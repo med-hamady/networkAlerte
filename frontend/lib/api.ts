@@ -1,0 +1,184 @@
+import type {
+  AlertPolicy,
+  AlertRecord,
+  Device,
+  DeviceFormData,
+  HealthResponse,
+  Incident,
+  NotificationChannel,
+  NotificationChannelInput,
+  SupervisionReport,
+  SystemInfo,
+  Threshold,
+} from './types'
+
+// All requests go through the same-origin Next.js route handler at /api/proxy.
+// That handler injects the X-API-Key header server-side, so the secret never
+// lands in the browser bundle. See app/api/proxy/[...path]/route.ts.
+const API_BASE = '/api/proxy'
+
+export const fetcher = (url: string) =>
+  fetch(url).then((r) => {
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    return r.json()
+  })
+
+export const endpoints = {
+  health:               `${API_BASE}/health`,
+  devices:              `${API_BASE}/devices/`,
+  device:               (id: number) => `${API_BASE}/devices/${id}`,
+  incidents:            `${API_BASE}/incidents/`,
+  incident:             (id: number) => `${API_BASE}/incidents/${id}`,
+  deviceMetrics:        (id: number) => `${API_BASE}/devices/${id}/metrics/latest`,
+  checkSsh:             (id: number) => `${API_BASE}/devices/${id}/check-ssh`,
+  checkPing:            (id: number) => `${API_BASE}/devices/${id}/check-ping`,
+  systemInfo:           `${API_BASE}/system/info`,
+  alertPolicies:        `${API_BASE}/alert-policies/`,
+  alertPolicy:          (alertType: string) => `${API_BASE}/alert-policies/${alertType}`,
+  notificationChannels: `${API_BASE}/notification-channels/`,
+  notificationChannel:  (id: number) => `${API_BASE}/notification-channels/${id}`,
+  alertRecords:         (params?: string) => `${API_BASE}/notifications/${params ? `?${params}` : ''}`,
+  reportGenerate:       (params: string) => `${API_BASE}/reports/generate?${params}`,
+}
+
+export interface DiagResult { ok: boolean; message: string }
+
+export async function runDiag(url: string): Promise<DiagResult> {
+  const res = await fetch(url, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json() as Promise<DiagResult>
+}
+
+async function jsonOrThrow<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
+  }
+  return res.json() as Promise<T>
+}
+
+export async function updateIncidentStatus(
+  id: number,
+  status: 'acknowledged' | 'resolved',
+): Promise<Incident> {
+  const res = await fetch(endpoints.incident(id), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  })
+  return jsonOrThrow<Incident>(res)
+}
+
+export async function updateDevice(
+  id: number,
+  patch: Partial<Device>,
+): Promise<Device> {
+  const res = await fetch(endpoints.device(id), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+  return jsonOrThrow<Device>(res)
+}
+
+export async function createNotificationChannel(
+  data: NotificationChannelInput,
+): Promise<NotificationChannel> {
+  const res = await fetch(endpoints.notificationChannels, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  return jsonOrThrow<NotificationChannel>(res)
+}
+
+export async function updateNotificationChannel(
+  id: number,
+  patch: Partial<NotificationChannelInput>,
+): Promise<NotificationChannel> {
+  const res = await fetch(endpoints.notificationChannel(id), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+  return jsonOrThrow<NotificationChannel>(res)
+}
+
+export async function deleteNotificationChannel(id: number): Promise<void> {
+  const res = await fetch(endpoints.notificationChannel(id), {
+    method: 'DELETE',
+  })
+  if (!res.ok && res.status !== 204) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
+  }
+}
+
+export async function generateReport(
+  dateFrom: string,
+  dateTo: string,
+): Promise<SupervisionReport> {
+  const params = new URLSearchParams({ date_from: dateFrom, date_to: dateTo })
+  const res = await fetch(endpoints.reportGenerate(params.toString()))
+  return jsonOrThrow<SupervisionReport>(res)
+}
+
+export async function createDevice(data: DeviceFormData): Promise<Device> {
+  const res = await fetch(endpoints.devices, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...data,
+      model:           data.model           || null,
+      location:        data.location        || null,
+      snmp_community:  data.snmp_community  || null,
+      ssh_username:    data.ssh_username    || null,
+      ssh_password:    data.ssh_password    || null,
+      notes:           data.notes           || null,
+    }),
+  })
+  return jsonOrThrow<Device>(res)
+}
+
+export async function deleteDevice(id: number): Promise<void> {
+  const res = await fetch(endpoints.device(id), { method: 'DELETE' })
+  if (!res.ok && res.status !== 204) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
+  }
+}
+
+export async function getThresholds(): Promise<Threshold[]> {
+  const res = await fetch(`${API_BASE}/system/thresholds`)
+  return jsonOrThrow<Threshold[]>(res)
+}
+
+export async function patchThresholds(updates: Record<string, number>): Promise<Threshold[]> {
+  const res = await fetch(`${API_BASE}/system/thresholds`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  })
+  return jsonOrThrow<Threshold[]>(res)
+}
+
+export async function resetThreshold(key: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/system/thresholds/${key}`, { method: 'DELETE' })
+  if (!res.ok && res.status !== 204) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
+  }
+}
+
+// Typed wrappers for SWR (pass to useSWR as key)
+export type {
+  AlertPolicy,
+  AlertRecord,
+  Device,
+  HealthResponse,
+  Incident,
+  NotificationChannel,
+  NotificationChannelInput,
+  SupervisionReport,
+  SystemInfo,
+}

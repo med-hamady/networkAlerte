@@ -1,0 +1,32 @@
+# Production overrides — use with:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Changes vs docker-compose.yml (dev):
+#   - No bind mounts: code is baked into images at build time
+#   - Frontend uses the optimized `runner` target (next build + node server.js)
+#   - Backend port bound to 127.0.0.1 only (put nginx in front)
+#   - Frontend port bound to 127.0.0.1 only (put nginx in front)
+#   - Resource limits prevent runaway jobs from OOM-killing the host
+
+services:
+  backend:
+    volumes: []
+    ports:
+      - "127.0.0.1:8000:8000"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: runner
+    volumes: []
+    ports:
+      - "127.0.0.1:3000:3000"
+    deploy:
+      resources:
+        limits:
+          memory: 512m

@@ -1,0 +1,926 @@
+"""
+Scheduled supervision jobs.
+
+- heartbeat_job     : sanity check every 60s
+- device_ping_job   : ICMP ping all devices every 30s → opens/resolves incidents
+- snmp_poll_job     : SNMP metrics for LTU/airMAX devices every 60s → alert engine
+- power_poll_job    : UISP Power API polling every 30s → power anomaly detection
+- ltu_api_poll_job  : LTU HTTP API polling every 60s → alert engine (radio quality)
+- transit_probe_job : Transit connectivity probe every 60s
+"""
+
+import asyncio
+import datetime
+import logging
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from sqlalchemy import func, select
+
+from app.core.alert_constants import AT_AIRMAX_DOWN
+from app.core.alert_constants import AT_BATTERY_LOW_CRIT as AT_BATT_CRIT
+from app.core.alert_constants import AT_BATTERY_LOW_WARN as AT_BATT_WARN
+from app.core.alert_constants import AT_DEVICE_UNREACHABLE as AT_UNREACHABLE
+from app.core.alert_constants import AT_LR_DOWN, AT_LR_NO_TRANSIT, AT_ROCKET_DOWN, AT_SWITCH_DOWN
+from app.core.alert_constants import AT_SWITCH_PORT_DOWN as AT_SWITCH_PORT
+from app.core.alert_constants import AT_SWITCH_PORT_SPEED_LOW as AT_SWITCH_PORT_SPEED
+from app.core.alert_constants import AT_UISP_POWER_UNREACH as AT_POWER_UNREACH
+from app.core.alert_constants import AT_VOLTAGE_ANOMALY as AT_VOLT_ANOMALY
+from app.core.config import get_settings
+from app.db.session import async_session_factory
+from app.services import threshold_service
+from app.models.alert import Alert
+from app.models.alert_state import AlertState
+from app.models.device import Device
+from app.models.device_metric import DeviceMetric
+from app.models.power_status_log import PowerStatusLog
+from app.services import (
+    alert_engine,
+    digest_service,
+    incident_service,
+    ltu_api_service,
+    notification_service,
+    poller,
+    snmp_service,
+    ssh_service,
+    uisp_power_service,
+)
+
+logger = logging.getLogger(__name__)
+
+# alert_type sentinel used to persist the consecutive-ping-failure counter in
+# AlertState. Picking a leading underscore keeps it out of the regular alert
+# vocabulary (no policy, no incident, no formatter touches it).
+_PING_FAILURE_STATE_KEY = "_ping_failures"
+
+
+async def _get_ping_failure_count(session, device_id: int) -> int:
+    """Read the persisted consecutive ping-failure count for a device."""
+    res = await session.execute(
+        select(AlertState).where(
+            AlertState.device_id == device_id,
+            AlertState.alert_type == _PING_FAILURE_STATE_KEY,
+        )
+    )
+    state = res.scalar_one_or_none()
+    return state.failure_count if state else 0
+
+
+async def _set_ping_failure_count(session, device_id: int, count: int) -> None:
+    """Upsert the consecutive ping-failure count for a device."""
+    res = await session.execute(
+        select(AlertState).where(
+            AlertState.device_id == device_id,
+            AlertState.alert_type == _PING_FAILURE_STATE_KEY,
+        )
+    )
+    state = res.scalar_one_or_none()
+    now = datetime.datetime.now(datetime.UTC)
+    if state is None:
+        session.add(AlertState(
+            device_id=device_id,
+            alert_type=_PING_FAILURE_STATE_KEY,
+            failure_count=count,
+            last_evaluated_at=now,
+        ))
+    else:
+        state.failure_count = count
+        state.last_evaluated_at = now
+
+
+# LTU radio devices — polled via standard IF-MIB (no UBNT enterprise MIB)
+RADIO_DEVICE_TYPES = {"ltu_rocket", "ltu_lr"}
+
+# airOS devices — polled via UBNT Enterprise MIB + IF-MIB
+AIRMAX_DEVICE_TYPES = {"airmax_rocket"}
+
+# Device types polled via standard SNMP (uptime only)
+SWITCH_DEVICE_TYPES = {"uisp_switch"}
+
+# ---------------------------------------------------------------------------
+# Stable alert_type identifiers re-exported above from core/alert_constants
+# (single source of truth shared with alert_policy and alert_formatter).
+# Legacy title strings kept for notify_incident_resolved compatibility
+# ---------------------------------------------------------------------------
+INC_UNREACHABLE   = "Device unreachable"
+INC_POWER_UNREACH = "UISP Power unreachable"
+INC_BATT_WARN     = "Low battery level"
+INC_BATT_CRIT     = "Critical battery level"
+INC_VOLT_ANOMALY  = "Voltage anomaly"
+INC_TRANSIT       = "Transit réseau indisponible"
+INC_SWITCH_PORT       = "Switch port critique down"
+INC_SWITCH_PORT_SPEED = "Port switch vitesse insuffisante"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+async def _create_alert_record(
+    session,
+    incident: object,
+    message: str,
+    notif_success: bool,
+) -> None:
+    """Persist an Alert row recording the notification attempt."""
+    now = datetime.datetime.now(datetime.UTC)
+    alert = Alert(
+        incident_id=incident.id,
+        message=message,
+        status="sent" if notif_success else "failed",
+        sent_at=now if notif_success else None,
+    )
+    session.add(alert)
+
+
+def _alert_type_for_device(device: Device) -> str:
+    """Return the appropriate device-down alert_type for a given device type."""
+    mapping = {
+        "ltu_rocket":    AT_ROCKET_DOWN,
+        "ltu_lr":        AT_LR_DOWN,
+        "uisp_switch":   AT_SWITCH_DOWN,
+        "airmax_rocket": AT_AIRMAX_DOWN,
+    }
+    return mapping.get(device.device_type, AT_UNREACHABLE)
+
+
+def _down_title_for_device(device: Device) -> str:
+    mapping = {
+        "ltu_rocket":    "ALERTE CRITIQUE : LTU Rocket indisponible",
+        "ltu_lr":        "ALERTE CRITIQUE : LTU LR indisponible",
+        "uisp_switch":   "ALERTE CRITIQUE : UISP Switch indisponible",
+        "airmax_rocket": "ALERTE CRITIQUE : Rocket airMAX indisponible",
+    }
+    return mapping.get(device.device_type, INC_UNREACHABLE)
+
+
+async def _open_and_notify(
+    session,
+    device: Device,
+    title: str,
+    severity: str,
+    description: str,
+    alert_type: str | None = None,
+) -> None:
+    """Open an incident (if not already open) and send a notification."""
+    incident, is_new = await incident_service.open_incident(
+        session, device, title, severity, description, alert_type=alert_type
+    )
+    if is_new:
+        ok = await notification_service.notify_incident_opened(device, incident)
+        await _create_alert_record(session, incident, f"{title} — {device.name}", ok)
+
+
+async def _resolve_and_notify(
+    session,
+    device: Device,
+    title: str,
+    alert_type: str | None = None,
+) -> None:
+    """Resolve open incidents with the given alert_type/title and send a notification."""
+    resolved = await incident_service.resolve_incidents(
+        session, device.id, title, alert_type=alert_type
+    )
+    for incident in resolved:
+        ok = await notification_service.notify_incident_resolved(device, incident)
+        await _create_alert_record(
+            session, incident, f"RECOVERY: {title} — {device.name}", ok
+        )
+
+
+# ---------------------------------------------------------------------------
+# Correlation helper (used by ping job for switch context)
+# ---------------------------------------------------------------------------
+
+async def _build_switch_context(session, target_device: Device) -> str:
+    """
+    Enrich an incident description with switch/wiring context.
+
+    Reads the latest eth_if_up metric from the LTU Rocket to determine
+    whether the cable between Rocket and switch was already down.
+    Only relevant for ltu_rocket devices.
+    """
+    if target_device.device_type != "ltu_rocket":
+        return ""
+
+    sub = (
+        select(func.max(DeviceMetric.collected_at))
+        .where(
+            DeviceMetric.device_id == target_device.id,
+            DeviceMetric.metric_name == "eth_if_up",
+        )
+        .scalar_subquery()
+    )
+    res = await session.execute(
+        select(DeviceMetric).where(
+            DeviceMetric.device_id == target_device.id,
+            DeviceMetric.metric_name == "eth_if_up",
+            DeviceMetric.collected_at == sub,
+        )
+    )
+    metric = res.scalars().first()
+
+    if metric is None:
+        return "\n\nContexte switch : état du lien switch↔Rocket non encore mesuré."
+    if metric.metric_value == 0.0:
+        return (
+            "\n\nContexte switch : l'interface Ethernet (eth0) du LTU Rocket était déjà DOWN "
+            "→ câble débranché ou port du switch HS entre le switch et le LTU Rocket."
+        )
+    return (
+        "\n\nContexte switch : l'interface Ethernet (eth0) du LTU Rocket était UP "
+        "→ le switch fonctionne correctement, le problème est probablement "
+        "côté alimentation ou radio du LTU Rocket."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Jobs
+# ---------------------------------------------------------------------------
+
+async def heartbeat_job() -> None:
+    """Confirm the scheduler is running."""
+    logger.info("Scheduler heartbeat — system is alive")
+
+
+async def device_ping_job() -> None:
+    """
+    Ping all registered devices via ICMP.
+    Updates status/last_seen, opens or resolves device-down incidents.
+
+    Anti-flapping: an incident is only opened after ping_down_threshold consecutive
+    failures (default 3 = 90 s). A single successful ping resolves the incident.
+    alert_type is device-specific (rocket_down / lr_down / switch_down).
+    """
+    base_settings = get_settings()
+    async with async_session_factory() as _ts_session:
+        settings = await threshold_service.get_effective_settings(_ts_session, base_settings)
+
+    async with async_session_factory() as session:
+        result = await session.execute(select(Device))
+        devices = list(result.scalars().all())
+
+    if not devices:
+        logger.debug("No devices registered — skipping ping poll")
+        return
+
+    logger.info("Ping poll — checking %d device(s)", len(devices))
+
+    ping_results = await asyncio.gather(
+        *[poller.ping_host(d.ip_address) for d in devices],
+        return_exceptions=True,
+    )
+
+    now = datetime.datetime.now(datetime.UTC)
+
+    # Single session for the entire loop — commits after each device so that
+    # one device failure never rolls back another device's state changes.
+    async with async_session_factory() as session:
+        for device, reachable in zip(devices, ping_results, strict=True):
+            if isinstance(reachable, Exception):
+                reachable = False
+
+            dev = await session.get(Device, device.id)
+            if dev is None:
+                continue
+
+            at = _alert_type_for_device(dev)
+
+            if reachable:
+                await _set_ping_failure_count(session, dev.id, 0)
+                dev.status = "up"
+                dev.last_seen = now
+                recovery_title = f"RECOVERY : {dev.name} de nouveau disponible"
+                await _resolve_and_notify(session, dev, recovery_title, alert_type=at)
+                logger.info("UP   %s (%s)", dev.name, dev.ip_address)
+            else:
+                dev.status = "down"
+                failures = await _get_ping_failure_count(session, dev.id) + 1
+                await _set_ping_failure_count(session, dev.id, failures)
+
+                if failures >= settings.ping_down_threshold:
+                    context = await _build_switch_context(session, dev)
+                    down_title = _down_title_for_device(dev)
+                    await _open_and_notify(
+                        session, dev,
+                        title=down_title,
+                        severity="critical",
+                        description=(
+                            f"{dev.name} ({dev.ip_address}) ne répond pas au ping ICMP"
+                            f" ({failures} tentatives consécutives échouées).{context}"
+                        ),
+                        alert_type=at,
+                    )
+                    logger.warning(
+                        "DOWN %s (%s) — %d/%d échecs consécutifs",
+                        dev.name, dev.ip_address, failures, settings.ping_down_threshold,
+                    )
+                else:
+                    logger.warning(
+                        "PING KO %s (%s) — %d/%d (seuil non atteint)",
+                        dev.name, dev.ip_address, failures, settings.ping_down_threshold,
+                    )
+
+            await session.commit()
+
+        # After all devices are processed, run a global correlation pass so that
+        # device-down incidents (which bypass alert_engine) get probable_cause set.
+        await alert_engine.run_correlation_pass(session)
+        await session.commit()
+
+
+async def snmp_poll_job() -> None:
+    """
+    Collect SNMP metrics from Ubiquiti radio and switch devices.
+    Stores metrics in device_metrics, then delegates anomaly detection
+    to the alert engine (radio_interface_down, eth0_down, high_rx_tx_errors).
+    Only polls devices with status 'up' and a configured snmp_community.
+    """
+    base_settings = get_settings()
+    async with async_session_factory() as _ts_session:
+        settings = await threshold_service.get_effective_settings(_ts_session, base_settings)
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Device).where(
+                Device.status == "up",
+                Device.snmp_community.is_not(None),
+                Device.device_type.in_(
+                    RADIO_DEVICE_TYPES | AIRMAX_DEVICE_TYPES | SWITCH_DEVICE_TYPES
+                ),
+            )
+        )
+        devices = list(result.scalars().all())
+
+    if not devices:
+        logger.debug("No SNMP-eligible devices — skipping SNMP poll")
+        return
+
+    logger.info("SNMP poll — checking %d device(s)", len(devices))
+
+    for device in devices:
+        community = device.snmp_community or settings.snmp_default_community
+
+        if device.device_type in AIRMAX_DEVICE_TYPES:
+            metrics = await snmp_service.collect_airmax_metrics(
+                host=device.ip_address,
+                community=community,
+                port=settings.snmp_port,
+                timeout=settings.snmp_timeout,
+            )
+        elif device.device_type in RADIO_DEVICE_TYPES:
+            metrics = await snmp_service.collect_ltu_metrics(
+                host=device.ip_address,
+                community=community,
+                port=settings.snmp_port,
+                timeout=settings.snmp_timeout,
+            )
+        elif device.device_type in SWITCH_DEVICE_TYPES:
+            metrics = await snmp_service.collect_switch_port_metrics(
+                host=device.ip_address,
+                community=community,
+                port=settings.snmp_port,
+                timeout=settings.snmp_timeout,
+                max_ports=settings.switch_max_ports,
+            )
+        else:
+            metrics = await snmp_service.collect_standard_metrics(
+                host=device.ip_address,
+                community=community,
+                port=settings.snmp_port,
+                timeout=settings.snmp_timeout,
+            )
+
+        if not any(v is not None for v in metrics.values()):
+            logger.warning("SNMP no data — %s (%s)", device.name, device.ip_address)
+            continue
+
+        logger.info(
+            "SNMP %s (%s) — %s",
+            device.name,
+            device.ip_address,
+            " | ".join(f"{k}={v}" for k, v in metrics.items() if v is not None),
+        )
+
+        async with async_session_factory() as session:
+            dev = await session.get(Device, device.id)
+            if dev is None:
+                continue
+
+            # Persist each metric as a DeviceMetric row
+            unit_map = {
+                "uptime_seconds":   "s",
+                "radio_rx_bytes":   "B",
+                "radio_tx_bytes":   "B",
+                "radio_in_errors":  "",
+                "radio_out_errors": "",
+                "radio_if_up":      "",
+                "eth_if_up":        "",
+            }
+            for key in metrics:
+                if key not in unit_map:
+                    if "_rx_bytes" in key or "_tx_bytes" in key:
+                        unit_map[key] = "B"
+                    elif "_speed_mbps" in key:
+                        unit_map[key] = "Mbps"
+                    else:
+                        unit_map[key] = ""
+            for metric_name, value in metrics.items():
+                if value is not None:
+                    session.add(DeviceMetric(
+                        device_id=dev.id,
+                        metric_name=metric_name,
+                        metric_value=value,
+                        unit=unit_map.get(metric_name),
+                    ))
+
+            # Delegate anomaly detection to alert engine
+            await alert_engine.evaluate_device_metrics(session, dev, metrics, settings)
+
+            # Switch port monitoring (not handled by alert engine — device-level rule)
+            if device.device_type in SWITCH_DEVICE_TYPES:
+                port_idx = settings.switch_rocket_port_index
+                if port_idx > 0:
+                    port_status = metrics.get(f"port_{port_idx}_up")
+                    if port_status is not None:
+                        if port_status == 0.0:
+                            await _open_and_notify(
+                                session, dev, INC_SWITCH_PORT, "critical",
+                                f"GigabitEthernet{port_idx} du {dev.name} "
+                                f"(connecté au LTU Rocket) est DOWN. "
+                                f"Vérifiez le câble entre le switch et le LTU Rocket.",
+                                alert_type=AT_SWITCH_PORT,
+                            )
+                            await _resolve_and_notify(
+                                session, dev, INC_SWITCH_PORT_SPEED, alert_type=AT_SWITCH_PORT_SPEED
+                            )
+                        else:
+                            await _resolve_and_notify(
+                                session, dev, INC_SWITCH_PORT, alert_type=AT_SWITCH_PORT
+                            )
+                            # Port is UP — check link speed
+                            speed = metrics.get(f"port_{port_idx}_speed_mbps")
+                            if speed is not None:
+                                if speed < settings.switch_port_min_speed_mbps:
+                                    await _open_and_notify(
+                                        session, dev, INC_SWITCH_PORT_SPEED, "critical",
+                                        f"GigabitEthernet{port_idx} du {dev.name} UP "
+                                        f"mais vitesse négociée à {speed:.0f} Mbps "
+                                        f"(seuil minimum : {settings.switch_port_min_speed_mbps:.0f} Mbps). "
+                                        f"Vérifiez la qualité du câble et l'auto-négociation.",
+                                        alert_type=AT_SWITCH_PORT_SPEED,
+                                    )
+                                else:
+                                    await _resolve_and_notify(
+                                        session, dev, INC_SWITCH_PORT_SPEED, alert_type=AT_SWITCH_PORT_SPEED
+                                    )
+
+            await session.commit()
+
+
+async def power_poll_job() -> None:
+    """
+    Poll UISP Power devices via their local REST API.
+    Stores readings in power_status_logs and detects power anomalies.
+    """
+    settings = get_settings()
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Device).where(Device.device_type == "uisp_power")
+        )
+        devices = list(result.scalars().all())
+
+    if not devices:
+        logger.debug("No UISP Power devices registered — skipping power poll")
+        return
+
+    logger.info("Power poll — checking %d UISP Power device(s)", len(devices))
+
+    for device in devices:
+        readings = await uisp_power_service.poll_uisp_power(
+            host=device.ip_address,
+            username=settings.uisp_power_username,
+            password=settings.uisp_power_password,
+            port=settings.uisp_power_port,
+        )
+
+        async with async_session_factory() as session:
+            dev = await session.get(Device, device.id)
+            if dev is None:
+                continue
+
+            if readings is None:
+                await _open_and_notify(
+                    session, dev, INC_POWER_UNREACH, "critical",
+                    f"UISP Power device {dev.name} ({dev.ip_address}) is not responding to API.",
+                    alert_type=AT_POWER_UNREACH,
+                )
+                logger.warning("UISP Power unreachable — %s (%s)", dev.name, dev.ip_address)
+            else:
+                await _resolve_and_notify(
+                    session, dev, INC_POWER_UNREACH, alert_type=AT_POWER_UNREACH
+                )
+
+                session.add(PowerStatusLog(
+                    device_id=dev.id,
+                    voltage=readings.get("voltage"),
+                    current=readings.get("current"),
+                    power=readings.get("power"),
+                    status="online",
+                ))
+
+                logger.info(
+                    "UISP Power %s — voltage=%.1fV current=%.2fA power=%.1fW",
+                    dev.name,
+                    readings.get("voltage") or 0,
+                    readings.get("current") or 0,
+                    readings.get("power") or 0,
+                )
+
+                # Battery anomaly detection
+                batt = readings.get("battery_percentage")
+                if batt is not None:
+                    if batt < settings.battery_critical_pct:
+                        await _open_and_notify(
+                            session, dev, INC_BATT_CRIT, "critical",
+                            f"Battery critical: {batt}% (threshold {settings.battery_critical_pct}%).",
+                            alert_type=AT_BATT_CRIT,
+                        )
+                        await _resolve_and_notify(
+                            session, dev, INC_BATT_WARN, alert_type=AT_BATT_WARN
+                        )
+                    elif batt < settings.battery_warning_pct:
+                        await _open_and_notify(
+                            session, dev, INC_BATT_WARN, "warning",
+                            f"Battery low: {batt}% (threshold {settings.battery_warning_pct}%).",
+                            alert_type=AT_BATT_WARN,
+                        )
+                        await _resolve_and_notify(
+                            session, dev, INC_BATT_CRIT, alert_type=AT_BATT_CRIT
+                        )
+                    else:
+                        await _resolve_and_notify(
+                            session, dev, INC_BATT_WARN, alert_type=AT_BATT_WARN
+                        )
+                        await _resolve_and_notify(
+                            session, dev, INC_BATT_CRIT, alert_type=AT_BATT_CRIT
+                        )
+
+                # Voltage anomaly
+                voltage = readings.get("voltage")
+                if voltage is not None and (voltage < 20.0 or voltage > 56.0):
+                    await _open_and_notify(
+                        session, dev, INC_VOLT_ANOMALY, "critical",
+                        f"Voltage out of range: {voltage:.1f}V.",
+                        alert_type=AT_VOLT_ANOMALY,
+                    )
+                elif voltage is not None:
+                    await _resolve_and_notify(
+                        session, dev, INC_VOLT_ANOMALY, alert_type=AT_VOLT_ANOMALY
+                    )
+
+            await session.commit()
+
+
+async def ltu_api_poll_job() -> None:
+    """
+    Poll LTU Rocket via HTTP API (signal, CCQ, CINR, rates, CPE info).
+    Delegates radio quality anomaly detection to the alert engine.
+    """
+    base_settings = get_settings()
+    async with async_session_factory() as _ts_session:
+        settings = await threshold_service.get_effective_settings(_ts_session, base_settings)
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Device).where(
+                Device.status == "up",
+                Device.device_type == "ltu_rocket",
+            )
+        )
+        devices = list(result.scalars().all())
+
+    if not devices:
+        logger.debug("LTU API poll — no eligible devices")
+        return
+
+    logger.info("LTU API poll — checking %d device(s)", len(devices))
+
+    unit_map = {
+        "signal_dbm":        "dBm",
+        "noise_dbm":         "dBm",
+        "ccq_pct":           "%",
+        "ul_ccq_pct":        "%",
+        "cinr_db":           "dB",
+        "ul_cinr_db":        "dB",
+        "tx_rate_mbps":      "Mbps",
+        "rx_rate_mbps":      "Mbps",
+        "tx_ideal_mbps":     "Mbps",
+        "rx_ideal_mbps":     "Mbps",
+        "remote_signal_dbm": "dBm",
+        "remote_noise_dbm":  "dBm",
+        "remote_eirp_dbm":   "dBm",
+        "distance_m":        "m",
+        "peer_uptime_s":     "s",
+        "peer_cpu_pct":      "%",
+        "peer_ram_pct":      "%",
+        "peer_tx_kbps":      "Kbps",
+        "peer_rx_kbps":      "Kbps",
+    }
+
+    for device in devices:
+        metrics, all_peers = await ltu_api_service.collect_ltu_api_full(
+            host=device.ip_address,
+            username=settings.ltu_api_username,
+            password=settings.ltu_api_password,
+            port=settings.ltu_api_port,
+        )
+
+        if metrics is None:
+            logger.debug("LTU API no response — %s (%s)", device.name, device.ip_address)
+            continue
+
+        has_data = any(v is not None for v in metrics.values())
+        if not has_data:
+            logger.warning("LTU API no data — %s (%s)", device.name, device.ip_address)
+            continue
+
+        async with async_session_factory() as session:
+            dev = await session.get(Device, device.id)
+            if dev is None:
+                continue
+
+            # Auto-assign parent_id on LR devices reported by this Rocket's peer list
+            matched_lr_ids: set[int] = set()
+            for peer in all_peers:
+                peer_ip = peer.get("mgmt_ip")
+                if not peer_ip:
+                    continue
+                lr_res = await session.execute(
+                    select(Device).where(
+                        Device.device_type == "ltu_lr",
+                        Device.ip_address == peer_ip,
+                    )
+                )
+                lr_device = lr_res.scalars().first()
+
+                if lr_device is None and len(all_peers) == 1:
+                    fallback_res = await session.execute(
+                        select(Device).where(Device.device_type == "ltu_lr")
+                    )
+                    lr_device = fallback_res.scalars().first()
+                    if lr_device and lr_device.ip_address != peer_ip:
+                        logger.info(
+                            "LTU LR IP mise à jour : %s → %s (via mgmtIp du Rocket %s)",
+                            lr_device.ip_address, peer_ip, dev.name,
+                        )
+                        lr_device.ip_address = peer_ip
+
+                if lr_device:
+                    matched_lr_ids.add(lr_device.id)
+                    if lr_device.parent_id != dev.id:
+                        lr_device.parent_id = dev.id
+                        logger.info(
+                            "Hiérarchie : LR '%s' lié au Rocket '%s' (mgmtIp=%s)",
+                            lr_device.name, dev.name, peer_ip,
+                        )
+
+            # Persist metrics
+            for metric_name, value in metrics.items():
+                if value is not None:
+                    session.add(DeviceMetric(
+                        device_id=dev.id,
+                        metric_name=metric_name,
+                        metric_value=value,
+                        unit=unit_map.get(metric_name),
+                    ))
+
+            # Build engine metrics dict with CPE peer_count derived from peer list
+            engine_metrics = dict(metrics)
+            engine_metrics["peer_count"] = len(all_peers)
+
+            # Delegate all radio quality anomaly detection to the alert engine
+            await alert_engine.evaluate_device_metrics(session, dev, engine_metrics, settings)
+
+            await session.commit()
+
+
+async def lr_transit_probe_job() -> None:
+    """
+    Vérifie la connectivité internet depuis le LTU LR lui-même via SSH.
+
+    Flux décisionnel
+    ----------------
+    1. Trouve le device LTU LR en base de données.
+    2. Tente une connexion SSH sur son IP locale (ex. 10.135.x.x).
+       - Échec SSH → l'équipement est probablement éteint ou non joignable
+         sur le réseau local → on ne lève pas d'alerte transit (le job de
+         ping gère déjà la disponibilité de l'équipement).
+    3. SSH OK → exécute "ping -c 2 -W 3 <cible>" depuis le LTU LR.
+       - Au moins une cible répond → transit OK → résoudre l'incident.
+       - Aucune cible ne répond → incrémenter le compteur (AlertState) →
+         ouvrir un incident critique après N cycles consécutifs.
+
+    Le compteur de cycles est persisté en base (AlertState) et survit
+    aux redémarrages du container.
+    """
+    settings = get_settings()
+    probe_ips = [ip.strip() for ip in settings.transit_probe_ips.split(",") if ip.strip()]
+    if not probe_ips:
+        logger.debug("lr_transit_probe: TRANSIT_PROBE_IPS vide — job ignoré")
+        return
+
+    async with async_session_factory() as session:
+        # ── 1. Trouver le LTU LR ─────────────────────────────────────────────
+        lr_res = await session.execute(
+            select(Device).where(Device.device_type == "ltu_lr")
+        )
+        lr = lr_res.scalars().first()
+
+        if lr is None:
+            logger.debug("lr_transit_probe: aucun LTU LR enregistré — ignoré")
+            return
+
+        # ── 2. Vérifier l'accès SSH sur le réseau local ──────────────────────
+        ssh_ok, ssh_msg, observed_fp = await ssh_service.check_ssh_access(
+            lr.ip_address,
+            settings.ltu_lr_ssh_port,
+            settings.ltu_lr_ssh_username,
+            settings.ltu_lr_ssh_password,
+            expected_fingerprint=lr.ssh_host_fingerprint,
+        )
+
+        if ssh_ok and observed_fp and lr.ssh_host_fingerprint != observed_fp:
+            # First-seen fingerprint — pin it so subsequent connects detect MITM.
+            lr.ssh_host_fingerprint = observed_fp
+
+        if not ssh_ok:
+            # L'équipement ne répond pas en SSH sur le réseau local.
+            # Il est peut-être éteint ou pas encore démarré.
+            # On ne lève pas d'alerte transit — le ping job s'en charge.
+            logger.info(
+                "lr_transit_probe: SSH %s:%d impossible (%s) — "
+                "équipement probablement hors-ligne, alerte transit ignorée",
+                lr.ip_address, settings.ltu_lr_ssh_port, ssh_msg,
+            )
+            await session.commit()
+            return
+
+        # ── 3. Ping internet depuis le LTU LR ────────────────────────────────
+        ping_ok, ping_detail, _ = await ssh_service.ping_targets_via_ssh(
+            lr.ip_address,
+            settings.ltu_lr_ssh_port,
+            settings.ltu_lr_ssh_username,
+            settings.ltu_lr_ssh_password,
+            probe_ips,
+            expected_fingerprint=lr.ssh_host_fingerprint,
+        )
+
+        # ── 4. Récupérer / créer l'AlertState pour le compteur anti-flap ─────
+        state_res = await session.execute(
+            select(AlertState).where(
+                AlertState.device_id == lr.id,
+                AlertState.alert_type == AT_LR_NO_TRANSIT,
+            )
+        )
+        state = state_res.scalar_one_or_none()
+        if state is None:
+            state = AlertState(
+                device_id=lr.id,
+                alert_type=AT_LR_NO_TRANSIT,
+                failure_count=0,
+            )
+            session.add(state)
+            await session.flush()
+
+        now = datetime.datetime.now(datetime.UTC)
+        state.last_evaluated_at = now
+
+        # ── 5. Traiter le résultat ────────────────────────────────────────────
+        if ping_ok:
+            # Transit OK — réinitialiser et résoudre
+            state.failure_count = 0
+            await _resolve_and_notify(
+                session, lr,
+                "RECOVERY : LTU LR de nouveau joignable depuis internet via le lien radio",
+                alert_type=AT_LR_NO_TRANSIT,
+            )
+            logger.info(
+                "lr_transit_probe: OK — %s atteint depuis %s via SSH",
+                ping_detail, lr.ip_address,
+            )
+        else:
+            # Transit KO — incrémenter le compteur
+            state.failure_count += 1
+            count = state.failure_count
+
+            if count >= settings.transit_probe_threshold:
+                title = "ALERTE CRITIQUE : LTU LR sans transit internet via le lien radio"
+                desc = (
+                    f"SSH vers {lr.ip_address} : OK — l'équipement est joignable sur le "
+                    f"réseau local.\n"
+                    f"Ping vers {probe_ips} depuis {lr.name} : ÉCHOUE "
+                    f"({count} cycles consécutifs).\n"
+                    f"Le LTU LR est allumé mais ne peut pas joindre internet — "
+                    f"problème probable sur le lien radio ou la configuration de routage."
+                )
+                await _open_and_notify(
+                    session, lr, title, "critical", desc, alert_type=AT_LR_NO_TRANSIT,
+                )
+                logger.warning(
+                    "lr_transit_probe: KO — %s SSH OK, ping %s ÉCHOUE (%d/%d cycles)",
+                    lr.ip_address, probe_ips, count, settings.transit_probe_threshold,
+                )
+            else:
+                logger.warning(
+                    "lr_transit_probe: KO (%d/%d) — seuil non atteint",
+                    count, settings.transit_probe_threshold,
+                )
+
+        await session.commit()
+
+
+async def warning_digest_job() -> None:
+    """
+    Flush the pending warning digest: collect all open undigested warnings
+    whose alert_type policy is groupable, send a single batched notification
+    per channel, and mark the included incidents as digested.
+    """
+    async with async_session_factory() as session:
+        try:
+            sent = await digest_service.flush_warning_digest(session)
+            if sent:
+                logger.info("Warning digest flushed — %d warnings", sent)
+            else:
+                logger.debug("Warning digest: nothing to send")
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+
+# ---------------------------------------------------------------------------
+# Registration
+# ---------------------------------------------------------------------------
+
+def register_jobs(scheduler: AsyncIOScheduler) -> None:
+    """Register all scheduled jobs. Intervals are read from settings.
+
+    Safety params on every job:
+      - max_instances=1     : never run a second copy if the previous one is still running
+      - coalesce=True       : if the scheduler missed several runs, only fire once
+      - misfire_grace_time  : ignore runs older than this when catching up
+    """
+    settings = get_settings()
+    safety = {"max_instances": 1, "coalesce": True, "misfire_grace_time": 15}
+
+    scheduler.add_job(
+        heartbeat_job,
+        trigger="interval", seconds=60,
+        id="heartbeat", name="Heartbeat check",
+        replace_existing=True,
+        **safety,
+    )
+    scheduler.add_job(
+        device_ping_job,
+        trigger="interval", seconds=settings.ping_interval_seconds,
+        id="device_ping", name="Device ping poll",
+        replace_existing=True,
+        **safety,
+    )
+    scheduler.add_job(
+        snmp_poll_job,
+        trigger="interval", seconds=settings.snmp_interval_seconds,
+        id="snmp_poll", name="SNMP metrics poll",
+        replace_existing=True,
+        **safety,
+    )
+    scheduler.add_job(
+        power_poll_job,
+        trigger="interval", seconds=settings.power_interval_seconds,
+        id="power_poll", name="UISP Power poll",
+        replace_existing=True,
+        **safety,
+    )
+    if settings.transit_probe_enabled:
+        scheduler.add_job(
+            lr_transit_probe_job,
+            trigger="interval", seconds=settings.transit_probe_interval,
+            id="transit_probe", name="LR SSH transit probe",
+            replace_existing=True,
+            **safety,
+        )
+    scheduler.add_job(
+        ltu_api_poll_job,
+        trigger="interval", seconds=settings.snmp_interval_seconds,
+        id="ltu_api_poll", name="LTU HTTP API poll",
+        replace_existing=True,
+        **safety,
+    )
+    scheduler.add_job(
+        warning_digest_job,
+        trigger="interval", minutes=settings.warning_digest_minutes,
+        id="warning_digest", name="Warning digest flush",
+        replace_existing=True,
+        **safety,
+    )

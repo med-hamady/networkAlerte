@@ -1,6 +1,6 @@
 import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -28,6 +28,17 @@ class Device(Base):
     ssh_host_fingerprint: Mapped[str | None] = mapped_column(String(255), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text)
     last_seen: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Auto-discovery fields. Populated when a peer is reported by a parent
+    # Rocket: mac_address is the stable identifier (survives IP changes and
+    # Rocket reassignment), auto_discovered distinguishes operator-created
+    # devices from those created automatically.
+    mac_address: Mapped[str | None] = mapped_column(String(17), unique=True, nullable=True)
+    hostname: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    firmware_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    auto_discovered: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    first_discovered_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    last_discovered_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Per-device alert_policy overrides — see services/alert_policy.merge_overrides.
     # Shape: {alert_type: {channels?, notify_immediately?, recovery_notification?, ...}}

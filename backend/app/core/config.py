@@ -154,6 +154,13 @@ class Settings(BaseSettings):
     battery_warning_pct: int = 25   # below → warning
     battery_critical_pct: int = 10  # below → critical
 
+    # Auto-discovery — stale LR detection
+    # An auto-discovered LR is considered "disappeared" if it has not been
+    # rapported as a peer of any Rocket for more than `stale_lr_minutes` minutes.
+    # The detection job runs every `stale_lr_check_interval_minutes` minutes.
+    stale_lr_check_interval_minutes: int = 5
+    stale_lr_minutes: int = 10
+
     @computed_field(repr=False)
     @property
     def database_url(self) -> str:

@@ -1,5 +1,6 @@
 import datetime
 import ipaddress
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -8,6 +9,12 @@ from pydantic import BaseModel, ConfigDict, field_validator
 # must be added here and to the polling jobs at the same time.
 DeviceType = Literal["ltu_rocket", "ltu_lr", "uisp_switch", "uisp_power", "airmax_rocket"]
 
+# Accepts MAC formats: aa:bb:cc:dd:ee:ff, AA-BB-CC-DD-EE-FF, AABBCCDDEEFF, aabb.ccdd.eeff.
+# Normalised to lowercase colon notation.
+_MAC_RAW = re.compile(r"^[0-9A-Fa-f]{12}$")
+_MAC_SEP = re.compile(r"^([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}$")
+_MAC_DOT = re.compile(r"^([0-9A-Fa-f]{4}\.){2}[0-9A-Fa-f]{4}$")
+
 
 def _validate_ip(value: str) -> str:
     try:
@@ -15,6 +22,22 @@ def _validate_ip(value: str) -> str:
     except ValueError as exc:
         raise ValueError(f"Invalid IP address: {value!r}") from exc
     return value
+
+
+def normalize_mac(value: str) -> str:
+    """Normalise a MAC address to lowercase colon-separated form (aa:bb:...)."""
+    raw = value.strip()
+    if _MAC_SEP.match(raw):
+        clean = raw.replace("-", ":").lower()
+    elif _MAC_DOT.match(raw):
+        hex_only = raw.replace(".", "").lower()
+        clean = ":".join(hex_only[i:i + 2] for i in range(0, 12, 2))
+    elif _MAC_RAW.match(raw):
+        hex_only = raw.lower()
+        clean = ":".join(hex_only[i:i + 2] for i in range(0, 12, 2))
+    else:
+        raise ValueError(f"Invalid MAC address: {value!r}")
+    return clean
 
 
 class DeviceCreate(BaseModel):
@@ -34,11 +57,21 @@ class DeviceCreate(BaseModel):
     notes: str | None = None
     parent_id: int | None = None
     policy_overrides: dict[str, Any] | None = None
+    mac_address: str | None = None
+    hostname: str | None = None
+    firmware_version: str | None = None
 
     @field_validator("ip_address")
     @classmethod
     def _check_ip(cls, v: str) -> str:
         return _validate_ip(v)
+
+    @field_validator("mac_address")
+    @classmethod
+    def _check_mac(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        return normalize_mac(v)
 
 
 class DeviceUpdate(BaseModel):
@@ -58,6 +91,9 @@ class DeviceUpdate(BaseModel):
     notes: str | None = None
     parent_id: int | None = None
     policy_overrides: dict[str, Any] | None = None
+    mac_address: str | None = None
+    hostname: str | None = None
+    firmware_version: str | None = None
 
     @field_validator("ip_address")
     @classmethod
@@ -65,6 +101,13 @@ class DeviceUpdate(BaseModel):
         if v is None:
             return v
         return _validate_ip(v)
+
+    @field_validator("mac_address")
+    @classmethod
+    def _check_mac(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        return normalize_mac(v)
 
 
 class DeviceRead(BaseModel):
@@ -90,6 +133,12 @@ class DeviceRead(BaseModel):
     updated_at: datetime.datetime
     parent_id: int | None
     policy_overrides: dict[str, Any] | None = None
+    mac_address: str | None = None
+    hostname: str | None = None
+    firmware_version: str | None = None
+    auto_discovered: bool = False
+    first_discovered_at: datetime.datetime | None = None
+    last_discovered_at: datetime.datetime | None = None
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs: Any) -> "DeviceRead":

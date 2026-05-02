@@ -16,18 +16,23 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import func, select
 
-from app.core.alert_constants import AT_AIRMAX_DOWN
+from app.core.alert_constants import (
+    AT_AIRMAX_DOWN,
+    AT_LR_DISAPPEARED,
+    AT_LR_DOWN,
+    AT_LR_NO_TRANSIT,
+    AT_ROCKET_DOWN,
+    AT_SWITCH_DOWN,
+)
 from app.core.alert_constants import AT_BATTERY_LOW_CRIT as AT_BATT_CRIT
 from app.core.alert_constants import AT_BATTERY_LOW_WARN as AT_BATT_WARN
 from app.core.alert_constants import AT_DEVICE_UNREACHABLE as AT_UNREACHABLE
-from app.core.alert_constants import AT_LR_DOWN, AT_LR_NO_TRANSIT, AT_ROCKET_DOWN, AT_SWITCH_DOWN
 from app.core.alert_constants import AT_SWITCH_PORT_DOWN as AT_SWITCH_PORT
 from app.core.alert_constants import AT_SWITCH_PORT_SPEED_LOW as AT_SWITCH_PORT_SPEED
 from app.core.alert_constants import AT_UISP_POWER_UNREACH as AT_POWER_UNREACH
 from app.core.alert_constants import AT_VOLTAGE_ANOMALY as AT_VOLT_ANOMALY
 from app.core.config import get_settings
 from app.db.session import async_session_factory
-from app.services import threshold_service
 from app.models.alert import Alert
 from app.models.alert_state import AlertState
 from app.models.device import Device
@@ -36,12 +41,14 @@ from app.models.power_status_log import PowerStatusLog
 from app.services import (
     alert_engine,
     digest_service,
+    discovery_service,
     incident_service,
     ltu_api_service,
     notification_service,
     poller,
     snmp_service,
     ssh_service,
+    threshold_service,
     uisp_power_service,
 )
 
@@ -436,6 +443,28 @@ async def snmp_poll_job() -> None:
             # Delegate anomaly detection to alert engine
             await alert_engine.evaluate_device_metrics(session, dev, metrics, settings)
 
+            # Auto-discovery for airMAX Rockets — walks the UBNT station table
+            # via SNMP and feeds the same reconcile_peers() pipeline as LTU API.
+            # The peers are still typed as ltu_lr in the DB; in mixed deployments
+            # the operator can rename them or override device_type after creation.
+            if device.device_type in AIRMAX_DEVICE_TYPES:
+                airmax_peers = await snmp_service.discover_airmax_peers(
+                    host=device.ip_address,
+                    community=community,
+                    port=settings.snmp_port,
+                    timeout=settings.snmp_timeout,
+                )
+                if airmax_peers:
+                    recon = await discovery_service.reconcile_peers(
+                        session, dev, airmax_peers,
+                    )
+                    if recon.created or recon.ip_changed or recon.reassigned:
+                        logger.info(
+                            "Discovery — airMAX '%s' : %d nouveau(x), %d IP changée(s), %d rebascule(s)",
+                            dev.name, len(recon.created),
+                            len(recon.ip_changed), len(recon.reassigned),
+                        )
+
             # Switch port monitoring (not handled by alert engine — device-level rule)
             if device.device_type in SWITCH_DEVICE_TYPES:
                 port_idx = settings.switch_rocket_port_index
@@ -650,40 +679,14 @@ async def ltu_api_poll_job() -> None:
             if dev is None:
                 continue
 
-            # Auto-assign parent_id on LR devices reported by this Rocket's peer list
-            matched_lr_ids: set[int] = set()
-            for peer in all_peers:
-                peer_ip = peer.get("mgmt_ip")
-                if not peer_ip:
-                    continue
-                lr_res = await session.execute(
-                    select(Device).where(
-                        Device.device_type == "ltu_lr",
-                        Device.ip_address == peer_ip,
-                    )
+            # Auto-discovery: create / update / link LR devices from the Rocket's peer list.
+            # MAC-based identity → IP changes and Rocket reassignments are detected reliably.
+            recon = await discovery_service.reconcile_peers(session, dev, all_peers)
+            if recon.created or recon.ip_changed or recon.reassigned:
+                logger.info(
+                    "Discovery — Rocket '%s' : %d nouveau(x), %d IP changée(s), %d rebascule(s)",
+                    dev.name, len(recon.created), len(recon.ip_changed), len(recon.reassigned),
                 )
-                lr_device = lr_res.scalars().first()
-
-                if lr_device is None and len(all_peers) == 1:
-                    fallback_res = await session.execute(
-                        select(Device).where(Device.device_type == "ltu_lr")
-                    )
-                    lr_device = fallback_res.scalars().first()
-                    if lr_device and lr_device.ip_address != peer_ip:
-                        logger.info(
-                            "LTU LR IP mise à jour : %s → %s (via mgmtIp du Rocket %s)",
-                            lr_device.ip_address, peer_ip, dev.name,
-                        )
-                        lr_device.ip_address = peer_ip
-
-                if lr_device:
-                    matched_lr_ids.add(lr_device.id)
-                    if lr_device.parent_id != dev.id:
-                        lr_device.parent_id = dev.id
-                        logger.info(
-                            "Hiérarchie : LR '%s' lié au Rocket '%s' (mgmtIp=%s)",
-                            lr_device.name, dev.name, peer_ip,
-                        )
 
             # Persist metrics
             for metric_name, value in metrics.items():
@@ -840,6 +843,72 @@ async def lr_transit_probe_job() -> None:
         await session.commit()
 
 
+async def stale_lr_detection_job() -> None:
+    """
+    Detect auto-discovered LRs that have stopped appearing in Rocket peer-lists.
+
+    An auto-discovered LR is reconciled (last_discovered_at refreshed) every
+    time its parent Rocket's API poll succeeds and reports it as a peer. If
+    `last_discovered_at` is older than `stale_lr_minutes`, the LR is either:
+      - powered off / disconnected from the radio, or
+      - rebooted with a different MAC, or
+      - genuinely retired from the network.
+
+    We open AT_LR_DISAPPEARED so the operator investigates. The incident is
+    automatically resolved on the next cycle if the LR reappears in any peer
+    list (last_discovered_at gets refreshed by reconcile_peers, the threshold
+    no longer fires).
+    """
+    settings = get_settings()
+    threshold = datetime.timedelta(minutes=settings.stale_lr_minutes)
+    now = datetime.datetime.now(datetime.UTC)
+    cutoff = now - threshold
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Device).where(
+                Device.device_type == "ltu_lr",
+                Device.auto_discovered.is_(True),
+            )
+        )
+        lrs = list(result.scalars().all())
+
+        if not lrs:
+            logger.debug("Stale-LR job: no auto-discovered LRs registered")
+            return
+
+        for lr in lrs:
+            # An LR that never appeared in a peer list (last_discovered_at NULL)
+            # is treated as fresh — we wait until it has been discovered at least
+            # once before tracking staleness.
+            if lr.last_discovered_at is None:
+                continue
+
+            if lr.last_discovered_at < cutoff:
+                age_minutes = int((now - lr.last_discovered_at).total_seconds() // 60)
+                title = f"LR disparu de la liste des peers : {lr.name}"
+                description = (
+                    f"Le LR auto-découvert '{lr.name}' (MAC={lr.mac_address or 'inconnue'}, "
+                    f"IP={lr.ip_address}) n'apparaît plus dans la liste des peers d'aucun "
+                    f"Rocket depuis {age_minutes} minutes (seuil : {settings.stale_lr_minutes} min). "
+                    f"Vérifier alimentation et lien radio. Comparer avec les incidents "
+                    f"lr_down / cpe_disconnected sur ce device et son parent."
+                )
+                await _open_and_notify(
+                    session, lr, title, "warning", description,
+                    alert_type=AT_LR_DISAPPEARED,
+                )
+            else:
+                # Recently seen — clear any stale incident
+                await _resolve_and_notify(
+                    session, lr,
+                    f"RECOVERY : {lr.name} de nouveau rapporté par un Rocket",
+                    alert_type=AT_LR_DISAPPEARED,
+                )
+
+        await session.commit()
+
+
 async def warning_digest_job() -> None:
     """
     Flush the pending warning digest: collect all open undigested warnings
@@ -921,6 +990,13 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         warning_digest_job,
         trigger="interval", minutes=settings.warning_digest_minutes,
         id="warning_digest", name="Warning digest flush",
+        replace_existing=True,
+        **safety,
+    )
+    scheduler.add_job(
+        stale_lr_detection_job,
+        trigger="interval", minutes=settings.stale_lr_check_interval_minutes,
+        id="stale_lr_detection", name="Stale LR detection",
         replace_existing=True,
         **safety,
     )

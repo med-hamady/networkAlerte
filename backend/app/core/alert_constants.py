@@ -96,6 +96,12 @@ AT_CAPACITY_UL_LOW = "capacity_ul_low"
 # airMAX (airOS) device availability — ping-based, device_ping_job
 AT_AIRMAX_DOWN     = "airmax_down"
 
+# Auto-discovery lifecycle events — fired by discovery_service / stale_lr_detection_job
+AT_LR_DISCOVERED   = "lr_discovered"   # nouveau LR détecté en peer d'un Rocket
+AT_LR_IP_CHANGED   = "lr_ip_changed"   # MAC connue mais IP différente
+AT_LR_REASSIGNED   = "lr_reassigned"   # LR vu sur un autre Rocket que son parent actuel
+AT_LR_DISAPPEARED  = "lr_disappeared"  # LR auto-découvert plus rapporté depuis N min
+
 
 KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_ROCKET_DOWN, AT_LR_DOWN, AT_SWITCH_DOWN, AT_DEVICE_UNREACHABLE,
@@ -107,6 +113,7 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_LR_NO_TRANSIT, AT_SWITCH_PORT_SPEED_LOW,
     AT_CCQ_UL_LOW, AT_CINR_UL_LOW, AT_CAPACITY_UL_LOW,
     AT_AIRMAX_DOWN,
+    AT_LR_DISCOVERED, AT_LR_IP_CHANGED, AT_LR_REASSIGNED, AT_LR_DISAPPEARED,
 })
 
 

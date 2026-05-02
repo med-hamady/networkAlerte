@@ -35,8 +35,12 @@ from app.core.alert_constants import (
     AT_DEVICE_UNREACHABLE,
     AT_ETH0_DOWN,
     AT_HIGH_RX_TX_ERRORS,
+    AT_LR_DISAPPEARED,
+    AT_LR_DISCOVERED,
     AT_LR_DOWN,
+    AT_LR_IP_CHANGED,
     AT_LR_NO_TRANSIT,
+    AT_LR_REASSIGNED,
     AT_RADIO_INTERFACE_DOWN,
     AT_RADIO_LINK_DEGRADED,
     AT_ROCKET_DOWN,
@@ -371,6 +375,60 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
         ),
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
+    ),
+
+    # --- Auto-discovery lifecycle (informational) ----------------------------
+
+    AT_LR_DISCOVERED: AlertPolicy(
+        alert_type=AT_LR_DISCOVERED,
+        severity=Severity.INFO,
+        recommended_action=(
+            "Nouveau LTU LR détecté en peer d'un Rocket — vérifier les informations "
+            "(nom, localisation, MAC) et compléter si nécessaire dans le dashboard."
+        ),
+        notify_immediately=False,
+        channels=(AlertChannel.WEBHOOK, AlertChannel.SLACK),
+        groupable=False,
+        recovery_notification=False,
+    ),
+    AT_LR_IP_CHANGED: AlertPolicy(
+        alert_type=AT_LR_IP_CHANGED,
+        severity=Severity.WARNING,
+        recommended_action=(
+            "L'adresse IP d'un LR a changé (MAC inchangée) — vérifier la cohérence "
+            "DHCP/configuration · Vérifier qu'aucune session SSH/API ne pointe vers "
+            "l'ancienne IP"
+        ),
+        notify_immediately=False,
+        channels=(AlertChannel.WEBHOOK, AlertChannel.SLACK),
+        groupable=False,
+        recovery_notification=False,
+    ),
+    AT_LR_REASSIGNED: AlertPolicy(
+        alert_type=AT_LR_REASSIGNED,
+        severity=Severity.WARNING,
+        recommended_action=(
+            "Un LR a basculé vers un autre Rocket — vérifier la couverture radio · "
+            "Vérifier si le bascule est volontaire ou symptôme d'une panne · "
+            "Vérifier la qualité du nouveau lien"
+        ),
+        notify_immediately=True,
+        channels=_CHANNELS_WARNING,
+        groupable=False,
+        recovery_notification=False,
+    ),
+    AT_LR_DISAPPEARED: AlertPolicy(
+        alert_type=AT_LR_DISAPPEARED,
+        severity=Severity.WARNING,
+        recommended_action=(
+            "Un LR auto-découvert n'apparaît plus dans la liste des peers du Rocket · "
+            "Vérifier alimentation et liaison radio du LR · "
+            "Comparer avec les incidents lr_down/cpe_disconnected"
+        ),
+        notify_immediately=True,
+        channels=_CHANNELS_WARNING,
+        groupable=False,
+        recovery_notification=True,
     ),
 }
 

@@ -234,7 +234,12 @@ def parse_ltu_stats(raw: dict) -> dict[str, float | None]:
 
 
 def _parse_peer_common(common: dict) -> dict[str, str | None]:
-    """Extract identification fields from a peer's 'common' dict."""
+    """Extract identification fields from a peer's 'common' dict.
+
+    The MAC address is normalised to lowercase colon notation so equality
+    comparisons in the discovery service work regardless of how the device
+    formats the field (uppercase, dashes, dots, no separator).
+    """
     info: dict[str, str | None] = {
         "mgmt_ip":  common.get("mgmtIp") or None,
         "hostname": common.get("hostname") or None,
@@ -246,7 +251,13 @@ def _parse_peer_common(common: dict) -> dict[str, str | None]:
     if isinstance(ident, dict):
         info["model"]    = ident.get("model") or None
         info["firmware"] = ident.get("firmwareVersion") or None
-        info["mac"]      = ident.get("mac") or None
+        raw_mac = ident.get("mac")
+        if raw_mac:
+            try:
+                from app.schemas.device import normalize_mac
+                info["mac"] = normalize_mac(raw_mac)
+            except ValueError:
+                logger.debug("LTU peer reported invalid MAC %r — kept as None", raw_mac)
     return info
 
 

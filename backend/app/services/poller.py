@@ -18,7 +18,7 @@ async def ping_host(ip_address: str, timeout: int = 2) -> bool:
         )
         await asyncio.wait_for(proc.wait(), timeout=timeout + 1)
         return proc.returncode == 0
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.debug("Ping timeout for %s", ip_address)
         return False
     except OSError as exc:

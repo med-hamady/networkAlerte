@@ -9,6 +9,7 @@ This object is drop-in compatible with alert_rules.py and alert_engine.py.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from sqlalchemy import select
@@ -247,10 +248,9 @@ async def get_effective_settings(db: AsyncSession, base_settings: Any) -> Merged
     overrides: dict[str, Any] = {}
     for key, schema in THRESHOLD_SCHEMA.items():
         if key in raw:
-            try:
+            # ignore malformed DB value, fall back to env
+            with contextlib.suppress(ValueError, TypeError):
                 overrides[key] = schema["type"](raw[key])
-            except (ValueError, TypeError):
-                pass  # ignore malformed DB value, fall back to env
     return MergedSettings(base_settings, overrides)
 
 

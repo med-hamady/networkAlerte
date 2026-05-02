@@ -119,7 +119,7 @@ async def flush_warning_digest(db: AsyncSession) -> int:
 
     targets = await notification_service._resolve_channels()
     targets = _channels_for_digest(targets, items)
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
 
     if not targets:
         # No channel will accept this digest — record the silence as failed

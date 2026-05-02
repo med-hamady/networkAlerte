@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 logger = logging.getLogger(__name__)
 
 
-class AppException(Exception):
+class AppError(Exception):
     """Base application exception."""
 
     def __init__(self, message: str, status_code: int = 500, detail: str | None = None):
@@ -16,7 +16,7 @@ class AppException(Exception):
         super().__init__(message)
 
 
-class DeviceNotFoundError(AppException):
+class DeviceNotFoundError(AppError):
     """Raised when a device is not found."""
 
     def __init__(self, device_id: int):
@@ -26,7 +26,7 @@ class DeviceNotFoundError(AppException):
         )
 
 
-class DeviceUnreachableError(AppException):
+class DeviceUnreachableError(AppError):
     """Raised when a device cannot be reached."""
 
     def __init__(self, ip_address: str):
@@ -39,9 +39,9 @@ class DeviceUnreachableError(AppException):
 def register_exception_handlers(app: FastAPI) -> None:
     """Register global exception handlers on the FastAPI app."""
 
-    @app.exception_handler(AppException)
-    async def app_exception_handler(_request: Request, exc: AppException) -> JSONResponse:
-        logger.warning("AppException: %s", exc.message)
+    @app.exception_handler(AppError)
+    async def app_exception_handler(_request: Request, exc: AppError) -> JSONResponse:
+        logger.warning("AppError: %s", exc.message)
         return JSONResponse(
             status_code=exc.status_code,
             content={

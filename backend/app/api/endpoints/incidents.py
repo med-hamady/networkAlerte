@@ -87,7 +87,7 @@ async def update_incident_status(
 
     if data.status == "resolved" and incident.status != "resolved":
         incident.status = "resolved"
-        incident.resolved_at = datetime.datetime.now(datetime.timezone.utc)
+        incident.resolved_at = datetime.datetime.now(datetime.UTC)
     elif data.status == "acknowledged" and incident.status == "open":
         incident.status = "acknowledged"
     else:

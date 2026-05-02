@@ -587,7 +587,7 @@ async def generate_report(
 ) -> SupervisionReport:
     """Génère un rapport complet de supervision pour la période donnée."""
     date_from_dt = datetime.datetime(
-        date_from.year, date_from.month, date_from.day, tzinfo=datetime.timezone.utc
+        date_from.year, date_from.month, date_from.day, tzinfo=datetime.UTC
     )
     date_to_dt = datetime.datetime(
         date_to.year,
@@ -596,7 +596,7 @@ async def generate_report(
         23,
         59,
         59,
-        tzinfo=datetime.timezone.utc,
+        tzinfo=datetime.UTC,
     )
 
     # Séquentiel : AsyncSession n'est pas thread-safe / concurrent-safe
@@ -608,7 +608,7 @@ async def generate_report(
     recs = await _build_recommendations(db, date_from_dt, date_to_dt)
 
     return SupervisionReport(
-        generated_at=datetime.datetime.now(datetime.timezone.utc),
+        generated_at=datetime.datetime.now(datetime.UTC),
         period=period,
         device_reliability=reliability,
         alert_frequencies=frequencies,

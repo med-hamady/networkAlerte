@@ -37,7 +37,12 @@ from app.db.session import async_session_factory
 from app.models.device import Device
 from app.models.incident import Incident
 from app.models.notification_channel import NotificationChannel
-from app.services import alert_formatter, email_service, notification_channel_service, whatsapp_service
+from app.services import (
+    alert_formatter,
+    email_service,
+    notification_channel_service,
+    whatsapp_service,
+)
 from app.services.alert_policy import get_policy_for_device, should_notify
 
 logger = logging.getLogger(__name__)

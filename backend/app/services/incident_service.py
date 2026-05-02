@@ -59,14 +59,14 @@ async def open_incident(
     """
     existing = await get_open_incident(db, device.id, title, alert_type=alert_type)
     if existing:
-        existing.last_triggered_at = datetime.datetime.now(datetime.timezone.utc)
+        existing.last_triggered_at = datetime.datetime.now(datetime.UTC)
         if metric_value is not None:
             existing.metric_value = metric_value
         if severity and _SEVERITY_RANK.get(severity, 0) > _SEVERITY_RANK.get(existing.severity or "", 0):
             existing.severity = severity
         return existing, False
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     incident = Incident(
         device_id=device.id,
         title=title,
@@ -116,7 +116,7 @@ async def resolve_incidents(
     if not incidents:
         return []
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     for inc in incidents:
         inc.status = "resolved"
         inc.resolved_at = now

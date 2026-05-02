@@ -11,8 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
 from app.core.alert_constants import Severity
+from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.alert import Alert
 from app.models.device import Device

@@ -3,7 +3,7 @@ Notification channels CRUD — manages the rows in the notification_channels tab
 
 Channels stored here are picked up automatically by notification_service:
 as soon as at least one enabled channel exists in DB, the DB rows take
-precedence over the env-based fallback (SLACK_WEBHOOK_URL etc.).
+precedence over the env-based fallback (SMTP_* env vars).
 """
 
 import logging

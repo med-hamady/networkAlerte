@@ -54,6 +54,10 @@ class DeviceCreate(BaseModel):
     ssh_password: str | None = None   # stored per-device, takes priority over global .env credential
     ssh_port: int = 22
     ssh_host_fingerprint: str | None = None
+    # Per-device UISP Power API credentials (override global env when set)
+    uisp_power_username: str | None = None
+    uisp_power_password: str | None = None   # stored per-device, takes priority over global .env credential
+    uisp_power_port: int | None = None
     notes: str | None = None
     parent_id: int | None = None
     policy_overrides: dict[str, Any] | None = None
@@ -88,6 +92,10 @@ class DeviceUpdate(BaseModel):
     ssh_password: str | None = None   # None = keep existing password
     ssh_port: int | None = None
     ssh_host_fingerprint: str | None = None
+    # Per-device UISP Power API credentials (None = keep existing)
+    uisp_power_username: str | None = None
+    uisp_power_password: str | None = None   # None = keep existing password
+    uisp_power_port: int | None = None
     notes: str | None = None
     parent_id: int | None = None
     policy_overrides: dict[str, Any] | None = None
@@ -127,6 +135,10 @@ class DeviceRead(BaseModel):
     ssh_port: int
     ssh_host_fingerprint: str | None = None
     has_ssh_password: bool = False    # true if a per-device password is stored (password itself is not returned)
+    # UISP Power: same write-only pattern as ssh_password
+    uisp_power_username: str | None = None
+    uisp_power_port: int | None = None
+    has_uisp_power_password: bool = False   # true if a per-device password is stored
     notes: str | None
     last_seen: datetime.datetime | None
     created_at: datetime.datetime
@@ -146,4 +158,6 @@ class DeviceRead(BaseModel):
         # Derive has_ssh_password from the ORM object without exposing the value
         if hasattr(obj, "ssh_password"):
             instance.has_ssh_password = bool(obj.ssh_password)
+        if hasattr(obj, "uisp_power_password"):
+            instance.has_uisp_power_password = bool(obj.uisp_power_password)
         return instance

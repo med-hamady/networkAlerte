@@ -130,16 +130,6 @@ async def resolve_incidents(
     return incidents
 
 
-async def acknowledge_incident(db: AsyncSession, incident_id: int) -> Incident | None:
-    """Mark an incident as acknowledged. Returns the updated incident or None."""
-    result = await db.execute(select(Incident).where(Incident.id == incident_id))
-    incident = result.scalar_one_or_none()
-    if incident and incident.status == "open":
-        incident.status = "acknowledged"
-        await db.flush()
-    return incident
-
-
 async def get_incidents(
     db: AsyncSession,
     status: str | None = None,

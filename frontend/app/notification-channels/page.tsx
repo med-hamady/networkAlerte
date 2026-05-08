@@ -11,20 +11,16 @@ import {
 } from '@/lib/api'
 import type { NotificationChannel, NotificationChannelInput } from '@/lib/types'
 
-const CHANNEL_TYPES = ['slack', 'webhook', 'email'] as const
+const CHANNEL_TYPES = ['email'] as const
 type ChannelType = (typeof CHANNEL_TYPES)[number]
 
 function emptyConfig(channelType: string): Record<string, unknown> {
-  if (channelType === 'slack')   return { webhook_url: '' }
-  if (channelType === 'webhook') return { url: '' }
-  if (channelType === 'email')   return { recipients: [] as string[] }
+  if (channelType === 'email') return { recipients: [] as string[] }
   return {}
 }
 
 function describeConfig(c: NotificationChannel): string {
   const cfg = c.config ?? {}
-  if (c.channel_type === 'slack')   return String(cfg.webhook_url ?? '—')
-  if (c.channel_type === 'webhook') return String(cfg.url ?? '—')
   if (c.channel_type === 'email') {
     const list = Array.isArray(cfg.recipients) ? cfg.recipients : []
     return list.length ? list.join(', ') : '—'
@@ -73,7 +69,7 @@ export default function NotificationChannelsPage() {
         <div>
           <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Canaux de notification</h1>
           <p className="text-blue-400 text-sm mt-1">
-            Configurez Slack, webhook générique ou email. Si aucun canal n&apos;est activé en
+            Configurez les destinataires email. Si aucun canal n&apos;est activé en
             base, le système retombe sur les variables d&apos;environnement.
           </p>
         </div>
@@ -180,16 +176,8 @@ function ChannelForm({
   onCancel: () => void
 }) {
   const [name, setName]                 = useState(initial?.name ?? '')
-  const [channelType, setChannelType]   = useState<ChannelType>(
-    (initial?.channel_type as ChannelType) ?? 'slack',
-  )
+  const [channelType, setChannelType]   = useState<ChannelType>('email')
   const [enabled, setEnabled]           = useState(initial?.enabled ?? true)
-  const [slackUrl, setSlackUrl]         = useState(
-    initial?.channel_type === 'slack' ? String(initial.config?.webhook_url ?? '') : '',
-  )
-  const [webhookUrl, setWebhookUrl]     = useState(
-    initial?.channel_type === 'webhook' ? String(initial.config?.url ?? '') : '',
-  )
   const [recipients, setRecipients]     = useState(
     initial?.channel_type === 'email' && Array.isArray(initial.config?.recipients)
       ? (initial.config.recipients as string[]).join(', ')
@@ -198,13 +186,8 @@ function ChannelForm({
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    let config: Record<string, unknown> = emptyConfig(channelType)
-    if (channelType === 'slack')   config = { webhook_url: slackUrl.trim() }
-    if (channelType === 'webhook') config = { url: webhookUrl.trim() }
-    if (channelType === 'email') {
-      config = {
-        recipients: recipients.split(',').map(s => s.trim()).filter(Boolean),
-      }
+    const config: Record<string, unknown> = {
+      recipients: recipients.split(',').map(s => s.trim()).filter(Boolean),
     }
     onSave({ name: name.trim(), channel_type: channelType, config, enabled })
   }
@@ -239,32 +222,6 @@ function ChannelForm({
           </select>
         </div>
       </div>
-
-      {channelType === 'slack' && (
-        <div>
-          <label className="block text-xs font-semibold text-blue-500 uppercase tracking-wider mb-1">
-            Webhook URL Slack
-          </label>
-          <input
-            type="url" required value={slackUrl} onChange={(e) => setSlackUrl(e.target.value)}
-            placeholder="https://hooks.slack.com/services/…"
-            className="w-full px-3 py-2 border border-blue-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-300"
-          />
-        </div>
-      )}
-
-      {channelType === 'webhook' && (
-        <div>
-          <label className="block text-xs font-semibold text-blue-500 uppercase tracking-wider mb-1">
-            URL générique
-          </label>
-          <input
-            type="url" required value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)}
-            placeholder="https://siem.example.com/notify"
-            className="w-full px-3 py-2 border border-blue-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-300"
-          />
-        </div>
-      )}
 
       {channelType === 'email' && (
         <div>

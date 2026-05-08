@@ -18,7 +18,6 @@
         ps stop down shell db migrate lint
 
 COMPOSE_BASE := docker compose -f docker-compose.yml
-COMPOSE_DEV  := $(COMPOSE_BASE) -f docker-compose.dev.yml
 COMPOSE_PROD := $(COMPOSE_BASE) -f docker-compose.prod.yml
 
 # ── Développement ────────────────────────────────────────────────────────────

@@ -2,14 +2,13 @@
 Tests for warning digest formatting and dispatch deferral.
 
 Two angles:
-  - alert_formatter.format_digest_* renders well-shaped payloads
+  - alert_formatter.format_digest_for_email renders well-shaped payloads
   - notification_service._dispatch defers groupable warnings on opened
 """
 
 from __future__ import annotations
 
 import datetime
-import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -50,33 +49,8 @@ def _incident(alert_type, severity=Severity.WARNING, **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# format_digest_*
+# format_digest_for_email
 # ---------------------------------------------------------------------------
-
-def test_digest_slack_groups_by_alert_type():
-    items = [
-        (_device("Rocket A"), _incident(AT_CCQ_LOW, metric_name="ccq_pct", metric_value=40.0)),
-        (_device("Rocket B"), _incident(AT_CCQ_LOW, metric_name="ccq_pct", metric_value=55.0)),
-        (_device("LR 1"),     _incident(AT_SIGNAL_LOW, metric_name="signal_dbm", metric_value=-75.0)),
-    ]
-    payload = alert_formatter.format_digest_for_slack(items)
-    text = payload["text"]
-    assert "3 alerte(s)" in text
-    assert "ccq_low" in text
-    assert "signal_low" in text
-    assert "Rocket A" in text and "Rocket B" in text
-
-
-def test_digest_webhook_serialisable():
-    items = [
-        (_device(), _incident(AT_CCQ_LOW)),
-    ]
-    payload = alert_formatter.format_digest_for_webhook(items)
-    json.dumps(payload)
-    assert payload["event"] == "warnings_digest"
-    assert payload["count"] == 1
-    assert payload["items"][0]["alert_type"] == AT_CCQ_LOW
-
 
 def test_digest_email_returns_subject_text_html():
     items = [
@@ -88,6 +62,19 @@ def test_digest_email_returns_subject_text_html():
     assert "2 alerte" in subject
     assert "ccq_low" in text and "signal_low" in text
     assert "<html>" in html
+
+
+def test_digest_groups_by_alert_type_in_text():
+    items = [
+        (_device("Rocket A"), _incident(AT_CCQ_LOW, metric_name="ccq_pct", metric_value=40.0)),
+        (_device("Rocket B"), _incident(AT_CCQ_LOW, metric_name="ccq_pct", metric_value=55.0)),
+        (_device("LR 1"),     _incident(AT_SIGNAL_LOW, metric_name="signal_dbm", metric_value=-75.0)),
+    ]
+    text = alert_formatter._digest_text_body(items)
+    assert "3 alerte(s)" in text
+    assert "ccq_low" in text
+    assert "signal_low" in text
+    assert "Rocket A" in text and "Rocket B" in text
 
 
 def test_digest_handles_empty_list():
@@ -103,7 +90,7 @@ def test_digest_handles_empty_list():
 async def test_dispatch_defers_groupable_warning_on_open():
     """ccq_low (warning, groupable) opened → no immediate notification."""
     async def fake_resolve():
-        return [_ChannelTarget("slack", "db:slack", url="https://x")]
+        return [_ChannelTarget("email", "db:opsmail", recipients=["a@x"])]
 
     delivered = []
 
@@ -128,7 +115,7 @@ async def test_dispatch_defers_groupable_warning_on_open():
 async def test_dispatch_critical_with_dynamic_severity_not_deferred():
     """radio_link_degraded with critical severity must still notify immediately."""
     async def fake_resolve():
-        return [_ChannelTarget("slack", "db:slack", url="https://x")]
+        return [_ChannelTarget("email", "db:opsmail", recipients=["a@x"])]
 
     delivered = []
 
@@ -146,14 +133,14 @@ async def test_dispatch_critical_with_dynamic_severity_not_deferred():
         )
 
     assert ok is True
-    assert delivered == ["slack"]
+    assert delivered == ["email"]
 
 
 @pytest.mark.asyncio
 async def test_dispatch_resolved_for_groupable_not_deferred():
     """Recovery messages for groupable warnings still go out — not digested."""
     async def fake_resolve():
-        return [_ChannelTarget("slack", "db:slack", url="https://x")]
+        return [_ChannelTarget("email", "db:opsmail", recipients=["a@x"])]
 
     delivered = []
 
@@ -171,14 +158,14 @@ async def test_dispatch_resolved_for_groupable_not_deferred():
         )
 
     assert ok is True
-    assert delivered == [("slack", NotificationEvent.RESOLVED)]
+    assert delivered == [("email", NotificationEvent.RESOLVED)]
 
 
 @pytest.mark.asyncio
 async def test_dispatch_critical_rocket_down_not_deferred():
     """rocket_down (critical, not groupable) → immediate notify."""
     async def fake_resolve():
-        return [_ChannelTarget("slack", "db:slack", url="https://x")]
+        return [_ChannelTarget("email", "db:opsmail", recipients=["a@x"])]
 
     delivered = []
 
@@ -196,4 +183,4 @@ async def test_dispatch_critical_rocket_down_not_deferred():
         )
 
     assert ok is True
-    assert delivered == ["slack"]
+    assert delivered == ["email"]

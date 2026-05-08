@@ -5,11 +5,9 @@ import useSWR from 'swr'
 import { endpoints, fetcher, updateDevice } from '@/lib/api'
 import type { AlertPolicy, Device, PolicyOverride } from '@/lib/types'
 
-const CHANNELS = ['slack', 'webhook', 'email'] as const
+const CHANNELS = ['email'] as const
 const CHANNEL_STYLES: Record<string, string> = {
-  slack:   'bg-purple-50 text-purple-700 border-purple-200',
-  email:   'bg-amber-50  text-amber-700  border-amber-200',
-  webhook: 'bg-sky-50    text-sky-700    border-sky-200',
+  email: 'bg-amber-50 text-amber-700 border-amber-200',
 }
 
 interface Props {

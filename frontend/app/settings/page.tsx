@@ -1,7 +1,7 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { getThresholds, patchThresholds, resetThreshold } from '@/lib/api'
+import { useCallback, useEffect, useState } from 'react'
+import { getThresholds, patchThresholds, resetThreshold, sendTestEmail } from '@/lib/api'
 import type { Threshold } from '@/lib/types'
 
 const CATEGORY_ORDER = [
@@ -11,6 +11,7 @@ const CATEGORY_ORDER = [
   'capacity',
   'errors',
   'battery',
+  'ping_latency',
   'antiflap',
   'throughput',
 ]
@@ -23,7 +24,8 @@ export default function SettingsPage() {
   const [savedAt, setSavedAt]       = useState<string | null>(null)
   const [error, setError]           = useState<string | null>(null)
   const [loading, setLoading]       = useState(true)
-  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [emailTesting, setEmailTesting] = useState(false)
+  const [emailResult, setEmailResult]   = useState<{ kind: 'ok' | 'err'; message: string } | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -79,6 +81,19 @@ export default function SettingsPage() {
   }
 
   const handleDiscard = () => setPending({})
+
+  const handleTestEmail = async () => {
+    setEmailTesting(true)
+    setEmailResult(null)
+    try {
+      const r = await sendTestEmail()
+      setEmailResult({ kind: 'ok', message: `Email envoyé à ${r.recipients.join(', ')} via ${r.smtp_host}` })
+    } catch (e: unknown) {
+      setEmailResult({ kind: 'err', message: e instanceof Error ? e.message : 'Échec d\'envoi' })
+    } finally {
+      setEmailTesting(false)
+    }
+  }
 
   // Group thresholds by category in defined order
   const grouped = CATEGORY_ORDER.reduce<Record<string, Threshold[]>>((acc, cat) => {
@@ -145,6 +160,36 @@ export default function SettingsPage() {
           Cliquer sur <strong>Défaut</strong> supprime la surcharge.
         </span>
       </div>
+
+      {/* SMTP test */}
+      <section className="bg-white border border-blue-100 rounded-xl shadow-sm overflow-hidden">
+        <div className="px-5 py-3 bg-blue-50 border-b border-blue-100">
+          <h2 className="text-sm font-semibold text-blue-700">Diagnostic SMTP</h2>
+        </div>
+        <div className="px-5 py-4 flex items-center gap-4">
+          <div className="flex-1 text-sm text-slate-600">
+            Envoie un email de test aux destinataires configurés (<code className="bg-blue-50 px-1 rounded text-xs">NOTIFICATION_EMAILS</code>) pour valider la configuration SMTP.
+          </div>
+          <button
+            onClick={handleTestEmail}
+            disabled={emailTesting}
+            className="text-sm text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-40 disabled:cursor-not-allowed font-medium px-4 py-1.5 rounded-lg transition-colors whitespace-nowrap"
+          >
+            {emailTesting ? 'Envoi…' : 'Envoyer un email de test'}
+          </button>
+        </div>
+        {emailResult && (
+          <div
+            className={`px-5 py-3 text-sm border-t ${
+              emailResult.kind === 'ok'
+                ? 'bg-green-50 border-green-200 text-green-700'
+                : 'bg-red-50 border-red-200 text-red-700'
+            }`}
+          >
+            {emailResult.kind === 'ok' ? '✓ ' : '✗ '}{emailResult.message}
+          </div>
+        )}
+      </section>
 
       {/* Groups */}
       {Object.entries(grouped).map(([_cat, items]) => (

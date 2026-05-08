@@ -77,15 +77,9 @@ class AlertPolicy:
 # Default channel sets
 # ---------------------------------------------------------------------------
 
-_CHANNELS_CRITICAL: tuple[str, ...] = (
-    AlertChannel.SLACK, AlertChannel.EMAIL, AlertChannel.WEBHOOK, AlertChannel.WHATSAPP,
-)
-_CHANNELS_WARNING: tuple[str, ...] = (
-    AlertChannel.SLACK, AlertChannel.EMAIL, AlertChannel.WEBHOOK,
-)
-_CHANNELS_INFO: tuple[str, ...] = (
-    AlertChannel.WEBHOOK,
-)
+_CHANNELS_CRITICAL: tuple[str, ...] = (AlertChannel.EMAIL,)
+_CHANNELS_WARNING: tuple[str, ...] = (AlertChannel.EMAIL,)
+_CHANNELS_INFO: tuple[str, ...] = (AlertChannel.EMAIL,)
 
 
 # ---------------------------------------------------------------------------
@@ -387,7 +381,7 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
             "(nom, localisation, MAC) et compléter si nécessaire dans le dashboard."
         ),
         notify_immediately=False,
-        channels=(AlertChannel.WEBHOOK, AlertChannel.SLACK),
+        channels=(AlertChannel.EMAIL,),
         groupable=False,
         recovery_notification=False,
     ),
@@ -400,7 +394,7 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
             "l'ancienne IP"
         ),
         notify_immediately=False,
-        channels=(AlertChannel.WEBHOOK, AlertChannel.SLACK),
+        channels=(AlertChannel.EMAIL,),
         groupable=False,
         recovery_notification=False,
     ),
@@ -442,7 +436,7 @@ _FALLBACK_POLICY = AlertPolicy(
     severity=Severity.WARNING,
     recommended_action="Investigation requise — type d'alerte non répertorié dans la policy.",
     notify_immediately=False,
-    channels=(AlertChannel.WEBHOOK,),
+    channels=(AlertChannel.EMAIL,),
     groupable=False,
     recovery_notification=True,
 )

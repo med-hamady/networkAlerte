@@ -42,9 +42,9 @@ async def notifications_health(
     """Notification delivery health over the last 24h.
 
     Surfaces the silent-failure mode where the alert engine writes incidents
-    to DB but every notification channel rejects them (Slack down, SMTP
-    misconfigured, no policy match…). Point a dashboard / cron at this
-    endpoint and alert on `success_rate < 0.95` or `failed > 0`.
+    to DB but every notification channel rejects them (SMTP misconfigured,
+    no policy match…). Point a dashboard / cron at this endpoint and alert
+    on `success_rate < 0.95` or `failed > 0`.
 
     Auth-gated (X-API-Key) since the counts indirectly disclose incident volume.
     """

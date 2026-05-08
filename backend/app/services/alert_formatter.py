@@ -3,13 +3,11 @@ Alert formatter — uniform message generation for every notification channel.
 
 Every alert message produced by the system goes through this module so that
 operators see the same fields rendered the same way whether the alert lands
-on Slack, in a webhook payload, in an email or in a log line.
+in an email or in a log line.
 
 Public functions (all take a Device + Incident + lifecycle event):
     format_human_readable(device, incident, event)  -> str
-    format_for_slack(device, incident, event)       -> dict (Slack payload)
-    format_for_webhook(device, incident, event)     -> dict (generic JSON)
-    format_for_email(device, incident, event)       -> tuple[subject, html_body]
+    format_for_email(device, incident, event)       -> tuple[subject, text, html]
 
 `event` is one of NotificationEvent.OPENED / NotificationEvent.RESOLVED.
 """
@@ -24,10 +22,7 @@ from app.core.alert_constants import (
 )
 from app.models.device import Device
 from app.models.incident import Incident
-from app.services.alert_policy import (
-    effective_notify_immediately,
-    get_policy,
-)
+from app.services.alert_policy import get_policy
 
 # ---------------------------------------------------------------------------
 # Visual identity per severity
@@ -95,7 +90,7 @@ def _metric_line(incident: Incident) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Human-readable text block (used in logs, API .message, Slack fallback)
+# Human-readable text block (used in logs, API .message, email plain text)
 # ---------------------------------------------------------------------------
 
 def format_human_readable(
@@ -133,88 +128,6 @@ def format_human_readable(
     lines.append(f"Début        : {_fmt_dt(incident.detected_at)}")
     lines.append(f"Action       : {policy.recommended_action}")
     return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# Slack
-# ---------------------------------------------------------------------------
-
-def format_for_slack(
-    device: Device,
-    incident: Incident,
-    event: str = NotificationEvent.OPENED,
-) -> dict:
-    """Return a Slack webhook payload dict."""
-    policy = get_policy(incident.alert_type)
-    alert_type = incident.alert_type or "unknown"
-
-    if event == NotificationEvent.RESOLVED:
-        text = (
-            f"{_RECOVERY_EMOJI} *RECOVERY* — {device.name} (`{device.ip_address}`)\n"
-            f"_{alert_type}_ résolu après "
-            f"{_fmt_duration(incident.detected_at, incident.resolved_at)}"
-        )
-        return {"text": text}
-
-    severity = incident.severity or Severity.WARNING
-    emoji = _severity_emoji(severity)
-    label = _severity_label(severity)
-
-    lines = [
-        f"{emoji} *{label}* — `{alert_type}` sur *{device.name}* (`{device.ip_address}`)",
-    ]
-    metric = _metric_line(incident)
-    if metric:
-        lines.append(f"• Métrique : {metric}")
-    if incident.probable_cause:
-        lines.append(f"• Cause probable : {incident.probable_cause}")
-    lines.append(f"• Début : {_fmt_dt(incident.detected_at)}")
-    lines.append(f"• Action : {policy.recommended_action}")
-    return {"text": "\n".join(lines)}
-
-
-# ---------------------------------------------------------------------------
-# Generic webhook payload
-# ---------------------------------------------------------------------------
-
-def format_for_webhook(
-    device: Device,
-    incident: Incident,
-    event: str = NotificationEvent.OPENED,
-) -> dict:
-    """Return a structured JSON payload for the generic webhook channel."""
-    policy = get_policy(incident.alert_type)
-
-    payload: dict = {
-        "event": f"incident_{event}",
-        "incident_id": incident.id,
-        "alert_type": incident.alert_type,
-        "severity": incident.severity,
-        "status": incident.status,
-        "device_name": device.name,
-        "device_type": device.device_type,
-        "device_ip": device.ip_address,
-        "title": incident.title,
-        "description": incident.description,
-        "metric_name": incident.metric_name,
-        "metric_value": incident.metric_value,
-        "threshold_value": incident.threshold_value,
-        "probable_cause": incident.probable_cause,
-        "started_at":
-            incident.detected_at.isoformat() if incident.detected_at else None,
-        "last_triggered_at":
-            incident.last_triggered_at.isoformat()
-            if incident.last_triggered_at else None,
-        "resolved_at":
-            incident.resolved_at.isoformat() if incident.resolved_at else None,
-        "recommended_action": policy.recommended_action,
-        "notify_immediately": effective_notify_immediately(policy, incident.severity),
-        "notification_channel_policy": list(policy.channels),
-        "message": format_human_readable(device, incident, event),
-    }
-    if event == NotificationEvent.RESOLVED:
-        payload["duration"] = _fmt_duration(incident.detected_at, incident.resolved_at)
-    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -352,44 +265,6 @@ def format_for_email(
 
 
 # ---------------------------------------------------------------------------
-# WhatsApp via WhatChimp — compact payload for Webhook Workflow
-# ---------------------------------------------------------------------------
-
-def format_for_whatsapp(
-    device: Device,
-    incident: Incident,
-    event: str = NotificationEvent.OPENED,
-) -> dict:
-    """Return a compact JSON payload for WhatChimp's Webhook Workflow.
-
-    Field names are stable — renaming them breaks WhatChimp template variable
-    mappings without any Python error, so treat this contract as a public API.
-    """
-    policy = get_policy(incident.alert_type)
-
-    payload: dict = {
-        "event":          f"incident_{event}",
-        "severity":       incident.severity,
-        "alerttype":      incident.alert_type,      # alphanumeric — WhatChimp variable name
-        "devicename":     device.name,              # alphanumeric — WhatChimp variable name
-        "deviceip":       device.ip_address,        # alphanumeric — WhatChimp variable name
-        "devicetype":     device.device_type,
-        "title":          incident.title,
-        "description":    incident.description,
-        "metric":         _metric_line(incident),
-        "probablecause":  incident.probable_cause,
-        "action":         policy.recommended_action,
-        "incidentid":     incident.id,
-        "startedat":      incident.detected_at.isoformat() if incident.detected_at else None,
-        "resolvedat":     incident.resolved_at.isoformat() if incident.resolved_at else None,
-        "duration":       None,
-    }
-    if event == NotificationEvent.RESOLVED:
-        payload["duration"] = _fmt_duration(incident.detected_at, incident.resolved_at)
-    return payload
-
-
-# ---------------------------------------------------------------------------
 # Warning digest — batched notification for groupable warnings
 # ---------------------------------------------------------------------------
 
@@ -463,36 +338,6 @@ def _digest_html_body(items: list[tuple[Device, Incident]]) -> str:
   </div>
 </body>
 </html>"""
-
-
-def format_digest_for_slack(items: list[tuple[Device, Incident]]) -> dict:
-    """Slack payload for a warning digest."""
-    return {"text": _digest_text_body(items)}
-
-
-def format_digest_for_webhook(items: list[tuple[Device, Incident]]) -> dict:
-    """Generic JSON payload for a warning digest."""
-    return {
-        "event": "warnings_digest",
-        "count": len(items),
-        "items": [
-            {
-                "incident_id": inc.id,
-                "alert_type": inc.alert_type,
-                "severity": inc.severity,
-                "device_name": dev.name,
-                "device_ip": dev.ip_address,
-                "device_type": dev.device_type,
-                "metric_name": inc.metric_name,
-                "metric_value": inc.metric_value,
-                "threshold_value": inc.threshold_value,
-                "started_at":
-                    inc.detected_at.isoformat() if inc.detected_at else None,
-            }
-            for dev, inc in items
-        ],
-        "message": _digest_text_body(items),
-    }
 
 
 def format_digest_for_email(

@@ -6,9 +6,7 @@ import SeverityBadge from './SeverityBadge'
 import IncidentStatusBadge from './IncidentStatusBadge'
 
 const CHANNEL_STYLES: Record<string, string> = {
-  slack:   'bg-purple-50 text-purple-700 border-purple-200',
-  email:   'bg-amber-50  text-amber-700  border-amber-200',
-  webhook: 'bg-sky-50    text-sky-700    border-sky-200',
+  email: 'bg-amber-50 text-amber-700 border-amber-200',
 }
 
 export default function IncidentDetailModal({

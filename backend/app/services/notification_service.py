@@ -1,35 +1,28 @@
 """
-Notification service — dispatch alerts via the configured channels.
+Notification service — dispatch alerts via email.
 
 Channel resolution:
   1. Read enabled rows from the notification_channels table (DB-first).
   2. If at least one enabled row exists, use those exclusively.
-  3. Otherwise fall back to the env-based defaults
-     (SLACK_WEBHOOK_URL, WEBHOOK_URL, SMTP_ENABLED + NOTIFICATION_EMAILS).
+  3. Otherwise fall back to the env-based default
+     (SMTP_ENABLED + NOTIFICATION_EMAILS).
 
-Each candidate channel is then gated by the alert_policy: a channel only
-fires if it appears in policy.channels for the alert_type and the event
+Each candidate channel is then gated by the alert_policy: it only fires
+if `email` appears in policy.channels for the alert_type and the event
 (opened/resolved) is allowed by the policy.
 
 Failure on one channel does not block the others. Returns True if at
 least one channel delivered successfully.
 
-DB row config payloads:
-  slack    : {"webhook_url": "https://hooks.slack.com/..."}
-  webhook  : {"url": "https://example.com/notify"}
-  email    : {"recipients": ["a@b.com", "c@d.com"]}
-             SMTP credentials are still taken from settings.smtp_*
-             because they are infrastructure, not policy.
-  whatsapp : {"webhook_url": "https://...", "secret_token": "optional"}
-             Delivered via WhatChimp Webhook Workflow. Phone routing is
-             configured on the WhatChimp side, not here.
+DB row config payload:
+  email : {"recipients": ["a@b.com", "c@d.com"]}
+          SMTP credentials are still taken from settings.smtp_*
+          because they are infrastructure, not policy.
 """
 
 from __future__ import annotations
 
 import logging
-
-import httpx
 
 from app.core.alert_constants import AlertChannel, NotificationEvent, Severity
 from app.core.config import get_settings
@@ -41,7 +34,6 @@ from app.services import (
     alert_formatter,
     email_service,
     notification_channel_service,
-    whatsapp_service,
 )
 from app.services.alert_policy import get_policy_for_device, should_notify
 
@@ -53,37 +45,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class _ChannelTarget:
-    """Single delivery target resolved from DB row or env fallback."""
+    """Single email delivery target resolved from a DB row or env fallback."""
 
-    __slots__ = ("kind", "label", "url", "recipients", "secret_token")
+    __slots__ = ("kind", "label", "recipients")
 
-    def __init__(
-        self,
-        kind: str,
-        label: str,
-        url: str | None = None,
-        recipients: list[str] | None = None,
-        secret_token: str | None = None,
-    ) -> None:
-        self.kind = kind          # "slack" | "webhook" | "email" | "whatsapp"
+    def __init__(self, kind: str, label: str, recipients: list[str]) -> None:
+        self.kind = kind          # always "email" today
         self.label = label        # for logging
-        self.url = url
-        self.recipients = recipients or []
-        self.secret_token = secret_token
-
-
-async def _post_webhook(url: str, payload: dict) -> bool:
-    """POST a JSON payload to a webhook URL. Returns True on success."""
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(url, json=payload)
-            if resp.status_code >= 300:
-                logger.warning("Webhook HTTP %d — %s", resp.status_code, url)
-                return False
-            return True
-    except Exception as exc:
-        logger.error("Webhook delivery failed (%s): %s", url, exc)
-        return False
+        self.recipients = recipients
 
 
 # ---------------------------------------------------------------------------
@@ -93,34 +62,12 @@ async def _post_webhook(url: str, payload: dict) -> bool:
 def _channel_from_db_row(row: NotificationChannel) -> _ChannelTarget | None:
     """Convert a DB row to a runtime channel target. Returns None if unusable."""
     cfg = row.config or {}
-    if row.channel_type == AlertChannel.SLACK:
-        url = cfg.get("webhook_url")
-        if not url:
-            logger.warning("Channel %r missing 'webhook_url' in config", row.name)
-            return None
-        return _ChannelTarget("slack", f"db:{row.name}", url=url)
-    if row.channel_type == AlertChannel.WEBHOOK:
-        url = cfg.get("url")
-        if not url:
-            logger.warning("Channel %r missing 'url' in config", row.name)
-            return None
-        return _ChannelTarget("webhook", f"db:{row.name}", url=url)
     if row.channel_type == AlertChannel.EMAIL:
         recipients = cfg.get("recipients") or []
         if not recipients:
             logger.warning("Channel %r missing 'recipients' in config", row.name)
             return None
         return _ChannelTarget("email", f"db:{row.name}", recipients=list(recipients))
-    if row.channel_type == AlertChannel.WHATSAPP:
-        url = cfg.get("webhook_url")
-        if not url:
-            logger.warning("Channel %r missing 'webhook_url' in config", row.name)
-            return None
-        return _ChannelTarget(
-            "whatsapp", f"db:{row.name}",
-            url=url,
-            secret_token=cfg.get("secret_token"),
-        )
     logger.warning("Channel %r has unknown channel_type %r", row.name, row.channel_type)
     return None
 
@@ -129,10 +76,6 @@ def _channels_from_env() -> list[_ChannelTarget]:
     """Build the env-based channel list (current backward-compat behaviour)."""
     settings = get_settings()
     targets: list[_ChannelTarget] = []
-    if settings.slack_webhook_url:
-        targets.append(_ChannelTarget("slack", "env:SLACK_WEBHOOK_URL", url=settings.slack_webhook_url))
-    if settings.webhook_url:
-        targets.append(_ChannelTarget("webhook", "env:WEBHOOK_URL", url=settings.webhook_url))
     if settings.smtp_enabled and settings.notification_email_list:
         targets.append(_ChannelTarget(
             "email", "env:SMTP",
@@ -175,26 +118,11 @@ async def _deliver(
     event: str,
 ) -> bool:
     """Send the alert through a single resolved channel target."""
-    if target.kind == "slack":
-        payload = alert_formatter.format_for_slack(device, incident, event)
-        return await _post_webhook(target.url, payload)
-    if target.kind == "webhook":
-        payload = alert_formatter.format_for_webhook(device, incident, event)
-        return await _post_webhook(target.url, payload)
     if target.kind == "email":
         subject, text_body, html_body = alert_formatter.format_for_email(
             device, incident, event,
         )
         return await email_service.send_email(target.recipients, subject, text_body, html_body)
-    if target.kind == "whatsapp":
-        settings = get_settings()
-        payload = alert_formatter.format_for_whatsapp(device, incident, event)
-        return await whatsapp_service.send_whatsapp_alert(
-            target.url,
-            payload,
-            test_mode=settings.whatsapp_test_mode,
-            secret_token=target.secret_token,
-        )
     logger.warning("Unknown channel kind %r — skipping", target.kind)
     return False
 

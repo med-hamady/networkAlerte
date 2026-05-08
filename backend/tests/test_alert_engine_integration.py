@@ -23,7 +23,7 @@ from app.services.alert_engine import evaluate_device_metrics
 
 @pytest.fixture
 def patch_notif():
-    """Silence all outgoing notifications (Slack, email, webhook)."""
+    """Silence all outgoing email notifications."""
     with patch("app.services.alert_engine.notification_service") as mock:
         mock.notify_incident_opened = AsyncMock(return_value=True)
         mock.notify_incident_resolved = AsyncMock(return_value=True)

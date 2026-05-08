@@ -3,7 +3,7 @@ CRUD service for the notification_channels table.
 
 Channels stored here override the env-based defaults: as soon as at least
 one enabled channel exists in DB, notification_service uses those instead
-of SLACK_WEBHOOK_URL / WEBHOOK_URL / SMTP_*.
+of SMTP_* env-based config.
 """
 
 import logging

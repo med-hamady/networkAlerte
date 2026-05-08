@@ -3,8 +3,6 @@ Unit tests for alert_formatter.py — pure Python, no DB required.
 
 Validates:
   - human-readable text contains all the operationally critical fields
-  - Slack payload is a non-empty Slack-shaped dict
-  - webhook payload includes the policy-derived fields the dashboard needs
   - email returns subject + plain body + html body, all non-empty
   - recovery format includes the duration
   - opened format always exposes the recommended_action
@@ -13,12 +11,10 @@ Validates:
 from __future__ import annotations
 
 import datetime
-import json
 from types import SimpleNamespace
 
 from app.core.alert_constants import (
     AT_CCQ_LOW,
-    AT_RADIO_LINK_DEGRADED,
     AT_ROCKET_DOWN,
     NotificationEvent,
     Severity,
@@ -118,87 +114,6 @@ def test_human_readable_resolved_handles_missing_dates():
 
 
 # ---------------------------------------------------------------------------
-# format_for_slack
-# ---------------------------------------------------------------------------
-
-def test_slack_opened_returns_text_payload():
-    payload = alert_formatter.format_for_slack(
-        _device(), _incident(), NotificationEvent.OPENED,
-    )
-    assert isinstance(payload, dict)
-    assert "text" in payload
-    text = payload["text"]
-    assert "CRITICAL" in text
-    assert AT_ROCKET_DOWN in text
-    assert "LTU Rocket" in text
-    assert "10.135.2.218" in text
-
-
-def test_slack_resolved_short_message():
-    inc = _incident(
-        status="resolved",
-        resolved_at=datetime.datetime(2026, 4, 22, 14, 12, 3, tzinfo=UTC),
-    )
-    payload = alert_formatter.format_for_slack(
-        _device(), inc, NotificationEvent.RESOLVED,
-    )
-    text = payload["text"]
-    assert "RECOVERY" in text
-    assert "LTU Rocket" in text
-    assert "résolu" in text
-
-
-# ---------------------------------------------------------------------------
-# format_for_webhook
-# ---------------------------------------------------------------------------
-
-def test_webhook_payload_is_json_serializable():
-    payload = alert_formatter.format_for_webhook(_device(), _incident())
-    # Must round-trip through json.dumps without errors
-    json.dumps(payload)
-
-
-def test_webhook_payload_carries_policy_fields():
-    payload = alert_formatter.format_for_webhook(_device(), _incident())
-    assert payload["event"] == "incident_opened"
-    assert payload["alert_type"] == AT_ROCKET_DOWN
-    assert payload["severity"] == Severity.CRITICAL
-    assert payload["device_name"] == "LTU Rocket"
-    assert payload["device_ip"] == "10.135.2.218"
-    assert payload["device_type"] == "ltu_rocket"
-    assert payload["recommended_action"]
-    assert payload["notify_immediately"] is True
-    assert "slack" in payload["notification_channel_policy"]
-    assert payload["message"]
-    assert payload["probable_cause"] == "switch_down"
-
-
-def test_webhook_resolved_includes_duration_field():
-    inc = _incident(
-        status="resolved",
-        resolved_at=datetime.datetime(2026, 4, 22, 14, 12, 3, tzinfo=UTC),
-    )
-    payload = alert_formatter.format_for_webhook(
-        _device(), inc, NotificationEvent.RESOLVED,
-    )
-    assert payload["event"] == "incident_resolved"
-    assert "duration" in payload
-    assert "6 min" in payload["duration"]
-
-
-def test_webhook_dynamic_severity_resolves_notify_immediately():
-    """radio_link_degraded inherits notify_immediately from incident severity."""
-    inc_warn = _incident(alert_type=AT_RADIO_LINK_DEGRADED, severity=Severity.WARNING)
-    inc_crit = _incident(alert_type=AT_RADIO_LINK_DEGRADED, severity=Severity.CRITICAL)
-
-    p_warn = alert_formatter.format_for_webhook(_device(), inc_warn)
-    p_crit = alert_formatter.format_for_webhook(_device(), inc_crit)
-
-    assert p_warn["notify_immediately"] is False
-    assert p_crit["notify_immediately"] is True
-
-
-# ---------------------------------------------------------------------------
 # format_for_email
 # ---------------------------------------------------------------------------
 
@@ -231,23 +146,3 @@ def test_email_resolved_subject_and_duration_in_html():
     assert "RÉSOLU" in subject
     assert "6 min" in html
     assert "RECOVERY" in text
-
-
-# ---------------------------------------------------------------------------
-# Cross-channel consistency
-# ---------------------------------------------------------------------------
-
-def test_all_channels_show_same_alert_type_and_ip():
-    dev = _device()
-    inc = _incident()
-    text = alert_formatter.format_human_readable(dev, inc)
-    slack = alert_formatter.format_for_slack(dev, inc)["text"]
-    webhook = alert_formatter.format_for_webhook(dev, inc)
-    _, email_text, email_html = alert_formatter.format_for_email(dev, inc)
-
-    for blob in (text, slack, email_text, email_html):
-        assert AT_ROCKET_DOWN in blob
-        assert dev.ip_address in blob
-
-    assert webhook["alert_type"] == AT_ROCKET_DOWN
-    assert webhook["device_ip"] == dev.ip_address

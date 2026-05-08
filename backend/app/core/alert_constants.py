@@ -37,15 +37,10 @@ SEVERITY_VALUES: frozenset[str] = frozenset({
 class AlertChannel:
     """Notification channel identifiers used by alert policies."""
 
-    SLACK    = "slack"
-    WEBHOOK  = "webhook"
-    EMAIL    = "email"
-    WHATSAPP = "whatsapp"
+    EMAIL = "email"
 
 
-CHANNEL_VALUES: frozenset[str] = frozenset({
-    AlertChannel.SLACK, AlertChannel.WEBHOOK, AlertChannel.EMAIL, AlertChannel.WHATSAPP,
-})
+CHANNEL_VALUES: frozenset[str] = frozenset({AlertChannel.EMAIL})
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +97,11 @@ AT_LR_IP_CHANGED   = "lr_ip_changed"   # MAC connue mais IP différente
 AT_LR_REASSIGNED   = "lr_reassigned"   # LR vu sur un autre Rocket que son parent actuel
 AT_LR_DISAPPEARED  = "lr_disappeared"  # LR auto-découvert plus rapporté depuis N min
 
+# Ping quality — instabilité ponctuelle (pas d'incident, info email)
+# et latence élevée (incident warning/critical, email forcé)
+AT_PING_INSTABILITY = "ping_instability"
+AT_PING_LATENCY_HIGH = "ping_latency_high"
+
 
 KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_ROCKET_DOWN, AT_LR_DOWN, AT_SWITCH_DOWN, AT_DEVICE_UNREACHABLE,
@@ -114,6 +114,7 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_CCQ_UL_LOW, AT_CINR_UL_LOW, AT_CAPACITY_UL_LOW,
     AT_AIRMAX_DOWN,
     AT_LR_DISCOVERED, AT_LR_IP_CHANGED, AT_LR_REASSIGNED, AT_LR_DISAPPEARED,
+    AT_PING_INSTABILITY, AT_PING_LATENCY_HIGH,
 })
 
 

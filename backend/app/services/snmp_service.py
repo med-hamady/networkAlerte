@@ -118,12 +118,17 @@ async def _snmp_get(
     oid: str,
     port: int,
     timeout: int,
+    mp_model: int = 1,
 ) -> Any | None:
-    """Perform a single SNMP GET. Returns the raw value or None on any error."""
+    """Perform a single SNMP GET. Returns the raw value or None on any error.
+
+    `mp_model` selects the SNMP version: 0 = SNMPv1, 1 = SNMPv2c (default).
+    Older airOS firmwares (Rocket Prism / XC v8.x) only answer in SNMPv1.
+    """
     try:
         error_indication, error_status, _, var_binds = await getCmd(
             engine,
-            CommunityData(community, mpModel=1),  # SNMPv2c
+            CommunityData(community, mpModel=mp_model),
             UdpTransportTarget((host, port), timeout=timeout, retries=0),
             ContextData(),
             ObjectType(ObjectIdentity(oid)),
@@ -148,10 +153,11 @@ async def _find_if_index(
     port: int,
     timeout: int,
     if_names: set[str],
+    mp_model: int = 1,
 ) -> int | None:
     """Walk ifDescr (up to 20 interfaces) to find an interface matching if_names."""
     for i in range(1, 20):
-        raw = await _snmp_get(engine, host, community, f"{_IF_DESCR}.{i}", port, timeout)
+        raw = await _snmp_get(engine, host, community, f"{_IF_DESCR}.{i}", port, timeout, mp_model)
         if raw is not None:
             name = str(raw).strip().lower()
             if name in if_names:
@@ -234,6 +240,7 @@ async def collect_airmax_metrics(
     community: str = "public",
     port: int = 161,
     timeout: int = 2,
+    mp_model: int = 0,
 ) -> dict[str, float | None]:
     """
     Collect radio metrics from an airOS device (Rocket M, NanoStation, etc.)
@@ -271,7 +278,7 @@ async def collect_airmax_metrics(
     }
 
     # Standard uptime
-    raw = await _snmp_get(engine, host, community, "1.3.6.1.2.1.1.3.0", port, timeout)
+    raw = await _snmp_get(engine, host, community, "1.3.6.1.2.1.1.3.0", port, timeout, mp_model)
     if raw is not None:
         with contextlib.suppress(TypeError, ValueError):
             metrics["uptime_seconds"] = round(int(raw) / 100.0, 1)
@@ -285,23 +292,33 @@ async def collect_airmax_metrics(
         ("noise_dbm",    _UBNT_STA_NOISE,   lambda v: float(int(v))),
     ]
     for metric_key, oid, transform in airmax_poll:
-        raw = await _snmp_get(engine, host, community, oid, port, timeout)
+        raw = await _snmp_get(engine, host, community, oid, port, timeout, mp_model)
         if raw is not None:
             with contextlib.suppress(TypeError, ValueError):
                 metrics[metric_key] = transform(raw)  # type: ignore[operator]
 
-    # Derive CINR from signal − noise when both are available
+    # Derive CINR from signal − noise when both are available.
+    # Quirk: airOS 8 / XC firmware (Rocket Prism 5AC, etc.) exposes the SNR
+    # directly in the "noise" OID as a positive value, instead of the noise
+    # floor in negative dBm. Detect that case and re-interpret: the value IS
+    # the CINR, and the actual noise floor is (signal − CINR).
     if metrics["signal_dbm"] is not None and metrics["noise_dbm"] is not None:
-        metrics["cinr_db"] = round(
-            metrics["signal_dbm"] - metrics["noise_dbm"], 1  # type: ignore[operator]
-        )
+        if metrics["noise_dbm"] >= 0:  # type: ignore[operator]
+            metrics["cinr_db"]  = round(metrics["noise_dbm"], 1)  # type: ignore[arg-type]
+            metrics["noise_dbm"] = round(
+                metrics["signal_dbm"] - metrics["cinr_db"], 1  # type: ignore[operator]
+            )
+        else:
+            metrics["cinr_db"] = round(
+                metrics["signal_dbm"] - metrics["noise_dbm"], 1  # type: ignore[operator]
+            )
 
     # IF-MIB — radio interface (ath0) status and byte/error counters
-    idx = await _find_if_index(engine, host, community, port, timeout, _RADIO_IF_NAMES)
+    idx = await _find_if_index(engine, host, community, port, timeout, _RADIO_IF_NAMES, mp_model)
     if idx is None:
         logger.warning("Radio interface (ath0) not found via SNMP on %s", host)
     else:
-        status = await _snmp_get(engine, host, community, f"{_IF_OPER}.{idx}", port, timeout)
+        status = await _snmp_get(engine, host, community, f"{_IF_OPER}.{idx}", port, timeout, mp_model)
         if status is not None:
             with contextlib.suppress(TypeError, ValueError):
                 metrics["radio_if_up"] = 1.0 if int(status) == 1 else 0.0
@@ -312,15 +329,15 @@ async def collect_airmax_metrics(
             ("radio_in_errors",  _IF_IN_ERRORS),
             ("radio_out_errors", _IF_OUT_ERRORS),
         ]:
-            raw = await _snmp_get(engine, host, community, f"{base_oid}.{idx}", port, timeout)
+            raw = await _snmp_get(engine, host, community, f"{base_oid}.{idx}", port, timeout, mp_model)
             if raw is not None:
                 with contextlib.suppress(TypeError, ValueError):
                     metrics[metric] = float(raw)
 
     # IF-MIB — Ethernet interface (eth0) status
-    eth_idx = await _find_if_index(engine, host, community, port, timeout, _ETH_IF_NAMES)
+    eth_idx = await _find_if_index(engine, host, community, port, timeout, _ETH_IF_NAMES, mp_model)
     if eth_idx is not None:
-        eth_status = await _snmp_get(engine, host, community, f"{_IF_OPER}.{eth_idx}", port, timeout)
+        eth_status = await _snmp_get(engine, host, community, f"{_IF_OPER}.{eth_idx}", port, timeout, mp_model)
         if eth_status is not None:
             with contextlib.suppress(TypeError, ValueError):
                 metrics["eth_if_up"] = 1.0 if int(eth_status) == 1 else 0.0
@@ -452,6 +469,7 @@ async def discover_airmax_peers(
     community: str = "public",
     port: int = 161,
     timeout: int = 2,
+    mp_model: int = 0,
 ) -> list[dict[str, str | None]]:
     """Walk the UBNT station table on an airOS Rocket and return peer descriptors.
 
@@ -469,7 +487,7 @@ async def discover_airmax_peers(
 
     for i in range(1, _UBNT_STA_TABLE_MAX + 1):
         mac_raw = await _snmp_get(
-            engine, host, community, f"{_UBNT_STA_MAC_BASE}.{i}", port, timeout,
+            engine, host, community, f"{_UBNT_STA_MAC_BASE}.{i}", port, timeout, mp_model,
         )
         if mac_raw is None:
             # First missing index = end of table (UBNT stations are dense from .1)
@@ -481,12 +499,12 @@ async def discover_airmax_peers(
             continue
 
         ip_raw = await _snmp_get(
-            engine, host, community, f"{_UBNT_STA_LASTIP_BASE}.{i}", port, timeout,
+            engine, host, community, f"{_UBNT_STA_LASTIP_BASE}.{i}", port, timeout, mp_model,
         )
         mgmt_ip = _format_ip_from_snmp(ip_raw)
 
         hostname_raw = await _snmp_get(
-            engine, host, community, f"{_UBNT_STA_HOSTNAME_BASE}.{i}", port, timeout,
+            engine, host, community, f"{_UBNT_STA_HOSTNAME_BASE}.{i}", port, timeout, mp_model,
         )
         hostname = str(hostname_raw).strip() if hostname_raw is not None else None
         # Some firmwares emit non-printable padding for empty hostname slots —

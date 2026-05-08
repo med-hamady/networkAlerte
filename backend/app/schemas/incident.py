@@ -98,8 +98,3 @@ class IncidentRead(BaseModel):
             instance.recommended_action = base.recommended_action
 
         return instance
-
-
-class IncidentUpdate(BaseModel):
-    """Allowed transitions: open → acknowledged, open/acknowledged → resolved."""
-    status: str

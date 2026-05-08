@@ -26,6 +26,14 @@ class Device(Base):
     # authenticate if the device returns a different key — defends against
     # MITM on the LAN segment between supervisor and the LTU LR.
     ssh_host_fingerprint: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # Per-device UISP Power API credentials. When non-null, override the global
+    # UISP_POWER_* env vars. Useful when several UISP Power units have distinct
+    # passwords without polluting .env.
+    uisp_power_username: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    uisp_power_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    uisp_power_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     notes: Mapped[str | None] = mapped_column(Text)
     last_seen: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -56,11 +64,21 @@ class Device(Base):
         "Device", back_populates="parent", foreign_keys=[parent_id], lazy="selectin",
     )
 
-    # Relationships
-    metrics: Mapped[list["DeviceMetric"]] = relationship(back_populates="device")  # noqa: F821
-    incidents: Mapped[list["Incident"]] = relationship(back_populates="device")  # noqa: F821
-    power_logs: Mapped[list["PowerStatusLog"]] = relationship(back_populates="device")  # noqa: F821
-    alert_states: Mapped[list["AlertState"]] = relationship(back_populates="device")  # noqa: F821
+    # Relationships — passive_deletes=True delegates row removal to the DB-level
+    # ON DELETE CASCADE on the FK; without it, SQLAlchemy would try to load
+    # children and NULL their device_id (which fails — the column is NOT NULL).
+    metrics: Mapped[list["DeviceMetric"]] = relationship(  # noqa: F821
+        back_populates="device", cascade="all, delete-orphan", passive_deletes=True,
+    )
+    incidents: Mapped[list["Incident"]] = relationship(  # noqa: F821
+        back_populates="device", cascade="all, delete-orphan", passive_deletes=True,
+    )
+    power_logs: Mapped[list["PowerStatusLog"]] = relationship(  # noqa: F821
+        back_populates="device", cascade="all, delete-orphan", passive_deletes=True,
+    )
+    alert_states: Mapped[list["AlertState"]] = relationship(  # noqa: F821
+        back_populates="device", cascade="all, delete-orphan", passive_deletes=True,
+    )
 
     def __repr__(self) -> str:
         return f"<Device(id={self.id}, name={self.name!r}, ip={self.ip_address})>"

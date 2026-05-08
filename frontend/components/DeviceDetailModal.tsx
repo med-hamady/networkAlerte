@@ -6,10 +6,11 @@ import { endpoints, fetcher, runDiag } from '@/lib/api'
 import type { DiagResult } from '@/lib/api'
 import type { Device, DeviceMetrics } from '@/lib/types'
 import { deviceTypeLabel, formatDate, timeAgo, formatBytes, formatUptime } from '@/lib/types'
+import { useThresholds } from '@/lib/useThresholds'
 import DeviceImage from './DeviceImage'
 import DevicePolicyOverridesEditor from './DevicePolicyOverridesEditor'
 
-const RADIO_TYPES = new Set(['ltu_rocket', 'ltu_lr'])
+const RADIO_TYPES = new Set(['ltu_rocket', 'ltu_lr', 'airmax_rocket'])
 const REFRESH     = 15_000
 
 interface Props {
@@ -51,9 +52,12 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
 }) {
   const isRadio  = RADIO_TYPES.has(device.device_type)
   const isSwitch = device.device_type === 'uisp_switch'
+  const isPower  = device.device_type === 'uisp_power'
   const isUp     = device.status === 'up'
   const isDown   = device.status === 'down'
   const isRocket = device.device_type === 'ltu_rocket'
+
+  const thresholds = useThresholds()
 
   // Children LRs linked to this Rocket
   const linkedLRs = isRocket
@@ -61,7 +65,7 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
     : []
 
   const { data: metrics } = useSWR<DeviceMetrics>(
-    (isRadio || isSwitch) ? endpoints.deviceMetrics(device.id) : null,
+    (isRadio || isSwitch || isPower) ? endpoints.deviceMetrics(device.id) : null,
     fetcher,
     { refreshInterval: REFRESH },
   )
@@ -162,24 +166,36 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
           {metrics?.uptime_seconds?.value != null && (
             <MetricRow label="Uptime" value={formatUptime(metrics.uptime_seconds.value)} />
           )}
+          {metrics?.ping_latency_ms?.value != null && (
+            <MetricRow
+              label="Latence ping"
+              value={
+                <LatencyValue
+                  ms={metrics.ping_latency_ms.value}
+                  warn={thresholds.ping_latency_warn_ms}
+                  crit={thresholds.ping_latency_crit_ms}
+                />
+              }
+            />
+          )}
         </Section>
 
         {/* Radio metrics */}
         {isRadio && metrics && (
           <Section title="Métriques radio">
-            {metrics.eth_if_up?.value != null && device.device_type === 'ltu_rocket' && (
+            {metrics.eth_if_up?.value != null && (device.device_type === 'ltu_rocket' || device.device_type === 'airmax_rocket') && (
               <MetricRow label="Lien switch (eth0)" value={<LinkStatus up={metrics.eth_if_up.value === 1} />} />
             )}
             {metrics.radio_if_up?.value != null && (
               <MetricRow label="Interface radio" value={<LinkStatus up={metrics.radio_if_up.value === 1} />} />
             )}
             {metrics.distance_m?.value    != null && <MetricRow label="Distance"  value={`${metrics.distance_m.value.toFixed(0)} m`} />}
-            {metrics.signal_dbm?.value    != null && <MetricRow label="Signal UL (AP)"  value={<SignalValue dBm={metrics.signal_dbm.value} />} />}
+            {metrics.signal_dbm?.value    != null && <MetricRow label="Signal UL (AP)"  value={<SignalValue dBm={metrics.signal_dbm.value} warn={thresholds.signal_warning_dbm} crit={thresholds.signal_critical_dbm} />} />}
             {metrics.noise_dbm?.value     != null && <MetricRow label="Bruit (AP)"      value={`${metrics.noise_dbm.value} dBm`} />}
             {metrics.cinr_db?.value       != null && <MetricRow label="CINR DL"         value={`${metrics.cinr_db.value} dB`} />}
             {metrics.ul_cinr_db?.value    != null && <MetricRow label="CINR UL"         value={`${metrics.ul_cinr_db.value} dB`} />}
-            {metrics.ccq_pct?.value       != null && <MetricRow label="CCQ DL"          value={<CcqValue pct={metrics.ccq_pct.value} />} />}
-            {metrics.ul_ccq_pct?.value    != null && <MetricRow label="CCQ UL"          value={<CcqValue pct={metrics.ul_ccq_pct.value} />} />}
+            {metrics.ccq_pct?.value       != null && <MetricRow label="CCQ DL"          value={<CcqValue pct={metrics.ccq_pct.value} warn={thresholds.ccq_warning_pct} crit={thresholds.ccq_critical_pct} />} />}
+            {metrics.ul_ccq_pct?.value    != null && <MetricRow label="CCQ UL"          value={<CcqValue pct={metrics.ul_ccq_pct.value} warn={thresholds.ccq_warning_pct} crit={thresholds.ccq_critical_pct} />} />}
             {metrics.tx_rate_mbps?.value  != null && <MetricRow label="Débit DL"        value={`${metrics.tx_rate_mbps.value.toFixed(1)} Mbps`} />}
             {metrics.rx_rate_mbps?.value  != null && <MetricRow label="Débit UL"        value={`${metrics.rx_rate_mbps.value.toFixed(1)} Mbps`} />}
             {metrics.tx_ideal_mbps?.value != null && <MetricRow label="Capacité DL"     value={`${metrics.tx_ideal_mbps.value.toFixed(1)} Mbps`} />}
@@ -189,7 +205,7 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
               <>
                 <div className="border-t border-blue-100 my-1" />
                 <p className="text-blue-300 text-xs uppercase tracking-wider">CPE distant</p>
-                <MetricRow label="Signal DL (CPE)" value={<SignalValue dBm={metrics.remote_signal_dbm.value} />} />
+                <MetricRow label="Signal DL (CPE)" value={<SignalValue dBm={metrics.remote_signal_dbm.value} warn={thresholds.signal_warning_dbm} crit={thresholds.signal_critical_dbm} />} />
               </>
             )}
             {metrics.remote_noise_dbm?.value != null && <MetricRow label="Bruit (CPE)"   value={`${metrics.remote_noise_dbm.value} dBm`} />}
@@ -264,6 +280,57 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
             </Section>
           )
         })()}
+
+        {/* UISP Power metrics */}
+        {isPower && metrics && (
+          (() => {
+            const v        = metrics.voltage_v?.value
+            const a        = metrics.current_a?.value
+            const w        = metrics.power_w?.value
+            const battPct  = metrics.battery_pct?.value
+            const battVolt = metrics.battery_voltage_v?.value
+            const hasAny   = [v, a, w, battPct, battVolt].some(x => x != null)
+            if (!hasAny) return null
+            return (
+              <Section title="Alimentation">
+                {v != null && (
+                  <MetricRow label="Tension" value={<VoltageValue volts={v} />} />
+                )}
+                {a != null && (
+                  <MetricRow label="Courant" value={`${a.toFixed(2)} A`} />
+                )}
+                {w != null && (
+                  <MetricRow label="Puissance" value={`${w.toFixed(1)} W`} />
+                )}
+                {(battPct != null || battVolt != null) && (
+                  <>
+                    <div className="border-t border-blue-100 my-1" />
+                    <p className="text-blue-300 text-xs uppercase tracking-wider">Batterie</p>
+                    {battPct != null && (
+                      <MetricRow
+                        label="Charge"
+                        value={
+                          <BatteryValue
+                            pct={battPct}
+                            warn={thresholds.battery_warning_pct}
+                            crit={thresholds.battery_critical_pct}
+                          />
+                        }
+                      />
+                    )}
+                    {battVolt != null && (
+                      <MetricRow label="Tension batterie" value={`${battVolt.toFixed(1)} V`} />
+                    )}
+                  </>
+                )}
+              </Section>
+            )
+          })()
+        )}
+
+        {isPower && !metrics && isUp && (
+          <p className="text-blue-300 text-sm italic">Métriques UISP Power en attente de collecte…</p>
+        )}
 
         {/* Diagnostics */}
         {device.device_type === 'ltu_lr' && (
@@ -370,13 +437,29 @@ function LinkStatus({ up }: { up: boolean }) {
     : <span className="text-red-500 font-semibold">DOWN</span>
 }
 
-function SignalValue({ dBm }: { dBm: number }) {
-  const color = dBm < -80 ? 'text-red-500' : dBm < -70 ? 'text-yellow-500' : 'text-green-600'
+function SignalValue({ dBm, warn, crit }: { dBm: number; warn: number; crit: number }) {
+  const color = dBm < crit ? 'text-red-500' : dBm < warn ? 'text-yellow-500' : 'text-green-600'
   return <span className={`font-semibold ${color}`}>{dBm} dBm</span>
 }
 
-function CcqValue({ pct }: { pct: number }) {
-  const color = pct < 50 ? 'text-red-500' : pct < 75 ? 'text-yellow-500' : 'text-green-600'
+function CcqValue({ pct, warn, crit }: { pct: number; warn: number; crit: number }) {
+  const color = pct < crit ? 'text-red-500' : pct < warn ? 'text-yellow-500' : 'text-green-600'
+  return <span className={`font-semibold ${color}`}>{pct.toFixed(0)} %</span>
+}
+
+function LatencyValue({ ms, warn, crit }: { ms: number; warn: number; crit: number }) {
+  const color = ms >= crit ? 'text-red-500' : ms >= warn ? 'text-yellow-500' : 'text-green-600'
+  return <span className={`font-semibold ${color}`}>{ms.toFixed(1)} ms</span>
+}
+
+function VoltageValue({ volts }: { volts: number }) {
+  // UISP Power: hardcoded safe range matches voltage_anomaly rule (20–56 V)
+  const out = volts < 20 || volts > 56
+  return <span className={`font-semibold ${out ? 'text-red-500' : 'text-green-600'}`}>{volts.toFixed(1)} V</span>
+}
+
+function BatteryValue({ pct, warn, crit }: { pct: number; warn: number; crit: number }) {
+  const color = pct < crit ? 'text-red-500' : pct < warn ? 'text-yellow-500' : 'text-green-600'
   return <span className={`font-semibold ${color}`}>{pct.toFixed(0)} %</span>
 }
 

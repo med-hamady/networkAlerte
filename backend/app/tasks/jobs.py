@@ -21,6 +21,7 @@ from app.core.alert_constants import (
     AT_LR_DISAPPEARED,
     AT_LR_DOWN,
     AT_LR_NO_TRANSIT,
+    AT_PING_LATENCY_HIGH,
     AT_ROCKET_DOWN,
     AT_SWITCH_DOWN,
 )
@@ -42,6 +43,7 @@ from app.services import (
     alert_engine,
     digest_service,
     discovery_service,
+    email_service,
     incident_service,
     ltu_api_service,
     notification_service,
@@ -58,6 +60,7 @@ logger = logging.getLogger(__name__)
 # AlertState. Picking a leading underscore keeps it out of the regular alert
 # vocabulary (no policy, no incident, no formatter touches it).
 _PING_FAILURE_STATE_KEY = "_ping_failures"
+_PING_LATENCY_FAILURE_STATE_KEY = "_ping_latency_failures"
 
 
 async def _get_ping_failure_count(session, device_id: int) -> int:
@@ -92,6 +95,121 @@ async def _set_ping_failure_count(session, device_id: int, count: int) -> None:
     else:
         state.failure_count = count
         state.last_evaluated_at = now
+
+
+async def _get_latency_failure_count(session, device_id: int) -> int:
+    """Read the persisted consecutive high-latency cycle count."""
+    res = await session.execute(
+        select(AlertState).where(
+            AlertState.device_id == device_id,
+            AlertState.alert_type == _PING_LATENCY_FAILURE_STATE_KEY,
+        )
+    )
+    state = res.scalar_one_or_none()
+    return state.failure_count if state else 0
+
+
+async def _set_latency_failure_count(session, device_id: int, count: int) -> None:
+    """Upsert the persisted consecutive high-latency cycle count."""
+    res = await session.execute(
+        select(AlertState).where(
+            AlertState.device_id == device_id,
+            AlertState.alert_type == _PING_LATENCY_FAILURE_STATE_KEY,
+        )
+    )
+    state = res.scalar_one_or_none()
+    now = datetime.datetime.now(datetime.UTC)
+    if state is None:
+        session.add(AlertState(
+            device_id=device_id,
+            alert_type=_PING_LATENCY_FAILURE_STATE_KEY,
+            failure_count=count,
+            last_evaluated_at=now,
+        ))
+    else:
+        state.failure_count = count
+        state.last_evaluated_at = now
+
+
+async def _send_ping_instability_email(
+    device: Device, failures: int, threshold: int, latency_ms: float | None
+) -> bool:
+    """
+    Send an INFO email when a device recovered from N consecutive ping failures
+    without ever reaching ping_down_threshold (no incident was opened).
+    """
+    settings = get_settings()
+    recipients = settings.notification_email_list
+    if not recipients:
+        return False
+
+    latency_str = (
+        f"{latency_ms:.1f} ms" if latency_ms is not None else "non mesurée"
+    )
+    subject = f"[INFO] Instabilité ping — {device.name}"
+    body_text = (
+        f"Information : {device.name} ({device.ip_address}) a eu {failures} ping(s) "
+        f"consécutif(s) raté(s) avant de redevenir joignable.\n\n"
+        f"Aucun incident n'a été ouvert (seuil critique = {threshold} cycles).\n"
+        f"Latence du ping de récupération : {latency_str}.\n\n"
+        f"À surveiller : possible dégradation latente du lien."
+    )
+    body_html = (
+        f"<h3>Instabilité ping détectée</h3>"
+        f"<p><strong>{device.name}</strong> ({device.ip_address}) a eu "
+        f"<strong>{failures} ping(s) consécutif(s) raté(s)</strong> avant de redevenir "
+        f"joignable.</p>"
+        f"<p>Aucun incident ouvert (seuil critique = {threshold} cycles).<br>"
+        f"Latence du ping de récupération : <strong>{latency_str}</strong>.</p>"
+        f"<p><em>À surveiller : possible dégradation latente du lien.</em></p>"
+    )
+    return await email_service.send_email(recipients, subject, body_text, body_html)
+
+
+async def _send_ping_latency_email(
+    device: Device,
+    latency_ms: float,
+    threshold_ms: float,
+    severity: str,
+    cycles: int,
+    event: str,
+) -> bool:
+    """
+    Send an email for a high-latency event (opened or resolved).
+    `event` is "opened" or "resolved".
+    """
+    settings = get_settings()
+    recipients = settings.notification_email_list
+    if not recipients:
+        return False
+
+    if event == "resolved":
+        subject = f"[RECOVERY] Latence redevenue normale — {device.name}"
+        body_text = (
+            f"La latence vers {device.name} ({device.ip_address}) est revenue sous le seuil "
+            f"({latency_ms:.1f} ms)."
+        )
+        body_html = (
+            f"<h3>Latence normale</h3>"
+            f"<p>La latence vers <strong>{device.name}</strong> ({device.ip_address}) "
+            f"est revenue sous le seuil : <strong>{latency_ms:.1f} ms</strong>.</p>"
+        )
+    else:
+        tag = "ALERTE CRITIQUE" if severity == "critical" else "ALERTE"
+        subject = f"[{tag}] Latence élevée — {device.name}"
+        body_text = (
+            f"{tag} — Latence élevée vers {device.name} ({device.ip_address}).\n"
+            f"Latence mesurée : {latency_ms:.1f} ms (seuil {severity} : {threshold_ms:.0f} ms).\n"
+            f"Cycles consécutifs au-dessus du seuil : {cycles}."
+        )
+        body_html = (
+            f"<h3>Latence élevée — {severity.upper()}</h3>"
+            f"<p><strong>{device.name}</strong> ({device.ip_address}) — "
+            f"latence mesurée : <strong>{latency_ms:.1f} ms</strong> "
+            f"(seuil {severity} : {threshold_ms:.0f} ms).</p>"
+            f"<p>Cycles consécutifs au-dessus du seuil : <strong>{cycles}</strong>.</p>"
+        )
+    return await email_service.send_email(recipients, subject, body_text, body_html)
 
 
 # LTU radio devices — polled via standard IF-MIB (no UBNT enterprise MIB)
@@ -194,6 +312,77 @@ async def _resolve_and_notify(
         )
 
 
+async def _evaluate_ping_latency(
+    session, device: Device, latency_ms: float, settings,
+) -> None:
+    """
+    Apply latency thresholds: increment counter when above warn, open incident
+    after `ping_latency_failure_threshold` consecutive bad cycles, resolve
+    when latency drops back. Severity = critical above crit threshold.
+    Notifications are sent by email regardless of policy.
+    """
+    warn = settings.ping_latency_warn_ms
+    crit = settings.ping_latency_crit_ms
+
+    if latency_ms < warn:
+        # Latency back to normal — reset counter and resolve incident if any.
+        prev = await _get_latency_failure_count(session, device.id)
+        if prev > 0:
+            await _set_latency_failure_count(session, device.id, 0)
+        resolved = await incident_service.resolve_incidents(
+            session, device.id,
+            title=f"Latence élevée — {device.name}",
+            alert_type=AT_PING_LATENCY_HIGH,
+        )
+        for inc in resolved:
+            ok = await _send_ping_latency_email(
+                device, latency_ms, warn, "warning", 0, "resolved",
+            )
+            await _create_alert_record(
+                session, inc, f"RECOVERY: latence normale — {device.name}", ok,
+            )
+        return
+
+    # Above warn threshold — bump counter.
+    cycles = await _get_latency_failure_count(session, device.id) + 1
+    await _set_latency_failure_count(session, device.id, cycles)
+
+    if cycles < settings.ping_latency_failure_threshold:
+        logger.info(
+            "PING LATENCY HIGH %s (%s) — %.1f ms (%d/%d cycles, seuil non atteint)",
+            device.name, device.ip_address, latency_ms,
+            cycles, settings.ping_latency_failure_threshold,
+        )
+        return
+
+    severity = "critical" if latency_ms >= crit else "warning"
+    threshold_used = crit if severity == "critical" else warn
+    title = f"Latence élevée — {device.name}"
+    description = (
+        f"{device.name} ({device.ip_address}) — latence ICMP : {latency_ms:.1f} ms "
+        f"(seuil {severity} : {threshold_used:.0f} ms). "
+        f"{cycles} cycles consécutifs au-dessus du seuil warning."
+    )
+    incident, is_new = await incident_service.open_incident(
+        session, device, title, severity, description,
+        alert_type=AT_PING_LATENCY_HIGH,
+        metric_name="ping_latency_ms",
+        metric_value=latency_ms,
+        threshold_value=threshold_used,
+    )
+    if is_new:
+        ok = await _send_ping_latency_email(
+            device, latency_ms, threshold_used, severity, cycles, "opened",
+        )
+        await _create_alert_record(
+            session, incident, f"{title} — {severity}", ok,
+        )
+        logger.warning(
+            "PING LATENCY HIGH %s (%s) — incident %s ouvert (%.1f ms)",
+            device.name, device.ip_address, severity, latency_ms,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Correlation helper (used by ping job for switch context)
 # ---------------------------------------------------------------------------
@@ -282,9 +471,11 @@ async def device_ping_job() -> None:
     # Single session for the entire loop — commits after each device so that
     # one device failure never rolls back another device's state changes.
     async with async_session_factory() as session:
-        for device, reachable in zip(devices, ping_results, strict=True):
-            if isinstance(reachable, Exception):
-                reachable = False
+        for device, result in zip(devices, ping_results, strict=True):
+            if isinstance(result, Exception):
+                reachable, latency_ms = False, None
+            else:
+                reachable, latency_ms = result
 
             dev = await session.get(Device, device.id)
             if dev is None:
@@ -293,12 +484,52 @@ async def device_ping_job() -> None:
             at = _alert_type_for_device(dev)
 
             if reachable:
+                # Capture previous failure count to detect instability that
+                # never reached the down threshold (info-only signal).
+                prev_failures = await _get_ping_failure_count(session, dev.id)
                 await _set_ping_failure_count(session, dev.id, 0)
                 dev.status = "up"
                 dev.last_seen = now
+
+                if latency_ms is not None:
+                    session.add(DeviceMetric(
+                        device_id=dev.id,
+                        metric_name="ping_latency_ms",
+                        metric_value=latency_ms,
+                        unit="ms",
+                    ))
+
                 recovery_title = f"RECOVERY : {dev.name} de nouveau disponible"
                 await _resolve_and_notify(session, dev, recovery_title, alert_type=at)
-                logger.info("UP   %s (%s)", dev.name, dev.ip_address)
+
+                # Ping instability — recovered after N partial failures without
+                # ever opening a *_down incident.
+                if (
+                    settings.ping_instability_threshold > 0
+                    and prev_failures >= settings.ping_instability_threshold
+                    and prev_failures < settings.ping_down_threshold
+                ):
+                    sent = await _send_ping_instability_email(
+                        dev, prev_failures, settings.ping_down_threshold, latency_ms,
+                    )
+                    logger.info(
+                        "PING INSTABILITY %s (%s) — %d échec(s) puis recovery, "
+                        "email %s",
+                        dev.name, dev.ip_address, prev_failures,
+                        "envoyé" if sent else "non envoyé",
+                    )
+
+                # Latency thresholds — anti-flap N consecutive cycles.
+                if latency_ms is not None:
+                    await _evaluate_ping_latency(
+                        session, dev, latency_ms, settings,
+                    )
+
+                logger.info(
+                    "UP   %s (%s)%s",
+                    dev.name, dev.ip_address,
+                    f" — {latency_ms:.1f} ms" if latency_ms is not None else "",
+                )
             else:
                 dev.status = "down"
                 failures = await _get_ping_failure_count(session, dev.id) + 1
@@ -526,11 +757,16 @@ async def power_poll_job() -> None:
     logger.info("Power poll — checking %d UISP Power device(s)", len(devices))
 
     for device in devices:
+        # Per-device credentials override the global env defaults when set.
+        username = device.uisp_power_username or settings.uisp_power_username
+        password = device.uisp_power_password or settings.uisp_power_password
+        port = device.uisp_power_port or settings.uisp_power_port
+
         readings = await uisp_power_service.poll_uisp_power(
             host=device.ip_address,
-            username=settings.uisp_power_username,
-            password=settings.uisp_power_password,
-            port=settings.uisp_power_port,
+            username=username,
+            password=password,
+            port=port,
         )
 
         async with async_session_factory() as session:
@@ -557,6 +793,26 @@ async def power_poll_job() -> None:
                     power=readings.get("power"),
                     status="online",
                 ))
+
+                # Mirror readings into device_metrics so the unified
+                # /devices/{id}/metrics/latest endpoint exposes them to the UI.
+                metric_units = {
+                    "voltage_v": ("voltage", "V"),
+                    "current_a": ("current", "A"),
+                    "power_w":   ("power",   "W"),
+                    "battery_pct":       ("battery_percentage", "%"),
+                    "battery_voltage_v": ("battery_voltage",    "V"),
+                }
+                for metric_name, (key, unit) in metric_units.items():
+                    val = readings.get(key)
+                    if val is None:
+                        continue
+                    session.add(DeviceMetric(
+                        device_id=dev.id,
+                        metric_name=metric_name,
+                        metric_value=float(val),
+                        unit=unit,
+                    ))
 
                 logger.info(
                     "UISP Power %s — voltage=%.1fV current=%.2fA power=%.1fW",
@@ -658,10 +914,18 @@ async def ltu_api_poll_job() -> None:
     }
 
     for device in devices:
-        metrics, all_peers = await ltu_api_service.collect_ltu_api_full(
+        if not device.ssh_username or not device.ssh_password:
+            logger.warning(
+                "LTU API skip — %s (%s) : credentials manquants en base "
+                "(ssh_username/ssh_password). Configure-les via PUT /api/v1/devices/%d.",
+                device.name, device.ip_address, device.id,
+            )
+            continue
+
+        metrics, all_peers, per_peer_metrics = await ltu_api_service.collect_ltu_api_full(
             host=device.ip_address,
-            username=settings.ltu_api_username,
-            password=settings.ltu_api_password,
+            username=device.ssh_username,
+            password=device.ssh_password,
             port=settings.ltu_api_port,
         )
 
@@ -704,6 +968,36 @@ async def ltu_api_poll_job() -> None:
 
             # Delegate all radio quality anomaly detection to the alert engine
             await alert_engine.evaluate_device_metrics(session, dev, engine_metrics, settings)
+
+            # Fan-out per-peer radio metrics to each child LR (matched by MAC).
+            # Discovery has already created/linked LR rows for every peer above,
+            # so simply look up children of this Rocket and persist that peer's
+            # metrics under the LR's id. This is what fills the LR detail
+            # modal's "Métriques radio" section — the LRs themselves are not
+            # reachable via SNMP/HTTP API from the supervisor (they sit behind
+            # the radio link), so the Rocket's API is the only source.
+            for peer_mac, peer_metrics in per_peer_metrics:
+                if not peer_mac:
+                    continue
+                if not any(v is not None for v in peer_metrics.values()):
+                    continue
+                lr_q = await session.execute(
+                    select(Device).where(
+                        Device.parent_id == dev.id,
+                        Device.mac_address == peer_mac,
+                    )
+                )
+                lr = lr_q.scalar_one_or_none()
+                if lr is None:
+                    continue
+                for metric_name, value in peer_metrics.items():
+                    if value is not None:
+                        session.add(DeviceMetric(
+                            device_id=lr.id,
+                            metric_name=metric_name,
+                            metric_value=value,
+                            unit=unit_map.get(metric_name),
+                        ))
 
             await session.commit()
 
@@ -1000,3 +1294,6 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         replace_existing=True,
         **safety,
     )
+
+
+

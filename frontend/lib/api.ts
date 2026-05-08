@@ -38,7 +38,9 @@ export const endpoints = {
   notificationChannels: `${API_BASE}/notification-channels/`,
   notificationChannel:  (id: number) => `${API_BASE}/notification-channels/${id}`,
   alertRecords:         (params?: string) => `${API_BASE}/notifications/${params ? `?${params}` : ''}`,
+  testEmail:            `${API_BASE}/notifications/test-email`,
   reportGenerate:       (params: string) => `${API_BASE}/reports/generate?${params}`,
+  thresholds:           `${API_BASE}/system/thresholds`,
 }
 
 export interface DiagResult { ok: boolean; message: string }
@@ -55,18 +57,6 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
     throw new Error(err.detail ?? `HTTP ${res.status}`)
   }
   return res.json() as Promise<T>
-}
-
-export async function updateIncidentStatus(
-  id: number,
-  status: 'acknowledged' | 'resolved',
-): Promise<Incident> {
-  const res = await fetch(endpoints.incident(id), {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status }),
-  })
-  return jsonOrThrow<Incident>(res)
 }
 
 export async function updateDevice(
@@ -168,6 +158,17 @@ export async function resetThreshold(key: string): Promise<void> {
     const err = await res.json().catch(() => ({}))
     throw new Error(err.detail ?? `HTTP ${res.status}`)
   }
+}
+
+export interface TestEmailResult {
+  status: string
+  recipients: string[]
+  smtp_host: string
+}
+
+export async function sendTestEmail(): Promise<TestEmailResult> {
+  const res = await fetch(endpoints.testEmail, { method: 'POST' })
+  return jsonOrThrow<TestEmailResult>(res)
 }
 
 // Typed wrappers for SWR (pass to useSWR as key)

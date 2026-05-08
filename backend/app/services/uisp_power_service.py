@@ -1,18 +1,22 @@
 """
-UISP Power device service.
+UISP Power Pro device service.
 
-Polls the local REST API of a UISP Power device to retrieve:
-  - Voltage, current, power consumption per outlet
-  - Battery voltage and percentage (if present)
+Polls the local REST API of a UISP Power Pro device to retrieve:
+  - Output voltage, current, and power delivered to loads (DC output)
+  - Battery charge level, voltage, and temperature (Li-Ion UPS)
   - Overall device status
 
-API format (Ubiquiti mFi / UISP Power):
-  POST http://<ip>/api/v1.0/login/   → session cookie
-  GET  http://<ip>/api/v1.0/sensors/ → sensor readings
+API protocol (UISP Power Pro firmware, served over HTTPS):
+  POST https://<ip>/api/v1.0/user/login
+       body: {"username": ..., "password": ...}
+       -> 200 with X-Auth-Token header
+  GET  https://<ip>/api/v1.0/statistics
+       header: X-Auth-Token: <token>
+       -> JSON [{ "device": { "outputPower": {...}, "power": [...], ... } }]
 
-Two response formats are handled:
-  Format A: {"sensors": [{"type": "voltage", "value": 24.1}, ...]}
-  Format B: {"outputs": [{"voltage": 24.0, "current": 0.5, "power": 12.0}], "battery": {...}}
+The legacy /api/v1.0/login/ + /api/v1.0/sensors/ endpoints used by older
+mFi/UISP Power firmware return 401/404 on this firmware revision, so the
+service targets the modern path exclusively.
 """
 
 import logging
@@ -25,38 +29,51 @@ logger = logging.getLogger(__name__)
 
 
 class UISPPowerClient:
-    """Stateless HTTP client for the UISP Power local REST API."""
+    """Stateless HTTPS client for the UISP Power Pro local REST API."""
 
-    def __init__(self, host: str, username: str, password: str, port: int = 80):
-        self._base = f"http://{host}:{port}"
+    def __init__(self, host: str, username: str, password: str, port: int = 443):
+        # The firmware forces HTTPS; certs are self-signed so verification is
+        # toggled via Settings.tls_verify_devices (off by default).
+        self._base = f"https://{host}:{port}"
         self._username = username
         self._password = password
 
-    async def _login(self, client: httpx.AsyncClient) -> dict:
-        """Authenticate and return session cookies."""
+    async def _login(self, client: httpx.AsyncClient) -> str | None:
+        """Authenticate and return the X-Auth-Token, or None on failure."""
         resp = await client.post(
-            f"{self._base}/api/v1.0/login/",
+            f"{self._base}/api/v1.0/user/login",
             json={"username": self._username, "password": self._password},
             timeout=5,
         )
         resp.raise_for_status()
-        return dict(resp.cookies)
+        # Firmware returns the token in a response header (case-insensitive).
+        token = resp.headers.get("x-auth-token")
+        if not token:
+            logger.warning("UISP Power login OK but no x-auth-token header (%s)", self._base)
+        return token
 
-    async def get_sensors(self) -> dict | None:
+    async def get_statistics(self) -> dict | None:
         """
-        Fetch raw sensor data from the device.
-        Returns the parsed JSON dict, or None if the device is unreachable or auth fails.
+        Fetch /api/v1.0/statistics and return the inner `device` dict, or
+        None if the device is unreachable / auth fails / payload malformed.
         """
         try:
             async with httpx.AsyncClient(timeout=10, verify=get_settings().tls_verify_devices) as client:
-                cookies = await self._login(client)
+                token = await self._login(client)
+                if not token:
+                    return None
                 resp = await client.get(
-                    f"{self._base}/api/v1.0/sensors/",
-                    cookies=cookies,
+                    f"{self._base}/api/v1.0/statistics",
+                    headers={"x-auth-token": token},
                     timeout=5,
                 )
                 resp.raise_for_status()
-                return resp.json()
+                payload = resp.json()
+                # API returns an array with a single sample
+                if isinstance(payload, list) and payload:
+                    return payload[0].get("device")
+                logger.warning("UISP Power statistics: unexpected payload shape (%s)", self._base)
+                return None
         except httpx.HTTPStatusError as exc:
             logger.warning(
                 "UISP Power HTTP error (%s): %s", self._base, exc.response.status_code
@@ -68,10 +85,18 @@ class UISPPowerClient:
         return None
 
 
-def parse_power_readings(raw: dict) -> dict[str, float | None]:
+def parse_power_readings(device: dict) -> dict[str, float | None]:
     """
-    Parse raw API response into a normalized dict of power metrics.
-    All values are floats or None if unavailable.
+    Extract a normalized metrics dict from the `device` block returned by
+    /api/v1.0/statistics. All values are floats, or None if absent.
+
+    Mapping:
+      voltage / current / power → outputPower.{voltage, current, power}
+        (these describe the load the UISP Power is currently driving — the
+        "is the device delivering" signal we want to monitor)
+      battery_percentage / battery_voltage → first power[] entry whose
+        battery.type == "li-ion" (the UPS battery, as opposed to lead-acid
+        external packs that the device may also report)
     """
     result: dict[str, float | None] = {
         "voltage": None,
@@ -81,33 +106,37 @@ def parse_power_readings(raw: dict) -> dict[str, float | None]:
         "battery_percentage": None,
     }
 
-    # Format A: sensors list
-    for sensor in raw.get("sensors", []):
-        stype = sensor.get("type", "")
-        value = sensor.get("value")
-        if value is None:
+    output = device.get("outputPower") or {}
+    if "voltage" in output:
+        result["voltage"] = float(output["voltage"])
+    if "current" in output:
+        result["current"] = float(output["current"])
+    if "power" in output:
+        result["power"] = float(output["power"])
+
+    # Find the Li-Ion UPS battery entry. The device may also expose lead-acid
+    # external packs — we prefer Li-Ion (internal UPS) since it's the one that
+    # drives the device when AC fails. Fallback to first battery found.
+    li_ion: dict | None = None
+    any_batt: dict | None = None
+    for entry in device.get("power") or []:
+        battery = entry.get("battery") or {}
+        if not battery:
             continue
-        if stype == "voltage":
-            result["voltage"] = float(value)
-        elif stype == "current":
-            result["current"] = float(value)
-        elif stype == "power":
-            result["power"] = float(value)
+        any_batt = any_batt or entry
+        if battery.get("type") == "li-ion":
+            li_ion = entry
+            break
 
-    # Format B: outputs list (first outlet used as reference)
-    outputs = raw.get("outputs", [])
-    if outputs:
-        out = outputs[0]
-        result["voltage"] = float(out["voltage"]) if "voltage" in out else result["voltage"]
-        result["current"] = float(out["current"]) if "current" in out else result["current"]
-        result["power"] = float(out["power"]) if "power" in out else result["power"]
-
-    # Battery (present on devices with UPS/battery backup)
-    battery = raw.get("battery", {})
-    if "voltage" in battery:
-        result["battery_voltage"] = float(battery["voltage"])
-    if "percentage" in battery:
-        result["battery_percentage"] = float(battery["percentage"])
+    chosen = li_ion or any_batt
+    if chosen:
+        battery = chosen.get("battery") or {}
+        charge_level = battery.get("chargeLevel")
+        if charge_level is not None:
+            result["battery_percentage"] = float(charge_level)
+        # The voltage on the same entry is the battery terminal voltage
+        if chosen.get("voltage") is not None:
+            result["battery_voltage"] = float(chosen["voltage"])
 
     return result
 
@@ -116,14 +145,14 @@ async def poll_uisp_power(
     host: str,
     username: str = "ubnt",
     password: str = "ubnt",
-    port: int = 80,
+    port: int = 443,
 ) -> dict[str, float | None] | None:
     """
     Poll a UISP Power device and return normalized power metrics.
     Returns None if the device is unreachable or authentication fails.
     """
     client = UISPPowerClient(host, username, password, port)
-    raw = await client.get_sensors()
-    if raw is None:
+    device = await client.get_statistics()
+    if device is None:
         return None
-    return parse_power_readings(raw)
+    return parse_power_readings(device)

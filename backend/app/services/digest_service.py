@@ -91,12 +91,6 @@ def _channels_for_digest(
 
 async def _deliver_digest(target, items: list[tuple[Device, Incident]]) -> bool:
     """Send a single digest payload through one channel target."""
-    if target.kind == "slack":
-        payload = alert_formatter.format_digest_for_slack(items)
-        return await notification_service._post_webhook(target.url, payload)
-    if target.kind == "webhook":
-        payload = alert_formatter.format_digest_for_webhook(items)
-        return await notification_service._post_webhook(target.url, payload)
     if target.kind == "email":
         subject, text_body, html_body = alert_formatter.format_digest_for_email(items)
         return await email_service.send_email(

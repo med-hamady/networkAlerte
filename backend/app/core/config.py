@@ -53,18 +53,20 @@ class Settings(BaseSettings):
     # Anti-flapping — nombre de pings ratés consécutifs avant d'ouvrir un incident
     ping_down_threshold: int = 3
 
+    # Instabilité ping — N échecs suivis d'un succès (sans atteindre ping_down_threshold)
+    # déclenche un email INFO. 0 = désactivé.
+    ping_instability_threshold: int = 2
+
+    # Latence ping — seuils warning/critical (ms) et anti-flap
+    ping_latency_warn_ms: float = 100.0
+    ping_latency_crit_ms: float = 300.0
+    ping_latency_failure_threshold: int = 3
+
     # Sonde de transit — vérifie que le trafic traverse bien le lien radio
     # IPs séparées par virgule (au moins une doit répondre pour valider le transit)
     transit_probe_ips: str = "1.1.1.1,8.8.8.8"
     transit_probe_interval: int = 60
     transit_probe_threshold: int = 2
-
-    # Notifications — webhook
-    webhook_url: str | None = None
-    slack_webhook_url: str | None = None
-
-    # Notifications — WhatsApp via WhatChimp
-    whatsapp_test_mode: bool = False   # log payload without sending when True
 
     # Notifications — SMTP email
     smtp_enabled: bool = False
@@ -95,10 +97,10 @@ class Settings(BaseSettings):
     # cert to each device or pinned fingerprints.
     tls_verify_devices: bool = False
 
-    # UISP Power REST API
+    # UISP Power REST API (HTTPS — firmware forces TLS, plain HTTP returns 307)
     uisp_power_username: str = "ubnt"
     uisp_power_password: str = "ubnt"
-    uisp_power_port: int = 80
+    uisp_power_port: int = 443
 
     # LTU HTTP API (CCQ, signal, rates)
     ltu_api_username: str = "ubnt"

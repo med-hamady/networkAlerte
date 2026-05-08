@@ -29,6 +29,9 @@ const EMPTY: DeviceFormData = {
   ssh_username: '',
   ssh_password: '',
   ssh_port: 22,
+  uisp_power_username: '',
+  uisp_power_password: '',
+  uisp_power_port: 443,
   notes: '',
 }
 
@@ -47,16 +50,19 @@ export default function DeviceFormModal({ open, device, onClose, onSaved }: Prop
     setConfirmDelete(false)
     if (device) {
       setForm({
-        name:            device.name,
-        ip_address:      device.ip_address,
-        device_type:     device.device_type,
-        model:           device.model ?? '',
-        location:        device.location ?? '',
-        snmp_community:  device.snmp_community ?? '',
-        ssh_username:    device.ssh_username ?? '',
-        ssh_password:    '',   // never pre-filled — write-only
-        ssh_port:        device.ssh_port ?? 22,
-        notes:           device.notes ?? '',
+        name:                 device.name,
+        ip_address:           device.ip_address,
+        device_type:          device.device_type,
+        model:                device.model ?? '',
+        location:             device.location ?? '',
+        snmp_community:       device.snmp_community ?? '',
+        ssh_username:         device.ssh_username ?? '',
+        ssh_password:         '',   // never pre-filled — write-only
+        ssh_port:             device.ssh_port ?? 22,
+        uisp_power_username:  device.uisp_power_username ?? '',
+        uisp_power_password:  '',   // never pre-filled — write-only
+        uisp_power_port:      device.uisp_power_port ?? 443,
+        notes:                device.notes ?? '',
       })
     } else {
       setForm(EMPTY)
@@ -67,7 +73,8 @@ export default function DeviceFormModal({ open, device, onClose, onSaved }: Prop
 
   const set = (field: keyof DeviceFormData) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-      const value = field === 'ssh_port' ? Number(e.target.value) : e.target.value
+      const isNumeric = field === 'ssh_port' || field === 'uisp_power_port'
+      const value = isNumeric ? Number(e.target.value) : e.target.value
       setForm(f => ({ ...f, [field]: value }))
     }
 
@@ -78,9 +85,10 @@ export default function DeviceFormModal({ open, device, onClose, onSaved }: Prop
     setSaving(true)
     try {
       if (isEdit && device) {
-        // For updates: only send ssh_password if the user typed a new one
+        // For updates: only send write-only secrets if the user typed a new value
         const payload = { ...form }
-        if (!payload.ssh_password) delete (payload as Partial<DeviceFormData>).ssh_password
+        if (!payload.ssh_password)        delete (payload as Partial<DeviceFormData>).ssh_password
+        if (!payload.uisp_power_password) delete (payload as Partial<DeviceFormData>).uisp_power_password
         await updateDevice(device.id, payload)
       } else {
         await createDevice(form)
@@ -112,6 +120,7 @@ export default function DeviceFormModal({ open, device, onClose, onSaved }: Prop
 
   const needsSsh = form.device_type === 'ltu_lr'
   const needsSnmp = form.device_type !== 'uisp_power'
+  const isUispPower = form.device_type === 'uisp_power'
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -243,6 +252,54 @@ export default function DeviceFormModal({ open, device, onClose, onSaved }: Prop
               />
             </Field>
           </div>
+
+          {/* UISP Power credentials — local REST API */}
+          {isUispPower && (
+            <div className="bg-amber-50 rounded-xl p-4 space-y-3">
+              <p className="text-xs font-semibold text-amber-700 uppercase tracking-wide">
+                Identifiants UISP Power
+                <span className="ml-2 font-normal text-amber-500 normal-case">
+                  (laisser vide pour utiliser les valeurs globales)
+                </span>
+              </p>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="col-span-2">
+                  <Field label="Utilisateur API">
+                    <input
+                      type="text"
+                      value={form.uisp_power_username}
+                      onChange={set('uisp_power_username')}
+                      placeholder="ubnt"
+                      className={input}
+                    />
+                  </Field>
+                </div>
+                <Field label="Port HTTP">
+                  <input
+                    type="number"
+                    value={form.uisp_power_port}
+                    onChange={set('uisp_power_port')}
+                    min={1}
+                    max={65535}
+                    className={input}
+                  />
+                </Field>
+              </div>
+              <Field
+                label="Mot de passe API"
+                hint={isEdit ? "Laisser vide pour conserver le mot de passe existant" : ""}
+              >
+                <input
+                  type="password"
+                  value={form.uisp_power_password}
+                  onChange={set('uisp_power_password')}
+                  placeholder={isEdit && device?.has_uisp_power_password ? "••••••••" : "Mot de passe UISP Power"}
+                  autoComplete="new-password"
+                  className={input}
+                />
+              </Field>
+            </div>
+          )}
 
           {/* Notes */}
           <Field label="Notes">

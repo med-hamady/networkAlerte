@@ -252,9 +252,8 @@ backend/app/
 | GET | `/api/v1/devices/{id}/metrics/latest` | Oui | Dernières métriques (dashboard) |
 | POST | `/api/v1/devices/{id}/check-ssh` | Oui | Test SSH vers le device |
 | POST | `/api/v1/devices/{id}/check-ping` | Oui | Ping internet via SSH depuis le device |
-| GET | `/api/v1/incidents` | Oui | Liste incidents (filtres: status, severity, device_id, alert_type) |
-| GET | `/api/v1/incidents/{id}` | Oui | Détail incident |
-| PATCH | `/api/v1/incidents/{id}` | Oui | Changer statut (acknowledged/resolved) |
+| GET | `/api/v1/incidents` | Oui | Liste incidents (filtres: status, severity, device_id, alert_type) — lecture seule |
+| GET | `/api/v1/incidents/{id}` | Oui | Détail incident — lecture seule |
 | GET | `/api/v1/notifications` | Oui | Historique des alertes envoyées |
 | GET | `/api/v1/notification-channels` | Oui | Liste canaux de notification |
 | POST | `/api/v1/notification-channels` | Oui | Créer un canal |
@@ -271,6 +270,8 @@ backend/app/
 |---|---|---|
 | Devices | `/devices` | Liste avec statut, dernière vue, métriques, modal détail |
 | Topology | `/topology` | Vue topologie réseau |
+| Anomalies détectées | `/incidents` | Anomalies actuellement détectées (lecture seule, résolution automatique) |
+| Archive | `/incidents/archive` | Historique des incidents auto-résolus |
 | Notification Channels | `/notification-channels` | Gestion des canaux Slack/email/webhook |
 
 ### À implémenter (prochaines phases)

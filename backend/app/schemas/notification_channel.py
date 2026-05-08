@@ -1,12 +1,10 @@
 """
 Pydantic schemas for the NotificationChannel resource.
 
-Each channel has a `channel_type` ("slack" | "webhook" | "email") that
-determines the expected shape of `config`:
+Each channel has a `channel_type` ("email") that determines the expected
+shape of `config`:
 
-  slack    : {"webhook_url": "https://hooks.slack.com/..."}
-  webhook  : {"url": "https://example.com/notify"}
-  email    : {"recipients": ["a@b.com", "c@d.com"]}
+  email : {"recipients": ["a@b.com", "c@d.com"]}
 
 The schemas validate the channel_type against the registry of supported
 types so unknown values are rejected at the API boundary.

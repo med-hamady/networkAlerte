@@ -10,6 +10,9 @@ export interface Device {
   ssh_username: string | null
   ssh_port: number
   has_ssh_password: boolean
+  uisp_power_username: string | null
+  uisp_power_port: number | null
+  has_uisp_power_password: boolean
   notes: string | null
   last_seen: string | null
   created_at: string
@@ -28,6 +31,9 @@ export interface DeviceFormData {
   ssh_username: string
   ssh_password: string   // write-only — empty = keep existing
   ssh_port: number
+  uisp_power_username: string
+  uisp_power_password: string   // write-only — empty = keep existing
+  uisp_power_port: number
   notes: string
 }
 
@@ -98,7 +104,7 @@ export interface AlertPolicy {
 export interface NotificationChannel {
   id: number
   name: string
-  channel_type: string             // slack | webhook | email
+  channel_type: string             // email
   config: Record<string, unknown>
   enabled: boolean
 }

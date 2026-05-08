@@ -123,28 +123,16 @@ def _float(val: object) -> float | None:
         return None
 
 
-def parse_ltu_stats(raw: dict) -> dict[str, float | None]:
-    """
-    Extract radio metrics from /api/v1.0/statistics response.
+def _extract_peer_radio_metrics(peer: dict) -> dict[str, float | None]:
+    """Extract per-peer radio metrics from a single ``wireless.peers[i]`` entry.
 
-    Structure (UDAPI v1.0, firmware 2.4.x):
-      wireless.radios[0].noiseFloor
-      wireless.peers[0].common            ← peer system info (distance, uptime, cpu, ram)
-      wireless.peers[0].local[0].linkQuality
-        .signal                           ← uplink signal at AP (dBm)
-        .cinr.dl / .cinr.ul              ← CINR downlink / uplink (dB)
-        .linkScore.dl / .linkScore.ul    ← CCQ equivalent DL/UL (0–100)
-        .capacity.dl / .capacity.ul      ← actual capacity DL/UL (Kbps)
-        .capacity.dlIdeal / .ulIdeal     ← ideal (uncapped) capacity DL/UL (Kbps)
-      wireless.peers[0].remote[0].linkQuality
-        .signal                           ← downlink signal at CPE (dBm)
-        .noiseFloor                       ← noise floor at CPE (dBm)
-        .outputPower                      ← EIRP at AP (dBm)
+    The AP-side ``noise_dbm`` (read from ``radios[0].noiseFloor``) is shared
+    across peers and is intentionally NOT part of this dict — callers that
+    need it add it on top.
     """
     result: dict[str, float | None] = {
-        # AP-side metrics (local)
+        # AP-side metrics (local) — measured at AP for this peer's uplink
         "signal_dbm":        None,
-        "noise_dbm":         None,
         "ccq_pct":           None,
         "ul_ccq_pct":        None,
         "cinr_db":           None,
@@ -166,20 +154,8 @@ def parse_ltu_stats(raw: dict) -> dict[str, float | None]:
         "peer_rx_kbps":      None,
     }
 
-    wireless = raw.get("wireless") if isinstance(raw, dict) else None
-    if not isinstance(wireless, dict):
+    if not isinstance(peer, dict):
         return result
-
-    # Noise floor from AP radio
-    radios = wireless.get("radios")
-    if isinstance(radios, list) and radios:
-        result["noise_dbm"] = _float(_nested(radios[0], "noiseFloor"))
-
-    peers = wireless.get("peers")
-    if not isinstance(peers, list) or not peers:
-        return result
-
-    peer = peers[0]
 
     # Common peer info (distance, uptime, CPU, RAM, throughput counters)
     common = peer.get("common")
@@ -231,6 +207,70 @@ def parse_ltu_stats(raw: dict) -> dict[str, float | None]:
         result["remote_eirp_dbm"]   = _float(eirp if eirp is not None else rlq.get("eirp"))
 
     return result
+
+
+def parse_ltu_stats(raw: dict) -> dict[str, float | None]:
+    """
+    Extract radio metrics from /api/v1.0/statistics response (peers[0]).
+
+    Structure (UDAPI v1.0, firmware 2.4.x):
+      wireless.radios[0].noiseFloor
+      wireless.peers[0].common            ← peer system info (distance, uptime, cpu, ram)
+      wireless.peers[0].local[0].linkQuality
+        .signal                           ← uplink signal at AP (dBm)
+        .cinr.dl / .cinr.ul              ← CINR downlink / uplink (dB)
+        .linkScore.dl / .linkScore.ul    ← CCQ equivalent DL/UL (0–100)
+        .capacity.dl / .capacity.ul      ← actual capacity DL/UL (Kbps)
+        .capacity.dlIdeal / .ulIdeal     ← ideal (uncapped) capacity DL/UL (Kbps)
+      wireless.peers[0].remote[0].linkQuality
+        .signal                           ← downlink signal at CPE (dBm)
+        .noiseFloor                       ← noise floor at CPE (dBm)
+        .outputPower                      ← EIRP at AP (dBm)
+    """
+    wireless = raw.get("wireless") if isinstance(raw, dict) else None
+    radios = wireless.get("radios") if isinstance(wireless, dict) else None
+    noise_dbm: float | None = None
+    if isinstance(radios, list) and radios:
+        noise_dbm = _float(_nested(radios[0], "noiseFloor"))
+
+    peer: dict = {}
+    if isinstance(wireless, dict):
+        peers = wireless.get("peers")
+        if isinstance(peers, list) and peers:
+            peer = peers[0] if isinstance(peers[0], dict) else {}
+
+    result = _extract_peer_radio_metrics(peer)
+    result["noise_dbm"] = noise_dbm
+    return result
+
+
+def parse_per_peer_metrics(
+    raw: dict,
+) -> list[tuple[str | None, dict[str, float | None]]]:
+    """Return per-peer radio metrics — one entry per connected CPE.
+
+    Each tuple is ``(mac_normalized_or_None, metrics_dict)``. The MAC is the
+    stable identity used by ``discovery_service.reconcile_peers`` to bind a
+    peer to its child LR Device. The metrics dict has the same shape as
+    ``_extract_peer_radio_metrics`` (no ``noise_dbm`` — that is AP-wide).
+    """
+    wireless = raw.get("wireless") if isinstance(raw, dict) else None
+    if not isinstance(wireless, dict):
+        return []
+    peers = wireless.get("peers")
+    if not isinstance(peers, list):
+        return []
+
+    out: list[tuple[str | None, dict[str, float | None]]] = []
+    for peer in peers:
+        if not isinstance(peer, dict):
+            continue
+        mac: str | None = None
+        common = peer.get("common")
+        if isinstance(common, dict):
+            mac = _parse_peer_common(common).get("mac")
+        out.append((mac, _extract_peer_radio_metrics(peer)))
+    return out
 
 
 def _parse_peer_common(common: dict) -> dict[str, str | None]:
@@ -305,18 +345,24 @@ async def collect_ltu_api_full(
     username: str = "ubnt",
     password: str = "ubnt",
     port: int = 443,
-) -> tuple[dict[str, float | None] | None, list[dict[str, str | None]]]:
+) -> tuple[
+    dict[str, float | None] | None,
+    list[dict[str, str | None]],
+    list[tuple[str | None, dict[str, float | None]]],
+]:
     """
-    Single HTTP call returning (metrics, all_peers).
-    metrics   — radio quality floats from peers[0] (see parse_ltu_stats), or None if unreachable
-    all_peers — list of CPE identification dicts for every connected LR (empty if unreachable)
+    Single HTTP call returning (metrics, all_peers, per_peer_metrics).
+    metrics          — radio floats aggregated from peers[0] (Rocket-side view), None if unreachable
+    all_peers        — list of CPE identification dicts for every connected LR (empty if unreachable)
+    per_peer_metrics — [(mac, metrics_dict), ...] one entry per peer, for fan-out to child LR devices
     """
     client = LTUApiClient(host, username, password, port)
     raw = await client.fetch_stats()
     if raw is None:
-        return None, []
-    metrics   = parse_ltu_stats(raw)
-    all_peers = parse_all_peers_info(raw)
+        return None, [], []
+    metrics          = parse_ltu_stats(raw)
+    all_peers        = parse_all_peers_info(raw)
+    per_peer_metrics = parse_per_peer_metrics(raw)
     peer_ips  = [p.get("mgmt_ip") or "?" for p in all_peers]
     logger.info(
         "LTU API %s — peers=%s %s",
@@ -324,7 +370,7 @@ async def collect_ltu_api_full(
         peer_ips,
         " | ".join(f"{k}={v}" for k, v in metrics.items() if v is not None) or "no data",
     )
-    return metrics, all_peers
+    return metrics, all_peers, per_peer_metrics
 
 
 async def collect_ltu_api_metrics(
@@ -334,5 +380,5 @@ async def collect_ltu_api_metrics(
     port: int = 443,
 ) -> dict[str, float | None] | None:
     """Backward-compatible wrapper — returns metrics only."""
-    metrics, _peers = await collect_ltu_api_full(host, username, password, port)
+    metrics, _peers, _per_peer = await collect_ltu_api_full(host, username, password, port)
     return metrics

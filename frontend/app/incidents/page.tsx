@@ -3,20 +3,10 @@
 import Link from 'next/link'
 import { useState } from 'react'
 import useSWR from 'swr'
-import { endpoints, fetcher, updateIncidentStatus } from '@/lib/api'
+import { endpoints, fetcher } from '@/lib/api'
 import type { Incident } from '@/lib/types'
 import { alertTypeLabel, formatDate, probableCauseLabel } from '@/lib/types'
-import SeverityBadge from '@/components/SeverityBadge'
-import IncidentStatusBadge from '@/components/IncidentStatusBadge'
 import IncidentDetailModal from '@/components/IncidentDetailModal'
-
-type StatusFilter = 'active' | 'open' | 'acknowledged'
-
-const FILTER_LABELS: Record<StatusFilter, string> = {
-  active:       'Tous actifs',
-  open:         'Ouverts',
-  acknowledged: 'Acquittés',
-}
 
 const SEVERITY_ORDER = ['critical', 'warning', 'info'] as const
 
@@ -27,42 +17,20 @@ const SEVERITY_META: Record<string, { label: string; header: string }> = {
 }
 
 export default function IncidentsPage() {
-  const [filter, setFilter]           = useState<StatusFilter>('open')
-  const [actionError, setActionError] = useState<string | null>(null)
-  const [detail, setDetail]           = useState<Incident | null>(null)
+  const [detail, setDetail] = useState<Incident | null>(null)
 
-  const { data: allIncidents, isLoading, mutate } = useSWR<Incident[]>(
-    `${endpoints.incidents}?limit=200`,
+  const { data: incidents, isLoading } = useSWR<Incident[]>(
+    `${endpoints.incidents}?status=open&limit=1000`,
     fetcher,
     { refreshInterval: 30_000 },
   )
 
-  const active = allIncidents?.filter(i => i.status !== 'resolved') ?? []
-
-  const displayed = filter === 'active'
-    ? active
-    : active.filter(i => i.status === filter)
-
-  const counts = {
-    active:       active.length,
-    open:         active.filter(i => i.status === 'open').length,
-    acknowledged: active.filter(i => i.status === 'acknowledged').length,
-  }
+  const sorted = [...(incidents ?? [])]
+    .sort((a, b) => new Date(b.detected_at).getTime() - new Date(a.detected_at).getTime())
 
   const groups = SEVERITY_ORDER
-    .map(sev => ({ severity: sev, items: displayed.filter(i => i.severity === sev) }))
+    .map(sev => ({ severity: sev, items: sorted.filter(i => i.severity === sev) }))
     .filter(g => g.items.length > 0)
-
-  async function handleAction(id: number, status: 'acknowledged' | 'resolved', e: React.MouseEvent) {
-    e.stopPropagation()
-    setActionError(null)
-    try {
-      await updateIncidentStatus(id, status)
-      await mutate()
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Erreur inconnue')
-    }
-  }
 
   return (
     <div className="space-y-6">
@@ -70,9 +38,9 @@ export default function IncidentsPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Incidents actifs</h1>
+          <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Anomalies détectées</h1>
           <p className="text-blue-400 text-sm mt-1">
-            Incidents ouverts et acquittés — actualisation toutes les 30s — cliquez sur une ligne pour le détail
+            Anomalies actuellement détectées par le système — résolution automatique dès retour à la normale — actualisation toutes les 30s
           </p>
         </div>
         <Link
@@ -84,52 +52,15 @@ export default function IncidentsPage() {
         </Link>
       </div>
 
-      {/* Filter tabs */}
-      <div className="flex gap-2 flex-wrap">
-        {(Object.keys(FILTER_LABELS) as StatusFilter[]).map(f => (
-          <button
-            key={f}
-            onClick={() => setFilter(f)}
-            className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all border ${
-              filter === f
-                ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
-                : 'bg-white border-blue-200 text-blue-500 hover:bg-blue-50 hover:border-blue-300'
-            }`}
-          >
-            {FILTER_LABELS[f]}
-            {counts[f] > 0 && (
-              <span className={`ml-1.5 text-xs px-1.5 py-0.5 rounded-full ${
-                filter === f ? 'bg-blue-500' : 'bg-blue-100 text-blue-500'
-              }`}>
-                {counts[f]}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
-
-      {/* Error */}
-      {actionError && (
-        <div className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl text-sm">
-          Erreur : {actionError}
-        </div>
-      )}
-
       {/* Content */}
       {isLoading ? (
         <div className="bg-white border border-blue-100 rounded-xl px-6 py-12 text-center text-blue-300 shadow-sm">
           Chargement…
         </div>
-      ) : displayed.length === 0 ? (
+      ) : sorted.length === 0 ? (
         <div className="bg-white border border-blue-100 rounded-xl px-6 py-12 text-center shadow-sm">
-          {filter === 'open' || filter === 'active' ? (
-            <>
-              <p className="text-green-600 font-semibold text-sm">✓ Aucun incident ouvert</p>
-              <p className="text-blue-400 text-xs mt-1">Tous les équipements fonctionnent normalement</p>
-            </>
-          ) : (
-            <p className="text-blue-400">Aucun incident pour ce filtre</p>
-          )}
+          <p className="text-green-600 font-semibold text-sm">✓ Aucune anomalie détectée</p>
+          <p className="text-blue-400 text-xs mt-1">Tous les équipements fonctionnent normalement</p>
         </div>
       ) : (
         <div className="space-y-4">
@@ -143,7 +74,7 @@ export default function IncidentsPage() {
                   <SeverityGroupIcon severity={severity} />
                   <span className="text-xs font-bold uppercase tracking-widest">{meta.label}</span>
                   <span className="ml-auto text-xs font-semibold opacity-70">
-                    {items.length} incident{items.length > 1 ? 's' : ''}
+                    {items.length} anomalie{items.length > 1 ? 's' : ''}
                   </span>
                 </div>
 
@@ -152,7 +83,7 @@ export default function IncidentsPage() {
                   <table className="w-full text-sm">
                     <thead className="bg-blue-50 border-b border-blue-100">
                       <tr>
-                        {['#', 'Détecté le', 'Équip.', 'Type', 'Métrique', 'Cause probable', 'Action recommandée', 'Notif.', 'Statut', 'Actions'].map(h => (
+                        {['#', 'Détecté le', 'Équip.', 'Type', 'Métrique', 'Cause probable', 'Action recommandée', 'Notif.'].map(h => (
                           <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
                             {h}
                           </th>
@@ -224,25 +155,6 @@ export default function IncidentsPage() {
                             ) : (
                               <span className="text-[11px] text-blue-300" title="Différé / digest">Diff.</span>
                             )}
-                          </td>
-                          <td className="px-4 py-3"><IncidentStatusBadge status={inc.status} /></td>
-                          <td className="px-4 py-3">
-                            <div className="flex gap-1.5">
-                              {inc.status === 'open' && (
-                                <button
-                                  onClick={(e) => handleAction(inc.id, 'acknowledged', e)}
-                                  className="px-2.5 py-1 text-xs bg-orange-50 text-orange-600 border border-orange-200 rounded-lg hover:bg-orange-100 transition-colors whitespace-nowrap"
-                                >
-                                  Acquitter
-                                </button>
-                              )}
-                              <button
-                                onClick={(e) => handleAction(inc.id, 'resolved', e)}
-                                className="px-2.5 py-1 text-xs bg-green-50 text-green-700 border border-green-200 rounded-lg hover:bg-green-100 transition-colors whitespace-nowrap"
-                              >
-                                Résoudre
-                              </button>
-                            </div>
                           </td>
                         </tr>
                       ))}

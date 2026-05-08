@@ -20,7 +20,6 @@ from app.core.alert_constants import (
     CHANNEL_VALUES,
     KNOWN_ALERT_TYPES,
     SEVERITY_VALUES,
-    AlertChannel,
     NotificationEvent,
     Severity,
 )
@@ -147,11 +146,11 @@ def test_should_notify_critical_uses_all_channels():
 
 
 def test_should_notify_skips_channel_outside_policy():
-    # The fallback policy only includes webhook — slack and email are absent.
+    # The fallback policy only includes email — slack is absent.
     p = get_policy("unknown_alert_type_xyz")
-    assert AlertChannel.SLACK not in p.channels
+    assert "slack" not in p.channels
     assert should_notify(
-        AlertChannel.SLACK, p, Severity.WARNING, NotificationEvent.OPENED,
+        "slack", p, Severity.WARNING, NotificationEvent.OPENED,
     ) is False
 
 
@@ -161,12 +160,12 @@ def test_should_notify_resolved_blocked_when_recovery_disabled():
     from dataclasses import replace
     p_no_recovery = replace(p, recovery_notification=False)
     assert should_notify(
-        AlertChannel.SLACK, p_no_recovery, Severity.CRITICAL, NotificationEvent.RESOLVED,
+        "slack", p_no_recovery, Severity.CRITICAL, NotificationEvent.RESOLVED,
     ) is False
 
 
 def test_should_notify_info_only_fires_if_immediate():
     p = get_policy(AT_SIGNAL_LOW)
     assert should_notify(
-        AlertChannel.SLACK, p, Severity.INFO, NotificationEvent.OPENED,
+        "slack", p, Severity.INFO, NotificationEvent.OPENED,
     ) is False

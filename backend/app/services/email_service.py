@@ -18,7 +18,7 @@ Configuration via .env:
   NOTIFICATION_EMAILS=admin@company.com,ops@company.com
 
 Subject + HTML body are produced by alert_formatter so the wording stays in
-sync with Slack / webhook / log messages.
+sync with the human-readable / log messages.
 """
 
 import logging

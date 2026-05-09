@@ -4,15 +4,17 @@
 # Changes vs docker-compose.yml (dev):
 #   - No bind mounts: code is baked into images at build time
 #   - Frontend uses the optimized `runner` target (next build + node server.js)
-#   - Backend port bound to 127.0.0.1 only (put nginx in front)
-#   - Frontend port bound to 127.0.0.1 only (put nginx in front)
+#   - Backend port bound to 127.0.0.1 only (nginx is the public entry point)
+#   - Frontend port bound to 127.0.0.1 only (nginx is the public entry point)
+#   - nginx reverse proxy in front, terminating TLS on 443 (redirects 80 -> 443)
 #   - Resource limits prevent runaway jobs from OOM-killing the host
 
 services:
   backend:
-    volumes: []
-    ports:
-      - "127.0.0.1:8000:8000"
+    volumes: !reset []
+    # Pas de bind host: nginx parle au backend via le réseau Docker interne.
+    # Pour debug, exposer ponctuellement: docker compose ... run --service-ports backend
+    ports: !reset []
     deploy:
       resources:
         limits:
@@ -23,10 +25,35 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       target: runner
-    volumes: []
-    ports:
-      - "127.0.0.1:3000:3000"
+    volumes: !reset []
+    ports: !reset []
     deploy:
       resources:
         limits:
           memory: 512m
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 443 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"

@@ -7,8 +7,11 @@ alembic upgrade head
 echo "Starting application (APP_ENV=${APP_ENV:-development})..."
 
 if [ "${APP_ENV:-development}" = "production" ]; then
-    # Production: no reload, single worker (APScheduler must run in one process only)
-    exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+    # Production: no reload, single worker (APScheduler must run in one process only).
+    # --proxy-headers + --forwarded-allow-ips='*' makes FastAPI trust X-Forwarded-Proto
+    # from the reverse proxy so HTTPS redirects (trailing slash etc.) keep the https scheme.
+    exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 \
+        --proxy-headers --forwarded-allow-ips='*'
 else
     # Development: hot reload enabled
     exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

@@ -25,7 +25,7 @@ def _to_schema(policy) -> AlertPolicyRead:
     )
 
 
-@router.get("/", response_model=list[AlertPolicyRead])
+@router.get("", response_model=list[AlertPolicyRead])
 async def list_alert_policies() -> list[AlertPolicyRead]:
     """List every alert_type known to the system with its operational policy."""
     return [

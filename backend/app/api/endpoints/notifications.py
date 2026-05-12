@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/", response_model=list[AlertReadEnriched], summary="List notification records")
+@router.get("", response_model=list[AlertReadEnriched], summary="List notification records")
 async def list_alerts(
     status: str | None = Query(
         None,

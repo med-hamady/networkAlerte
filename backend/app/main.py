@@ -55,6 +55,12 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         docs_url="/docs",
         redoc_url="/redoc",
+        # Disable trailing-slash redirects: every collection route is declared
+        # without a trailing slash (e.g. /devices, /devices/{id}). A mismatched
+        # URL now returns 404 directly instead of a silent 307 — fixes the
+        # classic FastAPI gotcha where curl POST/PUT bodies are dropped after
+        # the redirect.
+        redirect_slashes=False,
     )
 
     app.add_middleware(

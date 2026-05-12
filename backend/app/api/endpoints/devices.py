@@ -19,7 +19,7 @@ class MetricPoint(BaseModel):
     collected_at: datetime.datetime
 
 
-@router.get("/", response_model=list[DeviceRead])
+@router.get("", response_model=list[DeviceRead])
 async def list_devices(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
@@ -40,7 +40,7 @@ async def get_device(
     return DeviceRead.model_validate(device)
 
 
-@router.post("/", response_model=DeviceRead, status_code=201)
+@router.post("", response_model=DeviceRead, status_code=201)
 async def create_device(
     data: DeviceCreate,
     db: AsyncSession = Depends(get_db),

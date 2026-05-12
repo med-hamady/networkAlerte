@@ -25,7 +25,7 @@ async def _devices_by_id(
     return {d.id: d for d in result.scalars().all()}
 
 
-@router.get("/", response_model=list[IncidentRead])
+@router.get("", response_model=list[IncidentRead])
 async def list_incidents(
     status: str | None = Query(None, description="Filter by status: open|resolved"),
     severity: str | None = Query(None, description="Filter by severity: info|warning|critical"),

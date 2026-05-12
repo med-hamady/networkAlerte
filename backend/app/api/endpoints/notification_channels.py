@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/", response_model=list[NotificationChannelRead])
+@router.get("", response_model=list[NotificationChannelRead])
 async def list_channels(
     enabled_only: bool = False,
     db: AsyncSession = Depends(get_db),
@@ -44,7 +44,7 @@ async def get_channel(
     return NotificationChannelRead.model_validate(channel)
 
 
-@router.post("/", response_model=NotificationChannelRead, status_code=201)
+@router.post("", response_model=NotificationChannelRead, status_code=201)
 async def create_channel(
     data: NotificationChannelCreate,
     db: AsyncSession = Depends(get_db),

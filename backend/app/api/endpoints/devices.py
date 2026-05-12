@@ -5,7 +5,6 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.device_metric import DeviceMetric
 from app.schemas.device import DeviceCreate, DeviceRead, DeviceUpdate
@@ -115,21 +114,15 @@ class DiagResult(BaseModel):
     message: str
 
 
-def _ssh_credentials(device, settings) -> tuple[str, str, int]:
-    """Return (username, password, port) for SSH.
+def _ssh_credentials(device) -> tuple[str, str, int]:
+    """Return (username, password, port) for SSH from the Device row.
 
-    Per-device ssh_password takes priority over global .env credentials.
-    This allows devices with non-default passwords to authenticate correctly.
+    Credentials are stored per-device in the database — callers must surface a
+    clear error when they are missing rather than silently fall back.
     """
-    if device.device_type == "ltu_lr":
-        return (
-            device.ssh_username or settings.ltu_lr_ssh_username,
-            device.ssh_password or settings.ltu_lr_ssh_password,
-            device.ssh_port or settings.ltu_lr_ssh_port,
-        )
     return (
-        device.ssh_username or settings.ltu_api_username,
-        device.ssh_password or settings.ltu_api_password,
+        device.ssh_username,
+        device.ssh_password,
         device.ssh_port or 22,
     )
 
@@ -144,8 +137,12 @@ async def check_ssh(
     record the device's host key fingerprint (TOFU) so subsequent connects
     can detect a swapped device or MITM."""
     device = await device_service.get_device(db, device_id)
-    settings = get_settings()
-    username, password, port = _ssh_credentials(device, settings)
+    username, password, port = _ssh_credentials(device)
+    if not username or not password:
+        return DiagResult(
+            ok=False,
+            message="SSH credentials missing on this device — set ssh_username/ssh_password via PUT /api/v1/devices/{id}.",
+        )
     ok, msg, observed_fp = await ssh_service.check_ssh_access(
         host=device.ip_address,
         port=port,
@@ -166,8 +163,12 @@ async def check_ping(
 ) -> DiagResult:
     """SSH into the device and ping 8.8.8.8 to test internet transit."""
     device = await device_service.get_device(db, device_id)
-    settings = get_settings()
-    username, password, port = _ssh_credentials(device, settings)
+    username, password, port = _ssh_credentials(device)
+    if not username or not password:
+        return DiagResult(
+            ok=False,
+            message="SSH credentials missing on this device — set ssh_username/ssh_password via PUT /api/v1/devices/{id}.",
+        )
     ok, msg, observed_fp = await ssh_service.check_ping_via_ssh(
         host=device.ip_address,
         port=port,

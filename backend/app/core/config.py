@@ -97,20 +97,10 @@ class Settings(BaseSettings):
     # cert to each device or pinned fingerprints.
     tls_verify_devices: bool = False
 
-    # UISP Power REST API (HTTPS — firmware forces TLS, plain HTTP returns 307)
-    uisp_power_username: str = "ubnt"
-    uisp_power_password: str = "ubnt"
-    uisp_power_port: int = 443
-
-    # LTU HTTP API (CCQ, signal, rates)
-    ltu_api_username: str = "ubnt"
-    ltu_api_password: str = "ubnt"
-    ltu_api_port: int = 443
-
-    # SSH — LTU LR (credentials SSH, distincts du password API)
-    ltu_lr_ssh_username: str = "ubnt"
-    ltu_lr_ssh_password: str = ""
-    ltu_lr_ssh_port: int = 22
+    # Device credentials (UISP Power API, LTU HTTP API, LTU LR SSH) are stored
+    # per-device in the `devices` table — not as global env vars. Polling jobs
+    # skip a device whose credentials are missing and log a warning instructing
+    # the operator to set them via PUT /api/v1/devices/{id}.
 
     # Transit probe — disable entirely if LTU LR is not part of the topology
     transit_probe_enabled: bool = True
@@ -198,15 +188,6 @@ class Settings(BaseSettings):
             errors.append("API_KEY must be set (and non-empty) when APP_ENV=production")
         if self.postgres_password in ("", "supervisor_dev_password"):
             errors.append("POSTGRES_PASSWORD must be set to a strong value in production")
-        if self.uisp_power_password == "ubnt":
-            errors.append("UISP_POWER_PASSWORD is using the Ubiquiti default 'ubnt'")
-        if self.ltu_api_password == "ubnt":
-            errors.append("LTU_API_PASSWORD is using the Ubiquiti default 'ubnt'")
-        if self.transit_probe_enabled and not self.ltu_lr_ssh_password:
-            errors.append(
-                "LTU_LR_SSH_PASSWORD must be set when TRANSIT_PROBE_ENABLED=true. "
-                "Set TRANSIT_PROBE_ENABLED=false to skip the transit probe."
-            )
 
         if errors:
             raise ValueError(

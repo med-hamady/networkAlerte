@@ -757,16 +757,20 @@ async def power_poll_job() -> None:
     logger.info("Power poll — checking %d UISP Power device(s)", len(devices))
 
     for device in devices:
-        # Per-device credentials override the global env defaults when set.
-        username = device.uisp_power_username or settings.uisp_power_username
-        password = device.uisp_power_password or settings.uisp_power_password
-        port = device.uisp_power_port or settings.uisp_power_port
+        if not device.uisp_power_username or not device.uisp_power_password:
+            logger.warning(
+                "UISP Power skip — %s (%s) : credentials manquants en base "
+                "(uisp_power_username/uisp_power_password). "
+                "Configure-les via PUT /api/v1/devices/%d.",
+                device.name, device.ip_address, device.id,
+            )
+            continue
 
         readings = await uisp_power_service.poll_uisp_power(
             host=device.ip_address,
-            username=username,
-            password=password,
-            port=port,
+            username=device.uisp_power_username,
+            password=device.uisp_power_password,
+            port=device.uisp_power_port or 443,
         )
 
         async with async_session_factory() as session:
@@ -926,7 +930,7 @@ async def ltu_api_poll_job() -> None:
             host=device.ip_address,
             username=device.ssh_username,
             password=device.ssh_password,
-            port=settings.ltu_api_port,
+            port=443,  # LTU HTTP API requires HTTPS — firmware forces TLS
         )
 
         if metrics is None:
@@ -1038,12 +1042,20 @@ async def lr_transit_probe_job() -> None:
             logger.debug("lr_transit_probe: aucun LTU LR enregistré — ignoré")
             return
 
+        if not lr.ssh_username or not lr.ssh_password:
+            logger.warning(
+                "lr_transit_probe skip — LTU LR '%s' (id=%d) : credentials SSH "
+                "manquants en base. Configure-les via PUT /api/v1/devices/%d.",
+                lr.name, lr.id, lr.id,
+            )
+            return
+
         # ── 2. Vérifier l'accès SSH sur le réseau local ──────────────────────
         ssh_ok, ssh_msg, observed_fp = await ssh_service.check_ssh_access(
             lr.ip_address,
-            settings.ltu_lr_ssh_port,
-            settings.ltu_lr_ssh_username,
-            settings.ltu_lr_ssh_password,
+            lr.ssh_port,
+            lr.ssh_username,
+            lr.ssh_password,
             expected_fingerprint=lr.ssh_host_fingerprint,
         )
 
@@ -1058,7 +1070,7 @@ async def lr_transit_probe_job() -> None:
             logger.info(
                 "lr_transit_probe: SSH %s:%d impossible (%s) — "
                 "équipement probablement hors-ligne, alerte transit ignorée",
-                lr.ip_address, settings.ltu_lr_ssh_port, ssh_msg,
+                lr.ip_address, lr.ssh_port, ssh_msg,
             )
             await session.commit()
             return
@@ -1066,9 +1078,9 @@ async def lr_transit_probe_job() -> None:
         # ── 3. Ping internet depuis le LTU LR ────────────────────────────────
         ping_ok, ping_detail, _ = await ssh_service.ping_targets_via_ssh(
             lr.ip_address,
-            settings.ltu_lr_ssh_port,
-            settings.ltu_lr_ssh_username,
-            settings.ltu_lr_ssh_password,
+            lr.ssh_port,
+            lr.ssh_username,
+            lr.ssh_password,
             probe_ips,
             expected_fingerprint=lr.ssh_host_fingerprint,
         )

@@ -107,6 +107,12 @@ backend/app/
 
 ## Variables d'environnement importantes
 
+> Les **credentials des équipements** (LTU Rocket, LTU LR SSH, UISP Power) ne
+> sont **pas** dans le `.env` : ils sont stockés par device dans la table
+> `devices` (colonnes `ssh_username`, `ssh_password`, `ssh_port`,
+> `uisp_power_username`, `uisp_power_password`, `uisp_power_port`).
+> Configuration via `PUT /api/v1/devices/{id}` ou le formulaire UI.
+
 | Variable | Rôle |
 |---|---|
 | `APP_ENV` | `development` (reload) ou `production` (workers, pas de reload) |
@@ -125,15 +131,6 @@ backend/app/
 | `SWITCH_MAX_PORTS` | Nombre de ports à scanner sur le switch |
 | `SWITCH_ROCKET_PORT_INDEX` | Index du port switch connecté au Rocket (0 = désactivé) |
 | `SWITCH_PORT_MIN_SPEED_MBPS` | Vitesse minimale attendue sur ce port (défaut 1000 Mbps) |
-| `LTU_API_USERNAME` | Identifiant API HTTP LTU Rocket |
-| `LTU_API_PASSWORD` | Mot de passe API HTTP LTU Rocket |
-| `LTU_API_PORT` | Port API LTU Rocket (défaut 443) |
-| `LTU_LR_SSH_USERNAME` | Identifiant SSH LTU LR |
-| `LTU_LR_SSH_PASSWORD` | Mot de passe SSH LTU LR |
-| `LTU_LR_SSH_PORT` | Port SSH LTU LR (défaut 22) |
-| `UISP_POWER_USERNAME` | Identifiant API UISP Power |
-| `UISP_POWER_PASSWORD` | Mot de passe API UISP Power |
-| `UISP_POWER_PORT` | Port API UISP Power |
 | `TRANSIT_PROBE_IPS` | IPs à pinger depuis le LTU LR (ex: `1.1.1.1,8.8.8.8`) |
 | `TRANSIT_PROBE_INTERVAL` | Intervalle sonde transit (secondes) |
 | `TRANSIT_PROBE_THRESHOLD` | Cycles consécutifs KO avant incident transit |

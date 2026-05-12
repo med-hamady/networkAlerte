@@ -3,6 +3,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.exceptions import DeviceNotFoundError
 from app.models.device import Device
 from app.schemas.device import DeviceCreate, DeviceUpdate
@@ -26,8 +27,17 @@ async def get_device(db: AsyncSession, device_id: int) -> Device:
 
 
 async def create_device(db: AsyncSession, data: DeviceCreate) -> Device:
-    """Create a new device."""
-    device = Device(**data.model_dump())
+    """Create a new device.
+
+    If `snmp_community` is not provided, default it to the platform-wide
+    `SNMP_DEFAULT_COMMUNITY` from .env. This makes new devices SNMP-pollable
+    out of the box (the poll job filters out devices with NULL community) while
+    keeping the value editable per-device via PUT.
+    """
+    payload = data.model_dump()
+    if payload.get("snmp_community") is None:
+        payload["snmp_community"] = get_settings().snmp_default_community
+    device = Device(**payload)
     db.add(device)
     await db.flush()
     await db.refresh(device)

@@ -1,6 +1,6 @@
 from app.models.alert import Alert
 from app.models.alert_state import AlertState
-from app.models.device import Device
+from app.models.device import Device, Lr, Rocket, UispPower, UispSwitch
 from app.models.device_metric import DeviceMetric
 from app.models.incident import Incident
 from app.models.notification_channel import NotificationChannel
@@ -13,7 +13,11 @@ __all__ = [
     "Device",
     "DeviceMetric",
     "Incident",
+    "Lr",
     "NotificationChannel",
     "PowerStatusLog",
+    "Rocket",
     "SystemSetting",
+    "UispPower",
+    "UispSwitch",
 ]

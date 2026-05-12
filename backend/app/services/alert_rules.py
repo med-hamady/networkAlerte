@@ -774,9 +774,21 @@ class ThroughputAnomalyRule(AlertRule):
 # ---------------------------------------------------------------------------
 
 _ROCKET_RULES: list[AlertRule] = [
+    # Rocket-level alerts: derived from SNMP IF-MIB (radio_if_up, eth_if_up,
+    # byte/error counters on the AP's radio interface) + peer_count from the
+    # HTTP API (number of connected CPEs).
     RadioInterfaceDownRule(),
     Eth0DownRule(),
     CPEDisconnectedRule(),
+    HighRxTxErrorsRule(),
+    ThroughputAnomalyRule(),
+]
+
+_LR_RULES: list[AlertRule] = [
+    # Per-LR alerts: every radio-quality metric reported by the parent Rocket
+    # for that specific peer (signal, CCQ, CINR DL+UL, capacity, link grade).
+    # Evaluated against each LR individually so issues on one link don't hide
+    # behind a healthy peer[0].
     SignalLowRule(),
     CINRLowRule(),
     CCQLowRule(),
@@ -785,15 +797,6 @@ _ROCKET_RULES: list[AlertRule] = [
     RadioLinkDegradedRule(),
     CapacityLowRule(),
     CapacityLowULRule(),
-    HighRxTxErrorsRule(),
-    ThroughputAnomalyRule(),
-]
-
-_LR_RULES: list[AlertRule] = [
-    RadioInterfaceDownRule(),
-    SignalLowRule(),
-    CINRLowRule(),
-    ThroughputAnomalyRule(),
 ]
 
 _SWITCH_RULES: list[AlertRule] = [
@@ -815,7 +818,7 @@ _AIRMAX_ROCKET_RULES: list[AlertRule] = [
 
 RULES_BY_DEVICE_TYPE: dict[str, list[AlertRule]] = {
     "ltu_rocket":    _ROCKET_RULES,
-    "ltu_lr":        _LR_RULES,
+    "lr":            _LR_RULES,
     "uisp_switch":   _SWITCH_RULES,
     "uisp_power":    [],
     "airmax_rocket": _AIRMAX_ROCKET_RULES,

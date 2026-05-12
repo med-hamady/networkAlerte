@@ -209,39 +209,25 @@ def _extract_peer_radio_metrics(peer: dict) -> dict[str, float | None]:
     return result
 
 
-def parse_ltu_stats(raw: dict) -> dict[str, float | None]:
-    """
-    Extract radio metrics from /api/v1.0/statistics response (peers[0]).
+def parse_rocket_ap_metrics(raw: dict) -> dict[str, float | None]:
+    """Extract AP-wide metrics that describe the Rocket itself.
 
-    Structure (UDAPI v1.0, firmware 2.4.x):
-      wireless.radios[0].noiseFloor
-      wireless.peers[0].common            ← peer system info (distance, uptime, cpu, ram)
-      wireless.peers[0].local[0].linkQuality
-        .signal                           ← uplink signal at AP (dBm)
-        .cinr.dl / .cinr.ul              ← CINR downlink / uplink (dB)
-        .linkScore.dl / .linkScore.ul    ← CCQ equivalent DL/UL (0–100)
-        .capacity.dl / .capacity.ul      ← actual capacity DL/UL (Kbps)
-        .capacity.dlIdeal / .ulIdeal     ← ideal (uncapped) capacity DL/UL (Kbps)
-      wireless.peers[0].remote[0].linkQuality
-        .signal                           ← downlink signal at CPE (dBm)
-        .noiseFloor                       ← noise floor at CPE (dBm)
-        .outputPower                      ← EIRP at AP (dBm)
+    Per-link metrics (signal, CCQ, CINR, rates, distance…) belong to each
+    connected LR, NOT to the Rocket — they are extracted separately by
+    `parse_per_peer_metrics` and stored against the LR's device_id.
+
+    Currently AP-wide metrics from the LTU HTTP API are:
+      noise_dbm  : noise floor at the AP radio (wireless.radios[0].noiseFloor)
+
+    Additional Rocket-level metrics (radio_if_up, eth_if_up, byte counters)
+    come from a separate SNMP IF-MIB poll, not this function.
     """
     wireless = raw.get("wireless") if isinstance(raw, dict) else None
     radios = wireless.get("radios") if isinstance(wireless, dict) else None
     noise_dbm: float | None = None
     if isinstance(radios, list) and radios:
         noise_dbm = _float(_nested(radios[0], "noiseFloor"))
-
-    peer: dict = {}
-    if isinstance(wireless, dict):
-        peers = wireless.get("peers")
-        if isinstance(peers, list) and peers:
-            peer = peers[0] if isinstance(peers[0], dict) else {}
-
-    result = _extract_peer_radio_metrics(peer)
-    result["noise_dbm"] = noise_dbm
-    return result
+    return {"noise_dbm": noise_dbm}
 
 
 def parse_per_peer_metrics(
@@ -350,35 +336,27 @@ async def collect_ltu_api_full(
     list[dict[str, str | None]],
     list[tuple[str | None, dict[str, float | None]]],
 ]:
-    """
-    Single HTTP call returning (metrics, all_peers, per_peer_metrics).
-    metrics          — radio floats aggregated from peers[0] (Rocket-side view), None if unreachable
-    all_peers        — list of CPE identification dicts for every connected LR (empty if unreachable)
-    per_peer_metrics — [(mac, metrics_dict), ...] one entry per peer, for fan-out to child LR devices
+    """Single HTTP call returning ``(rocket_ap_metrics, all_peers, per_peer_metrics)``.
+
+    rocket_ap_metrics — AP-wide floats for the Rocket itself (noise_dbm). None
+                        if the Rocket is unreachable.
+    all_peers         — identification dicts for every connected LR.
+    per_peer_metrics  — ``[(mac, metrics_dict), ...]`` one entry per LR peer
+                        (signal, CCQ, CINR, rates, distance…). Stored against
+                        each LR's device_id, NOT against the Rocket.
     """
     client = LTUApiClient(host, username, password, port)
     raw = await client.fetch_stats()
     if raw is None:
         return None, [], []
-    metrics          = parse_ltu_stats(raw)
-    all_peers        = parse_all_peers_info(raw)
-    per_peer_metrics = parse_per_peer_metrics(raw)
-    peer_ips  = [p.get("mgmt_ip") or "?" for p in all_peers]
+    rocket_ap_metrics = parse_rocket_ap_metrics(raw)
+    all_peers         = parse_all_peers_info(raw)
+    per_peer_metrics  = parse_per_peer_metrics(raw)
+    peer_ips = [p.get("mgmt_ip") or "?" for p in all_peers]
     logger.info(
-        "LTU API %s — peers=%s %s",
+        "LTU API %s — peers=%s rocket_ap=%s",
         host,
         peer_ips,
-        " | ".join(f"{k}={v}" for k, v in metrics.items() if v is not None) or "no data",
+        " ".join(f"{k}={v}" for k, v in rocket_ap_metrics.items() if v is not None) or "no data",
     )
-    return metrics, all_peers, per_peer_metrics
-
-
-async def collect_ltu_api_metrics(
-    host: str,
-    username: str = "ubnt",
-    password: str = "ubnt",
-    port: int = 443,
-) -> dict[str, float | None] | None:
-    """Backward-compatible wrapper — returns metrics only."""
-    metrics, _peers, _per_peer = await collect_ltu_api_full(host, username, password, port)
-    return metrics
+    return rocket_ap_metrics, all_peers, per_peer_metrics

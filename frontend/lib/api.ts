@@ -61,7 +61,7 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
 
 export async function updateDevice(
   id: number,
-  patch: Partial<Device>,
+  patch: Record<string, unknown>,
 ): Promise<Device> {
   const res = await fetch(endpoints.device(id), {
     method: 'PUT',
@@ -114,18 +114,15 @@ export async function generateReport(
 }
 
 export async function createDevice(data: DeviceFormData): Promise<Device> {
+  // Empty strings on optional text fields → null so Pydantic accepts them.
+  const payload: Record<string, unknown> = { ...data }
+  for (const key of Object.keys(payload)) {
+    if (payload[key] === '') payload[key] = null
+  }
   const res = await fetch(endpoints.devices, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      ...data,
-      model:           data.model           || null,
-      location:        data.location        || null,
-      snmp_community:  data.snmp_community  || null,
-      ssh_username:    data.ssh_username    || null,
-      ssh_password:    data.ssh_password    || null,
-      notes:           data.notes           || null,
-    }),
+    body: JSON.stringify(payload),
   })
   return jsonOrThrow<Device>(res)
 }

@@ -31,7 +31,8 @@ def _device(**overrides) -> SimpleNamespace:
         id=1,
         name="LTU Rocket",
         ip_address="10.135.2.218",
-        device_type="ltu_rocket",
+        device_type="rocket",
+        radio_tech="ltu",
     )
     base.update(overrides)
     return SimpleNamespace(**base)

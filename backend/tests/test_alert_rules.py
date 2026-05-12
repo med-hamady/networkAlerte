@@ -358,7 +358,7 @@ class TestRuleRegistry:
         assert "HighRxTxErrorsRule" in rule_types
 
     def test_lr_has_subset(self):
-        rules = get_rules_for_device("ltu_lr")
+        rules = get_rules_for_device("lr")
         rule_types = {type(r).__name__ for r in rules}
         assert "RadioInterfaceDownRule" in rule_types
         assert "SignalLowRule" in rule_types
@@ -378,7 +378,7 @@ class TestRuleRegistry:
         assert "ThroughputAnomalyRule" in rule_types
 
     def test_lr_has_throughput_anomaly(self):
-        rules = get_rules_for_device("ltu_lr")
+        rules = get_rules_for_device("lr")
         rule_types = {type(r).__name__ for r in rules}
         assert "ThroughputAnomalyRule" in rule_types
 

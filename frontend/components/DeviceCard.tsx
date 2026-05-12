@@ -2,7 +2,7 @@
 
 import type { ReactNode } from 'react'
 import type { Device } from '@/lib/types'
-import { deviceTypeLabel, timeAgo } from '@/lib/types'
+import { deviceLabel, timeAgo } from '@/lib/types'
 import DeviceImage from './DeviceImage'
 
 interface Props {
@@ -39,7 +39,7 @@ export default function DeviceCard({ device, onClick, linkedLRCount = 0 }: Props
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <p className="font-semibold text-slate-800 text-sm leading-tight truncate">{device.name}</p>
-            <p className="text-blue-400 text-xs mt-0.5">{deviceTypeLabel(device.device_type)}</p>
+            <p className="text-blue-400 text-xs mt-0.5">{deviceLabel(device)}</p>
           </div>
           <StatusPill status={device.status} />
         </div>
@@ -56,11 +56,10 @@ export default function DeviceCard({ device, onClick, linkedLRCount = 0 }: Props
             }
           />
           {device.location && <Row label="Site"   value={device.location} />}
-          {device.model    && <Row label="Modèle" value={device.model} />}
         </div>
 
         {/* LR badge (only for Rockets) */}
-        {device.device_type === 'ltu_rocket' && (
+        {device.device_type === 'rocket' && (
           <div className="flex items-center gap-1.5">
             <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold border ${
               linkedLRCount > 0

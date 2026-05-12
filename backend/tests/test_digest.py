@@ -30,7 +30,7 @@ UTC = datetime.timezone.utc
 
 def _device(name="LTU Rocket", ip="10.135.2.218", overrides=None):
     return SimpleNamespace(
-        id=1, name=name, ip_address=ip, device_type="ltu_rocket",
+        id=1, name=name, ip_address=ip, device_type="rocket",
         policy_overrides=overrides,
     )
 

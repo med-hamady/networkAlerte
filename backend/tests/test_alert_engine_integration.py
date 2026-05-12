@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 from sqlalchemy import select
 
 from app.models.alert_state import AlertState
-from app.models.device import Device
+from app.models.device import Device, Rocket
 from app.models.incident import Incident
 from app.services.alert_engine import evaluate_device_metrics
 
@@ -32,10 +32,10 @@ def patch_notif():
 
 async def _make_rocket(db) -> Device:
     """Insert a minimal LTU Rocket device and return it."""
-    device = Device(
+    device = Rocket(
         name="Test Rocket",
         ip_address="10.99.0.1",
-        device_type="ltu_rocket",
+        radio_tech="ltu",
         status="up",
     )
     db.add(device)

@@ -1,41 +1,117 @@
-export interface Device {
+// Shared base — every device row carries these columns regardless of subtype.
+interface DeviceBase {
   id: number
   name: string
   ip_address: string
-  device_type: string
-  model: string | null
   status: string        // up | down | unknown
   location: string | null
   snmp_community: string | null
-  ssh_username: string | null
-  ssh_port: number
-  has_ssh_password: boolean
-  uisp_power_username: string | null
-  uisp_power_port: number | null
-  has_uisp_power_password: boolean
   notes: string | null
   last_seen: string | null
   created_at: string
   updated_at: string
-  parent_id: number | null
+  mac_address: string | null
+  hostname: string | null
+  firmware_version: string | null
+  auto_discovered: boolean
+  first_discovered_at: string | null
+  last_discovered_at: string | null
   policy_overrides: Record<string, PolicyOverride> | null
 }
 
-export interface DeviceFormData {
+export interface Rocket extends DeviceBase {
+  device_type: 'rocket'
+  radio_tech: 'ltu' | 'airmax'
+  ssh_username: string | null
+  ssh_port: number
+  ssh_host_fingerprint: string | null
+  has_ssh_password: boolean
+}
+
+export type LrModelVariant =
+  | 'ltu_lr'
+  | 'ltu_instant'
+  | 'ltu_lite'
+  | 'litebeam_5ac'
+  | 'litebeam_m5'
+
+export interface Lr extends DeviceBase {
+  device_type: 'lr'
+  model_variant: LrModelVariant
+  rocket_id: number | null
+  ssh_username: string | null
+  ssh_port: number
+  ssh_host_fingerprint: string | null
+  has_ssh_password: boolean
+  distance_m: number | null
+}
+
+export interface UispPower extends DeviceBase {
+  device_type: 'uisp_power'
+  api_username: string | null
+  api_port: number
+  has_api_password: boolean
+}
+
+export interface UispSwitch extends DeviceBase {
+  device_type: 'uisp_switch'
+  max_ports: number
+  rocket_port_index: number | null
+  port_min_speed_mbps: number
+}
+
+// Discriminated union — narrow by `device_type`.
+export type Device = Rocket | Lr | UispPower | UispSwitch
+
+// ──────────────────────────────────────────────────────────────────────────
+// Form payloads — one DeviceFormData per type. The form switches its
+// rendered fields by `device_type`, then submits the matching subset.
+// ──────────────────────────────────────────────────────────────────────────
+
+interface DeviceFormBase {
   name: string
   ip_address: string
-  device_type: string
-  model: string
   location: string
   snmp_community: string
+  notes: string
+}
+
+export type RocketFormData = DeviceFormBase & {
+  device_type: 'rocket'
+  radio_tech: 'ltu' | 'airmax'
   ssh_username: string
   ssh_password: string   // write-only — empty = keep existing
   ssh_port: number
-  uisp_power_username: string
-  uisp_power_password: string   // write-only — empty = keep existing
-  uisp_power_port: number
-  notes: string
 }
+
+export type LrFormData = DeviceFormBase & {
+  device_type: 'lr'
+  model_variant: LrModelVariant
+  rocket_id: number | null
+  ssh_username: string
+  ssh_password: string
+  ssh_port: number
+}
+
+export type UispPowerFormData = DeviceFormBase & {
+  device_type: 'uisp_power'
+  api_username: string
+  api_password: string   // write-only — empty = keep existing
+  api_port: number
+}
+
+export type UispSwitchFormData = DeviceFormBase & {
+  device_type: 'uisp_switch'
+  max_ports: number
+  rocket_port_index: number | null
+  port_min_speed_mbps: number
+}
+
+export type DeviceFormData =
+  | RocketFormData
+  | LrFormData
+  | UispPowerFormData
+  | UispSwitchFormData
 
 export interface Threshold {
   key: string
@@ -71,18 +147,15 @@ export interface Incident {
   resolved_at: string | null
   created_at: string
   updated_at: string
-  // Alert engine fields (may be null for incidents created before V1)
   alert_type: string | null
   metric_name: string | null
   metric_value: number | null
   threshold_value: number | null
   probable_cause: string | null
   last_triggered_at: string | null
-  // Joined device fields
   device_name: string | null
   device_type: string | null
   device_ip: string | null
-  // Pre-formatted operator-facing message and policy fields
   message: string | null
   recommended_action: string
   notify_immediately: boolean
@@ -118,36 +191,29 @@ export interface NotificationChannelInput {
 
 // Human-readable labels for every alert_type the engine can raise
 export const ALERT_TYPE_LABELS: Record<string, string> = {
-  // Disponibilité
   rocket_down:            'Rocket hors ligne',
   lr_down:                'LR hors ligne',
   switch_down:            'Switch hors ligne',
   device_unreachable:     'Équipement injoignable',
   airmax_down:            'Rocket airMAX hors ligne',
-  // Interface & lien local
   radio_interface_down:   'Interface radio DOWN',
   eth0_down:              'Lien Ethernet DOWN',
   cpe_disconnected:       'CPE déconnecté',
-  // Qualité radio
   signal_low:             'Signal faible',
   cinr_low:               'CINR faible',
   ccq_low:                'CCQ faible',
   radio_link_degraded:    'Lien radio dégradé',
-  // Performance
   capacity_low:           'Capacité faible',
   high_rx_tx_errors:      'Erreurs RX/TX',
   throughput_anomaly:     'Anomalie débit',
-  // Alimentation
   uisp_power_unreachable: 'UISP Power inaccessible',
   battery_low_warning:    'Batterie faible',
   battery_low_critical:   'Batterie critique',
   voltage_anomaly:        'Anomalie tension',
-  // Infrastructure & transit
   transit_unavailable:    'Transit indisponible',
   switch_port_down:        'Port switch DOWN',
   switch_port_speed_low:   'Port switch vitesse dégradée',
   lr_no_transit:           'LR sans transit internet',
-  // Uplink
   ccq_ul_low:              'CCQ UL faible',
   cinr_ul_low:             'CINR UL faible',
   capacity_ul_low:         'Capacité UL faible',
@@ -178,15 +244,12 @@ export interface AlertRecord {
   status: string          // sent | failed | pending
   sent_at: string | null
   created_at: string
-  // joined from incident
   incident_title: string | null
   incident_severity: string | null
   incident_alert_type: string | null
-  // joined from device
   device_id: number | null
   device_name: string | null
   device_ip: string | null
-  // True for warning incidents waiting for the next digest batch
   is_pending_digest: boolean
 }
 
@@ -226,17 +289,42 @@ export interface SystemInfo {
   gpus: GpuInfo[]
 }
 
-// Human-readable labels for device_type values
+// Human-readable labels for device_type values + radio_tech / model_variant
+// refinements. Use `deviceLabel(device)` to get a single human-friendly string
+// that distinguishes LTU Rockets from airMAX Rockets, LTU LRs from Litebeams.
 export const DEVICE_TYPE_LABELS: Record<string, string> = {
-  ltu_rocket:    'LTU Rocket',
-  ltu_lr:        'LTU LR',
-  airmax_rocket: 'Rocket airMAX',
-  uisp_switch:   'UISP Switch',
-  uisp_power:    'UISP Power',
+  rocket:      'Rocket',
+  lr:          'LR',
+  uisp_switch: 'UISP Switch',
+  uisp_power:  'UISP Power',
+}
+
+export const LR_MODEL_VARIANT_LABELS: Record<LrModelVariant, string> = {
+  ltu_lr:       'LTU LR',
+  ltu_instant:  'LTU Instant',
+  ltu_lite:     'LTU Lite',
+  litebeam_5ac: 'Litebeam 5AC',
+  litebeam_m5:  'Litebeam M5',
 }
 
 export function deviceTypeLabel(type: string): string {
   return DEVICE_TYPE_LABELS[type] ?? type
+}
+
+/** Parent rocket id, or null for non-LR devices. Replaces the old `parent_id` access. */
+export function parentRocketId(device: Device): number | null {
+  return device.device_type === 'lr' ? device.rocket_id : null
+}
+
+/** Specific human label for a device — narrows Rockets by radio_tech and LRs by model_variant. */
+export function deviceLabel(device: Device): string {
+  if (device.device_type === 'rocket') {
+    return device.radio_tech === 'airmax' ? 'Rocket airMAX' : 'LTU Rocket'
+  }
+  if (device.device_type === 'lr') {
+    return LR_MODEL_VARIANT_LABELS[device.model_variant] ?? 'LR'
+  }
+  return deviceTypeLabel(device.device_type)
 }
 
 // Severity label + color helpers (centralised so badges stay consistent)
@@ -337,8 +425,8 @@ export interface WeakPoint {
 }
 
 export interface Recommendation {
-  priority: string                  // critique | élevé | moyen
-  category: string                  // disponibilite | radio | alimentation | transit | switch | performance
+  priority: string
+  category: string
   title: string
   description: string
   affected_devices: string[]

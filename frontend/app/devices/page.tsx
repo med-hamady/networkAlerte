@@ -4,7 +4,7 @@ import { useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type { Device } from '@/lib/types'
-import { deviceTypeLabel, formatDate, timeAgo } from '@/lib/types'
+import { deviceLabel, formatDate, timeAgo } from '@/lib/types'
 import StatusBadge from '@/components/StatusBadge'
 import DeviceDetailModal from '@/components/DeviceDetailModal'
 import DeviceFormModal from '@/components/DeviceFormModal'
@@ -90,7 +90,7 @@ export default function DevicesPage() {
             <table className="w-full text-sm">
               <thead className="bg-blue-50 border-b border-blue-100">
                 <tr>
-                  {['', 'Nom', 'Adresse IP', 'Type', 'Modèle', 'Localisation', 'Statut', 'Dernière vue', 'Ajouté le', ''].map((h, i) => (
+                  {['', 'Nom', 'Adresse IP', 'Type', 'Localisation', 'Statut', 'Dernière vue', 'Ajouté le', ''].map((h, i) => (
                     <th key={i} className="px-4 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
                       {h}
                     </th>
@@ -111,8 +111,7 @@ export default function DevicesPage() {
                     </td>
                     <td className="px-4 py-3 font-semibold text-slate-800">{d.name}</td>
                     <td className="px-4 py-3 font-mono text-blue-600 text-xs">{d.ip_address}</td>
-                    <td className="px-4 py-3 text-slate-600">{deviceTypeLabel(d.device_type)}</td>
-                    <td className="px-4 py-3 text-blue-400">{d.model ?? '—'}</td>
+                    <td className="px-4 py-3 text-slate-600">{deviceLabel(d)}</td>
                     <td className="px-4 py-3 text-blue-400">{d.location ?? '—'}</td>
                     <td className="px-4 py-3"><StatusBadge status={d.status} /></td>
                     <td className="px-4 py-3 text-blue-400 whitespace-nowrap text-xs">{timeAgo(d.last_seen)}</td>

@@ -1,16 +1,16 @@
 """
-Discovery service — reconciles peers reported by a Rocket against the Device table.
+Discovery service — reconciles peers reported by a Rocket against the LR table.
 
 Single entry point: `reconcile_peers(session, parent, peers)`.
 
 The operator only registers Rocket APs (LTU or airMAX). Each polling cycle, the
 Rocket reports the list of CPE/LR peers connected to its radio. This service
-turns that ephemeral list into persistent Device rows and keeps them in sync
-when the network topology changes:
+turns that ephemeral list into persistent Lr rows and keeps them in sync when
+the network topology changes:
 
-  - new LR detected               → create Device(auto_discovered=True), open AT_LR_DISCOVERED
+  - new LR detected               → create Lr(auto_discovered=True), open AT_LR_DISCOVERED
   - same MAC, different IP        → update IP, open AT_LR_IP_CHANGED
-  - same MAC, different parent    → update parent_id, open AT_LR_REASSIGNED
+  - same MAC, different parent    → update rocket_id, open AT_LR_REASSIGNED
   - hostname / firmware drifted   → silent update (logged)
 
 The MAC address is the stable identifier. IP-based matching is only used as a
@@ -38,7 +38,7 @@ from app.core.alert_constants import (
     Severity,
 )
 from app.models.alert import Alert
-from app.models.device import Device
+from app.models.device import Device, Lr, Rocket
 from app.schemas.device import normalize_mac
 from app.services import incident_service, notification_service
 
@@ -66,10 +66,10 @@ class PeerInfo(TypedDict, total=False):
 class ReconcileResult:
     """Outcome of a reconciliation pass — used by callers for logging/metrics."""
 
-    matched: list[Device] = field(default_factory=list)
-    created: list[Device] = field(default_factory=list)
-    ip_changed: list[tuple[Device, str]] = field(default_factory=list)   # (device, old_ip)
-    reassigned: list[tuple[Device, int | None]] = field(default_factory=list)  # (device, old_parent_id)
+    matched: list[Lr] = field(default_factory=list)
+    created: list[Lr] = field(default_factory=list)
+    ip_changed: list[tuple[Lr, str]] = field(default_factory=list)   # (device, old_ip)
+    reassigned: list[tuple[Lr, int | None]] = field(default_factory=list)  # (device, old_rocket_id)
 
 
 # ---------------------------------------------------------------------------
@@ -79,18 +79,18 @@ class ReconcileResult:
 def _generate_device_name(peer: PeerInfo, fallback_index: int) -> str:
     """Build a friendly name for an auto-discovered device.
 
-    Priority: hostname → "LTU LR <last 4 MAC bytes>" → "LTU LR <ip>" → generic.
+    Priority: hostname → "LR <last 6 MAC bytes>" → "LR <ip>" → generic.
     """
     hostname = peer.get("hostname")
     if hostname:
         return hostname
     mac = peer.get("mac")
     if mac:
-        return f"LTU LR {mac.replace(':', '')[-6:].upper()}"
+        return f"LR {mac.replace(':', '')[-6:].upper()}"
     ip = peer.get("mgmt_ip")
     if ip:
-        return f"LTU LR {ip}"
-    return f"LTU LR auto #{fallback_index}"
+        return f"LR {ip}"
+    return f"LR auto #{fallback_index}"
 
 
 def _normalised_mac(peer: PeerInfo) -> str | None:
@@ -104,27 +104,67 @@ def _normalised_mac(peer: PeerInfo) -> str | None:
         return None
 
 
+def _infer_model_variant(peer: PeerInfo, parent: Device) -> str:
+    """Pick the right LR model_variant from the peer's reported model string.
+
+    Ubiquiti firmware reports model identifiers in `peers[i].common.identification.model`.
+    Examples seen on real devices:
+      LTU family   : "LTU‑LR", "LTU LR", "LTU-Pro", "LTU-Instant", "LTU-Lite"
+      airMAX family: "LBE-M5-23" / "LiteBeam M5", "LBE-5AC-Gen2" / "LiteBeam 5AC",
+                     "NBE-M5-19", "NSM5"
+
+    Unknown strings fall back to the parent Rocket's radio_tech:
+      LTU parent → ltu_lr, airMAX parent → litebeam_5ac (most common Litebeam).
+    The raw string is logged so operators can extend this mapping later.
+    """
+    raw = (peer.get("model") or "").strip()
+    if not raw:
+        return "ltu_lr" if not isinstance(parent, Rocket) or parent.radio_tech != "airmax" else "litebeam_5ac"
+
+    norm = raw.lower().replace("-", " ").replace("_", " ")
+
+    # LTU family — LTU Rockets' peers
+    if "ltu" in norm:
+        if "instant" in norm or "pro" in norm:
+            return "ltu_instant"
+        if "lite" in norm:
+            return "ltu_lite"
+        return "ltu_lr"
+
+    # airMAX Litebeam family
+    if "lbe" in norm or "litebeam" in norm:
+        if "m5" in norm:
+            return "litebeam_m5"
+        # LBE-5AC-Gen2, "LiteBeam 5AC", etc.
+        return "litebeam_5ac"
+
+    # Unknown — default by parent radio tech, log for future mapping extension
+    parent_kind = "airmax" if (isinstance(parent, Rocket) and parent.radio_tech == "airmax") else "ltu"
+    fallback = "litebeam_5ac" if parent_kind == "airmax" else "ltu_lr"
+    logger.warning(
+        "Discovery: unknown peer model %r under %s Rocket '%s' — defaulting to %s. "
+        "Extend _infer_model_variant if this becomes recurrent.",
+        raw, parent_kind, parent.name if hasattr(parent, "name") else "?", fallback,
+    )
+    return fallback
+
+
 # ---------------------------------------------------------------------------
 # Lookup helpers
 # ---------------------------------------------------------------------------
 
-async def _find_by_mac(session: AsyncSession, mac: str) -> Device | None:
-    res = await session.execute(select(Device).where(Device.mac_address == mac))
+async def _find_lr_by_mac(session: AsyncSession, mac: str) -> Lr | None:
+    res = await session.execute(select(Lr).where(Lr.mac_address == mac))
     return res.scalar_one_or_none()
 
 
-async def _find_by_ip(session: AsyncSession, ip: str, device_type: str) -> Device | None:
-    """Lookup by IP, restricted to the expected device_type.
+async def _find_lr_by_ip(session: AsyncSession, ip: str) -> Lr | None:
+    """Lookup by IP, restricted to LRs.
 
-    Without the device_type guard we'd match a Rocket whose IP collides with a
-    peer's mgmt_ip (rare but possible on misconfigured networks).
+    Without the type guard we'd match a Rocket whose IP collides with a peer's
+    mgmt_ip (rare but possible on misconfigured networks).
     """
-    res = await session.execute(
-        select(Device).where(
-            Device.ip_address == ip,
-            Device.device_type == device_type,
-        )
-    )
+    res = await session.execute(select(Lr).where(Lr.ip_address == ip))
     return res.scalar_one_or_none()
 
 
@@ -144,9 +184,6 @@ async def _emit_lifecycle_event(
 
     Lifecycle incidents (discovered / ip_changed / reassigned) auto-resolve
     immediately — they are point-in-time events, not ongoing conditions.
-    Each call therefore: opens, notifies, then resolves the same incident in
-    one transaction so the audit trail records the event without leaving an
-    "open" row that operators would have to acknowledge.
     """
     incident, is_new = await incident_service.open_incident(
         session, device,
@@ -178,12 +215,12 @@ async def _emit_lifecycle_event(
 
 async def _reconcile_single_peer(
     session: AsyncSession,
-    parent: Device,
+    parent: Rocket,
     peer: PeerInfo,
     fallback_index: int,
     result: ReconcileResult,
-) -> Device | None:
-    """Reconcile one peer entry — create or update the corresponding LR device."""
+) -> Lr | None:
+    """Reconcile one peer entry — create or update the corresponding Lr row."""
     mac = _normalised_mac(peer)
     ip = peer.get("mgmt_ip")
     if mac is None and ip is None:
@@ -196,13 +233,13 @@ async def _reconcile_single_peer(
     now = datetime.datetime.now(datetime.UTC)
 
     # ── 1. Lookup ─────────────────────────────────────────────────────────
-    device: Device | None = None
+    device: Lr | None = None
     if mac:
-        device = await _find_by_mac(session, mac)
+        device = await _find_lr_by_mac(session, mac)
     if device is None and ip:
         # Fallback for legacy LR devices created before MAC tracking existed.
         # Once matched, the MAC gets pinned so future cycles use the fast path.
-        device = await _find_by_ip(session, ip, "ltu_lr")
+        device = await _find_lr_by_ip(session, ip)
         if device and mac and not device.mac_address:
             device.mac_address = mac
             logger.info(
@@ -222,8 +259,8 @@ async def _reconcile_single_peer(
             )
             return None
 
-        # Avoid creating a duplicate when the IP is already used by another
-        # device of any type (operator-created Rocket, Switch, etc.).
+        # Avoid creating a duplicate when the IP is already used by any other
+        # device row (operator-created Rocket, Switch, etc.).
         existing_any = await session.execute(
             select(Device).where(Device.ip_address == ip)
         )
@@ -234,16 +271,16 @@ async def _reconcile_single_peer(
             )
             return None
 
-        device = Device(
+        model_variant = _infer_model_variant(peer, parent)
+        device = Lr(
             name=_generate_device_name(peer, fallback_index),
             ip_address=ip,
-            device_type="ltu_lr",
             status="unknown",
             mac_address=mac,
             hostname=peer.get("hostname"),
-            model=peer.get("model"),
             firmware_version=peer.get("firmware"),
-            parent_id=parent.id,
+            model_variant=model_variant,
+            rocket_id=parent.id,
             auto_discovered=True,
             first_discovered_at=now,
             last_discovered_at=now,
@@ -253,18 +290,18 @@ async def _reconcile_single_peer(
 
         result.created.append(device)
         logger.info(
-            "Discovery: NEW LR auto-créé '%s' (mac=%s ip=%s parent=%s)",
-            device.name, mac, ip, parent.name,
+            "Discovery: NEW LR auto-créé '%s' (mac=%s ip=%s variant=%s parent=%s)",
+            device.name, mac, ip, model_variant, parent.name,
         )
         await _emit_lifecycle_event(
             session, device,
             alert_type=AT_LR_DISCOVERED,
-            title=f"Nouveau LTU LR détecté : {device.name}",
+            title=f"Nouveau LR détecté : {device.name}",
             severity=Severity.INFO,
             description=(
                 f"Le LR '{device.name}' (MAC={mac or 'inconnue'}, IP={ip or 'inconnue'}) "
                 f"a été automatiquement enregistré comme peer du Rocket '{parent.name}'. "
-                f"Modèle: {peer.get('model') or 'inconnu'} · "
+                f"Modèle: {peer.get('model') or 'inconnu'} (variant={model_variant}) · "
                 f"Firmware: {peer.get('firmware') or 'inconnu'}."
             ),
         )
@@ -298,15 +335,15 @@ async def _reconcile_single_peer(
         )
 
     # Parent reassignment (LR reported by a different Rocket than its current parent)
-    if device.parent_id != parent.id:
-        old_parent_id = device.parent_id
-        device.parent_id = parent.id
+    if device.rocket_id != parent.id:
+        old_parent_id = device.rocket_id
+        device.rocket_id = parent.id
         result.reassigned.append((device, old_parent_id))
 
         old_parent_name = "aucun"
         if old_parent_id is not None:
             old_parent_res = await session.execute(
-                select(Device).where(Device.id == old_parent_id)
+                select(Rocket).where(Rocket.id == old_parent_id)
             )
             old_parent_dev = old_parent_res.scalar_one_or_none()
             if old_parent_dev is not None:
@@ -329,7 +366,10 @@ async def _reconcile_single_peer(
             ),
         )
 
-    # Silent updates — hostname / model / firmware drifts get logged but no incident
+    # Silent updates — hostname / firmware drifts get logged but no incident.
+    # The peer's `model` string is mapped to model_variant only at creation;
+    # we don't re-infer on update to avoid silently flipping a manually
+    # adjusted variant.
     new_hostname = peer.get("hostname")
     if new_hostname and new_hostname != device.hostname:
         logger.info(
@@ -337,10 +377,6 @@ async def _reconcile_single_peer(
             device.name, device.hostname, new_hostname,
         )
         device.hostname = new_hostname
-
-    new_model = peer.get("model")
-    if new_model and new_model != device.model:
-        device.model = new_model
 
     new_firmware = peer.get("firmware")
     if new_firmware and new_firmware != device.firmware_version:
@@ -359,17 +395,17 @@ async def _reconcile_single_peer(
 
 async def reconcile_peers(
     session: AsyncSession,
-    parent: Device,
+    parent: Rocket,
     peers: list[PeerInfo],
 ) -> ReconcileResult:
-    """Reconcile a Rocket's peer list with the Device table.
+    """Reconcile a Rocket's peer list with the lrs table.
 
     Parameters
     ----------
     session : AsyncSession
         Live transaction. The caller commits.
-    parent : Device
-        The Rocket reporting the peers (its `id` becomes the new `parent_id`).
+    parent : Rocket
+        The Rocket reporting the peers (its `id` becomes the new `rocket_id`).
     peers : list[PeerInfo]
         Normalised list of peers extracted from the data source.
 
@@ -377,7 +413,7 @@ async def reconcile_peers(
     -------
     ReconcileResult
         Aggregated outcome — useful for logging and metrics. The returned
-        Device instances are the ones bound to the current session.
+        Lr instances are the ones bound to the current session.
     """
     result = ReconcileResult()
     if not peers:

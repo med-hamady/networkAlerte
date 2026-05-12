@@ -94,7 +94,7 @@ export default function TopologyPage() {
       {/* Help note */}
       <p className="text-xs text-slate-400 text-center">
         Les liens sont déterminés par la relation parent/enfant de chaque équipement.
-        Configurez le champ <span className="font-mono bg-slate-100 px-1 rounded">parent_id</span> via l&apos;API pour modifier la topologie.
+        Configurez le champ <span className="font-mono bg-slate-100 px-1 rounded">rocket_id</span> sur un LR via l&apos;API pour modifier la topologie.
       </p>
     </div>
   )

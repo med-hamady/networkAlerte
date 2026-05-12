@@ -6,8 +6,17 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
+from app.models.device import Device, Lr, Rocket
 from app.models.device_metric import DeviceMetric
-from app.schemas.device import DeviceCreate, DeviceRead, DeviceUpdate
+from app.schemas.device import (
+    DeviceCreate,
+    DeviceRead,
+    DeviceUpdate,
+    LrRead,
+    RocketRead,
+    UispPowerRead,
+    UispSwitchRead,
+)
 from app.services import device_service, ssh_service
 
 router = APIRouter()
@@ -19,15 +28,35 @@ class MetricPoint(BaseModel):
     collected_at: datetime.datetime
 
 
+# Picks the Pydantic *Read class matching a Device subclass instance.
+_READ_BY_TYPE: dict[str, type] = {
+    "rocket": RocketRead,
+    "lr": LrRead,
+    "uisp_power": UispPowerRead,
+    "uisp_switch": UispSwitchRead,
+}
+
+
+def _to_read(device: Device) -> DeviceRead:
+    """Convert a polymorphic Device ORM instance into the right *Read schema."""
+    read_cls = _READ_BY_TYPE.get(device.device_type)
+    if read_cls is None:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unknown device_type {device.device_type!r} — schema mismatch.",
+        )
+    return read_cls.model_validate(device)
+
+
 @router.get("", response_model=list[DeviceRead])
 async def list_devices(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     db: AsyncSession = Depends(get_db),
 ) -> list[DeviceRead]:
-    """List all monitored devices."""
+    """List all monitored devices — polymorphic read returns subclass-specific fields."""
     devices = await device_service.get_devices(db, skip=skip, limit=limit)
-    return [DeviceRead.model_validate(d) for d in devices]
+    return [_to_read(d) for d in devices]
 
 
 @router.get("/{device_id}", response_model=DeviceRead)
@@ -35,9 +64,9 @@ async def get_device(
     device_id: int,
     db: AsyncSession = Depends(get_db),
 ) -> DeviceRead:
-    """Get a single device by ID."""
+    """Get a single device by ID — returns the type-specific shape."""
     device = await device_service.get_device(db, device_id)
-    return DeviceRead.model_validate(device)
+    return _to_read(device)
 
 
 @router.post("", response_model=DeviceRead, status_code=201)
@@ -45,9 +74,9 @@ async def create_device(
     data: DeviceCreate,
     db: AsyncSession = Depends(get_db),
 ) -> DeviceRead:
-    """Register a new device for monitoring."""
+    """Register a new device for monitoring. Payload is discriminated on `device_type`."""
     device = await device_service.create_device(db, data)
-    return DeviceRead.model_validate(device)
+    return _to_read(device)
 
 
 @router.put("/{device_id}", response_model=DeviceRead)
@@ -56,9 +85,9 @@ async def update_device(
     data: DeviceUpdate,
     db: AsyncSession = Depends(get_db),
 ) -> DeviceRead:
-    """Update an existing device."""
+    """Update an existing device. Caller must send a payload matching the device's type."""
     device = await device_service.update_device(db, device_id, data)
-    return DeviceRead.model_validate(device)
+    return _to_read(device)
 
 
 @router.get("/{device_id}/metrics/latest", response_model=dict[str, MetricPoint])
@@ -105,7 +134,7 @@ async def delete_device(
     device_id: int,
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    """Remove a device from monitoring."""
+    """Remove a device from monitoring (cascades to type-specific row + dependents)."""
     await device_service.delete_device(db, device_id)
 
 
@@ -114,18 +143,15 @@ class DiagResult(BaseModel):
     message: str
 
 
-def _ssh_credentials(device) -> tuple[str, str, int]:
-    """Return (username, password, port) for SSH from the Device row.
+def _ssh_credentials(device: Device) -> tuple[str | None, str | None, int]:
+    """Return (username, password, port) for SSH. Only Rocket and Lr expose these.
 
-    Credentials are stored per-device in the database — callers must surface a
-    clear error when they are missing rather than silently fall back.
+    Callers handle the None/None case by surfacing a 400-style error message,
+    so this stays loose — no type check, just attribute access.
     """
-    return (
-        device.ssh_username,
-        device.ssh_password,
-        device.ssh_port or 22,
-    )
-
+    if isinstance(device, (Rocket, Lr)):
+        return (device.ssh_username, device.ssh_password, device.ssh_port or 22)
+    return (None, None, 22)
 
 
 @router.post("/{device_id}/check-ssh", response_model=DiagResult)
@@ -133,9 +159,7 @@ async def check_ssh(
     device_id: int,
     db: AsyncSession = Depends(get_db),
 ) -> DiagResult:
-    """Test SSH connectivity to the device. On first successful connect we
-    record the device's host key fingerprint (TOFU) so subsequent connects
-    can detect a swapped device or MITM."""
+    """Test SSH connectivity. On first success we pin the host key fingerprint (TOFU)."""
     device = await device_service.get_device(db, device_id)
     username, password, port = _ssh_credentials(device)
     if not username or not password:
@@ -143,14 +167,15 @@ async def check_ssh(
             ok=False,
             message="SSH credentials missing on this device — set ssh_username/ssh_password via PUT /api/v1/devices/{id}.",
         )
+    fingerprint = getattr(device, "ssh_host_fingerprint", None)
     ok, msg, observed_fp = await ssh_service.check_ssh_access(
         host=device.ip_address,
         port=port,
         username=username,
         password=password,
-        expected_fingerprint=device.ssh_host_fingerprint,
+        expected_fingerprint=fingerprint,
     )
-    if ok and observed_fp and device.ssh_host_fingerprint != observed_fp:
+    if ok and observed_fp and fingerprint != observed_fp:
         device.ssh_host_fingerprint = observed_fp
         await db.flush()
     return DiagResult(ok=ok, message=msg)
@@ -169,14 +194,15 @@ async def check_ping(
             ok=False,
             message="SSH credentials missing on this device — set ssh_username/ssh_password via PUT /api/v1/devices/{id}.",
         )
+    fingerprint = getattr(device, "ssh_host_fingerprint", None)
     ok, msg, observed_fp = await ssh_service.check_ping_via_ssh(
         host=device.ip_address,
         port=port,
         username=username,
         password=password,
-        expected_fingerprint=device.ssh_host_fingerprint,
+        expected_fingerprint=fingerprint,
     )
-    if ok and observed_fp and device.ssh_host_fingerprint != observed_fp:
+    if ok and observed_fp and fingerprint != observed_fp:
         device.ssh_host_fingerprint = observed_fp
         await db.flush()
     return DiagResult(ok=ok, message=msg)

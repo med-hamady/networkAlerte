@@ -229,12 +229,12 @@ async def _apply_correlation(
     device_statuses: dict[str, str] = {}
     device_by_role: dict[str, Device] = {}
     for d in all_devices:
-        if d.device_type == "ltu_rocket":
+        if d.rule_category == "ltu_rocket":
             device_statuses["rocket"] = d.status
             device_by_role["rocket"] = d
-        elif d.device_type == "ltu_lr":
+        elif d.rule_category == "lr":
             device_statuses["lr"] = d.status
-        elif d.device_type == "uisp_switch":
+        elif d.rule_category == "uisp_switch":
             device_statuses["switch"] = d.status
             device_by_role["switch"] = d
 
@@ -292,7 +292,7 @@ async def evaluate_device_metrics(
     metrics  : dict of metric_name → value collected this cycle
     settings : Settings instance
     """
-    rules = get_rules_for_device(device.device_type)
+    rules = get_rules_for_device(device.rule_category)
     if not rules:
         return
 

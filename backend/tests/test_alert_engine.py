@@ -41,12 +41,18 @@ def make_settings(**overrides):
     return types.SimpleNamespace(**defaults)
 
 
-def make_device(device_type="ltu_rocket"):
+def make_device(rule_category="ltu_rocket"):
+    """Mock device — `rule_category` drives which rule set the engine selects.
+
+    Accepts the legacy `device_type` values for tests: "ltu_rocket",
+    "airmax_rocket", "lr", "uisp_power", "uisp_switch".
+    """
     dev = MagicMock()
     dev.id = 1
-    dev.name = "LTU Rocket"
+    dev.name = "Mock"
     dev.ip_address = "192.168.1.10"
-    dev.device_type = device_type
+    dev.rule_category = rule_category
+    dev.device_type = "rocket" if "rocket" in rule_category else rule_category
     return dev
 
 
@@ -268,7 +274,7 @@ async def test_cpe_disconnected_immediate():
 async def test_uisp_power_no_rules_no_calls():
     """uisp_power has no engine rules → open_incident never called."""
     db, state = make_mock_db()
-    device = make_device(device_type="uisp_power")
+    device = make_device(rule_category="uisp_power")
     settings = make_settings()
 
     with patch("app.services.alert_engine.incident_service") as mock_svc:

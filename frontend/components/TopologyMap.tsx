@@ -17,7 +17,7 @@ const NODE_H_SWITCH  = 108
 
 function getNodeH(device: Device): number {
   if (device.device_type === 'uisp_switch') return NODE_H_SWITCH
-  if (device.device_type === 'ltu_rocket' || device.device_type === 'ltu_lr') return NODE_H_LTU
+  if (device.device_type === 'rocket' || device.device_type === 'lr') return NODE_H_LTU
   return NODE_H_DEFAULT
 }
 
@@ -131,8 +131,9 @@ function computeLayout(devices: Device[]): {
 
   const roots: Device[] = []
   for (const d of devices) {
-    if (d.parent_id != null && dm.has(d.parent_id)) {
-      childrenOf.get(d.parent_id)!.push(d)
+    const pid = d.device_type === 'lr' ? d.rocket_id : null
+    if (pid != null && dm.has(pid)) {
+      childrenOf.get(pid)!.push(d)
     } else {
       roots.push(d)
     }
@@ -168,14 +169,18 @@ function computeLayout(devices: Device[]): {
 
   const nodeById = new Map(nodes.map(n => [n.device.id, n]))
   const edges: EdgeLayout[] = devices
-    .filter(d => d.parent_id != null && dm.has(d.parent_id))
     .map(d => {
-      const from = nodeById.get(d.parent_id!)
+      const pid = d.device_type === 'lr' ? d.rocket_id : null
+      if (pid == null || !dm.has(pid)) return null
+      const from = nodeById.get(pid)
       const to   = nodeById.get(d.id)
       if (!from || !to) return null
-      const isRadio = d.device_type === 'ltu_lr'
-        && dm.get(d.parent_id!)?.device_type === 'ltu_rocket'
-      return { id: `${d.parent_id}-${d.id}`, from, to, isRadio }
+      // Radio edges = LR ← Rocket(LTU) connection
+      const parent = dm.get(pid)
+      const isRadio = d.device_type === 'lr'
+        && parent?.device_type === 'rocket'
+        && parent.radio_tech === 'ltu'
+      return { id: `${pid}-${d.id}`, from, to, isRadio }
     })
     .filter(Boolean) as EdgeLayout[]
 
@@ -198,7 +203,9 @@ function NodeCard({
 }) {
   const { device, x, y, height } = node
   const isSwitch = device.device_type === 'uisp_switch'
-  const isLTU    = device.device_type === 'ltu_rocket' || device.device_type === 'ltu_lr'
+  // "LTU-grade" panels: LTU Rockets and any LR (both expose signal/CCQ).
+  const isLTU    = (device.device_type === 'rocket' && device.radio_tech === 'ltu')
+    || device.device_type === 'lr'
   const ports     = isSwitch ? extractPorts(metrics) : []
   const signalDbm = isLTU ? (metrics['signal_dbm']?.value ?? null) : null
   const ccqPct    = isLTU ? (metrics['ccq_pct']?.value    ?? null) : null

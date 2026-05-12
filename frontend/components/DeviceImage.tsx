@@ -152,8 +152,8 @@ function DefaultSvg() {
 }
 
 const svgMap: Record<string, () => JSX.Element> = {
-  ltu_rocket:  RocketSvg,
-  ltu_lr:      LRSvg,
+  rocket:      RocketSvg,
+  lr:          LRSvg,
   uisp_switch: SwitchSvg,
   uisp_power:  PowerSvg,
 }

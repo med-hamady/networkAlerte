@@ -19,7 +19,7 @@ type EquipmentGroup = {
 
 const EQUIPMENT_GROUPS: EquipmentGroup[] = [
   {
-    key: 'ltu_rocket',
+    key: 'rocket',
     label: 'LTU Rocket',
     description: 'Ping, SNMP IF-MIB, API HTTP LTU et auto-découverte des CPE peers',
     alertTypes: [
@@ -44,8 +44,8 @@ const EQUIPMENT_GROUPS: EquipmentGroup[] = [
     ],
   },
   {
-    key: 'ltu_lr',
-    label: 'LTU LR',
+    key: 'lr',
+    label: 'LR',
     description: 'Ping, SNMP IF-MIB et sonde transit SSH (ping internet depuis le LR)',
     alertTypes: [
       'lr_down',

@@ -33,7 +33,7 @@ from app.services.notification_service import (
 
 def _device():
     return SimpleNamespace(
-        id=1, name="LTU Rocket", ip_address="10.135.2.218", device_type="ltu_rocket",
+        id=1, name="LTU Rocket", ip_address="10.135.2.218", device_type="rocket",
     )
 
 

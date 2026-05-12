@@ -1,7 +1,14 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import type { Device, DeviceFormData } from '@/lib/types'
+import type {
+  Device,
+  DeviceFormData,
+  LrFormData,
+  RocketFormData,
+  UispPowerFormData,
+  UispSwitchFormData,
+} from '@/lib/types'
 import { createDevice, deleteDevice, updateDevice } from '@/lib/api'
 
 interface Props {
@@ -11,32 +18,104 @@ interface Props {
   onSaved: () => void
 }
 
-const DEVICE_TYPES = [
-  { value: 'ltu_rocket',    label: 'LTU Rocket (AP radio)' },
-  { value: 'ltu_lr',        label: 'LTU LR (CPE radio)' },
-  { value: 'airmax_rocket', label: 'Rocket airMAX (airOS)' },
-  { value: 'uisp_switch',   label: 'UISP Switch' },
-  { value: 'uisp_power',    label: 'UISP Power' },
+// Types manually creatable by the operator. LR is excluded on purpose: those
+// rows are owned by the auto-discovery pipeline (the Rocket reports its peers
+// via HTTP API, and discovery_service inserts/updates LR rows).
+const CREATABLE_DEVICE_TYPES: Array<{ value: Exclude<DeviceFormData['device_type'], 'lr'>; label: string }> = [
+  { value: 'rocket',       label: 'Rocket (LTU ou airMAX)' },
+  { value: 'uisp_switch',  label: 'UISP Switch' },
+  { value: 'uisp_power',   label: 'UISP Power' },
 ]
 
-const EMPTY: DeviceFormData = {
-  name: '',
-  ip_address: '',
-  device_type: 'ltu_rocket',
-  model: '',
-  location: '',
-  snmp_community: '',
-  ssh_username: '',
-  ssh_password: '',
-  ssh_port: 22,
-  uisp_power_username: '',
-  uisp_power_password: '',
-  uisp_power_port: 443,
-  notes: '',
+const TYPE_LABEL: Record<DeviceFormData['device_type'], string> = {
+  rocket:       'Rocket',
+  lr:           'LR (auto-découvert)',
+  uisp_switch:  'UISP Switch',
+  uisp_power:   'UISP Power',
+}
+
+const ROCKET_RADIO_TECHS: Array<{ value: 'ltu' | 'airmax'; label: string }> = [
+  { value: 'ltu',    label: 'LTU' },
+  { value: 'airmax', label: 'airMAX' },
+]
+
+const LR_MODEL_VARIANTS: Array<{ value: LrFormData['model_variant']; label: string }> = [
+  { value: 'ltu_lr',       label: 'LTU LR' },
+  { value: 'ltu_instant',  label: 'LTU Instant' },
+  { value: 'ltu_lite',     label: 'LTU Lite' },
+  { value: 'litebeam_5ac', label: 'Litebeam 5AC' },
+  { value: 'litebeam_m5',  label: 'Litebeam M5' },
+]
+
+function emptyForm(type: DeviceFormData['device_type']): DeviceFormData {
+  const base = {
+    name: '',
+    ip_address: '',
+    location: '',
+    snmp_community: '',
+    notes: '',
+  }
+  switch (type) {
+    case 'rocket':
+      return { ...base, device_type: 'rocket', radio_tech: 'ltu', ssh_username: '', ssh_password: '', ssh_port: 443 }
+    case 'lr':
+      return { ...base, device_type: 'lr', model_variant: 'ltu_lr', rocket_id: null, ssh_username: '', ssh_password: '', ssh_port: 22 }
+    case 'uisp_power':
+      return { ...base, device_type: 'uisp_power', api_username: '', api_password: '', api_port: 443 }
+    case 'uisp_switch':
+      return { ...base, device_type: 'uisp_switch', max_ports: 16, rocket_port_index: null, port_min_speed_mbps: 1000 }
+  }
+}
+
+function deviceToForm(device: Device): DeviceFormData {
+  const base = {
+    name: device.name,
+    ip_address: device.ip_address,
+    location: device.location ?? '',
+    snmp_community: device.snmp_community ?? '',
+    notes: device.notes ?? '',
+  }
+  switch (device.device_type) {
+    case 'rocket':
+      return {
+        ...base,
+        device_type: 'rocket',
+        radio_tech: device.radio_tech,
+        ssh_username: device.ssh_username ?? '',
+        ssh_password: '',
+        ssh_port: device.ssh_port,
+      }
+    case 'lr':
+      return {
+        ...base,
+        device_type: 'lr',
+        model_variant: device.model_variant,
+        rocket_id: device.rocket_id,
+        ssh_username: device.ssh_username ?? '',
+        ssh_password: '',
+        ssh_port: device.ssh_port,
+      }
+    case 'uisp_power':
+      return {
+        ...base,
+        device_type: 'uisp_power',
+        api_username: device.api_username ?? '',
+        api_password: '',
+        api_port: device.api_port,
+      }
+    case 'uisp_switch':
+      return {
+        ...base,
+        device_type: 'uisp_switch',
+        max_ports: device.max_ports,
+        rocket_port_index: device.rocket_port_index,
+        port_min_speed_mbps: device.port_min_speed_mbps,
+      }
+  }
 }
 
 export default function DeviceFormModal({ open, device, onClose, onSaved }: Props) {
-  const [form, setForm] = useState<DeviceFormData>(EMPTY)
+  const [form, setForm] = useState<DeviceFormData>(() => emptyForm('rocket'))
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -48,35 +127,30 @@ export default function DeviceFormModal({ open, device, onClose, onSaved }: Prop
     if (!open) return
     setError(null)
     setConfirmDelete(false)
-    if (device) {
-      setForm({
-        name:                 device.name,
-        ip_address:           device.ip_address,
-        device_type:          device.device_type,
-        model:                device.model ?? '',
-        location:             device.location ?? '',
-        snmp_community:       device.snmp_community ?? '',
-        ssh_username:         device.ssh_username ?? '',
-        ssh_password:         '',   // never pre-filled — write-only
-        ssh_port:             device.ssh_port ?? 22,
-        uisp_power_username:  device.uisp_power_username ?? '',
-        uisp_power_password:  '',   // never pre-filled — write-only
-        uisp_power_port:      device.uisp_power_port ?? 443,
-        notes:                device.notes ?? '',
-      })
-    } else {
-      setForm(EMPTY)
-    }
+    setForm(device ? deviceToForm(device) : emptyForm('rocket'))
   }, [open, device])
 
   if (!open) return null
 
-  const set = (field: keyof DeviceFormData) =>
-    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-      const isNumeric = field === 'ssh_port' || field === 'uisp_power_port'
-      const value = isNumeric ? Number(e.target.value) : e.target.value
-      setForm(f => ({ ...f, [field]: value }))
-    }
+  // Setter — accepts any field name because each sub-component is responsible
+  // for passing fields that match the form variant currently rendered. The
+  // discriminator (device_type) prevents the wrong fields from being collected.
+  const update = (field: string, value: unknown) => {
+    setForm(f => ({ ...f, [field]: value }) as DeviceFormData)
+  }
+
+  // When the user switches the device_type in create mode, reset the form to
+  // the right shape so type-specific fields are valid defaults.
+  const switchType = (type: DeviceFormData['device_type']) => {
+    setForm(prev => ({
+      ...emptyForm(type),
+      name: prev.name,
+      ip_address: prev.ip_address,
+      location: prev.location,
+      snmp_community: prev.snmp_community,
+      notes: prev.notes,
+    }))
+  }
 
   const handleSave = async () => {
     setError(null)
@@ -85,10 +159,10 @@ export default function DeviceFormModal({ open, device, onClose, onSaved }: Prop
     setSaving(true)
     try {
       if (isEdit && device) {
-        // For updates: only send write-only secrets if the user typed a new value
-        const payload = { ...form }
-        if (!payload.ssh_password)        delete (payload as Partial<DeviceFormData>).ssh_password
-        if (!payload.uisp_power_password) delete (payload as Partial<DeviceFormData>).uisp_power_password
+        // Strip empty write-only secrets so the backend keeps the existing value.
+        const payload: Record<string, unknown> = { ...form }
+        if ('ssh_password' in payload && !payload.ssh_password) delete payload.ssh_password
+        if ('api_password' in payload && !payload.api_password) delete payload.api_password
         await updateDevice(device.id, payload)
       } else {
         await createDevice(form)
@@ -118,201 +192,107 @@ export default function DeviceFormModal({ open, device, onClose, onSaved }: Prop
     }
   }
 
-  const needsSsh = form.device_type === 'ltu_lr'
-  const needsSnmp = form.device_type !== 'uisp_power'
-  const isUispPower = form.device_type === 'uisp_power'
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
 
-      {/* Panel */}
       <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 flex flex-col max-h-[90vh]">
-
-        {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-blue-100">
           <h2 className="text-lg font-bold text-blue-900">
             {isEdit ? `Modifier — ${device.name}` : 'Enregistrer un équipement'}
           </h2>
-          <button onClick={onClose} className="text-blue-300 hover:text-blue-600 transition-colors">
+          <button onClick={onClose} className="text-blue-300 hover:text-blue-600">
             <XIcon className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Form */}
         <div className="overflow-y-auto flex-1 px-6 py-5 space-y-4">
 
-          {/* Name */}
           <Field label="Nom *">
             <input
               type="text"
               value={form.name}
-              onChange={set('name')}
-              placeholder="ex: LTU Rocket Toit"
+              onChange={e => update('name', e.target.value)}
+              placeholder="ex: Rocket SUD"
               className={input}
             />
           </Field>
 
-          {/* IP */}
           <Field label="Adresse IP *">
             <input
               type="text"
               value={form.ip_address}
-              onChange={set('ip_address')}
-              placeholder="ex: 192.168.1.10"
+              onChange={e => update('ip_address', e.target.value)}
+              placeholder="ex: 10.135.82.1"
               className={`${input} font-mono`}
             />
           </Field>
 
-          {/* Type */}
           <Field label="Type d'équipement *">
-            <select value={form.device_type} onChange={set('device_type')} className={input}>
-              {DEVICE_TYPES.map(t => (
-                <option key={t.value} value={t.value}>{t.label}</option>
-              ))}
-            </select>
+            {isEdit ? (
+              <div className={`${input} bg-blue-50 text-slate-600`}>
+                {TYPE_LABEL[form.device_type]}
+              </div>
+            ) : (
+              <select
+                value={form.device_type as Exclude<DeviceFormData['device_type'], 'lr'>}
+                onChange={e => switchType(e.target.value as Exclude<DeviceFormData['device_type'], 'lr'>)}
+                className={input}
+              >
+                {CREATABLE_DEVICE_TYPES.map(t => (
+                  <option key={t.value} value={t.value}>{t.label}</option>
+                ))}
+              </select>
+            )}
+            {isEdit && form.device_type === 'lr' && (
+              <p className="text-xs text-blue-300 mt-1">
+                Les LR sont créés et mis à jour automatiquement par la découverte
+                via l&apos;API du Rocket parent — pas modifiables manuellement.
+              </p>
+            )}
+            {isEdit && form.device_type !== 'lr' && (
+              <p className="text-xs text-blue-300 mt-1">
+                Le type est figé après création — supprimer puis recréer si nécessaire.
+              </p>
+            )}
           </Field>
 
-          {/* Model + Location */}
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Modèle">
-              <input
-                type="text"
-                value={form.model}
-                onChange={set('model')}
-                placeholder="ex: LTU‑Rocket"
-                className={input}
-              />
-            </Field>
-            <Field label="Emplacement">
-              <input
-                type="text"
-                value={form.location}
-                onChange={set('location')}
-                placeholder="ex: Toit immeuble A"
-                className={input}
-              />
-            </Field>
-          </div>
+          <Field label="Emplacement">
+            <input
+              type="text"
+              value={form.location}
+              onChange={e => update('location', e.target.value)}
+              placeholder="ex: Site AT2"
+              className={input}
+            />
+          </Field>
 
-          {/* SNMP */}
-          {needsSnmp && (
-            <Field label="Community SNMP" hint="Laisser vide pour utiliser la valeur globale">
-              <input
-                type="text"
-                value={form.snmp_community}
-                onChange={set('snmp_community')}
-                placeholder="public"
-                className={input}
-              />
-            </Field>
-          )}
+          <Field label="Community SNMP" hint="Laisser vide pour utiliser la valeur globale du .env">
+            <input
+              type="text"
+              value={form.snmp_community}
+              onChange={e => update('snmp_community', e.target.value)}
+              placeholder="public"
+              className={input}
+            />
+          </Field>
 
-          {/* SSH credentials — for all device types (enables check-ssh / check-ping diagnostics) */}
-          <div className="bg-blue-50 rounded-xl p-4 space-y-3">
-            <p className="text-xs font-semibold text-blue-600 uppercase tracking-wide">
-              Credentials SSH
-              {!needsSsh && <span className="ml-2 font-normal text-blue-400 normal-case">(diagnostics uniquement)</span>}
-            </p>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="col-span-2">
-                <Field label="Utilisateur">
-                  <input
-                    type="text"
-                    value={form.ssh_username}
-                    onChange={set('ssh_username')}
-                    placeholder="ubnt"
-                    className={input}
-                  />
-                </Field>
-              </div>
-              <Field label="Port">
-                <input
-                  type="number"
-                  value={form.ssh_port}
-                  onChange={set('ssh_port')}
-                  min={1}
-                  max={65535}
-                  className={input}
-                />
-              </Field>
-            </div>
-            <Field
-              label="Mot de passe SSH"
-              hint={isEdit ? "Laisser vide pour conserver le mot de passe existant" : ""}
-            >
-              <input
-                type="password"
-                value={form.ssh_password}
-                onChange={set('ssh_password')}
-                placeholder={isEdit ? "••••••••" : "Mot de passe SSH"}
-                autoComplete="new-password"
-                className={input}
-              />
-            </Field>
-          </div>
+          {/* Type-specific blocks */}
+          {form.device_type === 'rocket'      && <RocketFields form={form} update={update} isEdit={isEdit} />}
+          {form.device_type === 'lr'          && <LrFields form={form} update={update} isEdit={isEdit} />}
+          {form.device_type === 'uisp_power'  && <PowerFields form={form} update={update} isEdit={isEdit} hasPwd={device?.device_type === 'uisp_power' && device.has_api_password} />}
+          {form.device_type === 'uisp_switch' && <SwitchFields form={form} update={update} />}
 
-          {/* UISP Power credentials — local REST API */}
-          {isUispPower && (
-            <div className="bg-amber-50 rounded-xl p-4 space-y-3">
-              <p className="text-xs font-semibold text-amber-700 uppercase tracking-wide">
-                Identifiants UISP Power
-                <span className="ml-2 font-normal text-amber-500 normal-case">
-                  (laisser vide pour utiliser les valeurs globales)
-                </span>
-              </p>
-              <div className="grid grid-cols-3 gap-3">
-                <div className="col-span-2">
-                  <Field label="Utilisateur API">
-                    <input
-                      type="text"
-                      value={form.uisp_power_username}
-                      onChange={set('uisp_power_username')}
-                      placeholder="ubnt"
-                      className={input}
-                    />
-                  </Field>
-                </div>
-                <Field label="Port HTTP">
-                  <input
-                    type="number"
-                    value={form.uisp_power_port}
-                    onChange={set('uisp_power_port')}
-                    min={1}
-                    max={65535}
-                    className={input}
-                  />
-                </Field>
-              </div>
-              <Field
-                label="Mot de passe API"
-                hint={isEdit ? "Laisser vide pour conserver le mot de passe existant" : ""}
-              >
-                <input
-                  type="password"
-                  value={form.uisp_power_password}
-                  onChange={set('uisp_power_password')}
-                  placeholder={isEdit && device?.has_uisp_power_password ? "••••••••" : "Mot de passe UISP Power"}
-                  autoComplete="new-password"
-                  className={input}
-                />
-              </Field>
-            </div>
-          )}
-
-          {/* Notes */}
           <Field label="Notes">
             <textarea
               value={form.notes}
-              onChange={set('notes')}
+              onChange={e => update('notes', e.target.value)}
               rows={2}
               placeholder="Informations complémentaires…"
               className={`${input} resize-none`}
             />
           </Field>
 
-          {/* Error */}
           {error && (
             <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700">
               {error}
@@ -320,52 +300,24 @@ export default function DeviceFormModal({ open, device, onClose, onSaved }: Prop
           )}
         </div>
 
-        {/* Footer */}
         <div className="px-6 py-4 border-t border-blue-100 flex items-center justify-between gap-3">
-          {/* Delete zone */}
-          {isEdit && (
-            <div>
-              {confirmDelete ? (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-red-600 font-medium">Confirmer la suppression ?</span>
-                  <button
-                    onClick={handleDelete}
-                    disabled={deleting}
-                    className="text-xs bg-red-600 text-white px-3 py-1.5 rounded-lg hover:bg-red-700 disabled:opacity-50"
-                  >
-                    {deleting ? '…' : 'Supprimer'}
-                  </button>
-                  <button
-                    onClick={() => setConfirmDelete(false)}
-                    className="text-xs text-blue-500 hover:text-blue-700"
-                  >
-                    Annuler
-                  </button>
-                </div>
-              ) : (
-                <button
-                  onClick={() => setConfirmDelete(true)}
-                  className="text-sm text-red-500 hover:text-red-700 font-medium transition-colors"
-                >
-                  Supprimer
+          {isEdit ? (
+            confirmDelete ? (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-red-600 font-medium">Confirmer ?</span>
+                <button onClick={handleDelete} disabled={deleting} className="text-xs bg-red-600 text-white px-3 py-1.5 rounded-lg hover:bg-red-700 disabled:opacity-50">
+                  {deleting ? '…' : 'Supprimer'}
                 </button>
-              )}
-            </div>
-          )}
-          {!isEdit && <div />}
+                <button onClick={() => setConfirmDelete(false)} className="text-xs text-blue-500 hover:text-blue-700">Annuler</button>
+              </div>
+            ) : (
+              <button onClick={() => setConfirmDelete(true)} className="text-sm text-red-500 hover:text-red-700 font-medium">Supprimer</button>
+            )
+          ) : <div />}
 
           <div className="flex items-center gap-3">
-            <button
-              onClick={onClose}
-              className="text-sm text-blue-500 hover:text-blue-700 px-4 py-2 rounded-lg transition-colors"
-            >
-              Annuler
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className="text-sm bg-blue-700 text-white px-5 py-2 rounded-lg hover:bg-blue-800 disabled:opacity-50 font-medium transition-colors"
-            >
+            <button onClick={onClose} className="text-sm text-blue-500 hover:text-blue-700 px-4 py-2 rounded-lg">Annuler</button>
+            <button onClick={handleSave} disabled={saving} className="text-sm bg-blue-700 text-white px-5 py-2 rounded-lg hover:bg-blue-800 disabled:opacity-50 font-medium">
               {saving ? 'Enregistrement…' : isEdit ? 'Enregistrer' : 'Ajouter'}
             </button>
           </div>
@@ -375,16 +327,129 @@ export default function DeviceFormModal({ open, device, onClose, onSaved }: Prop
   )
 }
 
-function Field({ label, hint, children }: {
-  label: string
-  hint?: string
-  children: React.ReactNode
+// ─────────────────────────────────────────────────────────────────────────────
+// Type-specific field blocks
+// ─────────────────────────────────────────────────────────────────────────────
+
+function RocketFields({
+  form, update, isEdit,
+}: {
+  form: RocketFormData
+  update: (field: string, value: unknown) => void
+  isEdit: boolean
 }) {
   return (
+    <div className="bg-blue-50 rounded-xl p-4 space-y-3">
+      <p className="text-xs font-semibold text-blue-600 uppercase tracking-wide">Configuration Rocket</p>
+      <Field label="Technologie radio">
+        <select value={form.radio_tech} onChange={e => update('radio_tech', e.target.value as 'ltu' | 'airmax')} className={input}>
+          {ROCKET_RADIO_TECHS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+        </select>
+      </Field>
+      <div className="grid grid-cols-3 gap-3">
+        <div className="col-span-2">
+          <Field label="Utilisateur API">
+            <input type="text" value={form.ssh_username} onChange={e => update('ssh_username', e.target.value)} placeholder="ubnt" className={input} />
+          </Field>
+        </div>
+        <Field label="Port HTTPS">
+          <input type="number" value={form.ssh_port} onChange={e => update('ssh_port', Number(e.target.value))} min={1} max={65535} className={input} />
+        </Field>
+      </div>
+      <Field label="Mot de passe API" hint={isEdit ? "Laisser vide pour conserver le mot de passe existant" : ""}>
+        <input type="password" value={form.ssh_password} onChange={e => update('ssh_password', e.target.value)} placeholder={isEdit ? "••••••••" : "Mot de passe API"} autoComplete="new-password" className={input} />
+      </Field>
+    </div>
+  )
+}
+
+function LrFields({
+  form, update, isEdit,
+}: {
+  form: LrFormData
+  update: (field: string, value: unknown) => void
+  isEdit: boolean
+}) {
+  const variantLabel = LR_MODEL_VARIANTS.find(v => v.value === form.model_variant)?.label ?? form.model_variant
+  return (
+    <div className="bg-emerald-50 rounded-xl p-4 space-y-3">
+      <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide">Configuration LR</p>
+      <Field label="Modèle" hint="Détecté automatiquement par la découverte — non modifiable.">
+        <div className={`${input} bg-white text-slate-600`}>{variantLabel}</div>
+      </Field>
+      <div className="grid grid-cols-3 gap-3">
+        <div className="col-span-2">
+          <Field label="Utilisateur SSH">
+            <input type="text" value={form.ssh_username} onChange={e => update('ssh_username', e.target.value)} placeholder="ubnt" className={input} />
+          </Field>
+        </div>
+        <Field label="Port SSH">
+          <input type="number" value={form.ssh_port} onChange={e => update('ssh_port', Number(e.target.value))} min={1} max={65535} className={input} />
+        </Field>
+      </div>
+      <Field label="Mot de passe SSH" hint={isEdit ? "Laisser vide pour conserver le mot de passe existant" : ""}>
+        <input type="password" value={form.ssh_password} onChange={e => update('ssh_password', e.target.value)} placeholder={isEdit ? "••••••••" : "Mot de passe SSH"} autoComplete="new-password" className={input} />
+      </Field>
+    </div>
+  )
+}
+
+function PowerFields({
+  form, update, isEdit, hasPwd,
+}: {
+  form: UispPowerFormData
+  update: (field: string, value: unknown) => void
+  isEdit: boolean
+  hasPwd: boolean | undefined
+}) {
+  return (
+    <div className="bg-amber-50 rounded-xl p-4 space-y-3">
+      <p className="text-xs font-semibold text-amber-700 uppercase tracking-wide">Identifiants UISP Power</p>
+      <div className="grid grid-cols-3 gap-3">
+        <div className="col-span-2">
+          <Field label="Utilisateur API">
+            <input type="text" value={form.api_username} onChange={e => update('api_username', e.target.value)} placeholder="ubnt" className={input} />
+          </Field>
+        </div>
+        <Field label="Port HTTPS">
+          <input type="number" value={form.api_port} onChange={e => update('api_port', Number(e.target.value))} min={1} max={65535} className={input} />
+        </Field>
+      </div>
+      <Field label="Mot de passe API" hint={isEdit ? "Laisser vide pour conserver le mot de passe existant" : ""}>
+        <input type="password" value={form.api_password} onChange={e => update('api_password', e.target.value)} placeholder={isEdit && hasPwd ? "••••••••" : "Mot de passe UISP Power"} autoComplete="new-password" className={input} />
+      </Field>
+    </div>
+  )
+}
+
+function SwitchFields({
+  form, update,
+}: {
+  form: UispSwitchFormData
+  update: (field: string, value: unknown) => void
+}) {
+  return (
+    <div className="bg-slate-50 rounded-xl p-4 space-y-3">
+      <p className="text-xs font-semibold text-slate-700 uppercase tracking-wide">Configuration UISP Switch</p>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Nombre de ports à scanner">
+          <input type="number" value={form.max_ports} onChange={e => update('max_ports', Number(e.target.value))} min={1} max={64} className={input} />
+        </Field>
+        <Field label="Index du port Rocket" hint="0 = pas de monitoring de port spécifique">
+          <input type="number" value={form.rocket_port_index ?? 0} onChange={e => update('rocket_port_index', Number(e.target.value) || null)} min={0} max={64} className={input} />
+        </Field>
+      </div>
+      <Field label="Vitesse minimale attendue (Mbps)">
+        <input type="number" value={form.port_min_speed_mbps} onChange={e => update('port_min_speed_mbps', Number(e.target.value))} min={10} max={10000} className={input} />
+      </Field>
+    </div>
+  )
+}
+
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
     <div className="space-y-1">
-      <label className="block text-xs font-semibold text-blue-600 uppercase tracking-wide">
-        {label}
-      </label>
+      <label className="block text-xs font-semibold text-blue-600 uppercase tracking-wide">{label}</label>
       {children}
       {hint && <p className="text-xs text-blue-300">{hint}</p>}
     </div>

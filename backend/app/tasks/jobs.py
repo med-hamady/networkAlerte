@@ -36,7 +36,7 @@ from app.core.config import get_settings
 from app.db.session import async_session_factory
 from app.models.alert import Alert
 from app.models.alert_state import AlertState
-from app.models.device import Device
+from app.models.device import Device, Lr, Rocket, UispPower
 from app.models.device_metric import DeviceMetric
 from app.models.power_status_log import PowerStatusLog
 from app.services import (
@@ -212,14 +212,16 @@ async def _send_ping_latency_email(
     return await email_service.send_email(recipients, subject, body_text, body_html)
 
 
-# LTU radio devices — polled via standard IF-MIB (no UBNT enterprise MIB)
-RADIO_DEVICE_TYPES = {"ltu_rocket", "ltu_lr"}
+# rule_category buckets used to pick SNMP poll variants.
+# LTU Rockets → standard IF-MIB. LRs are NOT polled via SNMP — their metrics
+# come from the parent Rocket's HTTP API (peer fan-out in ltu_api_poll_job).
+RADIO_RULE_CATEGORIES = {"ltu_rocket"}
 
-# airOS devices — polled via UBNT Enterprise MIB + IF-MIB
-AIRMAX_DEVICE_TYPES = {"airmax_rocket"}
+# airMAX Rockets → UBNT Enterprise MIB + IF-MIB.
+AIRMAX_RULE_CATEGORIES = {"airmax_rocket"}
 
-# Device types polled via standard SNMP (uptime only)
-SWITCH_DEVICE_TYPES = {"uisp_switch"}
+# Switches → standard SNMP (uptime only).
+SWITCH_RULE_CATEGORIES = {"uisp_switch"}
 
 # ---------------------------------------------------------------------------
 # Stable alert_type identifiers re-exported above from core/alert_constants
@@ -261,21 +263,21 @@ def _alert_type_for_device(device: Device) -> str:
     """Return the appropriate device-down alert_type for a given device type."""
     mapping = {
         "ltu_rocket":    AT_ROCKET_DOWN,
-        "ltu_lr":        AT_LR_DOWN,
+        "lr":            AT_LR_DOWN,
         "uisp_switch":   AT_SWITCH_DOWN,
         "airmax_rocket": AT_AIRMAX_DOWN,
     }
-    return mapping.get(device.device_type, AT_UNREACHABLE)
+    return mapping.get(device.rule_category, AT_UNREACHABLE)
 
 
 def _down_title_for_device(device: Device) -> str:
     mapping = {
         "ltu_rocket":    "ALERTE CRITIQUE : LTU Rocket indisponible",
-        "ltu_lr":        "ALERTE CRITIQUE : LTU LR indisponible",
+        "lr":            "ALERTE CRITIQUE : LTU LR indisponible",
         "uisp_switch":   "ALERTE CRITIQUE : UISP Switch indisponible",
         "airmax_rocket": "ALERTE CRITIQUE : Rocket airMAX indisponible",
     }
-    return mapping.get(device.device_type, INC_UNREACHABLE)
+    return mapping.get(device.rule_category, INC_UNREACHABLE)
 
 
 async def _open_and_notify(
@@ -395,7 +397,7 @@ async def _build_switch_context(session, target_device: Device) -> str:
     whether the cable between Rocket and switch was already down.
     Only relevant for ltu_rocket devices.
     """
-    if target_device.device_type != "ltu_rocket":
+    if target_device.rule_category != "ltu_rocket":
         return ""
 
     sub = (
@@ -578,13 +580,15 @@ async def snmp_poll_job() -> None:
         settings = await threshold_service.get_effective_settings(_ts_session, base_settings)
 
     async with async_session_factory() as session:
+        # Polymorphic load — pulls Rocket and UispSwitch instances with their
+        # subtype columns. LRs are excluded: they are not directly reachable
+        # for SNMP (they sit behind the radio link) — their metrics come from
+        # the parent Rocket's HTTP API poll fan-out.
         result = await session.execute(
             select(Device).where(
                 Device.status == "up",
                 Device.snmp_community.is_not(None),
-                Device.device_type.in_(
-                    RADIO_DEVICE_TYPES | AIRMAX_DEVICE_TYPES | SWITCH_DEVICE_TYPES
-                ),
+                Device.device_type.in_(("rocket", "uisp_switch")),
             )
         )
         devices = list(result.scalars().all())
@@ -597,28 +601,29 @@ async def snmp_poll_job() -> None:
 
     for device in devices:
         community = device.snmp_community or settings.snmp_default_community
+        category = device.rule_category
 
-        if device.device_type in AIRMAX_DEVICE_TYPES:
+        if category in AIRMAX_RULE_CATEGORIES:
             metrics = await snmp_service.collect_airmax_metrics(
                 host=device.ip_address,
                 community=community,
                 port=settings.snmp_port,
                 timeout=settings.snmp_timeout,
             )
-        elif device.device_type in RADIO_DEVICE_TYPES:
+        elif category in RADIO_RULE_CATEGORIES:
             metrics = await snmp_service.collect_ltu_metrics(
                 host=device.ip_address,
                 community=community,
                 port=settings.snmp_port,
                 timeout=settings.snmp_timeout,
             )
-        elif device.device_type in SWITCH_DEVICE_TYPES:
+        elif category in SWITCH_RULE_CATEGORIES:
             metrics = await snmp_service.collect_switch_port_metrics(
                 host=device.ip_address,
                 community=community,
                 port=settings.snmp_port,
                 timeout=settings.snmp_timeout,
-                max_ports=settings.switch_max_ports,
+                max_ports=device.max_ports,
             )
         else:
             metrics = await snmp_service.collect_standard_metrics(
@@ -676,9 +681,9 @@ async def snmp_poll_job() -> None:
 
             # Auto-discovery for airMAX Rockets — walks the UBNT station table
             # via SNMP and feeds the same reconcile_peers() pipeline as LTU API.
-            # The peers are still typed as ltu_lr in the DB; in mixed deployments
-            # the operator can rename them or override device_type after creation.
-            if device.device_type in AIRMAX_DEVICE_TYPES:
+            # Peers are persisted as Lr rows with model_variant="litebeam_5ac"
+            # by default; the operator can override via PUT after creation.
+            if category in AIRMAX_RULE_CATEGORIES:
                 airmax_peers = await snmp_service.discover_airmax_peers(
                     host=device.ip_address,
                     community=community,
@@ -696,9 +701,11 @@ async def snmp_poll_job() -> None:
                             len(recon.ip_changed), len(recon.reassigned),
                         )
 
-            # Switch port monitoring (not handled by alert engine — device-level rule)
-            if device.device_type in SWITCH_DEVICE_TYPES:
-                port_idx = settings.switch_rocket_port_index
+            # Switch port monitoring (not handled by alert engine — device-level rule).
+            # Per-switch settings come from the UispSwitch row (port index + min speed).
+            if category in SWITCH_RULE_CATEGORIES:
+                port_idx = device.rocket_port_index or 0
+                min_speed = device.port_min_speed_mbps
                 if port_idx > 0:
                     port_status = metrics.get(f"port_{port_idx}_up")
                     if port_status is not None:
@@ -720,12 +727,12 @@ async def snmp_poll_job() -> None:
                             # Port is UP — check link speed
                             speed = metrics.get(f"port_{port_idx}_speed_mbps")
                             if speed is not None:
-                                if speed < settings.switch_port_min_speed_mbps:
+                                if speed < min_speed:
                                     await _open_and_notify(
                                         session, dev, INC_SWITCH_PORT_SPEED, "critical",
                                         f"GigabitEthernet{port_idx} du {dev.name} UP "
                                         f"mais vitesse négociée à {speed:.0f} Mbps "
-                                        f"(seuil minimum : {settings.switch_port_min_speed_mbps:.0f} Mbps). "
+                                        f"(seuil minimum : {min_speed:.0f} Mbps). "
                                         f"Vérifiez la qualité du câble et l'auto-négociation.",
                                         alert_type=AT_SWITCH_PORT_SPEED,
                                     )
@@ -745,9 +752,7 @@ async def power_poll_job() -> None:
     settings = get_settings()
 
     async with async_session_factory() as session:
-        result = await session.execute(
-            select(Device).where(Device.device_type == "uisp_power")
-        )
+        result = await session.execute(select(UispPower))
         devices = list(result.scalars().all())
 
     if not devices:
@@ -757,10 +762,10 @@ async def power_poll_job() -> None:
     logger.info("Power poll — checking %d UISP Power device(s)", len(devices))
 
     for device in devices:
-        if not device.uisp_power_username or not device.uisp_power_password:
+        if not device.api_username or not device.api_password:
             logger.warning(
                 "UISP Power skip — %s (%s) : credentials manquants en base "
-                "(uisp_power_username/uisp_power_password). "
+                "(api_username/api_password). "
                 "Configure-les via PUT /api/v1/devices/%d.",
                 device.name, device.ip_address, device.id,
             )
@@ -768,9 +773,9 @@ async def power_poll_job() -> None:
 
         readings = await uisp_power_service.poll_uisp_power(
             host=device.ip_address,
-            username=device.uisp_power_username,
-            password=device.uisp_power_password,
-            port=device.uisp_power_port or 443,
+            username=device.api_username,
+            password=device.api_password,
+            port=device.api_port or 443,
         )
 
         async with async_session_factory() as session:
@@ -881,10 +886,11 @@ async def ltu_api_poll_job() -> None:
         settings = await threshold_service.get_effective_settings(_ts_session, base_settings)
 
     async with async_session_factory() as session:
+        # Poll LTU Rockets — airMAX uses different SNMP MIBs handled in snmp_poll.
         result = await session.execute(
-            select(Device).where(
-                Device.status == "up",
-                Device.device_type == "ltu_rocket",
+            select(Rocket).where(
+                Rocket.status == "up",
+                Rocket.radio_tech == "ltu",
             )
         )
         devices = list(result.scalars().all())
@@ -926,20 +932,15 @@ async def ltu_api_poll_job() -> None:
             )
             continue
 
-        metrics, all_peers, per_peer_metrics = await ltu_api_service.collect_ltu_api_full(
+        rocket_ap_metrics, all_peers, per_peer_metrics = await ltu_api_service.collect_ltu_api_full(
             host=device.ip_address,
             username=device.ssh_username,
             password=device.ssh_password,
             port=443,  # LTU HTTP API requires HTTPS — firmware forces TLS
         )
 
-        if metrics is None:
+        if rocket_ap_metrics is None:
             logger.debug("LTU API no response — %s (%s)", device.name, device.ip_address)
-            continue
-
-        has_data = any(v is not None for v in metrics.values())
-        if not has_data:
-            logger.warning("LTU API no data — %s (%s)", device.name, device.ip_address)
             continue
 
         async with async_session_factory() as session:
@@ -956,8 +957,10 @@ async def ltu_api_poll_job() -> None:
                     dev.name, len(recon.created), len(recon.ip_changed), len(recon.reassigned),
                 )
 
-            # Persist metrics
-            for metric_name, value in metrics.items():
+            # Persist AP-wide metrics on the Rocket (noise_dbm). Per-link
+            # metrics (signal/CCQ/CINR/etc.) belong to each LR and are stored
+            # in the fan-out loop below.
+            for metric_name, value in rocket_ap_metrics.items():
                 if value is not None:
                     session.add(DeviceMetric(
                         device_id=dev.id,
@@ -966,34 +969,37 @@ async def ltu_api_poll_job() -> None:
                         unit=unit_map.get(metric_name),
                     ))
 
-            # Build engine metrics dict with CPE peer_count derived from peer list
-            engine_metrics = dict(metrics)
-            engine_metrics["peer_count"] = len(all_peers)
+            # Rocket-level alert engine pass: only cares about peer_count and
+            # whatever the SNMP IF-MIB poll added (radio_if_up, eth_if_up,
+            # byte/error counters via _inject_error_deltas inside the engine).
+            rocket_engine_metrics = dict(rocket_ap_metrics)
+            rocket_engine_metrics["peer_count"] = len(all_peers)
+            await alert_engine.evaluate_device_metrics(
+                session, dev, rocket_engine_metrics, settings,
+            )
 
-            # Delegate all radio quality anomaly detection to the alert engine
-            await alert_engine.evaluate_device_metrics(session, dev, engine_metrics, settings)
-
-            # Fan-out per-peer radio metrics to each child LR (matched by MAC).
-            # Discovery has already created/linked LR rows for every peer above,
-            # so simply look up children of this Rocket and persist that peer's
-            # metrics under the LR's id. This is what fills the LR detail
-            # modal's "Métriques radio" section — the LRs themselves are not
-            # reachable via SNMP/HTTP API from the supervisor (they sit behind
-            # the radio link), so the Rocket's API is the only source.
+            # Fan-out per-peer metrics to each child LR (matched by MAC).
+            # Each LR gets its own DeviceMetric rows AND its own alert engine
+            # pass so signal_low / ccq_low / cinr_low / etc. fire per-link,
+            # not just on whichever peer happened to be peers[0].
             for peer_mac, peer_metrics in per_peer_metrics:
                 if not peer_mac:
                     continue
                 if not any(v is not None for v in peer_metrics.values()):
                     continue
                 lr_q = await session.execute(
-                    select(Device).where(
-                        Device.parent_id == dev.id,
-                        Device.mac_address == peer_mac,
+                    select(Lr).where(
+                        Lr.rocket_id == dev.id,
+                        Lr.mac_address == peer_mac,
                     )
                 )
                 lr = lr_q.scalar_one_or_none()
                 if lr is None:
                     continue
+                # Sync the stable distance_m column for quick UI display.
+                distance = peer_metrics.get("distance_m")
+                if distance is not None:
+                    lr.distance_m = distance
                 for metric_name, value in peer_metrics.items():
                     if value is not None:
                         session.add(DeviceMetric(
@@ -1002,6 +1008,11 @@ async def ltu_api_poll_job() -> None:
                             metric_value=value,
                             unit=unit_map.get(metric_name),
                         ))
+                # Per-LR alert engine pass — radio-quality rules evaluate
+                # against this LR's metrics, not the Rocket's peer[0].
+                await alert_engine.evaluate_device_metrics(
+                    session, lr, dict(peer_metrics), settings,
+                )
 
             await session.commit()
 
@@ -1033,9 +1044,7 @@ async def lr_transit_probe_job() -> None:
 
     async with async_session_factory() as session:
         # ── 1. Trouver le LTU LR ─────────────────────────────────────────────
-        lr_res = await session.execute(
-            select(Device).where(Device.device_type == "ltu_lr")
-        )
+        lr_res = await session.execute(select(Lr))
         lr = lr_res.scalars().first()
 
         if lr is None:
@@ -1172,10 +1181,7 @@ async def stale_lr_detection_job() -> None:
 
     async with async_session_factory() as session:
         result = await session.execute(
-            select(Device).where(
-                Device.device_type == "ltu_lr",
-                Device.auto_discovered.is_(True),
-            )
+            select(Lr).where(Lr.auto_discovered.is_(True))
         )
         lrs = list(result.scalars().all())
 

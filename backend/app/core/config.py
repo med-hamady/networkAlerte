@@ -105,10 +105,8 @@ class Settings(BaseSettings):
     # Transit probe — disable entirely if LTU LR is not part of the topology
     transit_probe_enabled: bool = True
 
-    # Switch port monitoring
-    switch_rocket_port_index: int = 0   # SNMP interface index of port connected to LTU Rocket (0 = disabled)
-    switch_max_ports: int = 16          # max interfaces to walk on the switch
-    switch_port_min_speed_mbps: float = 1000.0  # below → critical (port UP but link below Gigabit)
+    # Switch port monitoring is configured per-UispSwitch in the database
+    # (max_ports / rocket_port_index / port_min_speed_mbps). No global defaults.
 
     # Anomaly thresholds — radio link (LTU Rocket / LTU LR)
     signal_warning_dbm: int = -70   # below → warning incident

@@ -33,8 +33,8 @@ export default function DashboardPage() {
 
   const childrenMap: Record<number, number> = {}
   devices?.forEach(d => {
-    if (d.parent_id != null) {
-      childrenMap[d.parent_id] = (childrenMap[d.parent_id] ?? 0) + 1
+    if (d.device_type === 'lr' && d.rocket_id != null) {
+      childrenMap[d.rocket_id] = (childrenMap[d.rocket_id] ?? 0) + 1
     }
   })
 

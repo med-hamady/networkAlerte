@@ -5,12 +5,12 @@ import useSWR from 'swr'
 import { endpoints, fetcher, runDiag } from '@/lib/api'
 import type { DiagResult } from '@/lib/api'
 import type { Device, DeviceMetrics } from '@/lib/types'
-import { deviceTypeLabel, formatDate, timeAgo, formatBytes, formatUptime } from '@/lib/types'
+import { deviceLabel, formatDate, timeAgo, formatBytes, formatUptime, parentRocketId } from '@/lib/types'
 import { useThresholds } from '@/lib/useThresholds'
 import DeviceImage from './DeviceImage'
 import DevicePolicyOverridesEditor from './DevicePolicyOverridesEditor'
 
-const RADIO_TYPES = new Set(['ltu_rocket', 'ltu_lr', 'airmax_rocket'])
+const RADIO_TYPES = new Set(['rocket', 'lr'])
 const REFRESH     = 15_000
 
 interface Props {
@@ -55,13 +55,13 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
   const isPower  = device.device_type === 'uisp_power'
   const isUp     = device.status === 'up'
   const isDown   = device.status === 'down'
-  const isRocket = device.device_type === 'ltu_rocket'
+  const isRocket = device.device_type === 'rocket'
 
   const thresholds = useThresholds()
 
   // Children LRs linked to this Rocket
   const linkedLRs = isRocket
-    ? devices.filter(d => d.parent_id === device.id)
+    ? devices.filter(d => parentRocketId(d) === device.id)
     : []
 
   const { data: metrics } = useSWR<DeviceMetrics>(
@@ -76,7 +76,7 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
       <div className="flex items-center justify-between px-6 py-4 border-b border-blue-100 bg-white sticky top-0 z-10">
         <div>
           <p className="font-bold text-slate-800 text-base">{device.name}</p>
-          <p className="text-blue-400 text-xs mt-0.5">{deviceTypeLabel(device.device_type)}</p>
+          <p className="text-blue-400 text-xs mt-0.5">{deviceLabel(device)}</p>
         </div>
         <button
           onClick={onClose}
@@ -135,7 +135,7 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
                 <p className="text-blue-300 text-sm">Aucun LR lié à cette Rocket</p>
                 <p className="text-blue-200 text-xs mt-1">
                   Assignez un LR via{' '}
-                  <code className="bg-blue-50 px-1 rounded">PATCH /api/v1/devices/{'<id>'}  {"{"}"parent_id": {device.id}{"}"}</code>
+                  <code className="bg-blue-50 px-1 rounded">PUT /api/v1/devices/{'<id>'}  {"{"}"rocket_id": {device.id}{"}"}</code>
                 </p>
               </div>
             ) : (
@@ -155,8 +155,7 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
         {/* Base info */}
         <Section title="Informations générales">
           <MetricRow label="Adresse IP"    value={<span className="font-mono text-blue-700">{device.ip_address}</span>} />
-          <MetricRow label="Type"          value={deviceTypeLabel(device.device_type)} />
-          {device.model    && <MetricRow label="Modèle"       value={device.model} />}
+          <MetricRow label="Type"          value={deviceLabel(device)} />
           {device.location && <MetricRow label="Localisation" value={device.location} />}
           <MetricRow
             label="Dernière vue"
@@ -183,7 +182,7 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
         {/* Radio metrics */}
         {isRadio && metrics && (
           <Section title="Métriques radio">
-            {metrics.eth_if_up?.value != null && (device.device_type === 'ltu_rocket' || device.device_type === 'airmax_rocket') && (
+            {metrics.eth_if_up?.value != null && device.device_type === 'rocket' && (
               <MetricRow label="Lien switch (eth0)" value={<LinkStatus up={metrics.eth_if_up.value === 1} />} />
             )}
             {metrics.radio_if_up?.value != null && (
@@ -333,7 +332,7 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
         )}
 
         {/* Diagnostics */}
-        {device.device_type === 'ltu_lr' && (
+        {device.device_type === 'lr' && (
           <Section title="Diagnostics">
             <DiagRow label="SSH"          url={endpoints.checkSsh(device.id)} />
             <DiagRow label="Ping 8.8.8.8" url={endpoints.checkPing(device.id)} />
@@ -371,7 +370,7 @@ function LRMiniCard({ lr, onClick }: { lr: Device; onClick: () => void }) {
       <div className={`w-12 h-12 rounded-lg flex items-center justify-center shrink-0 ${
         isDown ? 'bg-red-100' : 'bg-blue-50'
       }`}>
-        <DeviceImage type="ltu_lr" size="sm" />
+        <DeviceImage type="lr" size="sm" />
       </div>
 
       {/* Info */}

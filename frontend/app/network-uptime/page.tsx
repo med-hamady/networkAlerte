@@ -337,11 +337,15 @@ function DeviceRow({
           <div className="text-slate-700">{device.episodes_count} épisode{device.episodes_count > 1 ? 's' : ''}</div>
           {flapping && (
             <div
-              title={`${device.raw_episodes_count} pannes brutes en ${device.episodes_count} salve(s). Indique un lien physiquement instable — câble, sertissage, étanchéité, alimentation limite, ou mât qui bouge.`}
+              title={`${device.raw_episodes_count} coupures brutes fusionnées en ${device.episodes_count} épisode(s) affiché(s). Indique un lien physiquement instable — câble, sertissage, étanchéité, alimentation limite, ou mât qui bouge.`}
               className="mt-1 inline-flex items-center gap-1.5 text-xs font-bold px-2 py-1 rounded-md bg-orange-100 text-orange-800 border border-orange-300 shadow-sm"
             >
               <span className="text-base leading-none">⚡</span>
-              <span>INSTABLE ×{device.raw_episodes_count}</span>
+              <span>
+                INSTABLE {device.raw_episodes_count}
+                <span className="font-normal opacity-75"> coupures → </span>
+                {device.episodes_count} épisode{device.episodes_count > 1 ? 's' : ''}
+              </span>
             </div>
           )}
         </td>

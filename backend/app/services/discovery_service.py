@@ -45,6 +45,13 @@ from app.services import incident_service, notification_service
 logger = logging.getLogger(__name__)
 
 
+# Credentials SSH standard pour toutes les LR côté client A2.
+# Appliqués automatiquement à chaque LR auto-découverte ; un opérateur peut
+# toujours les écraser ensuite via PUT /api/v1/devices/{id}.
+_LR_DEFAULT_SSH_USERNAME = "ubnt"
+_LR_DEFAULT_SSH_PASSWORD = "A2HQ@87654321"  # noqa: S105
+
+
 # ---------------------------------------------------------------------------
 # Public types
 # ---------------------------------------------------------------------------
@@ -284,6 +291,12 @@ async def _reconcile_single_peer(
             auto_discovered=True,
             first_discovered_at=now,
             last_discovered_at=now,
+            # Toutes les LR côté client partagent les mêmes credentials SSH
+            # (déploiement standardisé A2). La sonde transit en a besoin dès
+            # la découverte — sans cela, le job lr_transit_probe skip le device.
+            ssh_username=_LR_DEFAULT_SSH_USERNAME,
+            ssh_password=_LR_DEFAULT_SSH_PASSWORD,
+            ssh_port=22,
         )
         session.add(device)
         await session.flush()  # populate device.id for the lifecycle incident

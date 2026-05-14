@@ -341,7 +341,7 @@ function DeviceRow({
               className="mt-1 inline-flex items-center gap-1.5 text-xs font-bold px-2 py-1 rounded-md bg-orange-100 text-orange-800 border border-orange-300 shadow-sm"
             >
               <span className="text-base leading-none">⚡</span>
-              <span>FLAPPING ×{device.raw_episodes_count}</span>
+              <span>INSTABLE ×{device.raw_episodes_count}</span>
             </div>
           )}
         </td>
@@ -491,10 +491,10 @@ function Gantt({
           <span className="w-3 h-2 bg-amber-400 rounded-sm" /> Panne warning
         </span>
         <span className="flex items-center gap-1">
-          <span className="w-3 h-2 rounded-sm" style={flapHatchStyle} /> Plage flapping
+          <span className="w-3 h-2 rounded-sm" style={flapHatchStyle} /> Plage d'instabilité
         </span>
         <span className="flex items-center gap-1">
-          <span className="w-3 h-2 bg-orange-600 rounded-sm" /> Chaque coupure individuelle (dans la plage flapping)
+          <span className="w-3 h-2 bg-orange-600 rounded-sm" /> Chaque coupure individuelle (dans la plage d'instabilité)
         </span>
         <span className="text-blue-300 ml-auto">Survol → détail</span>
       </div>
@@ -527,7 +527,7 @@ function EpisodeLine({ episode: ep }: { episode: DowntimeEpisode }) {
               title={`${ep.flap_count} pannes brutes fusionnées sur cette plage`}
               className="ml-2 inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded bg-orange-50 text-orange-700 border border-orange-200"
             >
-              ⚡ flapping ×{ep.flap_count}
+              ⚡ instable ×{ep.flap_count}
             </span>
           )}
         </div>

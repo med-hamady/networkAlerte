@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type { DeviceDowntime, DowntimeEpisode, DowntimeLogResponse } from '@/lib/types'
-import { deviceTypeLabel } from '@/lib/types'
+import { alertTypeLabel, deviceTypeLabel, severityLabel } from '@/lib/types'
 
 // ─── Date helpers — convert between browser-local <input> and UTC ISO ─────
 function nowMinusHoursLocalInput(hours: number): string {
@@ -534,9 +534,9 @@ function EpisodeLine({ episode: ep }: { episode: DowntimeEpisode }) {
         <div className="text-[11px] text-slate-500">
           Durée : <span className="font-medium">{fmtDuration(ep.duration_seconds)}</span>
           {' · '}
-          Sévérité : <span className="font-medium">{ep.severity}</span>
+          Sévérité : <span className="font-medium">{severityLabel(ep.severity)}</span>
           {' · '}
-          Type : <span className="font-mono">{ep.alert_type}</span>
+          Type : <span className="font-medium">{alertTypeLabel(ep.alert_type)}</span>
           {' · '}
           Incident #{ep.incident_id}
         </div>

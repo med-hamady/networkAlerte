@@ -1,8 +1,11 @@
 import type {
   AlertPolicy,
   AlertRecord,
+  BadInstallationRow,
+  BadInstallationsResponse,
   Device,
   DeviceFormData,
+  DowntimeLogResponse,
   HealthResponse,
   Incident,
   NotificationChannel,
@@ -41,6 +44,9 @@ export const endpoints = {
   testEmail:            `${API_BASE}/notifications/test-email`,
   reportGenerate:       (params: string) => `${API_BASE}/reports/generate?${params}`,
   thresholds:           `${API_BASE}/system/thresholds`,
+  badInstallations:     (days = 30) => `${API_BASE}/lr-health/bad-installations?days=${days}`,
+  downtimeLog:          (startIso: string, endIso: string) =>
+    `${API_BASE}/network-uptime/downtime-log?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`,
 }
 
 export interface DiagResult { ok: boolean; message: string }
@@ -172,7 +178,10 @@ export async function sendTestEmail(): Promise<TestEmailResult> {
 export type {
   AlertPolicy,
   AlertRecord,
+  BadInstallationRow,
+  BadInstallationsResponse,
   Device,
+  DowntimeLogResponse,
   HealthResponse,
   Incident,
   NotificationChannel,

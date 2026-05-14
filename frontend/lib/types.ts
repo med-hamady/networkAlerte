@@ -473,6 +473,96 @@ export interface Recommendation {
   alert_type: string | null
 }
 
+// ─── Bad installations (Liaisons clients) ──────────────────────────────────
+
+export type BadInstallationVerdict = 'watch' | 'suspect' | 'critical'
+
+export interface SignalEvidence {
+  key: string         // recurrence | persistence | variety | gravity | outlier | duration
+  label: string
+  active: boolean
+  value: string
+  detail: string
+}
+
+export interface BadInstallationRow {
+  lr_id: number
+  lr_name: string
+  lr_ip: string
+  lr_mac: string | null
+  model_variant: LrModelVariant
+  distance_m: number | null
+  first_discovered_at: string | null
+  rocket_id: number | null
+  rocket_name: string | null
+
+  verdict: BadInstallationVerdict
+  active_signals_count: number
+  signals: SignalEvidence[]
+
+  outages_count: number
+  downtime_hours: number
+
+  latest_signal_dbm: number | null
+  latest_noise_dbm: number | null
+  latest_ccq_pct: number | null
+
+  signal_warning_threshold: number
+}
+
+export const VERDICT_LABELS: Record<BadInstallationVerdict, string> = {
+  watch:    'À surveiller',
+  suspect:  'Suspect — à inspecter',
+  critical: 'Critique — à reprendre',
+}
+
+export interface BadInstallationsResponse {
+  period_days: number
+  generated_at: string
+  items: BadInstallationRow[]
+}
+
+// ─── Network uptime — Journal des coupures ─────────────────────────────────
+
+export interface FlapSubEpisode {
+  started_at: string
+  ended_at: string | null
+  duration_seconds: number
+}
+
+export interface DowntimeEpisode {
+  incident_id: number
+  alert_type: string
+  severity: string                  // warning | critical
+  started_at: string
+  ended_at: string | null           // null = still ongoing
+  is_ongoing: boolean
+  duration_seconds: number
+  flap_count: number                // 1 = single outage, >1 = fused flapping
+  flaps: FlapSubEpisode[]           // raw sub-incidents (empty when flap_count == 1)
+}
+
+export interface DeviceDowntime {
+  device_id: number
+  device_name: string
+  device_ip: string
+  device_type: string               // rocket | uisp_switch | uisp_power
+  current_status: string            // up | down | unknown
+  episodes_count: number            // after merging
+  raw_episodes_count: number        // before merging — flapping signal
+  total_downtime_seconds: number
+  longest_episode_seconds: number
+  availability_pct: number
+  episodes: DowntimeEpisode[]
+}
+
+export interface DowntimeLogResponse {
+  start: string
+  end: string
+  merge_gap_seconds: number
+  items: DeviceDowntime[]
+}
+
 export interface SupervisionReport {
   generated_at: string
   period: ReportPeriodSummary

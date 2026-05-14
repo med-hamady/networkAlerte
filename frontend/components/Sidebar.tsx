@@ -13,6 +13,8 @@ const links = [
   { href: '/incidents/archive',     label: 'Archive',           icon: ArchiveIcon    },
   { href: '/notifications',         label: 'Notifications',     icon: BellIcon       },
   { href: '/topology',              label: 'Topologie',         icon: TopologyIcon   },
+  { href: '/lr-health',             label: 'Liaisons clients',  icon: LinkIcon       },
+  { href: '/network-uptime',        label: 'Journal coupures',  icon: ClockIcon      },
   { href: '/alert-policies',        label: 'Policies',          icon: PolicyIcon     },
   { href: '/notification-channels', label: 'Canaux',            icon: ChannelIcon    },
   { href: '/reports',               label: 'Rapports',    icon: ReportIcon     },
@@ -184,6 +186,24 @@ function ReportIcon({ className }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round"
         d="M9 17v-6m3 6V7m3 10v-4M5 21h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z" />
+    </svg>
+  )
+}
+
+function ClockIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <circle cx="12" cy="12" r="9" strokeLinecap="round" strokeLinejoin="round" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 7v5l3 2" />
+    </svg>
+  )
+}
+
+function LinkIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round"
+        d="M13.828 10.172a4 4 0 00-5.656 0l-3 3a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l3-3a4 4 0 00-5.656-5.656l-1.1 1.1" />
     </svg>
   )
 }

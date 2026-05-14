@@ -32,23 +32,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.core.radio_thresholds import (
+    signal_critical_threshold,
+    signal_distance_band_label,
+    signal_warning_threshold,
+)
+
 
 @dataclass
 class AlertEvalResult:
     """Result of a single rule evaluation."""
 
     alert_type: str
-    severity: str | None        # None = OK, engine resolves open alert
+    severity: str | None  # None = OK, engine resolves open alert
     metric_name: str | None
     metric_value: float | None
     threshold_value: float | None
     message: str
-    skip: bool = False          # True = metric absent, engine ignores (no increment, no reset)
+    skip: bool = False  # True = metric absent, engine ignores (no increment, no reset)
 
 
 # ---------------------------------------------------------------------------
 # Base rule
 # ---------------------------------------------------------------------------
+
 
 class AlertRule:
     """Base class for all alert rules."""
@@ -65,11 +72,12 @@ class AlertRule:
 # Famille B — Interface et lien local
 # ---------------------------------------------------------------------------
 
+
 class RadioInterfaceDownRule(AlertRule):
     """Détecte l'interface radio (ath0) hors service via SNMP ifOperStatus."""
 
     alert_type = "radio_interface_down"
-    failure_threshold = 0   # immédiat — panne matérielle franche
+    failure_threshold = 0  # immédiat — panne matérielle franche
 
     def evaluate(self, device_name: str, metrics: dict, settings) -> AlertEvalResult:
         radio_up = metrics.get("radio_if_up")
@@ -106,7 +114,7 @@ class Eth0DownRule(AlertRule):
     """Détecte le lien Ethernet (eth0) hors service via SNMP ifOperStatus."""
 
     alert_type = "eth0_down"
-    failure_threshold = 0   # immédiat
+    failure_threshold = 0  # immédiat
 
     def evaluate(self, device_name: str, metrics: dict, settings) -> AlertEvalResult:
         eth_up = metrics.get("eth_if_up")
@@ -146,7 +154,7 @@ class CPEDisconnectedRule(AlertRule):
     """Détecte l'absence de CPE associé au LTU Rocket (peer_count == 0)."""
 
     alert_type = "cpe_disconnected"
-    failure_threshold = 0   # immédiat
+    failure_threshold = 0  # immédiat
 
     def evaluate(self, device_name: str, metrics: dict, settings) -> AlertEvalResult:
         peer_count = metrics.get("peer_count")
@@ -186,6 +194,7 @@ class CPEDisconnectedRule(AlertRule):
 # Famille C — Qualité radio
 # ---------------------------------------------------------------------------
 
+
 class SignalLowRule(AlertRule):
     """Signal radio faible (dBm) — seuils configurables."""
 
@@ -207,28 +216,33 @@ class SignalLowRule(AlertRule):
                 message="",
                 skip=True,
             )
-        if signal < settings.signal_critical_dbm:
+        distance_m = metrics.get("distance_m")
+        warn_dbm = signal_warning_threshold(distance_m, settings.signal_warning_dbm)
+        crit_dbm = signal_critical_threshold(distance_m, settings.signal_critical_dbm)
+        band = signal_distance_band_label(distance_m)
+
+        if signal < crit_dbm:
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity="critical",
                 metric_name="signal_dbm",
                 metric_value=signal,
-                threshold_value=float(settings.signal_critical_dbm),
+                threshold_value=float(crit_dbm),
                 message=(
                     f"ALERTE CRITIQUE : signal radio faible sur {device_name} : "
-                    f"{signal:.1f} dBm (seuil critique {settings.signal_critical_dbm} dBm)"
+                    f"{signal:.1f} dBm (seuil critique {crit_dbm:.0f} dBm, {band})"
                 ),
             )
-        if signal < settings.signal_warning_dbm:
+        if signal < warn_dbm:
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity="warning",
                 metric_name="signal_dbm",
                 metric_value=signal,
-                threshold_value=float(settings.signal_warning_dbm),
+                threshold_value=float(warn_dbm),
                 message=(
                     f"ALERTE WARNING : signal radio dégradé sur {device_name} : "
-                    f"{signal:.1f} dBm (seuil warning {settings.signal_warning_dbm} dBm)"
+                    f"{signal:.1f} dBm (seuil warning {warn_dbm:.0f} dBm, {band})"
                 ),
             )
         return AlertEvalResult(
@@ -372,7 +386,11 @@ class RadioLinkDegradedRule(AlertRule):
                 skip=True,
             )
 
-        if signal is not None and signal < settings.signal_warning_dbm:
+        distance_m = metrics.get("distance_m")
+        sig_warn = signal_warning_threshold(distance_m, settings.signal_warning_dbm)
+        sig_crit = signal_critical_threshold(distance_m, settings.signal_critical_dbm)
+
+        if signal is not None and signal < sig_warn:
             bad_metrics.append(f"signal={signal:.1f}dBm")
 
         if cinr is not None and cinr < settings.cinr_warning_db:
@@ -384,7 +402,7 @@ class RadioLinkDegradedRule(AlertRule):
         if len(bad_metrics) >= 2:
             worst_sev = "warning"
             if (
-                (signal is not None and signal < settings.signal_critical_dbm)
+                (signal is not None and signal < sig_crit)
                 or (cinr is not None and cinr < settings.cinr_critical_db)
                 or (ccq is not None and ccq < settings.ccq_critical_pct)
             ):
@@ -415,6 +433,7 @@ class RadioLinkDegradedRule(AlertRule):
 # ---------------------------------------------------------------------------
 # Famille D — Performance du lien
 # ---------------------------------------------------------------------------
+
 
 class CapacityLowRule(AlertRule):
     """
@@ -569,6 +588,7 @@ class HighRxTxErrorsRule(AlertRule):
 # Famille C bis — Qualité radio UL (uplink)
 # ---------------------------------------------------------------------------
 
+
 class CCQLowULRule(AlertRule):
     """CCQ uplink faible (%) — même seuils que le DL."""
 
@@ -578,14 +598,20 @@ class CCQLowULRule(AlertRule):
         ccq_ul = metrics.get("ul_ccq_pct")
         if ccq_ul is None:
             return AlertEvalResult(
-                alert_type=self.alert_type, severity=None,
-                metric_name="ul_ccq_pct", metric_value=None, threshold_value=None, message="",
+                alert_type=self.alert_type,
+                severity=None,
+                metric_name="ul_ccq_pct",
+                metric_value=None,
+                threshold_value=None,
+                message="",
                 skip=True,
             )
         if ccq_ul < settings.ccq_critical_pct:
             return AlertEvalResult(
-                alert_type=self.alert_type, severity="critical",
-                metric_name="ul_ccq_pct", metric_value=ccq_ul,
+                alert_type=self.alert_type,
+                severity="critical",
+                metric_name="ul_ccq_pct",
+                metric_value=ccq_ul,
                 threshold_value=float(settings.ccq_critical_pct),
                 message=(
                     f"ALERTE CRITIQUE : CCQ UL faible sur {device_name} : "
@@ -594,8 +620,10 @@ class CCQLowULRule(AlertRule):
             )
         if ccq_ul < settings.ccq_warning_pct:
             return AlertEvalResult(
-                alert_type=self.alert_type, severity="warning",
-                metric_name="ul_ccq_pct", metric_value=ccq_ul,
+                alert_type=self.alert_type,
+                severity="warning",
+                metric_name="ul_ccq_pct",
+                metric_value=ccq_ul,
                 threshold_value=float(settings.ccq_warning_pct),
                 message=(
                     f"ALERTE WARNING : CCQ UL faible sur {device_name} : "
@@ -603,8 +631,11 @@ class CCQLowULRule(AlertRule):
                 ),
             )
         return AlertEvalResult(
-            alert_type=self.alert_type, severity=None,
-            metric_name="ul_ccq_pct", metric_value=ccq_ul, threshold_value=None,
+            alert_type=self.alert_type,
+            severity=None,
+            metric_name="ul_ccq_pct",
+            metric_value=ccq_ul,
+            threshold_value=None,
             message=f"RECOVERY : CCQ UL de {device_name} de nouveau nominal ({ccq_ul:.1f}%)",
         )
 
@@ -618,14 +649,20 @@ class CINRLowULRule(AlertRule):
         cinr_ul = metrics.get("ul_cinr_db")
         if cinr_ul is None:
             return AlertEvalResult(
-                alert_type=self.alert_type, severity=None,
-                metric_name="ul_cinr_db", metric_value=None, threshold_value=None, message="",
+                alert_type=self.alert_type,
+                severity=None,
+                metric_name="ul_cinr_db",
+                metric_value=None,
+                threshold_value=None,
+                message="",
                 skip=True,
             )
         if cinr_ul < settings.cinr_critical_db:
             return AlertEvalResult(
-                alert_type=self.alert_type, severity="critical",
-                metric_name="ul_cinr_db", metric_value=cinr_ul,
+                alert_type=self.alert_type,
+                severity="critical",
+                metric_name="ul_cinr_db",
+                metric_value=cinr_ul,
                 threshold_value=settings.cinr_critical_db,
                 message=(
                     f"ALERTE CRITIQUE : CINR UL faible sur {device_name} : "
@@ -634,8 +671,10 @@ class CINRLowULRule(AlertRule):
             )
         if cinr_ul < settings.cinr_warning_db:
             return AlertEvalResult(
-                alert_type=self.alert_type, severity="warning",
-                metric_name="ul_cinr_db", metric_value=cinr_ul,
+                alert_type=self.alert_type,
+                severity="warning",
+                metric_name="ul_cinr_db",
+                metric_value=cinr_ul,
                 threshold_value=settings.cinr_warning_db,
                 message=(
                     f"ALERTE WARNING : CINR UL faible sur {device_name} : "
@@ -643,8 +682,11 @@ class CINRLowULRule(AlertRule):
                 ),
             )
         return AlertEvalResult(
-            alert_type=self.alert_type, severity=None,
-            metric_name="ul_cinr_db", metric_value=cinr_ul, threshold_value=None,
+            alert_type=self.alert_type,
+            severity=None,
+            metric_name="ul_cinr_db",
+            metric_value=cinr_ul,
+            threshold_value=None,
             message=f"RECOVERY : CINR UL de {device_name} de nouveau nominal ({cinr_ul:.1f} dB)",
         )
 
@@ -664,8 +706,12 @@ class CapacityLowULRule(AlertRule):
 
         if rx_rate is None or rx_ideal is None or rx_ideal <= 0:
             return AlertEvalResult(
-                alert_type=self.alert_type, severity=None,
-                metric_name="rx_rate_pct", metric_value=None, threshold_value=None, message="",
+                alert_type=self.alert_type,
+                severity=None,
+                metric_name="rx_rate_pct",
+                metric_value=None,
+                threshold_value=None,
+                message="",
                 skip=True,
             )
 
@@ -673,8 +719,10 @@ class CapacityLowULRule(AlertRule):
 
         if capacity_pct < settings.capacity_low_critical_pct:
             return AlertEvalResult(
-                alert_type=self.alert_type, severity="critical",
-                metric_name="rx_rate_pct", metric_value=round(capacity_pct, 1),
+                alert_type=self.alert_type,
+                severity="critical",
+                metric_name="rx_rate_pct",
+                metric_value=round(capacity_pct, 1),
                 threshold_value=settings.capacity_low_critical_pct,
                 message=(
                     f"ALERTE CRITIQUE : capacité UL très faible sur {device_name} : "
@@ -684,8 +732,10 @@ class CapacityLowULRule(AlertRule):
             )
         if capacity_pct < settings.capacity_low_warning_pct:
             return AlertEvalResult(
-                alert_type=self.alert_type, severity="warning",
-                metric_name="rx_rate_pct", metric_value=round(capacity_pct, 1),
+                alert_type=self.alert_type,
+                severity="warning",
+                metric_name="rx_rate_pct",
+                metric_value=round(capacity_pct, 1),
                 threshold_value=settings.capacity_low_warning_pct,
                 message=(
                     f"ALERTE WARNING : capacité UL dégradée sur {device_name} : "
@@ -694,8 +744,10 @@ class CapacityLowULRule(AlertRule):
                 ),
             )
         return AlertEvalResult(
-            alert_type=self.alert_type, severity=None,
-            metric_name="rx_rate_pct", metric_value=round(capacity_pct, 1),
+            alert_type=self.alert_type,
+            severity=None,
+            metric_name="rx_rate_pct",
+            metric_value=round(capacity_pct, 1),
             threshold_value=None,
             message=f"RECOVERY : capacité UL de {device_name} de nouveau nominale",
         )
@@ -704,6 +756,7 @@ class CapacityLowULRule(AlertRule):
 # ---------------------------------------------------------------------------
 # Famille D — Anomalie de débit (throughput_anomaly)
 # ---------------------------------------------------------------------------
+
 
 class ThroughputAnomalyRule(AlertRule):
     """
@@ -817,10 +870,10 @@ _AIRMAX_ROCKET_RULES: list[AlertRule] = [
 ]
 
 RULES_BY_DEVICE_TYPE: dict[str, list[AlertRule]] = {
-    "ltu_rocket":    _ROCKET_RULES,
-    "lr":            _LR_RULES,
-    "uisp_switch":   _SWITCH_RULES,
-    "uisp_power":    [],
+    "ltu_rocket": _ROCKET_RULES,
+    "lr": _LR_RULES,
+    "uisp_switch": _SWITCH_RULES,
+    "uisp_power": [],
     "airmax_rocket": _AIRMAX_ROCKET_RULES,
 }
 

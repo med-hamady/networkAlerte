@@ -9,11 +9,12 @@ import type { HealthResponse } from '@/lib/types'
 const links = [
   { href: '/',                      label: 'Dashboard',   icon: DashboardIcon  },
   { href: '/devices',               label: 'Équipements', icon: ServerIcon     },
-  { href: '/incidents',             label: 'Incidents',   icon: WarningIcon,   exact: true },
-  { href: '/incidents/archive',     label: 'Archive',     icon: ArchiveIcon    },
-  { href: '/topology',              label: 'Topologie',   icon: TopologyIcon   },
-  { href: '/alert-policies',        label: 'Policies',    icon: PolicyIcon     },
-  { href: '/notification-channels', label: 'Canaux',      icon: ChannelIcon    },
+  { href: '/incidents',             label: 'Incidents',         icon: WarningIcon,   exact: true },
+  { href: '/incidents/archive',     label: 'Archive',           icon: ArchiveIcon    },
+  { href: '/notifications',         label: 'Notifications',     icon: BellIcon       },
+  { href: '/topology',              label: 'Topologie',         icon: TopologyIcon   },
+  { href: '/alert-policies',        label: 'Policies',          icon: PolicyIcon     },
+  { href: '/notification-channels', label: 'Canaux',            icon: ChannelIcon    },
   { href: '/reports',               label: 'Rapports',    icon: ReportIcon     },
   { href: '/settings',              label: 'Seuils',      icon: SettingsIcon   },
 ]
@@ -165,6 +166,15 @@ function ChannelIcon({ className }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round"
         d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+    </svg>
+  )
+}
+
+function BellIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round"
+        d="M10 5a2 2 0 114 0c3.31 0 6 2.69 6 6v4l1.5 2H2.5L4 15v-4c0-3.31 2.69-6 6-6zM9 19a3 3 0 006 0" />
     </svg>
   )
 }

@@ -122,14 +122,102 @@ export default function ReportsPage() {
           </div>
 
           <PeriodSummaryCard period={report.period} />
-          <DeviceReliabilityCard data={report.device_reliability} />
+
+          {(() => {
+            const typeById = new Map<number, string>(
+              report.device_reliability.map((d) => [d.device_id, d.device_type]),
+            )
+            const isClient = (deviceType: string | undefined) => deviceType === 'lr'
+
+            const clientReliability = report.device_reliability.filter((d) => isClient(d.device_type))
+            const networkReliability = report.device_reliability.filter((d) => !isClient(d.device_type))
+
+            const clientRadio = report.radio_metrics.filter((m) => isClient(typeById.get(m.device_id)))
+            const networkRadio = report.radio_metrics.filter((m) => !isClient(typeById.get(m.device_id)))
+
+            const clientWeak = report.weak_points.filter((w) => isClient(typeById.get(w.device_id)))
+            const networkWeak = report.weak_points.filter((w) => !isClient(typeById.get(w.device_id)))
+
+            const hasClient =
+              clientReliability.length + clientRadio.length + clientWeak.length > 0
+            const hasNetwork =
+              networkReliability.length + networkRadio.length + networkWeak.length > 0
+
+            return (
+              <>
+                <SectionHeader
+                  title="Côté clients — LTU LR"
+                  subtitle="Équipements installés chez les clients : problèmes liés à la qualité du service délivré."
+                  accent="amber"
+                />
+                {hasClient ? (
+                  <>
+                    <DeviceReliabilityCard data={clientReliability} />
+                    <RadioMetricsCard data={clientRadio} />
+                    <WeakPointsCard data={clientWeak} />
+                  </>
+                ) : (
+                  <EmptySection message="Aucun problème détecté côté clients sur la période." />
+                )}
+
+                <SectionHeader
+                  title="Côté réseau — Rockets, Switches, UISP Power"
+                  subtitle="Équipements d'infrastructure : problèmes liés au cœur de réseau et à l'alimentation."
+                  accent="blue"
+                />
+                {hasNetwork ? (
+                  <>
+                    <DeviceReliabilityCard data={networkReliability} />
+                    <RadioMetricsCard data={networkRadio} />
+                    <WeakPointsCard data={networkWeak} />
+                  </>
+                ) : (
+                  <EmptySection message="Aucun problème détecté côté réseau sur la période." />
+                )}
+              </>
+            )
+          })()}
+
+          <SectionHeader
+            title="Synthèse globale"
+            subtitle="Vue agrégée des alertes et recommandations sur l'ensemble du réseau."
+            accent="slate"
+          />
           <AlertFrequencyCard data={report.alert_frequencies} />
-          <RadioMetricsCard data={report.radio_metrics} />
-          <WeakPointsCard data={report.weak_points} />
           <RecommendationsCard data={report.recommendations} />
         </>
       )}
     </div>
+  )
+}
+
+function SectionHeader({
+  title,
+  subtitle,
+  accent,
+}: {
+  title: string
+  subtitle: string
+  accent: 'amber' | 'blue' | 'slate'
+}) {
+  const styles = {
+    amber: 'bg-amber-50 border-amber-300 text-amber-900',
+    blue: 'bg-blue-50 border-blue-300 text-blue-900',
+    slate: 'bg-slate-50 border-slate-300 text-slate-900',
+  }[accent]
+  return (
+    <div className={`print-card border-l-4 rounded-r-xl px-5 py-3 mt-4 ${styles}`}>
+      <h2 className="text-base font-bold uppercase tracking-wider">{title}</h2>
+      <p className="text-sm mt-1 opacity-80">{subtitle}</p>
+    </div>
+  )
+}
+
+function EmptySection({ message }: { message: string }) {
+  return (
+    <section className="print-card bg-white border border-blue-100 rounded-xl p-6 shadow-sm">
+      <p className="text-sm text-green-600">{message}</p>
+    </section>
   )
 }
 

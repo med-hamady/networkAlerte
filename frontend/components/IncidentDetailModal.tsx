@@ -1,7 +1,7 @@
 'use client'
 
 import type { Incident } from '@/lib/types'
-import { formatDate, probableCauseLabel } from '@/lib/types'
+import { alertTypeLabel, formatDate, metricLabel, probableCauseLabel } from '@/lib/types'
 import SeverityBadge from './SeverityBadge'
 import IncidentStatusBadge from './IncidentStatusBadge'
 
@@ -41,7 +41,7 @@ export default function IncidentDetailModal({
               )}
             </div>
             <h2 className="text-lg font-bold text-blue-900">
-              {incident.alert_type ?? 'incident'}
+              {alertTypeLabel(incident.alert_type)}
               <span className="text-blue-400 font-normal ml-2 text-sm">#{incident.id}</span>
             </h2>
           </div>
@@ -92,10 +92,9 @@ export default function IncidentDetailModal({
                     label="Métrique"
                     value={
                       incident.metric_value !== null
-                        ? `${incident.metric_name} = ${incident.metric_value}`
-                        : incident.metric_name
+                        ? `${metricLabel(incident.metric_name)} = ${incident.metric_value}`
+                        : metricLabel(incident.metric_name)
                     }
-                    mono
                   />
                 )}
                 {incident.threshold_value !== null && (
@@ -119,7 +118,7 @@ export default function IncidentDetailModal({
           <Section title="Canaux de notification">
             <div className="flex gap-1 flex-wrap">
               {incident.notification_channel_policy.length === 0 ? (
-                <span className="text-blue-300 text-xs">Aucun canal configuré pour cet alert_type.</span>
+                <span className="text-blue-300 text-xs">Aucun canal configuré pour ce type d'alerte.</span>
               ) : (
                 incident.notification_channel_policy.map(c => (
                   <span

@@ -20,6 +20,7 @@ from app.core.alert_constants import (
     NotificationEvent,
     Severity,
 )
+from app.core.alert_labels import alert_type_label, metric_label
 from app.models.device import Device
 from app.models.incident import Incident
 from app.services.alert_policy import get_policy
@@ -81,7 +82,7 @@ def _metric_line(incident: Incident) -> str | None:
     """Render the metric line if metric data is attached to the incident."""
     if incident.metric_name is None:
         return None
-    parts = [f"{incident.metric_name}"]
+    parts = [metric_label(incident.metric_name)]
     if incident.metric_value is not None:
         parts.append(f"= {incident.metric_value}")
     if incident.threshold_value is not None:
@@ -100,11 +101,11 @@ def format_human_readable(
 ) -> str:
     """Single block of text suitable for logs, terminal output, or chat."""
     policy = get_policy(incident.alert_type)
-    alert_type = incident.alert_type or "unknown"
+    alert_label = alert_type_label(incident.alert_type)
 
     if event == NotificationEvent.RESOLVED:
         return (
-            f"{_RECOVERY_EMOJI} RECOVERY — {alert_type} résolu\n"
+            f"{_RECOVERY_EMOJI} RÉTABLI — {alert_label}\n"
             f"Équipement   : {device.name}\n"
             f"IP           : {device.ip_address}\n"
             f"Résolu à     : {_fmt_dt(incident.resolved_at)}\n"
@@ -116,7 +117,7 @@ def format_human_readable(
     label = _severity_label(severity)
 
     lines = [
-        f"{emoji} {label} — {alert_type}",
+        f"{emoji} {label} — {alert_label}",
         f"Équipement   : {device.name} ({device.device_type})",
         f"IP           : {device.ip_address}",
     ]
@@ -135,11 +136,11 @@ def format_human_readable(
 # ---------------------------------------------------------------------------
 
 def _email_subject(device: Device, incident: Incident, event: str) -> str:
-    alert_type = incident.alert_type or "incident"
+    alert_label = alert_type_label(incident.alert_type)
     if event == NotificationEvent.RESOLVED:
-        return f"[RÉSOLU] {device.name} : {alert_type}"
+        return f"[RÉSOLU] {device.name} — {alert_label}"
     label = _severity_label(incident.severity)
-    return f"[{label}] {alert_type} — {device.name}"
+    return f"[{label}] {alert_label} — {device.name}"
 
 
 def _email_html_opened(device: Device, incident: Incident) -> str:
@@ -147,7 +148,7 @@ def _email_html_opened(device: Device, incident: Incident) -> str:
     severity = incident.severity or Severity.WARNING
     color = _SEVERITY_COLOR.get(severity, "#95a5a6")
     label = _severity_label(severity)
-    alert_type = incident.alert_type or "incident"
+    alert_label = alert_type_label(incident.alert_type)
 
     metric = _metric_line(incident)
     metric_row = (
@@ -173,7 +174,7 @@ def _email_html_opened(device: Device, incident: Incident) -> str:
   <div style="max-width:640px;margin:auto;background:#fff;border-radius:8px;overflow:hidden;
               box-shadow:0 2px 8px rgba(0,0,0,0.1);">
     <div style="background:{color};padding:20px 30px;">
-      <h2 style="color:#fff;margin:0;">{_severity_emoji(severity)} {label} — {alert_type}</h2>
+      <h2 style="color:#fff;margin:0;">{_severity_emoji(severity)} {label} — {alert_label}</h2>
     </div>
     <div style="padding:30px;">
       <table style="width:100%;border-collapse:collapse;font-size:14px;">
@@ -212,7 +213,7 @@ def _email_html_opened(device: Device, incident: Incident) -> str:
 
 
 def _email_html_resolved(device: Device, incident: Incident) -> str:
-    alert_type = incident.alert_type or "incident"
+    alert_label = alert_type_label(incident.alert_type)
     duration = _fmt_duration(incident.detected_at, incident.resolved_at)
     return f"""
 <!DOCTYPE html>
@@ -221,7 +222,7 @@ def _email_html_resolved(device: Device, incident: Incident) -> str:
   <div style="max-width:640px;margin:auto;background:#fff;border-radius:8px;overflow:hidden;
               box-shadow:0 2px 8px rgba(0,0,0,0.1);">
     <div style="background:{_RECOVERY_COLOR};padding:20px 30px;">
-      <h2 style="color:#fff;margin:0;">{_RECOVERY_EMOJI} RECOVERY — {alert_type} résolu</h2>
+      <h2 style="color:#fff;margin:0;">{_RECOVERY_EMOJI} RÉTABLI — {alert_label}</h2>
     </div>
     <div style="padding:30px;">
       <table style="width:100%;border-collapse:collapse;font-size:14px;">
@@ -271,7 +272,7 @@ def format_for_email(
 def _digest_line(device: Device, incident: Incident) -> str:
     """One-line summary of a single warning inside a digest."""
     parts = [
-        f"• {incident.alert_type or 'unknown'}",
+        f"• {alert_type_label(incident.alert_type)}",
         f"{device.name} ({device.ip_address})",
     ]
     metric = _metric_line(incident)
@@ -291,7 +292,7 @@ def _digest_text_body(items: list[tuple[Device, Incident]]) -> str:
     for dev, inc in items:
         by_type.setdefault(inc.alert_type or "unknown", []).append((dev, inc))
     for alert_type, group in sorted(by_type.items()):
-        lines.append(f"[{alert_type}] ({len(group)})")
+        lines.append(f"[{alert_type_label(alert_type)}] ({len(group)})")
         for dev, inc in group:
             lines.append(_digest_line(dev, inc))
         lines.append("")
@@ -313,7 +314,7 @@ def _digest_html_body(items: list[tuple[Device, Incident]]) -> str:
         )
         sections.append(f"""
         <h3 style="color:#333;margin-top:20px;margin-bottom:8px;">
-          {alert_type} <span style="color:#888;font-size:13px;">({len(group)})</span>
+          {alert_type_label(alert_type)} <span style="color:#888;font-size:13px;">({len(group)})</span>
         </h3>
         <table style="width:100%;border-collapse:collapse;font-size:13px;">{rows}</table>
         """)

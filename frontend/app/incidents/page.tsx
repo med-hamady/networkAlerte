@@ -5,7 +5,7 @@ import { useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type { Incident } from '@/lib/types'
-import { alertTypeLabel, formatDate, probableCauseLabel } from '@/lib/types'
+import { alertTypeLabel, formatDate, metricLabel, probableCauseLabel } from '@/lib/types'
 import IncidentDetailModal from '@/components/IncidentDetailModal'
 
 const SEVERITY_ORDER = ['critical', 'warning', 'info'] as const
@@ -124,7 +124,7 @@ export default function IncidentsPage() {
                           <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
                             {inc.metric_name && inc.metric_value !== null ? (
                               <span title={`Seuil : ${inc.threshold_value ?? '?'}`}>
-                                {inc.metric_name} = <strong>{inc.metric_value}</strong>
+                                {metricLabel(inc.metric_name)} = <strong>{inc.metric_value}</strong>
                               </span>
                             ) : '—'}
                           </td>

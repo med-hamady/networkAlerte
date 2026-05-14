@@ -137,7 +137,7 @@ function PolicyTable({ policies }: { policies: AlertPolicy[] }) {
       <table className="w-full text-sm">
         <thead className="bg-blue-50 border-b border-blue-100">
           <tr>
-            {['Alert type', 'Sévérité', 'Action recommandée', 'Notify imm.', 'Canaux', 'Groupable', 'Recovery'].map(h => (
+            {["Type d'alerte", 'Sévérité', 'Action recommandée', 'Notification immédiate', 'Canaux', 'Regroupable', 'Rétablissement'].map(h => (
               <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
                 {h}
               </th>
@@ -148,10 +148,7 @@ function PolicyTable({ policies }: { policies: AlertPolicy[] }) {
           {policies.map(p => (
             <tr key={p.alert_type} className="hover:bg-blue-50/50 transition-colors align-top">
               <td className="px-4 py-3">
-                <code className="font-mono text-xs bg-blue-50 text-blue-700 border border-blue-200 px-1.5 py-0.5 rounded">
-                  {p.alert_type}
-                </code>
-                <div className="text-[11px] text-blue-400 mt-0.5">
+                <div className="text-sm font-medium text-blue-900" title={p.alert_type}>
                   {alertTypeLabel(p.alert_type)}
                 </div>
               </td>

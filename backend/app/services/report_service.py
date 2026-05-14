@@ -12,6 +12,7 @@ from collections import defaultdict
 from sqlalchemy import and_, desc, distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.alert_labels import alert_type_label
 from app.models.device import Device
 from app.models.device_metric import DeviceMetric
 from app.models.incident import Incident
@@ -38,37 +39,8 @@ RADIO_METRIC_NAMES: set[str] = {"signal_dbm", "cinr_db", "ccq_pct"}
 
 PRIORITY_RANK: dict[str, int] = {"critique": 0, "élevé": 1, "moyen": 2}
 
-ALERT_TYPE_LABELS_FR: dict[str, str] = {
-    "rocket_down": "Panne LTU Rocket",
-    "lr_down": "Panne LTU LR",
-    "switch_down": "Panne Switch",
-    "device_unreachable": "Équipement injoignable",
-    "radio_interface_down": "Interface radio DOWN",
-    "eth0_down": "Interface eth0 DOWN",
-    "cpe_disconnected": "CPE déconnecté",
-    "signal_low": "Signal faible",
-    "cinr_low": "CINR faible",
-    "ccq_low": "CCQ faible",
-    "radio_link_degraded": "Lien radio dégradé",
-    "capacity_low": "Capacité faible",
-    "high_rx_tx_errors": "Taux d'erreurs élevé",
-    "throughput_anomaly": "Anomalie de débit",
-    "uisp_power_unreachable": "UISP Power injoignable",
-    "battery_low_warning": "Batterie faible (warning)",
-    "battery_low_critical": "Batterie critique",
-    "voltage_anomaly": "Anomalie de tension",
-    "switch_port_down": "Port switch DOWN",
-    "switch_port_speed_low": "Vitesse port switch faible",
-    "lr_no_transit": "Coupure transit",
-    "transit_unavailable": "Transit indisponible",
-    "ccq_ul_low": "CCQ uplink faible",
-    "cinr_ul_low": "CINR uplink faible",
-    "capacity_ul_low": "Capacité uplink faible",
-}
-
-
 def _label_for(alert_type: str) -> str:
-    return ALERT_TYPE_LABELS_FR.get(alert_type, alert_type)
+    return alert_type_label(alert_type)
 
 
 async def _build_period_summary(

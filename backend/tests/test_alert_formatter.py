@@ -19,6 +19,7 @@ from app.core.alert_constants import (
     NotificationEvent,
     Severity,
 )
+from app.core.alert_labels import alert_type_label, metric_label
 from app.services import alert_formatter
 from app.services.alert_policy import get_policy
 
@@ -68,7 +69,7 @@ def test_human_readable_opened_critical_contains_required_fields():
         _device(), _incident(), NotificationEvent.OPENED,
     )
     assert "CRITICAL" in out
-    assert AT_ROCKET_DOWN in out
+    assert alert_type_label(AT_ROCKET_DOWN) in out
     assert "LTU Rocket" in out
     assert "10.135.2.218" in out
     assert "switch_down" in out  # probable_cause
@@ -86,7 +87,7 @@ def test_human_readable_warning_includes_metric_line():
     )
     out = alert_formatter.format_human_readable(_device(), inc)
     assert "WARNING" in out
-    assert "ccq_pct" in out
+    assert metric_label("ccq_pct") in out
     assert "40" in out
     assert "75" in out
 
@@ -99,8 +100,8 @@ def test_human_readable_resolved_includes_duration():
     out = alert_formatter.format_human_readable(
         _device(), inc, NotificationEvent.RESOLVED,
     )
-    assert "RECOVERY" in out
-    assert "résolu" in out
+    assert "RÉTABLI" in out
+    assert alert_type_label(AT_ROCKET_DOWN) in out
     # 14:05:12 → 14:12:03 = 6 min 51 s
     assert "6 min" in out
     assert "51 s" in out
@@ -146,4 +147,4 @@ def test_email_resolved_subject_and_duration_in_html():
     )
     assert "RÉSOLU" in subject
     assert "6 min" in html
-    assert "RECOVERY" in text
+    assert "RÉTABLI" in text

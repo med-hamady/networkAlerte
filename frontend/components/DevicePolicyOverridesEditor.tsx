@@ -4,6 +4,7 @@ import { useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher, updateDevice } from '@/lib/api'
 import type { AlertPolicy, Device, PolicyOverride } from '@/lib/types'
+import { alertTypeLabel } from '@/lib/types'
 
 const CHANNELS = ['email'] as const
 const CHANNEL_STYLES: Record<string, string> = {
@@ -164,9 +165,9 @@ function OverrideSummary({
   return (
     <div className="flex items-start justify-between gap-3 bg-blue-50/40 border border-blue-100 rounded-lg p-2.5">
       <div className="flex-1 min-w-0 space-y-1">
-        <code className="font-mono text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">
-          {alertType}
-        </code>
+        <div className="text-sm font-semibold text-blue-800" title={alertType}>
+          {alertTypeLabel(alertType)}
+        </div>
         <p className="text-xs text-slate-600 font-mono break-all">
           {fields.length === 0 ? '(empty override)' : fields.join(' · ')}
         </p>
@@ -241,7 +242,7 @@ function OverrideForm({
       {!alertType && availableAlertTypes && (
         <div>
           <label className="block text-xs font-semibold text-blue-500 uppercase tracking-wider mb-1">
-            Alert type
+            Type d'alerte
           </label>
           <select
             required value={selectedType}
@@ -249,13 +250,13 @@ function OverrideForm({
             className="w-full px-2 py-1.5 border border-blue-200 rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-300"
           >
             <option value="" disabled>— Choisir —</option>
-            {availableAlertTypes.map(at => <option key={at} value={at}>{at}</option>)}
+            {availableAlertTypes.map(at => <option key={at} value={at}>{alertTypeLabel(at)}</option>)}
           </select>
         </div>
       )}
       {alertType && (
         <p className="text-xs text-slate-600">
-          Override pour <code className="font-mono bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">{alertType}</code>
+          Personnalisation pour <strong className="text-blue-700">{alertTypeLabel(alertType)}</strong>
         </p>
       )}
 

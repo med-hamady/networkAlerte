@@ -189,39 +189,79 @@ export interface NotificationChannelInput {
   enabled: boolean
 }
 
-// Human-readable labels for every alert_type the engine can raise
+// Human-readable labels for every alert_type the engine can raise.
+// Keep aligned with backend/app/core/alert_labels.py — single operator vocabulary.
 export const ALERT_TYPE_LABELS: Record<string, string> = {
-  rocket_down:            'Rocket hors ligne',
-  lr_down:                'LR hors ligne',
-  switch_down:            'Switch hors ligne',
-  device_unreachable:     'Équipement injoignable',
-  airmax_down:            'Rocket airMAX hors ligne',
-  radio_interface_down:   'Interface radio DOWN',
-  eth0_down:              'Lien Ethernet DOWN',
-  cpe_disconnected:       'CPE déconnecté',
-  signal_low:             'Signal faible',
-  cinr_low:               'CINR faible',
-  ccq_low:                'CCQ faible',
-  radio_link_degraded:    'Lien radio dégradé',
-  capacity_low:           'Capacité faible',
-  high_rx_tx_errors:      'Erreurs RX/TX',
-  throughput_anomaly:     'Anomalie débit',
-  uisp_power_unreachable: 'UISP Power inaccessible',
-  battery_low_warning:    'Batterie faible',
-  battery_low_critical:   'Batterie critique',
-  voltage_anomaly:        'Anomalie tension',
-  transit_unavailable:    'Transit indisponible',
-  switch_port_down:        'Port switch DOWN',
-  switch_port_speed_low:   'Port switch vitesse dégradée',
-  lr_no_transit:           'LR sans transit internet',
-  ccq_ul_low:              'CCQ UL faible',
-  cinr_ul_low:             'CINR UL faible',
-  capacity_ul_low:         'Capacité UL faible',
+  // Disponibilité
+  rocket_down:             'Station de base (Rocket) hors ligne',
+  lr_down:                 'Client (LR) hors ligne',
+  switch_down:             'Switch hors ligne',
+  device_unreachable:      'Équipement injoignable',
+  airmax_down:             'Station de base airMAX hors ligne',
+  // Interfaces et lien local
+  radio_interface_down:    'Interface radio coupée',
+  eth0_down:               'Lien Ethernet coupé',
+  cpe_disconnected:        'Aucun client connecté à la station',
+  // Qualité radio (descendant — base → client)
+  signal_low:              'Signal radio faible',
+  cinr_low:                'Qualité du signal radio faible (CINR)',
+  ccq_low:                 'Qualité de connexion radio faible',
+  radio_link_degraded:     'Lien radio dégradé',
+  // Performance
+  capacity_low:            'Capacité du lien radio faible',
+  high_rx_tx_errors:       "Taux d'erreurs réseau élevé",
+  throughput_anomaly:      'Anomalie de débit détectée',
+  // Qualité radio UL (montant — client → base)
+  ccq_ul_low:              'Qualité de connexion côté client faible',
+  cinr_ul_low:             'Qualité du signal côté client faible (CINR)',
+  capacity_ul_low:         'Capacité montante (côté client) faible',
+  // Power & infra
+  uisp_power_unreachable:  'UISP Power injoignable',
+  battery_low_warning:     'Batterie faible',
+  battery_low_critical:    'Batterie critique',
+  voltage_anomaly:         "Tension d'alimentation anormale",
+  // Switch
+  switch_port_down:        'Port du switch coupé',
+  switch_port_speed_low:   'Vitesse du port switch dégradée',
+  // Transit
+  transit_unavailable:     'Transit Internet indisponible',
+  lr_no_transit:           'Client (LR) sans accès Internet',
+  // Ping
+  ping_instability:        'Latence ping instable',
+  ping_latency_high:       'Latence ping élevée',
+  // Auto-découverte
+  lr_discovered:           'Nouveau client (LR) détecté',
+  lr_ip_changed:           "Adresse IP d'un client modifiée",
+  lr_reassigned:           'Client (LR) reconnecté à une autre station',
+  lr_disappeared:          'Client (LR) disparu',
 }
 
 export function alertTypeLabel(alertType: string | null): string {
   if (!alertType) return '—'
   return ALERT_TYPE_LABELS[alertType] ?? alertType
+}
+
+// Human-readable labels for every metric_name the engine attaches to incidents.
+// Keep aligned with backend/app/core/alert_labels.py.
+export const METRIC_LABELS: Record<string, string> = {
+  signal_dbm:      'Niveau de signal (dBm)',
+  cinr_db:         'Qualité signal/bruit CINR (dB)',
+  ccq_pct:         'Qualité de connexion CCQ (%)',
+  ul_ccq_pct:      'Qualité de connexion côté client (%)',
+  ul_cinr_db:      'Qualité signal/bruit côté client (dB)',
+  tx_rate_pct:     "Capacité d'émission (%)",
+  rx_rate_pct:     'Capacité de réception (%)',
+  error_rate_pct:  "Taux d'erreurs (%)",
+  tx_drop_pct:     'Taux de paquets perdus (%)',
+  radio_if_up:     'État interface radio',
+  eth_if_up:       'État interface Ethernet',
+  peer_count:      'Nombre de clients connectés',
+  ping_latency_ms: 'Latence ping (ms)',
+}
+
+export function metricLabel(metricName: string | null): string {
+  if (!metricName) return '—'
+  return METRIC_LABELS[metricName] ?? metricName
 }
 
 export const PROBABLE_CAUSE_LABELS: Record<string, string> = {

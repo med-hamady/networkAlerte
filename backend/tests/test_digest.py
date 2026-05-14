@@ -21,6 +21,7 @@ from app.core.alert_constants import (
     NotificationEvent,
     Severity,
 )
+from app.core.alert_labels import alert_type_label
 from app.services import alert_formatter, notification_service
 from app.services.notification_service import _ChannelTarget
 
@@ -60,7 +61,8 @@ def test_digest_email_returns_subject_text_html():
     subject, text, html = alert_formatter.format_digest_for_email(items)
     assert "WARNINGS" in subject
     assert "2 alerte" in subject
-    assert "ccq_low" in text and "signal_low" in text
+    assert alert_type_label(AT_CCQ_LOW) in text
+    assert alert_type_label(AT_SIGNAL_LOW) in text
     assert "<html>" in html
 
 
@@ -72,8 +74,8 @@ def test_digest_groups_by_alert_type_in_text():
     ]
     text = alert_formatter._digest_text_body(items)
     assert "3 alerte(s)" in text
-    assert "ccq_low" in text
-    assert "signal_low" in text
+    assert alert_type_label(AT_CCQ_LOW) in text
+    assert alert_type_label(AT_SIGNAL_LOW) in text
     assert "Rocket A" in text and "Rocket B" in text
 
 

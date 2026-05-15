@@ -171,3 +171,33 @@ class UispSwitch(Device):
     port_min_speed_mbps: Mapped[float] = mapped_column(Float, default=1000.0, nullable=False)
 
     __mapper_args__ = {"polymorphic_identity": "uisp_switch", "polymorphic_load": "selectin"}
+
+
+class ClientModem(Device):
+    """Customer-side modem (TP-Link, Huawei, ZTE, ...) behind an LR.
+
+    The modem sits in the client LAN behind the LR's NAT, so it's not directly
+    reachable from the supervisor. Interactive access goes through an SSH jump
+    via the parent LR (services/jump_session.open_jump_channel).
+    """
+
+    __tablename__ = "client_modems"
+
+    id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True)
+
+    # Parent LR — provides the SSH jump host. SET NULL on LR delete so the
+    # modem row survives orphaned (operator can re-link via PUT).
+    lr_id: Mapped[int | None] = mapped_column(
+        ForeignKey("lrs.id", ondelete="SET NULL"), nullable=True,
+    )
+    lr: Mapped["Lr | None"] = relationship(foreign_keys=[lr_id], lazy="selectin")
+
+    # ssh / telnet — telnet is reserved (501) until a real model is available
+    # to test against; the field is here so the UI can already pick it.
+    management_protocol: Mapped[str] = mapped_column(String(10), default="ssh", nullable=False)
+    management_port: Mapped[int] = mapped_column(Integer, default=22, nullable=False)
+    management_username: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    management_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    management_host_fingerprint: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    __mapper_args__ = {"polymorphic_identity": "client_modem", "polymorphic_load": "selectin"}

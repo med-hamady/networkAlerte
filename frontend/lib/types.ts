@@ -60,8 +60,20 @@ export interface UispSwitch extends DeviceBase {
   port_min_speed_mbps: number
 }
 
+export type ManagementProtocol = 'ssh' | 'telnet'
+
+export interface ClientModem extends DeviceBase {
+  device_type: 'client_modem'
+  lr_id: number | null
+  management_protocol: ManagementProtocol
+  management_port: number
+  management_username: string | null
+  management_host_fingerprint: string | null
+  has_management_password: boolean
+}
+
 // Discriminated union — narrow by `device_type`.
-export type Device = Rocket | Lr | UispPower | UispSwitch
+export type Device = Rocket | Lr | UispPower | UispSwitch | ClientModem
 
 // ──────────────────────────────────────────────────────────────────────────
 // Form payloads — one DeviceFormData per type. The form switches its
@@ -107,11 +119,21 @@ export type UispSwitchFormData = DeviceFormBase & {
   port_min_speed_mbps: number
 }
 
+export type ClientModemFormData = DeviceFormBase & {
+  device_type: 'client_modem'
+  lr_id: number | null
+  management_protocol: ManagementProtocol
+  management_port: number
+  management_username: string
+  management_password: string   // write-only — empty = keep existing
+}
+
 export type DeviceFormData =
   | RocketFormData
   | LrFormData
   | UispPowerFormData
   | UispSwitchFormData
+  | ClientModemFormData
 
 export interface Threshold {
   key: string
@@ -333,10 +355,11 @@ export interface SystemInfo {
 // refinements. Use `deviceLabel(device)` to get a single human-friendly string
 // that distinguishes LTU Rockets from airMAX Rockets, LTU LRs from Litebeams.
 export const DEVICE_TYPE_LABELS: Record<string, string> = {
-  rocket:      'Rocket',
-  lr:          'LR',
-  uisp_switch: 'UISP Switch',
-  uisp_power:  'UISP Power',
+  rocket:       'Rocket',
+  lr:           'LR',
+  uisp_switch:  'UISP Switch',
+  uisp_power:   'UISP Power',
+  client_modem: 'Modem client',
 }
 
 export const LR_MODEL_VARIANT_LABELS: Record<LrModelVariant, string> = {

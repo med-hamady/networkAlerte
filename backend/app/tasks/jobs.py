@@ -454,7 +454,13 @@ async def device_ping_job() -> None:
         settings = await threshold_service.get_effective_settings(_ts_session, base_settings)
 
     async with async_session_factory() as session:
-        result = await session.execute(select(Device))
+        # Skip client_modem rows: they sit behind an LR's NAT and are NOT
+        # reachable by ICMP from the supervisor — pinging them would trigger
+        # constant device_unreachable incidents. Their reachability is
+        # implicitly checked when the operator opens a shell session.
+        result = await session.execute(
+            select(Device).where(Device.device_type != "client_modem")
+        )
         devices = list(result.scalars().all())
 
     if not devices:

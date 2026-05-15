@@ -1,15 +1,26 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import useSWR from 'swr'
 import type {
+  ClientModemFormData,
   Device,
   DeviceFormData,
+  Lr,
   LrFormData,
   RocketFormData,
   UispPowerFormData,
   UispSwitchFormData,
 } from '@/lib/types'
-import { createDevice, deleteDevice, updateDevice } from '@/lib/api'
+import type { LanNeighbor } from '@/lib/api'
+import {
+  createDevice,
+  deleteDevice,
+  discoverModemsViaLr,
+  endpoints,
+  fetcher,
+  updateDevice,
+} from '@/lib/api'
 
 interface Props {
   open: boolean
@@ -22,9 +33,10 @@ interface Props {
 // rows are owned by the auto-discovery pipeline (the Rocket reports its peers
 // via HTTP API, and discovery_service inserts/updates LR rows).
 const CREATABLE_DEVICE_TYPES: Array<{ value: Exclude<DeviceFormData['device_type'], 'lr'>; label: string }> = [
-  { value: 'rocket',       label: 'Rocket (LTU ou airMAX)' },
-  { value: 'uisp_switch',  label: 'UISP Switch' },
-  { value: 'uisp_power',   label: 'UISP Power' },
+  { value: 'rocket',        label: 'Rocket (LTU ou airMAX)' },
+  { value: 'uisp_switch',   label: 'UISP Switch' },
+  { value: 'uisp_power',    label: 'UISP Power' },
+  { value: 'client_modem',  label: 'Modem client (TP-Link, Huawei, ZTE…)' },
 ]
 
 const TYPE_LABEL: Record<DeviceFormData['device_type'], string> = {
@@ -32,6 +44,7 @@ const TYPE_LABEL: Record<DeviceFormData['device_type'], string> = {
   lr:           'LR (auto-découvert)',
   uisp_switch:  'UISP Switch',
   uisp_power:   'UISP Power',
+  client_modem: 'Modem client',
 }
 
 const ROCKET_RADIO_TECHS: Array<{ value: 'ltu' | 'airmax'; label: string }> = [
@@ -64,6 +77,8 @@ function emptyForm(type: DeviceFormData['device_type']): DeviceFormData {
       return { ...base, device_type: 'uisp_power', api_username: '', api_password: '', api_port: 443 }
     case 'uisp_switch':
       return { ...base, device_type: 'uisp_switch', max_ports: 16, rocket_port_index: null, port_min_speed_mbps: 1000 }
+    case 'client_modem':
+      return { ...base, device_type: 'client_modem', lr_id: null, management_protocol: 'ssh', management_port: 22, management_username: '', management_password: '' }
   }
 }
 
@@ -110,6 +125,16 @@ function deviceToForm(device: Device): DeviceFormData {
         max_ports: device.max_ports,
         rocket_port_index: device.rocket_port_index,
         port_min_speed_mbps: device.port_min_speed_mbps,
+      }
+    case 'client_modem':
+      return {
+        ...base,
+        device_type: 'client_modem',
+        lr_id: device.lr_id,
+        management_protocol: device.management_protocol,
+        management_port: device.management_port,
+        management_username: device.management_username ?? '',
+        management_password: '',
       }
   }
 }
@@ -163,6 +188,7 @@ export default function DeviceFormModal({ open, device, onClose, onSaved }: Prop
         const payload: Record<string, unknown> = { ...form }
         if ('ssh_password' in payload && !payload.ssh_password) delete payload.ssh_password
         if ('api_password' in payload && !payload.api_password) delete payload.api_password
+        if ('management_password' in payload && !payload.management_password) delete payload.management_password
         await updateDevice(device.id, payload)
       } else {
         await createDevice(form)
@@ -278,10 +304,11 @@ export default function DeviceFormModal({ open, device, onClose, onSaved }: Prop
           </Field>
 
           {/* Type-specific blocks */}
-          {form.device_type === 'rocket'      && <RocketFields form={form} update={update} isEdit={isEdit} />}
-          {form.device_type === 'lr'          && <LrFields form={form} update={update} isEdit={isEdit} />}
-          {form.device_type === 'uisp_power'  && <PowerFields form={form} update={update} isEdit={isEdit} hasPwd={device?.device_type === 'uisp_power' && device.has_api_password} />}
-          {form.device_type === 'uisp_switch' && <SwitchFields form={form} update={update} />}
+          {form.device_type === 'rocket'        && <RocketFields form={form} update={update} isEdit={isEdit} />}
+          {form.device_type === 'lr'            && <LrFields form={form} update={update} isEdit={isEdit} />}
+          {form.device_type === 'uisp_power'    && <PowerFields form={form} update={update} isEdit={isEdit} hasPwd={device?.device_type === 'uisp_power' && device.has_api_password} />}
+          {form.device_type === 'uisp_switch'   && <SwitchFields form={form} update={update} />}
+          {form.device_type === 'client_modem'  && <ClientModemFields form={form} update={update} isEdit={isEdit} hasPwd={device?.device_type === 'client_modem' && device.has_management_password} />}
 
           <Field label="Notes">
             <textarea
@@ -442,6 +469,181 @@ function SwitchFields({
       <Field label="Vitesse minimale attendue (Mbps)">
         <input type="number" value={form.port_min_speed_mbps} onChange={e => update('port_min_speed_mbps', Number(e.target.value))} min={10} max={10000} className={input} />
       </Field>
+    </div>
+  )
+}
+
+function ClientModemFields({
+  form, update, isEdit, hasPwd,
+}: {
+  form: ClientModemFormData
+  update: (field: string, value: unknown) => void
+  isEdit: boolean
+  hasPwd: boolean | undefined
+}) {
+  // List LRs so the operator can pick the SSH jump host. We pull from the
+  // shared devices SWR cache via the same /devices endpoint — the form modal
+  // is short-lived so an extra fetch here is cheap.
+  const { data: devices } = useSWR<Device[]>(endpoints.devices, fetcher)
+  const lrs = (devices ?? []).filter((d): d is Lr => d.device_type === 'lr')
+
+  const [discovering, setDiscovering] = useState(false)
+  const [candidates, setCandidates] = useState<LanNeighbor[] | null>(null)
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null)
+
+  const handleDiscover = async () => {
+    if (form.lr_id == null) return
+    setDiscovering(true)
+    setDiscoveryError(null)
+    setCandidates(null)
+    try {
+      const res = await discoverModemsViaLr(form.lr_id)
+      setCandidates(res.candidates)
+    } catch (e: unknown) {
+      setDiscoveryError(e instanceof Error ? e.message : 'Erreur découverte')
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
+  const pickCandidate = (n: LanNeighbor) => {
+    update('ip_address', n.ip)
+    // Pre-fill name only when empty so we don't overwrite operator input.
+    if (!form.name.trim()) {
+      const label = n.model_guess ? `TP-Link ${n.model_guess}` : `Modem TP-Link ${n.ip}`
+      update('name', label)
+    }
+    setCandidates(null)
+  }
+
+  return (
+    <div className="bg-purple-50 rounded-xl p-4 space-y-3">
+      <p className="text-xs font-semibold text-purple-700 uppercase tracking-wide">Modem client (jump SSH via LR)</p>
+
+      <Field label="LR de rattachement" hint="Hôte de rebond SSH pour atteindre le modem en NAT">
+        <div className="flex items-center gap-2">
+          <select
+            value={form.lr_id ?? ''}
+            onChange={e => {
+              update('lr_id', e.target.value ? Number(e.target.value) : null)
+              setCandidates(null)
+              setDiscoveryError(null)
+            }}
+            className={`${input} flex-1`}
+          >
+            <option value="">— Sélectionner un LR —</option>
+            {lrs.map(lr => (
+              <option key={lr.id} value={lr.id}>{lr.name} ({lr.ip_address})</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={handleDiscover}
+            disabled={form.lr_id == null || discovering}
+            title="Interroger le LR pour lister les modems TP-Link visibles côté LAN"
+            className="text-xs whitespace-nowrap bg-purple-700 text-white font-medium px-3 py-2 rounded-lg hover:bg-purple-800 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {discovering ? 'Recherche…' : 'Découvrir'}
+          </button>
+        </div>
+      </Field>
+
+      {discoveryError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700">
+          {discoveryError}
+        </div>
+      )}
+
+      {candidates !== null && (
+        candidates.length === 0 ? (
+          <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800">
+            Aucun modem TP-Link détecté côté LAN du LR. Vérifie que le modem est branché et qu'il a déjà eu du trafic récemment.
+          </div>
+        ) : (
+          <div className="bg-white border border-purple-200 rounded-lg divide-y divide-purple-100">
+            <div className="px-3 py-1.5 text-[11px] uppercase tracking-wide text-purple-600 font-semibold bg-purple-50">
+              Candidats détectés — cliquer pour pré-remplir
+            </div>
+            {candidates.map(n => (
+              <button
+                key={n.mac}
+                type="button"
+                onClick={() => pickCandidate(n)}
+                className="w-full text-left px-3 py-2 hover:bg-purple-50 flex items-center justify-between gap-3"
+              >
+                <div className="flex flex-col">
+                  <span className="font-mono text-sm text-slate-800">
+                    {n.ip}
+                    {n.model_guess && (
+                      <span className="ml-2 font-sans text-xs text-purple-700 font-semibold">
+                        {n.model_guess}
+                      </span>
+                    )}
+                  </span>
+                  <span className="font-mono text-[11px] text-blue-400">{n.mac} · {n.interface}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {n.is_default_gateway && (
+                    <span className="text-[10px] uppercase tracking-wide bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-semibold">
+                      Gateway
+                    </span>
+                  )}
+                  <span className="text-[11px] text-purple-700 font-medium">{n.vendor}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        )
+      )}
+
+      <div className="grid grid-cols-3 gap-3">
+        <Field label="Protocole">
+          <select
+            value={form.management_protocol}
+            onChange={e => update('management_protocol', e.target.value)}
+            className={input}
+          >
+            <option value="ssh">SSH</option>
+            <option value="telnet">Telnet (à venir)</option>
+          </select>
+        </Field>
+        <div className="col-span-2">
+          <Field label="Utilisateur">
+            <input
+              type="text"
+              value={form.management_username}
+              onChange={e => update('management_username', e.target.value)}
+              placeholder="admin"
+              className={input}
+            />
+          </Field>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <Field label="Port">
+          <input
+            type="number"
+            value={form.management_port}
+            onChange={e => update('management_port', Number(e.target.value))}
+            min={1}
+            max={65535}
+            className={input}
+          />
+        </Field>
+        <div className="col-span-2">
+          <Field label="Mot de passe" hint={isEdit ? "Laisser vide pour conserver le mot de passe existant" : ""}>
+            <input
+              type="password"
+              value={form.management_password}
+              onChange={e => update('management_password', e.target.value)}
+              placeholder={isEdit && hasPwd ? "••••••••" : "Mot de passe modem"}
+              autoComplete="new-password"
+              className={input}
+            />
+          </Field>
+        </div>
+      </div>
     </div>
   )
 }

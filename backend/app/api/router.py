@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from app.api.deps import verify_api_key
 from app.api.endpoints import (
     alert_policies,
+    device_shell,
     devices,
     health,
     incidents,
@@ -21,6 +22,10 @@ api_router.include_router(health.router, tags=["health"])
 
 _auth = [Depends(verify_api_key)]
 api_router.include_router(devices.router, prefix="/devices", tags=["devices"], dependencies=_auth)
+# device_shell mounts the WebSocket on /devices/{id}/shell — no router-level auth
+# because browsers cannot attach the X-API-Key header to a WebSocket. The ticket
+# endpoint inside this router applies verify_api_key per-route instead.
+api_router.include_router(device_shell.router, prefix="/devices", tags=["devices"])
 api_router.include_router(incidents.router, prefix="/incidents", tags=["incidents"], dependencies=_auth)
 api_router.include_router(lr_health.router, prefix="/lr-health", tags=["lr-health"], dependencies=_auth)
 api_router.include_router(network_uptime.router, prefix="/network-uptime", tags=["network-uptime"], dependencies=_auth)

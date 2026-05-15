@@ -15,7 +15,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, field_validator
 
 # Discriminator values used by SQLAlchemy polymorphic identity and by the API.
-DeviceType = Literal["rocket", "lr", "uisp_power", "uisp_switch"]
+DeviceType = Literal["rocket", "lr", "uisp_power", "uisp_switch", "client_modem"]
+
+ManagementProtocol = Literal["ssh", "telnet"]
 
 RocketRadioTech = Literal["ltu", "airmax"]
 
@@ -200,12 +202,37 @@ class UispSwitchUpdate(_DeviceBaseUpdate):
     port_min_speed_mbps: float | None = None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Client modem — TP-Link / Huawei / ZTE behind an LR (NAT)
+# Reached via SSH jump through the parent LR — see services/jump_session.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class ClientModemCreate(_DeviceBaseCreate):
+    device_type: Literal["client_modem"] = "client_modem"
+    lr_id: int | None = None
+    management_protocol: ManagementProtocol = "ssh"
+    management_port: int = 22
+    management_username: str | None = None
+    management_password: str | None = None
+
+
+class ClientModemUpdate(_DeviceBaseUpdate):
+    lr_id: int | None = None
+    management_protocol: ManagementProtocol | None = None
+    management_port: int | None = None
+    management_username: str | None = None
+    management_password: str | None = None
+
+
 # Discriminated union — FastAPI parses based on the `device_type` field.
 # LrCreate is INTENTIONALLY excluded: LRs are only ever created by the
 # auto-discovery pipeline (see services/discovery_service.reconcile_peers).
 # A POST /devices with device_type="lr" therefore fails validation (422).
-DeviceCreate = RocketCreate | UispPowerCreate | UispSwitchCreate
-DeviceUpdate = RocketUpdate | LrUpdate | UispPowerUpdate | UispSwitchUpdate
+DeviceCreate = RocketCreate | UispPowerCreate | UispSwitchCreate | ClientModemCreate
+DeviceUpdate = (
+    RocketUpdate | LrUpdate | UispPowerUpdate | UispSwitchUpdate | ClientModemUpdate
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -293,5 +320,22 @@ class UispSwitchRead(_DeviceBaseRead):
     port_min_speed_mbps: float = 1000.0
 
 
+class ClientModemRead(_DeviceBaseRead):
+    device_type: Literal["client_modem"] = "client_modem"
+    lr_id: int | None = None
+    management_protocol: str = "ssh"
+    management_port: int = 22
+    management_username: str | None = None
+    management_host_fingerprint: str | None = None
+    has_management_password: bool = False
+
+    @classmethod
+    def model_validate(cls, obj: Any, **kwargs: Any) -> "ClientModemRead":
+        instance = super().model_validate(obj, **kwargs)
+        if hasattr(obj, "management_password"):
+            instance.has_management_password = bool(obj.management_password)
+        return instance
+
+
 # Discriminated union for responses — FastAPI emits the type matching device_type.
-DeviceRead = RocketRead | LrRead | UispPowerRead | UispSwitchRead
+DeviceRead = RocketRead | LrRead | UispPowerRead | UispSwitchRead | ClientModemRead

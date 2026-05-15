@@ -35,6 +35,8 @@ export const endpoints = {
   deviceMetrics:        (id: number) => `${API_BASE}/devices/${id}/metrics/latest`,
   checkSsh:             (id: number) => `${API_BASE}/devices/${id}/check-ssh`,
   checkPing:            (id: number) => `${API_BASE}/devices/${id}/check-ping`,
+  shellTicket:          (id: number) => `${API_BASE}/devices/${id}/shell-ticket`,
+  discoverModems:       (lrId: number) => `${API_BASE}/devices/${lrId}/discover-modems`,
   systemInfo:           `${API_BASE}/system/info`,
   alertPolicies:        `${API_BASE}/alert-policies`,
   alertPolicy:          (alertType: string) => `${API_BASE}/alert-policies/${alertType}`,
@@ -172,6 +174,35 @@ export interface TestEmailResult {
 export async function sendTestEmail(): Promise<TestEmailResult> {
   const res = await fetch(endpoints.testEmail, { method: 'POST' })
   return jsonOrThrow<TestEmailResult>(res)
+}
+
+export interface ShellTicketResponse {
+  ticket: string
+  expires_in: number
+}
+
+export async function requestShellTicket(deviceId: number): Promise<ShellTicketResponse> {
+  const res = await fetch(endpoints.shellTicket(deviceId), { method: 'POST' })
+  return jsonOrThrow<ShellTicketResponse>(res)
+}
+
+export interface LanNeighbor {
+  ip: string
+  mac: string
+  interface: string
+  is_default_gateway: boolean
+  vendor: string
+  model_guess: string | null
+}
+
+export interface DiscoverModemsResponse {
+  lr_id: number
+  candidates: LanNeighbor[]
+}
+
+export async function discoverModemsViaLr(lrId: number): Promise<DiscoverModemsResponse> {
+  const res = await fetch(endpoints.discoverModems(lrId), { method: 'POST' })
+  return jsonOrThrow<DiscoverModemsResponse>(res)
 }
 
 // Typed wrappers for SWR (pass to useSWR as key)

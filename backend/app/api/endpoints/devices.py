@@ -9,6 +9,7 @@ from app.db.session import get_db
 from app.models.device import Device, Lr, Rocket
 from app.models.device_metric import DeviceMetric
 from app.schemas.device import (
+    ClientModemRead,
     DeviceCreate,
     DeviceRead,
     DeviceUpdate,
@@ -17,7 +18,7 @@ from app.schemas.device import (
     UispPowerRead,
     UispSwitchRead,
 )
-from app.services import device_service, ssh_service
+from app.services import device_service, lan_discovery, ssh_service
 
 router = APIRouter()
 
@@ -34,6 +35,7 @@ _READ_BY_TYPE: dict[str, type] = {
     "lr": LrRead,
     "uisp_power": UispPowerRead,
     "uisp_switch": UispSwitchRead,
+    "client_modem": ClientModemRead,
 }
 
 
@@ -179,6 +181,59 @@ async def check_ssh(
         device.ssh_host_fingerprint = observed_fp
         await db.flush()
     return DiagResult(ok=ok, message=msg)
+
+
+class LanNeighborOut(BaseModel):
+    ip: str
+    mac: str
+    interface: str
+    is_default_gateway: bool
+    vendor: str
+    model_guess: str | None = None
+
+
+class DiscoverModemsResponse(BaseModel):
+    lr_id: int
+    candidates: list[LanNeighborOut]
+
+
+@router.post("/{device_id}/discover-modems", response_model=DiscoverModemsResponse)
+async def discover_modems(
+    device_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> DiscoverModemsResponse:
+    """Discover TP-Link modems on the LR's LAN side via SSH + ARP scrape.
+
+    The endpoint is mounted on the LR (not on a candidate modem) — the modem
+    typically does not exist yet in the DB when this is called from the create
+    form. Returns gateway-first list; the operator picks one.
+    """
+    device = await device_service.get_device(db, device_id)
+    if not isinstance(device, Lr):
+        raise HTTPException(
+            status_code=400,
+            detail="Modem discovery is only available on LR devices.",
+        )
+    if not (device.ssh_username and device.ssh_password):
+        raise HTTPException(
+            status_code=400,
+            detail="LR has no SSH credentials — set ssh_username/ssh_password first.",
+        )
+    try:
+        neighbours = await lan_discovery.discover_via_lr(
+            host=device.ip_address,
+            port=device.ssh_port or 22,
+            username=device.ssh_username,
+            password=device.ssh_password,
+            expected_fingerprint=device.ssh_host_fingerprint,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"SSH discovery failed: {exc}") from exc
+
+    return DiscoverModemsResponse(
+        lr_id=device.id,
+        candidates=[LanNeighborOut(**n.__dict__) for n in neighbours],
+    )
 
 
 @router.post("/{device_id}/check-ping", response_model=DiagResult)

@@ -14,8 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.exceptions import DeviceNotFoundError
-from app.models.device import Device, Rocket, UispPower, UispSwitch
+from app.models.device import ClientModem, Device, Rocket, UispPower, UispSwitch
 from app.schemas.device import (
+    ClientModemCreate,
     DeviceCreate,
     DeviceUpdate,
     RocketCreate,
@@ -34,6 +35,7 @@ _TYPE_TO_MODEL: dict[str, type[Device]] = {
     "rocket": Rocket,
     "uisp_power": UispPower,
     "uisp_switch": UispSwitch,
+    "client_modem": ClientModem,
 }
 
 
@@ -107,6 +109,7 @@ async def delete_device(db: AsyncSession, device_id: int) -> None:
 
 # Re-exports so callers don't need to know the type module
 __all__ = [
+    "ClientModemCreate",
     "RocketCreate",
     "UispPowerCreate",
     "UispSwitchCreate",

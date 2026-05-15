@@ -4,17 +4,20 @@ import { useState } from 'react'
 import Link from 'next/link'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
-import type { Device } from '@/lib/types'
+import type { Device, Lr } from '@/lib/types'
 import { deviceLabel, formatDate, timeAgo } from '@/lib/types'
 import StatusBadge from '@/components/StatusBadge'
 import DeviceDetailModal from '@/components/DeviceDetailModal'
-import DeviceFormModal from '@/components/DeviceFormModal'
+import DeviceFormModal, { type DeviceFormPrefill } from '@/components/DeviceFormModal'
 import DeviceImage from '@/components/DeviceImage'
+import LrDiscoveryModal from '@/components/LrDiscoveryModal'
 
 export default function DevicesPage() {
   const [selected, setSelected]       = useState<Device | null>(null)
   const [formOpen, setFormOpen]       = useState(false)
   const [editDevice, setEditDevice]   = useState<Device | null>(null)
+  const [formPrefill, setFormPrefill] = useState<DeviceFormPrefill | null>(null)
+  const [discoverLr, setDiscoverLr]   = useState<Lr | null>(null)
 
   const { data: devices, isLoading, mutate } = useSWR<Device[]>(
     endpoints.devices,
@@ -26,10 +29,23 @@ export default function DevicesPage() {
   const down    = devices?.filter(d => d.status === 'down').length ?? 0
   const unknown = devices?.filter(d => d.status === 'unknown').length ?? 0
 
-  const openCreate = () => { setEditDevice(null); setFormOpen(true) }
+  const openCreate = () => { setEditDevice(null); setFormPrefill(null); setFormOpen(true) }
   const openEdit   = (d: Device, e: React.MouseEvent) => {
     e.stopPropagation()
     setEditDevice(d)
+    setFormPrefill(null)
+    setFormOpen(true)
+  }
+  const openDiscover = (lr: Lr, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setDiscoverLr(lr)
+  }
+  // Candidate picked in the discovery modal → close it, open the create form
+  // pre-filled with the modem's IP, lr_id and name.
+  const handleDiscoveryPick = (prefill: DeviceFormPrefill) => {
+    setDiscoverLr(null)
+    setEditDevice(null)
+    setFormPrefill(prefill)
     setFormOpen(true)
   }
 
@@ -119,6 +135,15 @@ export default function DevicesPage() {
                     <td className="px-4 py-3 text-blue-300 whitespace-nowrap text-xs">{formatDate(d.created_at)}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1">
+                        {d.device_type === 'lr' && (
+                          <button
+                            onClick={(e) => openDiscover(d, e)}
+                            title="Découvrir les modems sur le LAN"
+                            className="p-1.5 rounded-lg text-purple-500 hover:text-purple-800 hover:bg-purple-100 transition-colors"
+                          >
+                            <RadarIcon className="w-4 h-4" />
+                          </button>
+                        )}
                         {d.device_type === 'client_modem' && (
                           <Link
                             href={`/devices/${d.id}/terminal`}
@@ -156,8 +181,15 @@ export default function DevicesPage() {
       <DeviceFormModal
         open={formOpen}
         device={editDevice}
-        onClose={() => setFormOpen(false)}
+        prefill={formPrefill}
+        onClose={() => { setFormOpen(false); setFormPrefill(null) }}
         onSaved={() => mutate()}
+      />
+
+      <LrDiscoveryModal
+        lr={discoverLr}
+        onClose={() => setDiscoverLr(null)}
+        onPick={handleDiscoveryPick}
       />
     </>
   )
@@ -185,6 +217,17 @@ function TerminalIcon({ className }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round"
         d="M5 7l4 4-4 4M11 15h6M4 5h16a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1z" />
+    </svg>
+  )
+}
+
+function RadarIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <circle cx="12" cy="12" r="9" strokeLinecap="round" />
+      <circle cx="12" cy="12" r="5.5" strokeLinecap="round" />
+      <circle cx="12" cy="12" r="2" fill="currentColor" stroke="none" />
+      <path strokeLinecap="round" d="M12 12 L19 7" />
     </svg>
   )
 }

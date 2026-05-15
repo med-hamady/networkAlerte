@@ -12,19 +12,31 @@ import type {
   UispPowerFormData,
   UispSwitchFormData,
 } from '@/lib/types'
-import type { LanNeighbor } from '@/lib/api'
 import {
   createDevice,
   deleteDevice,
-  discoverModemsViaLr,
   endpoints,
   fetcher,
   updateDevice,
 } from '@/lib/api'
 
+/**
+ * Pre-fill applied when opening the modal in create mode. Used by the LR
+ * discovery flow on /devices: the operator picks a candidate modem and we
+ * jump straight into the create form with name/IP/lr_id already populated.
+ * The shape mirrors ClientModemFormData but every field is optional.
+ */
+export interface DeviceFormPrefill {
+  device_type?: DeviceFormData['device_type']
+  name?: string
+  ip_address?: string
+  lr_id?: number | null
+}
+
 interface Props {
   open: boolean
   device: Device | null   // null = create mode, non-null = edit mode
+  prefill?: DeviceFormPrefill | null
   onClose: () => void
   onSaved: () => void
 }
@@ -139,7 +151,7 @@ function deviceToForm(device: Device): DeviceFormData {
   }
 }
 
-export default function DeviceFormModal({ open, device, onClose, onSaved }: Props) {
+export default function DeviceFormModal({ open, device, prefill, onClose, onSaved }: Props) {
   const [form, setForm] = useState<DeviceFormData>(() => emptyForm('rocket'))
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -152,8 +164,20 @@ export default function DeviceFormModal({ open, device, onClose, onSaved }: Prop
     if (!open) return
     setError(null)
     setConfirmDelete(false)
-    setForm(device ? deviceToForm(device) : emptyForm('rocket'))
-  }, [open, device])
+    if (device) {
+      setForm(deviceToForm(device))
+      return
+    }
+    // Create mode — apply prefill on top of the right empty template.
+    const baseType = prefill?.device_type ?? 'rocket'
+    const empty = emptyForm(baseType)
+    setForm({
+      ...empty,
+      ...(prefill?.name ? { name: prefill.name } : {}),
+      ...(prefill?.ip_address ? { ip_address: prefill.ip_address } : {}),
+      ...(baseType === 'client_modem' && prefill?.lr_id != null ? { lr_id: prefill.lr_id } : {}),
+    } as DeviceFormData)
+  }, [open, device, prefill])
 
   if (!open) return null
 
@@ -487,114 +511,25 @@ function ClientModemFields({
   const { data: devices } = useSWR<Device[]>(endpoints.devices, fetcher)
   const lrs = (devices ?? []).filter((d): d is Lr => d.device_type === 'lr')
 
-  const [discovering, setDiscovering] = useState(false)
-  const [candidates, setCandidates] = useState<LanNeighbor[] | null>(null)
-  const [discoveryError, setDiscoveryError] = useState<string | null>(null)
-
-  const handleDiscover = async () => {
-    if (form.lr_id == null) return
-    setDiscovering(true)
-    setDiscoveryError(null)
-    setCandidates(null)
-    try {
-      const res = await discoverModemsViaLr(form.lr_id)
-      setCandidates(res.candidates)
-    } catch (e: unknown) {
-      setDiscoveryError(e instanceof Error ? e.message : 'Erreur découverte')
-    } finally {
-      setDiscovering(false)
-    }
-  }
-
-  const pickCandidate = (n: LanNeighbor) => {
-    update('ip_address', n.ip)
-    // Pre-fill name only when empty so we don't overwrite operator input.
-    if (!form.name.trim()) {
-      const label = n.model_guess ? `TP-Link ${n.model_guess}` : `Modem TP-Link ${n.ip}`
-      update('name', label)
-    }
-    setCandidates(null)
-  }
-
   return (
     <div className="bg-purple-50 rounded-xl p-4 space-y-3">
       <p className="text-xs font-semibold text-purple-700 uppercase tracking-wide">Modem client (jump SSH via LR)</p>
 
-      <Field label="LR de rattachement" hint="Hôte de rebond SSH pour atteindre le modem en NAT">
-        <div className="flex items-center gap-2">
-          <select
-            value={form.lr_id ?? ''}
-            onChange={e => {
-              update('lr_id', e.target.value ? Number(e.target.value) : null)
-              setCandidates(null)
-              setDiscoveryError(null)
-            }}
-            className={`${input} flex-1`}
-          >
-            <option value="">— Sélectionner un LR —</option>
-            {lrs.map(lr => (
-              <option key={lr.id} value={lr.id}>{lr.name} ({lr.ip_address})</option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={handleDiscover}
-            disabled={form.lr_id == null || discovering}
-            title="Interroger le LR pour lister les modems TP-Link visibles côté LAN"
-            className="text-xs whitespace-nowrap bg-purple-700 text-white font-medium px-3 py-2 rounded-lg hover:bg-purple-800 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {discovering ? 'Recherche…' : 'Découvrir'}
-          </button>
-        </div>
+      <Field
+        label="LR de rattachement"
+        hint="Hôte de rebond SSH pour atteindre le modem en NAT — la découverte automatique se lance depuis la liste des équipements."
+      >
+        <select
+          value={form.lr_id ?? ''}
+          onChange={e => update('lr_id', e.target.value ? Number(e.target.value) : null)}
+          className={input}
+        >
+          <option value="">— Sélectionner un LR —</option>
+          {lrs.map(lr => (
+            <option key={lr.id} value={lr.id}>{lr.name} ({lr.ip_address})</option>
+          ))}
+        </select>
       </Field>
-
-      {discoveryError && (
-        <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700">
-          {discoveryError}
-        </div>
-      )}
-
-      {candidates !== null && (
-        candidates.length === 0 ? (
-          <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800">
-            Aucun modem TP-Link détecté côté LAN du LR. Vérifie que le modem est branché et qu'il a déjà eu du trafic récemment.
-          </div>
-        ) : (
-          <div className="bg-white border border-purple-200 rounded-lg divide-y divide-purple-100">
-            <div className="px-3 py-1.5 text-[11px] uppercase tracking-wide text-purple-600 font-semibold bg-purple-50">
-              Candidats détectés — cliquer pour pré-remplir
-            </div>
-            {candidates.map(n => (
-              <button
-                key={n.mac}
-                type="button"
-                onClick={() => pickCandidate(n)}
-                className="w-full text-left px-3 py-2 hover:bg-purple-50 flex items-center justify-between gap-3"
-              >
-                <div className="flex flex-col">
-                  <span className="font-mono text-sm text-slate-800">
-                    {n.ip}
-                    {n.model_guess && (
-                      <span className="ml-2 font-sans text-xs text-purple-700 font-semibold">
-                        {n.model_guess}
-                      </span>
-                    )}
-                  </span>
-                  <span className="font-mono text-[11px] text-blue-400">{n.mac} · {n.interface}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  {n.is_default_gateway && (
-                    <span className="text-[10px] uppercase tracking-wide bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-semibold">
-                      Gateway
-                    </span>
-                  )}
-                  <span className="text-[11px] text-purple-700 font-medium">{n.vendor}</span>
-                </div>
-              </button>
-            ))}
-          </div>
-        )
-      )}
 
       <div className="grid grid-cols-3 gap-3">
         <Field label="Protocole">

@@ -190,7 +190,7 @@ backend/app/
 - [x] **Formatage des alertes** — `alert_formatter.py` (messages Slack/email contextualisés par type)
 - [x] **API incidents** — `GET/PATCH /api/v1/incidents` (filtres status/severity/device_id/alert_type)
 - [x] **Enregistrement alertes** — table `alerts` alimentée à chaque notification (audit trail)
-- [x] **Dashboard frontend** — Next.js avec pages : devices, topology, notification-channels
+- [x] **Dashboard frontend** — Next.js avec pages : devices, notification-channels
 
 ### Jobs planifiés actifs
 | Job | Intervalle | Rôle |
@@ -266,7 +266,6 @@ backend/app/
 | Page | Chemin | Contenu |
 |---|---|---|
 | Devices | `/devices` | Liste avec statut, dernière vue, métriques, modal détail |
-| Topology | `/topology` | Vue topologie réseau |
 | Anomalies détectées | `/incidents` | Anomalies actuellement détectées (lecture seule, résolution automatique) |
 | Archive | `/incidents/archive` | Historique des incidents auto-résolus |
 | Notification Channels | `/notification-channels` | Gestion des canaux Slack/email/webhook |

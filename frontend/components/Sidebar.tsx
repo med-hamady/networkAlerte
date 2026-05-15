@@ -6,19 +6,51 @@ import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type { HealthResponse } from '@/lib/types'
 
-const links = [
-  { href: '/',                      label: 'Dashboard',   icon: DashboardIcon  },
-  { href: '/devices',               label: 'Équipements', icon: ServerIcon     },
-  { href: '/incidents',             label: 'Incidents',         icon: WarningIcon,   exact: true },
-  { href: '/incidents/archive',     label: 'Archive',           icon: ArchiveIcon    },
-  { href: '/notifications',         label: 'Notifications',     icon: BellIcon       },
-  { href: '/topology',              label: 'Topologie',         icon: TopologyIcon   },
-  { href: '/lr-health',             label: 'Liaisons clients',  icon: LinkIcon       },
-  { href: '/network-uptime',        label: 'Journal coupures',  icon: ClockIcon      },
-  { href: '/alert-policies',        label: 'Policies',          icon: PolicyIcon     },
-  { href: '/notification-channels', label: 'Canaux',            icon: ChannelIcon    },
-  { href: '/reports',               label: 'Rapports',    icon: ReportIcon     },
-  { href: '/settings',              label: 'Seuils',      icon: SettingsIcon   },
+type NavLink = {
+  href: string
+  label: string
+  icon: (props: { className?: string }) => JSX.Element
+  exact?: boolean
+  indent?: boolean
+}
+
+type NavSection = {
+  title: string
+  links: NavLink[]
+}
+
+const sections: NavSection[] = [
+  {
+    title: 'Supervision',
+    links: [
+      { href: '/',           label: 'Dashboard',        icon: DashboardIcon },
+      { href: '/devices',    label: 'Équipements',      icon: ServerIcon    },
+      { href: '/lr-health',  label: 'Liaisons clients', icon: LinkIcon      },
+    ],
+  },
+  {
+    title: 'Anomalies',
+    links: [
+      { href: '/incidents',         label: 'Incidents',       icon: WarningIcon, exact: true },
+      { href: '/incidents/archive', label: 'Archive',         icon: ArchiveIcon, indent: true },
+      { href: '/network-uptime',    label: 'Journal coupures', icon: ClockIcon   },
+    ],
+  },
+  {
+    title: 'Notifications',
+    links: [
+      { href: '/notifications',         label: 'Notifications', icon: BellIcon    },
+      { href: '/notification-channels', label: 'Canaux',        icon: ChannelIcon },
+      { href: '/alert-policies',        label: 'Policies',      icon: PolicyIcon  },
+    ],
+  },
+  {
+    title: 'Configuration',
+    links: [
+      { href: '/reports',  label: 'Rapports', icon: ReportIcon   },
+      { href: '/settings', label: 'Seuils',   icon: SettingsIcon },
+    ],
+  },
 ]
 
 export default function Sidebar() {
@@ -47,26 +79,35 @@ export default function Sidebar() {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 px-3 py-5 space-y-1">
-        {links.map(({ href, label, icon: Icon, exact }) => {
-          const isActive = exact ? pathname === href : pathname === href || pathname.startsWith(href + '/')
-          return (
-            <Link
-              key={href}
-              href={href}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                href === '/incidents/archive' ? 'pl-8' : ''
-              } ${
-                isActive
-                  ? 'bg-white text-blue-900'
-                  : 'text-blue-200 hover:bg-blue-800 hover:text-white'
-              }`}
-            >
-              <Icon className="w-4 h-4 shrink-0" />
-              {label}
-            </Link>
-          )
-        })}
+      <nav className="flex-1 px-3 py-4 space-y-5 overflow-y-auto">
+        {sections.map(({ title, links }) => (
+          <div key={title} className="space-y-1">
+            <p className="px-3 pb-1 text-[10px] font-bold tracking-widest uppercase text-blue-400">
+              {title}
+            </p>
+            {links.map(({ href, label, icon: Icon, exact, indent }) => {
+              const isActive = exact
+                ? pathname === href
+                : pathname === href || pathname.startsWith(href + '/')
+              return (
+                <Link
+                  key={href}
+                  href={href}
+                  className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                    indent ? 'pl-8' : ''
+                  } ${
+                    isActive
+                      ? 'bg-white text-blue-900'
+                      : 'text-blue-200 hover:bg-blue-800 hover:text-white'
+                  }`}
+                >
+                  <Icon className="w-4 h-4 shrink-0" />
+                  {label}
+                </Link>
+              )
+            })}
+          </div>
+        ))}
       </nav>
 
       {/* System status footer */}
@@ -131,17 +172,6 @@ function WarningIcon({ className }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round"
         d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-    </svg>
-  )
-}
-
-function TopologyIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <circle cx="12" cy="5"  r="2" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx="5"  cy="19" r="2" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx="19" cy="19" r="2" strokeLinecap="round" strokeLinejoin="round" />
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 7v4m0 0l-5.5 6M12 11l5.5 6" />
     </svg>
   )
 }

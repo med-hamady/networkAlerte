@@ -1,0 +1,6 @@
+# Shell scripts MUST keep LF endings and be checked out as-is, even when
+# core.autocrlf=true (Windows dev machines). A CRLF in docker-entrypoint.sh
+# breaks the shebang inside the Linux container with a cryptic
+# "permission denied" / "no such file" at container start.
+*.sh text eol=lf
+docker-entrypoint.sh text eol=lf

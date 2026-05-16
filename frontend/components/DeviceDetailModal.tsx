@@ -339,6 +339,12 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
           </Section>
         )}
 
+        {device.device_type === 'client_modem' && (
+          <Section title="Diagnostics">
+            <DiagRow label="Ping depuis le LR" url={endpoints.pingFromLr(device.id)} />
+          </Section>
+        )}
+
         {device.notes && (
           <Section title="Notes">
             <p className="text-slate-600 text-sm">{device.notes}</p>

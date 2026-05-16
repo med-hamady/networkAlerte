@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.models.device import Device, Lr, Rocket
+from app.models.device import ClientModem, Device, Lr, Rocket
 from app.models.device_metric import DeviceMetric
 from app.schemas.device import (
     ClientModemRead,
@@ -181,6 +181,55 @@ async def check_ssh(
         device.ssh_host_fingerprint = observed_fp
         await db.flush()
     return DiagResult(ok=ok, message=msg)
+
+
+@router.post("/{device_id}/ping-from-lr", response_model=DiagResult)
+async def ping_from_lr(
+    device_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> DiagResult:
+    """Ping a client modem from its parent LR (the SSH jump host).
+
+    The modem sits behind the LR's NAT and is unreachable from the
+    supervisor directly, so reachability is checked from the LR itself —
+    the same path the interactive shell uses. Verifies L3 connectivity
+    before the operator opens a terminal.
+    """
+    device = await device_service.get_device(db, device_id)
+    if not isinstance(device, ClientModem):
+        raise HTTPException(
+            status_code=400,
+            detail="Ping-from-LR is only available on client_modem devices.",
+        )
+    lr = device.lr
+    if lr is None:
+        return DiagResult(
+            ok=False,
+            message="Ce modem n'a pas de LR de rattachement — définis lr_id d'abord.",
+        )
+    if not (lr.ssh_username and lr.ssh_password):
+        return DiagResult(
+            ok=False,
+            message=f"Le LR parent ({lr.name}) n'a pas d'identifiants SSH.",
+        )
+    ok, msg, observed_fp = await ssh_service.ping_targets_via_ssh(
+        host=lr.ip_address,
+        port=lr.ssh_port or 22,
+        username=lr.ssh_username,
+        password=lr.ssh_password,
+        targets=[device.ip_address],
+        expected_fingerprint=lr.ssh_host_fingerprint,
+    )
+    if ok and observed_fp and lr.ssh_host_fingerprint != observed_fp:
+        lr.ssh_host_fingerprint = observed_fp
+        await db.flush()
+    if ok:
+        message = f"Modem {device.ip_address} joignable depuis le LR {lr.name}."
+    else:
+        message = (
+            f"Modem {device.ip_address} injoignable depuis le LR {lr.name} — {msg}"
+        )
+    return DiagResult(ok=ok, message=message)
 
 
 class LanNeighborOut(BaseModel):

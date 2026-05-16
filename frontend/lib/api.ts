@@ -35,6 +35,7 @@ export const endpoints = {
   deviceMetrics:        (id: number) => `${API_BASE}/devices/${id}/metrics/latest`,
   checkSsh:             (id: number) => `${API_BASE}/devices/${id}/check-ssh`,
   checkPing:            (id: number) => `${API_BASE}/devices/${id}/check-ping`,
+  pingFromLr:           (id: number) => `${API_BASE}/devices/${id}/ping-from-lr`,
   shellTicket:          (id: number) => `${API_BASE}/devices/${id}/shell-ticket`,
   discoverModems:       (lrId: number) => `${API_BASE}/devices/${lrId}/discover-modems`,
   systemInfo:           `${API_BASE}/system/info`,

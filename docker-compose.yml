@@ -58,6 +58,10 @@ services:
     environment:
       - BACKEND_URL=http://backend:8000
       - API_KEY=${API_KEY}
+      # Dev only: no nginx, Next dev (:3000) does not proxy /api/v1, so the
+      # modem-shell WebSocket reaches the backend directly. In prod this is
+      # unset → same-origin via nginx (see docker-compose.prod.yml).
+      - NEXT_PUBLIC_BACKEND_WS_URL=ws://localhost:8000
     volumes:
       - ./frontend:/app
       - /app/node_modules

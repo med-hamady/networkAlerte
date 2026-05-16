@@ -20,13 +20,18 @@ const STATUS_LABELS = {
 type Status = keyof typeof STATUS_LABELS
 
 function deriveBackendWsBase(): string {
-  // Allow override (production behind reverse proxy). Otherwise assume the
-  // backend is exposed on the same hostname, port 8000 (matches docker-compose).
+  // Prod: same-origin. The shell WebSocket goes through nginx (same scheme,
+  // host and port as the page — 443), which proxies
+  // /api/v1/devices/{id}/shell to the backend. No hardcoded port.
+  //
+  // Dev: the Next dev server (:3000) does NOT proxy /api/v1, and there is no
+  // nginx, so the dev stack sets NEXT_PUBLIC_BACKEND_WS_URL=ws://localhost:8000
+  // to reach the backend directly (port 8000 is exposed in docker-compose.yml).
   const fromEnv = process.env.NEXT_PUBLIC_BACKEND_WS_URL
   if (fromEnv) return fromEnv.replace(/\/+$/, '')
   if (typeof window === 'undefined') return ''
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${proto}://${window.location.hostname}:8000`
+  return `${proto}://${window.location.host}`
 }
 
 export default function DeviceTerminalPage() {

@@ -50,7 +50,11 @@ export default function LrDiscoveryModal({ lr, onClose, onPick }: Props) {
   if (!lr) return null
 
   const pick = (n: LanNeighbor) => {
-    const name = n.model_guess ? `TP-Link ${n.model_guess}` : `Modem TP-Link ${n.ip}`
+    const name = n.model_guess
+      ? `TP-Link ${n.model_guess}`
+      : n.vendor
+        ? `Modem ${n.vendor} ${n.ip}`
+        : `Modem ${n.ip}`
     onPick({
       device_type: 'client_modem',
       name,
@@ -79,7 +83,7 @@ export default function LrDiscoveryModal({ lr, onClose, onPick }: Props) {
         <div className="overflow-y-auto flex-1 px-6 py-5 space-y-3">
           {loading && (
             <div className="text-sm text-blue-500">
-              Interrogation du LR en cours — wget HTTP sur chaque voisin ARP (~quelques secondes).
+              Balayage du sous-réseau LAN depuis le LR (ping-sweep + lecture ARP) — ~10–30 s selon la taille du subnet.
             </div>
           )}
 
@@ -91,7 +95,7 @@ export default function LrDiscoveryModal({ lr, onClose, onPick }: Props) {
 
           {!loading && !error && candidates !== null && candidates.length === 0 && (
             <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm text-amber-800">
-              Aucun modem TP-Link détecté côté LAN du LR. Vérifie que le modem est branché et qu'il a eu du trafic récemment.
+              Aucun voisin détecté sur le LAN du LR après balayage. Vérifie que le modem est branché et alimenté, puis relance.
             </div>
           )}
 

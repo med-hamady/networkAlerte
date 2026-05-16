@@ -5,18 +5,28 @@ The customer-side modem (TP-Link, Huawei, ZTE...) sits on the LR's LAN —
 *downstream* of the LR, behind its NAT — so it is NOT the LR's default
 gateway (that points upstream, toward the Rocket / internet). It is also not
 directly reachable from the supervisor. We open one SSH session to the LR,
-enumerate its directly-connected IPv4 subnets, **ping-sweep** each subnet so
-every live host populates the ARP cache, then read /proc/net/arp and return
-*every* neighbour found.
+read its routing table, and **ping-sweep only the customer subnet** — the
+connected subnet that does NOT contain the default gateway — so every live
+host there populates the ARP cache. We then read /proc/net/arp and return
+those customer-side neighbours; the operator picks the modem.
+
+Why exclude the gateway's subnet
+--------------------------------
+The default gateway lives on the WISP management/backbone subnet (e.g.
+10.135.0.1 on br0), shared by *every* LR — full of other radios/switches,
+never a customer modem, and often a huge /16. The modem is always on a
+separate downstream subnet behind the LR's NAT (e.g. 172.16.0.0/x on br1).
+Sweeping/returning only the non-gateway subnet keeps the list to the real
+modem(s) and avoids walking the backbone. Degenerate single-LAN
+deployments (modem on the gateway's subnet) fall back to all subnets.
 
 Why a sweep, not a single gateway ping
 --------------------------------------
 A previous version pinged only the default gateway and kept only ARP entries
-that HTTP-fingerprinted as TP-Link. Both assumptions were wrong for this
-deployment: the modem is downstream (never the gateway) and may not expose a
-TP-Link banner on :80 (HTTPS-only, generic login page, odd port). The result
-was a permanently empty list. We now sweep the whole LAN subnet and surface
-all neighbours; the operator picks the modem from the list.
+that HTTP-fingerprinted as TP-Link. Both assumptions were wrong: the modem is
+downstream (never the gateway) and may not expose a TP-Link banner on :80
+(HTTPS-only, generic login page, odd port). The result was a permanently
+empty list. The sweep + return-all-customer-neighbours approach fixes that.
 
 Vendor detection (best-effort label only)
 -----------------------------------------
@@ -176,6 +186,43 @@ def _parse_arp(arp_proc: str) -> list[tuple[str, str, str]]:
     return out
 
 
+def _ip_in_any(ip: str, nets: list[IPv4Network]) -> bool:
+    """True if `ip` parses and belongs to any network in `nets`."""
+    try:
+        addr = IPv4Address(ip)
+    except AddressValueError:
+        return False
+    return any(addr in net for net in nets)
+
+
+def _split_subnets(
+    subnets: list[tuple[str, IPv4Network]],
+    gateway_ip: str | None,
+) -> tuple[list[tuple[str, IPv4Network]], list[tuple[str, IPv4Network]]]:
+    """Partition connected subnets into (customer, uplink).
+
+    The default gateway lives on the WISP management / uplink subnet (e.g.
+    10.135.0.1 on br0). The customer modem sits on a *different* connected
+    subnet, downstream behind the LR's NAT (e.g. 172.16.0.0/x on br1). So
+    "uplink" = every subnet containing the gateway, "customer" = the rest.
+
+    Degenerate fallback: if that leaves no customer subnet (single-LAN
+    deployment where the modem shares the gateway's subnet), treat *all*
+    connected subnets as customer so discovery still returns something.
+    """
+    if gateway_ip is None:
+        return subnets, []
+    try:
+        gw = IPv4Address(gateway_ip)
+    except AddressValueError:
+        return subnets, []
+    customer = [(i, n) for i, n in subnets if gw not in n]
+    uplink = [(i, n) for i, n in subnets if gw in n]
+    if not customer:                       # modem shares the gateway subnet
+        return subnets, []
+    return customer, uplink
+
+
 def _sweep_hosts(subnets: list[tuple[str, IPv4Network]]) -> list[str]:
     """Flatten connected subnets into a bounded, de-duplicated host list.
 
@@ -276,21 +323,32 @@ def _discover_sync(
     password: str,
     expected_fingerprint: str | None,
 ) -> list[LanNeighbor]:
-    """Open SSH to LR, sweep its LAN subnets, return every ARP neighbour."""
+    """Open SSH to LR, sweep its customer LAN subnet, return its neighbours.
+
+    Only the connected subnet(s) that do NOT contain the default gateway
+    are swept and returned — that is the customer side where the modem
+    lives. The WISP management/backbone subnet (the one with the gateway,
+    e.g. 10.135/16 shared by every LR) is skipped entirely so the list is
+    just the real modem(s), not infra.
+    """
     transport, _observed = _open_transport(
         host=host, port=port, username=username, password=password,
         expected_fingerprint=expected_fingerprint,
     )
     try:
-        # 1) Read the routing table once: default gateway (label) + the
-        #    directly-connected LAN subnets we will sweep.
+        # 1) Routing table: default gateway + directly-connected subnets,
+        #    split into customer (no gateway) vs uplink/backbone (gateway).
         route_proc = _exec_capture(transport, "cat /proc/net/route")
         gateway_ip = _parse_default_gateway(route_proc)
         subnets = _parse_connected_subnets(route_proc)
+        customer_subnets, uplink_subnets = _split_subnets(subnets, gateway_ip)
+        uplink_nets = [n for _i, n in uplink_subnets]
+        customer_nets = [n for _i, n in customer_subnets]
 
-        # 2) Ping-sweep every connected subnet so silent hosts (the modem
-        #    included) end up in the ARP cache.
-        sweep = _sweep_hosts(subnets)
+        # 2) Ping-sweep ONLY the customer subnet(s) so the modem (often
+        #    silent) lands in the ARP cache — and we never waste the host
+        #    budget walking a huge backbone /16.
+        sweep = _sweep_hosts(customer_subnets)
         if sweep:
             _ping_sweep(transport, sweep)
 
@@ -298,15 +356,25 @@ def _discover_sync(
         arp_proc = _exec_capture(transport, "cat /proc/net/arp")
         entries = _parse_arp(arp_proc)
 
-        # 4) Order: non-gateway first (the modem is never the gateway), then
-        #    by IP. The upstream gateway is kept but sinks to the bottom.
-        entries.sort(key=lambda e: (e[0] == gateway_ip, _ip_sort_key(e[0])))
+        # 4) Keep only customer-side neighbours. An entry qualifies if it
+        #    sits in a customer subnet, OR (defensive, for firmware whose
+        #    /proc/net/route omits the LAN route) it is neither inside the
+        #    uplink/backbone subnet nor the gateway itself.
+        kept: list[tuple[str, str, str]] = []
+        for ip, mac, dev in entries:
+            if ip == gateway_ip:
+                continue
+            in_customer = _ip_in_any(ip, customer_nets)
+            in_uplink = _ip_in_any(ip, uplink_nets)
+            if in_customer or (not in_uplink and customer_nets):
+                kept.append((ip, mac, dev))
+        kept.sort(key=lambda e: _ip_sort_key(e[0]))
 
         # 5) Best-effort vendor label on the first FP_LIMIT entries. A miss
-        #    never drops the row — every neighbour is returned regardless.
+        #    never drops the row — every customer neighbour is returned.
         neighbours: list[LanNeighbor] = []
         probed = 0
-        for ip, mac, dev in entries:
+        for ip, mac, dev in kept:
             vendor, model = "", None
             if probed < FP_LIMIT:
                 probed += 1
@@ -318,7 +386,7 @@ def _discover_sync(
                     ip=ip,
                     mac=mac,
                     interface=dev,
-                    is_default_gateway=(ip == gateway_ip),
+                    is_default_gateway=False,  # gateway is excluded above
                     vendor=vendor,
                     model_guess=model,
                 ),
@@ -326,16 +394,16 @@ def _discover_sync(
     finally:
         transport.close()
 
-    # TP-Link-labelled first, then gateway last, then by IP.
-    neighbours.sort(
-        key=lambda n: (n.vendor != "TP-Link", n.is_default_gateway, _ip_sort_key(n.ip)),
-    )
+    # TP-Link-labelled first, then by IP.
+    neighbours.sort(key=lambda n: (n.vendor != "TP-Link", _ip_sort_key(n.ip)))
     logger.info(
-        "LAN discovery via %s: %d neighbour(s) (gateway=%s, subnets=%s, swept=%d)",
+        "LAN discovery via %s: %d modem candidate(s) "
+        "(gateway=%s, customer=%s, uplink=%s, swept=%d)",
         host,
         len(neighbours),
         gateway_ip,
-        [str(n) for _i, n in subnets] or "none",
+        [str(n) for _i, n in customer_subnets] or "none",
+        [str(n) for _i, n in uplink_subnets] or "none",
         len(sweep),
     )
     return neighbours

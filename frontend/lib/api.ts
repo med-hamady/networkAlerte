@@ -36,6 +36,7 @@ export const endpoints = {
   checkSsh:             (id: number) => `${API_BASE}/devices/${id}/check-ssh`,
   checkPing:            (id: number) => `${API_BASE}/devices/${id}/check-ping`,
   pingFromLr:           (id: number) => `${API_BASE}/devices/${id}/ping-from-lr`,
+  pingTarget:           (lrId: number) => `${API_BASE}/devices/${lrId}/ping-target`,
   shellTicket:          (id: number) => `${API_BASE}/devices/${id}/shell-ticket`,
   discoverModems:       (lrId: number) => `${API_BASE}/devices/${lrId}/discover-modems`,
   systemInfo:           `${API_BASE}/system/info`,
@@ -56,6 +57,18 @@ export interface DiagResult { ok: boolean; message: string }
 
 export async function runDiag(url: string): Promise<DiagResult> {
   const res = await fetch(url, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json() as Promise<DiagResult>
+}
+
+// Ping an arbitrary IP from an LR (jump host) — used to test a discovered
+// modem candidate before it is saved as a device.
+export async function pingTargetFromLr(lrId: number, target: string): Promise<DiagResult> {
+  const res = await fetch(endpoints.pingTarget(lrId), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ target }),
+  })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json() as Promise<DiagResult>
 }

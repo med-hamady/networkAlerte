@@ -11,7 +11,7 @@
 import { useEffect, useState } from 'react'
 import type { Lr } from '@/lib/types'
 import type { LanNeighbor } from '@/lib/api'
-import { discoverModemsViaLr } from '@/lib/api'
+import { discoverModemsViaLr, pingTargetFromLr } from '@/lib/api'
 import type { DeviceFormPrefill } from './DeviceFormModal'
 
 interface Props {
@@ -105,32 +105,7 @@ export default function LrDiscoveryModal({ lr, onClose, onPick }: Props) {
                 Candidats détectés — cliquer pour ouvrir le formulaire pré-rempli
               </div>
               {candidates.map(n => (
-                <button
-                  key={n.mac}
-                  type="button"
-                  onClick={() => pick(n)}
-                  className="w-full text-left px-3 py-2 hover:bg-purple-50 flex items-center justify-between gap-3"
-                >
-                  <div className="flex flex-col">
-                    <span className="font-mono text-sm text-slate-800">
-                      {n.ip}
-                      {n.model_guess && (
-                        <span className="ml-2 font-sans text-xs text-purple-700 font-semibold">
-                          {n.model_guess}
-                        </span>
-                      )}
-                    </span>
-                    <span className="font-mono text-[11px] text-blue-400">{n.mac} · {n.interface}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {n.is_default_gateway && (
-                      <span className="text-[10px] uppercase tracking-wide bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-semibold">
-                        Gateway
-                      </span>
-                    )}
-                    <span className="text-[11px] text-purple-700 font-medium">{n.vendor}</span>
-                  </div>
-                </button>
+                <CandidateRow key={n.mac} n={n} lrId={lr.id} onPick={() => pick(n)} />
               ))}
             </div>
           )}
@@ -148,6 +123,70 @@ export default function LrDiscoveryModal({ lr, onClose, onPick }: Props) {
             Fermer
           </button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+type PingState = { status: 'idle' | 'loading' | 'done'; ok?: boolean; msg?: string }
+
+function CandidateRow({
+  n,
+  lrId,
+  onPick,
+}: {
+  n: LanNeighbor
+  lrId: number
+  onPick: () => void
+}) {
+  const [ping, setPing] = useState<PingState>({ status: 'idle' })
+
+  const test = async () => {
+    setPing({ status: 'loading' })
+    try {
+      const r = await pingTargetFromLr(lrId, n.ip)
+      setPing({ status: 'done', ok: r.ok, msg: r.message })
+    } catch {
+      setPing({ status: 'done', ok: false, msg: 'Erreur réseau' })
+    }
+  }
+
+  return (
+    <div className="px-3 py-2 hover:bg-purple-50 flex items-center justify-between gap-3">
+      <button type="button" onClick={onPick} className="text-left flex-1 min-w-0">
+        <span className="block font-mono text-sm text-slate-800">
+          {n.ip}
+          {n.model_guess && (
+            <span className="ml-2 font-sans text-xs text-purple-700 font-semibold">
+              {n.model_guess}
+            </span>
+          )}
+        </span>
+        <span className="block font-mono text-[11px] text-blue-400">{n.mac} · {n.interface}</span>
+      </button>
+      <div className="flex items-center gap-2 shrink-0">
+        {n.is_default_gateway && (
+          <span className="text-[10px] uppercase tracking-wide bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-semibold">
+            Gateway
+          </span>
+        )}
+        {n.vendor && <span className="text-[11px] text-purple-700 font-medium">{n.vendor}</span>}
+        {ping.status === 'done' && (
+          <span
+            title={ping.msg}
+            className={`text-[11px] font-semibold ${ping.ok ? 'text-green-600' : 'text-red-500'}`}
+          >
+            {ping.ok ? '● Joignable' : '✗ Injoignable'}
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={test}
+          disabled={ping.status === 'loading'}
+          className="text-[11px] text-blue-600 hover:text-blue-800 underline disabled:opacity-40"
+        >
+          {ping.status === 'loading' ? 'Ping…' : ping.status === 'done' ? '↻ Ping' : 'Tester ping'}
+        </button>
       </div>
     </div>
   )

@@ -1,4 +1,5 @@
 import datetime
+import ipaddress
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -229,6 +230,59 @@ async def ping_from_lr(
         message = (
             f"Modem {device.ip_address} injoignable depuis le LR {lr.name} — {msg}"
         )
+    return DiagResult(ok=ok, message=message)
+
+
+class PingTargetRequest(BaseModel):
+    target: str
+
+
+@router.post("/{device_id}/ping-target", response_model=DiagResult)
+async def ping_target(
+    device_id: int,
+    body: PingTargetRequest,
+    db: AsyncSession = Depends(get_db),
+) -> DiagResult:
+    """Ping an arbitrary IP from an LR (jump host).
+
+    Lets the operator test a discovered modem candidate's reachability
+    *before* it is saved as a client_modem device. Mounted on the LR (its
+    id is known from discovery); ``target`` is the candidate IP.
+    """
+    device = await device_service.get_device(db, device_id)
+    if not isinstance(device, Lr):
+        raise HTTPException(
+            status_code=400,
+            detail="Ping-target is only available on LR devices.",
+        )
+    if not (device.ssh_username and device.ssh_password):
+        return DiagResult(
+            ok=False,
+            message=f"Le LR {device.name} n'a pas d'identifiants SSH.",
+        )
+    target = body.target.strip()
+    try:
+        ipaddress.ip_address(target)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="target doit être une adresse IP valide.",
+        ) from exc
+    ok, msg, observed_fp = await ssh_service.ping_targets_via_ssh(
+        host=device.ip_address,
+        port=device.ssh_port or 22,
+        username=device.ssh_username,
+        password=device.ssh_password,
+        targets=[target],
+        expected_fingerprint=device.ssh_host_fingerprint,
+    )
+    if ok and observed_fp and device.ssh_host_fingerprint != observed_fp:
+        device.ssh_host_fingerprint = observed_fp
+        await db.flush()
+    if ok:
+        message = f"{target} joignable depuis le LR {device.name}."
+    else:
+        message = f"{target} injoignable depuis le LR {device.name} — {msg}"
     return DiagResult(ok=ok, message=message)
 
 

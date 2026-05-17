@@ -22,7 +22,9 @@ DB row config payload:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 
 from app.core.alert_constants import AlertChannel, NotificationEvent, Severity
 from app.core.config import get_settings
@@ -38,6 +40,29 @@ from app.services import (
 from app.services.alert_policy import get_policy_for_device, should_notify
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Delivery safety net (incident 2026-05-17)
+#
+# A single channel must never be able to stall a caller. The reconcile/alert
+# path opens many incidents in one loop; with a dead SMTP server every send
+# blocked ~60-90s on the connect timeout, serialising discovery to a crawl and
+# delaying the job's commit (LR re-attachment never persisted in time).
+#
+# Two guards, both here so EVERY caller (discovery, alert_engine, jobs) is
+# covered without touching their transaction structure:
+#   1. Hard per-delivery timeout — a hung channel is capped, never unbounded.
+#   2. Per-channel cooldown — once a channel times out, skip it for a short
+#      window instead of eating the full timeout again on every subsequent
+#      incident of the same burst. Auto-recovers after the cooldown.
+# ---------------------------------------------------------------------------
+
+_DELIVERY_TIMEOUT_S = 8.0
+_CHANNEL_COOLDOWN_S = 120.0
+
+# channel key -> monotonic time until which the channel is considered degraded
+_degraded_until: dict[str, float] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +180,7 @@ async def _dispatch(device: Device, incident: Incident, event: str) -> bool:
         return False
 
     results: list[bool] = []
+    now = time.monotonic()
     for target in targets:
         if not should_notify(target.kind, policy, incident.severity, event):
             logger.debug(
@@ -162,7 +188,43 @@ async def _dispatch(device: Device, incident: Incident, event: str) -> bool:
                 target.kind, target.label, incident.alert_type, event,
             )
             continue
-        results.append(await _deliver(target, device, incident, event))
+
+        key = f"{target.kind}:{target.label}"
+        degraded_until = _degraded_until.get(key, 0.0)
+        if now < degraded_until:
+            # Channel recently timed out — skip fast so a dead channel can't
+            # serialise the caller's loop. Treated as a failed delivery.
+            logger.debug(
+                "Skipping degraded channel %s (%s) — cooldown %.0fs left",
+                target.kind, target.label, degraded_until - now,
+            )
+            results.append(False)
+            continue
+
+        try:
+            ok = await asyncio.wait_for(
+                _deliver(target, device, incident, event),
+                timeout=_DELIVERY_TIMEOUT_S,
+            )
+        except TimeoutError:
+            _degraded_until[key] = time.monotonic() + _CHANNEL_COOLDOWN_S
+            logger.error(
+                "Notification channel %s (%s) timed out after %.0fs — "
+                "marking degraded for %.0fs (alert %s/%s)",
+                target.kind, target.label, _DELIVERY_TIMEOUT_S,
+                _CHANNEL_COOLDOWN_S, incident.alert_type, event,
+            )
+            ok = False
+        except Exception:
+            _degraded_until[key] = time.monotonic() + _CHANNEL_COOLDOWN_S
+            logger.exception(
+                "Notification channel %s (%s) raised — marking degraded for "
+                "%.0fs (alert %s/%s)",
+                target.kind, target.label, _CHANNEL_COOLDOWN_S,
+                incident.alert_type, event,
+            )
+            ok = False
+        results.append(ok)
 
     if not results:
         logger.debug(

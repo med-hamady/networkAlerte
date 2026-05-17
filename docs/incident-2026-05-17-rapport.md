@@ -46,6 +46,12 @@ conduit, suivi de **durcissements supplémentaires** et de la mise en place
 d'une **détection automatique d'anomalies**. Le délai de détection d'une
 attaque équivalente passerait désormais de **~15 h à ~5 minutes**.
 
+Enfin, une **page de connexion (nom d'utilisateur + mot de passe)** a été
+mise en place : l'accès au tableau de bord, qui était jusque-là implicite,
+requiert désormais une **authentification individuelle**. Chaque opérateur
+dispose d'un compte nommé, et chaque action effectuée est tracée à cet
+opérateur identifié.
+
 ---
 
 ## 2. Chronologie (heures en UTC)
@@ -71,6 +77,8 @@ attaque équivalente passerait désormais de **~15 h à ~5 minutes**.
 | ~19:20 → 19:40 | Mise en place des **contrôles détectifs** (journal d'audit + détection automatique de volume anormal) |
 | ~19:45 | Redéploiement final, vérifications complètes passées |
 | — | **Phase 2 close** — système durci, détection automatique active |
+| Même jour, plus tard | **Phase 3** : mise en place d'une page de connexion (utilisateur + mot de passe) et de comptes nommés ; vérifications bout en bout : OK |
+| — | **Phase 3 close** — authentification individuelle obligatoire pour accéder au tableau de bord |
 
 ---
 
@@ -265,6 +273,29 @@ Deux phases successives de corrections ont été déployées en production.
   par e-mail** au-delà d'un seuil et **délai de réarmement** par source
   pour éviter le spam.
 
+**Phase 3 — authentification individuelle des opérateurs :**
+
+- **Page de connexion** (nom d'utilisateur + mot de passe) en entrée du
+  tableau de bord. Aucun accès anonyme n'est plus possible : tout visiteur
+  qui atteint l'interface est automatiquement redirigé vers cette page de
+  connexion tant qu'il n'a pas saisi des identifiants valides.
+- **Comptes utilisateurs nommés**. Chaque opérateur dispose désormais d'un
+  compte personnel. Chaque action effectuée dans le tableau de bord (création
+  d'équipement, modification, suppression, etc.) est rattachée à l'opérateur
+  identifié — le journal d'audit devient bien plus parlant (« utilisateur X
+  a supprimé l'équipement Y à telle heure » au lieu de « quelqu'un a
+  supprimé Y »).
+- Les **mots de passe** sont stockés sous forme **chiffrée irréversible**
+  (jamais en clair en base de données). Une fuite éventuelle de la base ne
+  permettrait pas de retrouver les mots de passe.
+- **Sessions de connexion bornées** (12 h par défaut), avec un bouton
+  **« Se déconnecter »** dans l'interface. Une session expirée ou
+  manuellement révoquée renvoie automatiquement vers la page de connexion.
+- Les outils techniques (scripts d'administration, intégrations) continuent
+  d'utiliser la **clé secrète** existante pour leurs appels directs au
+  système — cette coexistence évite de casser les usages techniques en
+  place.
+
 Toutes ces protections sont **enregistrées dans la configuration et le code
 source du projet** : un futur déploiement les conserve ; la faille ne peut
 pas être réintroduite par inadvertance.
@@ -318,9 +349,12 @@ au lieu de quinze heures, avec une alerte explicite identifiant la source.
 ## 10. Récapitulatif des mesures appliquées
 
 - Accès au superviseur **réservé au réseau interne**, via tunnel sécurisé.
+- **Authentification individuelle** des opérateurs : page de connexion
+  (utilisateur + mot de passe), comptes nommés, mots de passe chiffrés
+  irréversiblement, sessions limitées à 12 h, bouton de déconnexion.
 - Authentification des **écritures et des lectures** côté périmètre.
 - **Détection automatique** des volumes anormaux d'écritures + **journal
-  d'audit** forensique.
+  d'audit** forensique (chaque action est tracée à un opérateur identifié).
 - **Limitation de débit** + **blocage** du sous-réseau attaquant connu.
 - **Sortie des secrets** hors du code source.
 - **Bornage** des envois de notifications (plus de blocage en cas de
@@ -343,7 +377,8 @@ au lieu de quinze heures, avec une alerte explicite identifiant la source.
 ---
 
 *Rapport établi le 17 mai 2026, mis à jour le même jour après l'audit de
-sécurité post-incident et le déploiement des durcissements complémentaires.
+sécurité post-incident, le déploiement des durcissements complémentaires
+et la mise en place de l'authentification individuelle des opérateurs.
 Les détails sensibles d'exploitation (secrets, références techniques
 internes, configuration précise) sont volontairement omis et conservés dans
 le runbook de déploiement à accès restreint.*

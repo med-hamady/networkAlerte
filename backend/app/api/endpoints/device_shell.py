@@ -28,7 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import verify_api_key
+from app.api.deps import require_user_or_api_key
 from app.db.session import async_session_factory, get_db
 from app.models.device import ClientModem
 from app.services import device_service
@@ -67,7 +67,7 @@ class ShellTicket(BaseModel):
 @router.post(
     "/{device_id}/shell-ticket",
     response_model=ShellTicket,
-    dependencies=[Depends(verify_api_key)],
+    dependencies=[Depends(require_user_or_api_key)],
 )
 async def issue_shell_ticket(
     device_id: int,

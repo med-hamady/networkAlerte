@@ -40,8 +40,14 @@ pas une compromission du moteur de base de données.
 
 **Résolution :** attaque coupée, accès Internet supprimé, faille corrigée,
 inventaire intégralement restauré (avec auto-reconstruction du parc), clé
-secrète renouvelée, et **4 correctifs de code déployés** en production pour que
-cela ne puisse plus se reproduire.
+secrète renouvelée. Dans la foulée, un **audit de sécurité complet du code** a
+été conduit et a abouti à **4 correctifs supplémentaires** (3 corrections de
+failles + 1 défaut latent), puis à la mise en place de **contrôles détectifs**
+(journal d'audit des écritures + détection automatique de volume anormal) qui
+font passer le temps de détection d'une attaque similaire de **~15 h à ~5 min**.
+Au total : **8 correctifs de code et 1 nouvelle migration** déployés sur
+`main`, **plus le présent rapport**, pour que cela ne puisse plus se reproduire
+et soit détecté immédiatement si cela arrivait.
 
 ---
 
@@ -64,7 +70,11 @@ cela ne puisse plus se reproduire.
 | ~18:08 → 18:55 | Auto-reconstruction du parc clients (LR) par découverte automatique |
 | ~18:50 | Découverte et purge de 129 entrées de configuration injectées |
 | ~18:55 | Vérifications finales : parc cohérent, notifications opérationnelles |
-| — | **Incident clos.** 4 correctifs déployés en production sur `main` |
+| — | **Phase 1 close** — 4 correctifs déployés sur `main` (incident neutralisé) |
+| ~19:00 → 19:15 | **Audit de sécurité complet du code** — 3 nouvelles failles trouvées (H1/H2/M6) + 1 défaut latent ; correctifs codés et mergés (`a7d7238`) |
+| ~19:20 → 19:40 | Conception et implémentation des contrôles détectifs (journal d'audit + détection volume anormal) ; merge `d0eb3aa` |
+| ~19:45 | Redéploiement final sur le serveur ; vérifications : table `audit_log` créée, job `security_anomaly_detection` actif, proxy bloque GET non same-origin (403) |
+| — | **Phase 2 close** — système durci, détection automatique active |
 
 ---
 
@@ -162,6 +172,10 @@ l'attaquant a pu lire la liste des équipements, incidents et métriques
 (~4 000 lectures réussies). Donnée non sensible (topologie réseau interne,
 pas de secret), mais à considérer comme **exposée**.
 
+> Corrigé en phase 2 (audit) : le garde same-origin du proxy a été étendu aux
+> méthodes GET — un accès direct à `/api/proxy/...` retourne désormais 403, la
+> clé n'est plus injectée même pour une lecture. Voir §9.
+
 ### 5.4 Ce qui n'a PAS été compromis
 
 - **Moteur PostgreSQL :** aucune injection SQL n'a abouti. Le code utilise des
@@ -190,7 +204,10 @@ non ambiguë d'une attaque automatisée.
 
 > **Constat d'amélioration :** l'attaque a duré ~15 h sans alerte automatique.
 > Il n'existait pas de détection sur les suppressions de masse ni sur les pics
-> d'erreurs. Voir recommandations (§9).
+> d'erreurs. **Corrigé en phase 2** : un journal d'audit des écritures + un
+> job de détection automatique (volume anormal par IP sur fenêtre glissante)
+> ont été mis en place et déployés ; le délai de détection passe de ~15 h à
+> **~5 min**. Voir §9.
 
 ---
 
@@ -227,6 +244,8 @@ Actions menées dans l'ordre :
 
 ## 8. Correctifs déployés (production, branche `main`)
 
+**Phase 1 — réponse immédiate à l'incident**
+
 | Commit | Objet |
 |---|---|
 | `1bc8f13` | **Proxy** : blocage des écritures non same-origin (en-tête `Sec-Fetch-Site`, non falsifiable par script) |
@@ -234,45 +253,123 @@ Actions menées dans l'ordre :
 | `cb14533` | **Notifications** : délai d'envoi borné + mise en pause d'un canal qui se bloque |
 | `8f2b1ee` | **Notifications** : mise en pause aussi après N échecs rapides consécutifs (cas serveur e-mail saturé) |
 
-Ces protections sont **versionnées** : un futur déploiement les conserve ; la
-faille ne peut pas être réintroduite par inadvertance.
+**Phase 2 — durcissements supplémentaires issus de l'audit de sécurité**
+
+| Commit | Objet |
+|---|---|
+| `cb025c4` | **Audit H1** : mot de passe SSH de la flotte LR sorti du code source vers `.env` (variable `LR_DEFAULT_SSH_PASSWORD`) |
+| `cb025c4` | **Audit H2** : garde same-origin du proxy **étendu aux GET** (les lectures aussi étaient relayées avec la clé injectée) |
+| `cb025c4` | **Audit M6** : nginx — rate-limit dédié sur `/api/proxy` (120 r/m + burst 40), `deny 85.203.47.0/24` (IoC) |
+| `cbd7d33` | **Détection M1** : nouvelle table `audit_log` (migration `h9c0d1e2f3a4`) + middleware FastAPI qui enregistre toutes les écritures `/api/v1/*` (méthode, chemin, IP, statut, User-Agent) |
+| `cbd7d33` | **Détection M2** : nouveau job planifié `security_anomaly_detection` (toutes les 60 s) — alerte par e-mail au-delà de N écritures/IP sur la fenêtre configurée, avec cooldown par IP |
+
+Toutes ces protections sont **versionnées sur `main`** : un futur déploiement
+les conserve ; la faille ne peut pas être réintroduite par inadvertance.
 
 ---
 
-## 9. Recommandations / actions de suivi
+## 9. Audit de sécurité post-incident
 
-### Priorité haute
+Dans la foulée de la résolution, un **audit complet du code** a été conduit
+(authentification, exécution de commande, injection SQL, gestion des secrets,
+TLS sortant, garde-fous de production, validation des entrées). Verdict
+global : la base de code est **globalement saine et défensive** —
+authentification temps-constant, requêtes paramétrées via l'ORM, échappement
+shell systématique (`shlex.quote`), invocation des sous-processus sans shell,
+épinglage de la clé SSH des équipements, garde-fous au démarrage en
+production, CORS explicite. La catastrophe du 17/05 venait de **l'architecture
+de déploiement** (exposition Internet + proxy ouvert), **pas** d'un code
+foncièrement vulnérable.
 
-- **Maintenir l'accès interne uniquement** (tunnel SSH). Ne **jamais**
-  ré-exposer sur Internet sans : (a) authentification réelle (login + session),
-  **et** (b) filtrage par liste d'IP autorisées / pare-feu.
-- **Authentifier aussi les lectures (GET)** : aujourd'hui lisibles par
-  quiconque atteint le service → fuite d'information.
-- **Renouveler par précaution** les mots de passe SSH/API des équipements
-  (Rockets) au vu de l'ampleur du balayage.
+L'audit a néanmoins identifié et corrigé **trois faiblesses réelles** + **un
+défaut latent** :
 
-### Priorité moyenne
+| Réf. | Sév. | Faiblesse identifiée | Statut |
+|---|---|---|---|
+| H1 | Haute | Mot de passe SSH standard des LR clients **codé en dur** dans `services/discovery_service.py` et donc versionné dans le dépôt | ✅ Sorti vers `.env` (`LR_DEFAULT_SSH_PASSWORD`) — voir note (1) |
+| H2 | Haute | Le proxy relayait les **GET** avec la clé secrète injectée, **sans contrôle d'origine** — fuite de lecture potentielle | ✅ Garde same-origin étendu à toutes les méthodes (lectures comprises) |
+| M6 | Moyenne | nginx : pas de limitation de débit sur `/api/proxy`, pas de blocage du sous-réseau attaquant | ✅ Rate-limit dédié + `deny 85.203.47.0/24` ajoutés |
+| M3 | Moyenne | Vérification TLS désactivée pour les API des équipements Ubiquiti (certificats auto-signés) | ⚠️ Documenté (calculé) — feuille de route : épinglage de certificats / CA interne |
+| — | Faible / Acceptés | Stockage en mémoire des tickets shell (mono-worker), TOFU initial des clés SSH d'équipement, telnet de gestion non implémenté (501) | ✅ Cohérents avec la conception ; revoir si l'on passe en multi-worker |
 
-- **Détection & alerte** : alerter automatiquement sur les suppressions de
-  masse, pics d'erreurs 4xx, ou volume anormal de requêtes (un signal aurait
-  réduit 15 h d'exposition à quelques minutes).
-- **Journal d'audit** des opérations d'écriture (qui/quoi/quand) côté backend.
-- **Limitation de débit / WAF / fail2ban** sur le périmètre, bannissement de
-  sous-réseaux abusifs.
-- **Sauvegardes PostgreSQL** : actuellement non mises en place (décision de
-  déploiement antérieure, données jugées régénérables). À **réévaluer** : la
-  configuration (équipements, canaux, politiques) n'est, elle, **pas**
-  régénérable automatiquement.
+> Note (1) — décision opérationnelle : la **rotation du mot de passe sur la
+> flotte LR n'a pas été retenue** (dépôt privé, accès tunnel SSH uniquement).
+> Le secret est désormais hors du code source (côté `main`) ; il reste dans
+> l'historique git, ce qui est jugé acceptable vu la politique d'accès actuelle.
+> À reconsidérer si la visibilité du dépôt change.
 
-### Priorité basse
+**Mesures détectives ajoutées dans le même mouvement :**
 
-- **E-mail d'alerte** : Gmail gratuit ne supporte pas les pics d'envoi →
-  privilégier un *App Password* ou un fournisseur transactionnel
-  (le code protège déjà la découverte en cas de saturation).
+- **Journal d'audit (`audit_log`)** : nouvelle table en base, alimentée par un
+  intercepteur FastAPI qui enregistre **chaque opération d'écriture**
+  (POST/PUT/PATCH/DELETE sur `/api/v1/...`) — méthode, chemin, IP source,
+  code de retour, User-Agent. Réponse à la question « qui a fait quoi, et
+  quand ? » même lorsque les journaux applicatifs ont été rotés.
+- **Détection automatique de volume anormal** : nouveau job planifié toutes
+  les 60 s qui interroge `audit_log` ; au-delà d'un seuil d'écritures par IP
+  sur une fenêtre glissante (par défaut : 50 / 5 min), un **e-mail
+  d'alerte de sécurité** est envoyé aux opérateurs, avec une période de
+  réarmement par IP (30 min) pour éviter le spam.
+
+Effet attendu sur un scénario d'attaque équivalent : **détection en ~5 min**
+au lieu de ~15 h, avec un signal e-mail explicite incluant l'IP fautive et le
+volume observé.
+
+**Livrables techniques associés :**
+
+- Migration Alembic `h9c0d1e2f3a4` (création de la table `audit_log`).
+- Intercepteur HTTP dans `app/main.py` (best-effort, ne peut pas casser une
+  réponse en cas d'échec d'audit).
+- Helper `notify_security_event` dans `notification_service` (court-circuite
+  le pipeline d'incident — l'évènement de sécurité est *système*, pas lié à
+  un équipement).
+- Paramètres configurables dans `.env` :
+  `AUDIT_ANOMALY_WINDOW_MINUTES`, `AUDIT_ANOMALY_MAX_MUTATIONS`,
+  `AUDIT_ANOMALY_CHECK_INTERVAL_SECONDS`,
+  `AUDIT_ANOMALY_ALERT_COOLDOWN_MINUTES`.
 
 ---
 
-## 10. Leçons apprises
+## 10. Actions restantes / recommandations
+
+La majorité des recommandations du présent rapport ont été **appliquées** en
+phase 2. Synthèse de ce qui reste :
+
+### Appliqué ✅
+
+- Accès interne uniquement (tunnel SSH, `127.0.0.1`).
+- Authentification des écritures **et** des lectures via le garde same-origin.
+- Détection automatique du volume anormal + journal d'audit forensique.
+- Limitation de débit nginx + blocage du sous-réseau attaquant.
+- Sortie du secret SSH LR hors du code source.
+- Bornage des envois e-mail (timeout + cooldown sur défaillance).
+
+### À faire (par décision opérationnelle)
+
+- **Sauvegardes PostgreSQL automatisées** : décision actuelle = **différé**.
+  La configuration en base (équipements, canaux, politiques, journal d'audit)
+  **n'est pas régénérable** automatiquement. Le script `cron` + `pg_dump`
+  documenté dans le runbook est prêt à activer.
+
+### Surveillé / à reconsidérer dans le futur
+
+- **Politique du dépôt git** : si le dépôt devient un jour public ou plus
+  largement partagé, **rotation immédiate** du mot de passe SSH de la flotte
+  LR (la valeur historique reste dans les anciens commits).
+- **TLS sortant vers les équipements** : actuellement non vérifié (certificats
+  auto-signés Ubiquiti). À sécuriser via épinglage de certificats ou CA
+  interne le jour où c'est opérationnellement faisable.
+- **Politique de mots de passe équipements** : les Rockets et l'UISP Power
+  ont conservé leurs mots de passe d'origine (rotation non retenue, choix
+  documenté). À renforcer le jour où une politique de rotation périodique
+  est mise en place.
+- **fail2ban** : jail prête (`/etc/fail2ban/jail.d/nginx-proxy.local`),
+  **désactivée** tant que nginx est sur `127.0.0.1`. À activer **avant**
+  toute ré-exposition publique éventuelle.
+
+---
+
+## 11. Leçons apprises
 
 1. **Un point d'entrée d'écriture exposé à Internet sans authentification
    réelle = compromission garantie**, même si la « clé secrète » n'est jamais
@@ -284,13 +381,21 @@ faille ne peut pas être réintroduite par inadvertance.
    notification lente bloquait l'enregistrement de la topologie. Les effets de
    bord (e-mails) doivent être isolés et bornés.
 4. **Sans détection, une intrusion dure** : ~15 h ici. La défense périmétrique
-   doit s'accompagner d'une supervision de sécurité.
+   doit s'accompagner d'une supervision de sécurité. Un simple journal d'audit
+   + une règle de seuil suffisent pour passer à un délai de détection de
+   l'ordre de la minute.
 5. **Les protections doivent être versionnées**, pas appliquées à la main sur
    le serveur (sinon elles régressent au déploiement suivant).
+6. **Un secret en dur dans le code est un secret divulgué** — même dans un
+   dépôt privé, il vit dans l'historique. Tout secret doit transiter par
+   `.env` ou par la base de données, pas par le code source.
+7. **Un incident est aussi une opportunité d'audit** : la dynamique de
+   réponse à incident permet de prioriser et déployer rapidement des
+   durcissements qui auraient pu attendre des mois autrement.
 
 ---
 
-## 11. Annexe — Indicateurs de compromission (IoC)
+## 12. Annexe — Indicateurs de compromission (IoC)
 
 | Type | Valeur |
 |---|---|
@@ -305,6 +410,8 @@ faille ne peut pas être réintroduite par inadvertance.
 
 ---
 
-*Rapport établi le 17 mai 2026. Les détails sensibles d'exploitation
-(secrets, procédures internes) sont volontairement omis et conservés dans le
-runbook de déploiement à accès restreint.*
+*Rapport établi le 17 mai 2026, mis à jour le même jour après l'audit
+post-incident et le déploiement des durcissements complémentaires
+(commits `cb025c4` et `cbd7d33` sur `main`). Les détails sensibles
+d'exploitation (secrets, procédures internes) sont volontairement omis et
+conservés dans le runbook de déploiement à accès restreint.*

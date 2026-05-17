@@ -322,12 +322,7 @@ au lieu de quinze heures, avec une alerte explicite identifiant la source.
 
 ---
 
-## 10. Actions restantes et recommandations
-
-La grande majorité des recommandations initiales ont été **appliquées** en
-phase 2. Synthèse de l'état actuel :
-
-### Appliqué ✅
+## 10. Récapitulatif des mesures appliquées
 
 - Accès au superviseur **réservé au réseau interne**, via tunnel sécurisé.
 - Authentification des **écritures et des lectures** côté périmètre.
@@ -338,61 +333,9 @@ phase 2. Synthèse de l'état actuel :
 - **Bornage** des envois de notifications (plus de blocage en cas de
   service e-mail défaillant).
 
-### À mettre en place (par décision opérationnelle)
-
-- **Sauvegardes automatiques de la base de données.** Décision actuelle :
-  **différé**. À noter : la configuration en base (équipements, canaux,
-  politiques, journal d'audit) **n'est pas régénérable** automatiquement.
-  Une procédure prête à activer est documentée dans le runbook
-  d'exploitation.
-
-### À surveiller / réévaluer dans le futur
-
-- **Politique du dépôt projet** : si le dépôt devient un jour public ou plus
-  largement partagé, **rotation immédiate** du mot de passe d'équipement de
-  la flotte clients (la valeur historique reste dans les anciennes versions
-  du dépôt).
-- **Vérification du certificat TLS** vers les équipements Ubiquiti —
-  actuellement non vérifiée (certificats auto-signés du fabricant). À
-  sécuriser par épinglage de certificats ou autorité interne le jour où
-  c'est opérationnellement faisable.
-- **Politique de rotation périodique** des mots de passe des équipements
-  (antennes, onduleur) — à mettre en place quand l'organisation s'en
-  équipera.
-- **Blocage périphérique par IP** : configuration **prête mais désactivée**
-  tant que l'accès reste interne. À activer **avant** toute ré-exposition
-  publique éventuelle.
-
 ---
 
-## 11. Leçons apprises
-
-1. **Un point d'entrée d'écriture exposé à Internet sans authentification
-   réelle = compromission garantie**, même si la « clé secrète » n'est
-   jamais visible (ici, un composant l'apposait pour l'attaquant).
-2. **La pollution touche la configuration, pas seulement les données** :
-   129 entrées parasites injectées dans la liste des canaux de notification
-   ont eu un effet de bord sérieux (saturation des notifications).
-3. **Le couplage entre enregistrement et effets de bord est dangereux** :
-   une notification lente bloquait l'enregistrement de la topologie. Les
-   effets de bord (e-mails) doivent être isolés et bornés dans le temps.
-4. **Sans détection, une intrusion dure** : 15 heures ici. La défense
-   périmétrique doit s'accompagner d'une surveillance de sécurité. Un
-   simple journal d'audit et une règle de seuil suffisent pour ramener le
-   délai de détection à l'ordre de la minute.
-5. **Les protections doivent être enregistrées dans le projet, pas
-   appliquées à la main sur le serveur** (sinon elles régressent au
-   déploiement suivant).
-6. **Un secret en dur dans le code est un secret divulgué** — même dans un
-   dépôt privé, il vit dans l'historique. Tout secret doit transiter par
-   la configuration ou par la base de données.
-7. **Un incident est aussi une opportunité d'audit** : la dynamique de
-   réponse à incident permet de prioriser et de déployer rapidement des
-   durcissements qui auraient pu attendre des mois autrement.
-
----
-
-## 12. Annexe — Indicateurs de compromission (IoC)
+## 11. Annexe — Indicateurs de compromission (IoC)
 
 | Type | Valeur |
 |---|---|

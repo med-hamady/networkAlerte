@@ -53,16 +53,22 @@ logger = logging.getLogger(__name__)
 # Two guards, both here so EVERY caller (discovery, alert_engine, jobs) is
 # covered without touching their transaction structure:
 #   1. Hard per-delivery timeout — a hung channel is capped, never unbounded.
-#   2. Per-channel cooldown — once a channel times out, skip it for a short
-#      window instead of eating the full timeout again on every subsequent
-#      incident of the same burst. Auto-recovers after the cooldown.
+#   2. Per-channel cooldown — once a channel times out OR fails repeatedly,
+#      skip it for a short window instead of eating the cost again on every
+#      subsequent incident of the same burst. Auto-recovers after the cooldown.
+#      A hang (timeout/exception) trips the cooldown at once; a fast reject
+#      (e.g. a throttling SMTP returning quickly) trips it after N in a row.
 # ---------------------------------------------------------------------------
 
 _DELIVERY_TIMEOUT_S = 8.0
 _CHANNEL_COOLDOWN_S = 120.0
+# Consecutive failed deliveries (incl. fast False returns) before cooldown.
+_MAX_CONSECUTIVE_FAILURES = 5
 
 # channel key -> monotonic time until which the channel is considered degraded
 _degraded_until: dict[str, float] = {}
+# channel key -> count of consecutive failed deliveries (reset on success)
+_consecutive_fail: dict[str, int] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +230,28 @@ async def _dispatch(device: Device, incident: Incident, event: str) -> bool:
                 incident.alert_type, event,
             )
             ok = False
+
+        # Track consecutive failures so a fast-rejecting channel (e.g. a
+        # throttling SMTP that returns False quickly without raising) also
+        # gets backed off — the timeout/exception paths above only catch
+        # hangs. Any success clears the streak.
+        if ok:
+            _consecutive_fail.pop(key, None)
+        else:
+            streak = _consecutive_fail.get(key, 0) + 1
+            _consecutive_fail[key] = streak
+            # Reaching here means we are NOT in an active cooldown (the skip
+            # block above `continue`s otherwise), so re-arming is always safe.
+            if streak >= _MAX_CONSECUTIVE_FAILURES:
+                _degraded_until[key] = time.monotonic() + _CHANNEL_COOLDOWN_S
+                _consecutive_fail.pop(key, None)
+                logger.error(
+                    "Notification channel %s (%s) failed %d× in a row — "
+                    "marking degraded for %.0fs (alert %s/%s)",
+                    target.kind, target.label, streak, _CHANNEL_COOLDOWN_S,
+                    incident.alert_type, event,
+                )
+
         results.append(ok)
 
     if not results:

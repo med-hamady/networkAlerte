@@ -37,6 +37,7 @@ from app.core.alert_constants import (
     AT_RADIO_INTERFACE_DOWN,
     AT_RADIO_LINK_DEGRADED,
     AT_ROCKET_DOWN,
+    AT_SECURITY_ANOMALY,
     AT_SIGNAL_LOW,
     AT_SWITCH_DOWN,
     AT_SWITCH_PORT_DOWN,
@@ -97,6 +98,9 @@ ALERT_TYPE_LABELS: dict[str, str] = {
     # Ping quality
     AT_PING_INSTABILITY:     "Latence ping instable",
     AT_PING_LATENCY_HIGH:    "Latence ping élevée",
+
+    # Sécurité
+    AT_SECURITY_ANOMALY:     "Volume anormal d'écritures API détecté",
 
     # Auto-discovery lifecycle
     AT_LR_DISCOVERED:        "Nouveau client (LR) détecté",

@@ -36,6 +36,7 @@ from app.core.config import get_settings
 from app.db.session import async_session_factory
 from app.models.alert import Alert
 from app.models.alert_state import AlertState
+from app.models.audit_log import AuditLog
 from app.models.device import Device, Lr, Rocket, UispPower
 from app.models.device_metric import DeviceMetric
 from app.models.power_status_log import PowerStatusLog
@@ -1247,6 +1248,86 @@ async def warning_digest_job() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Security — abnormal API write volume detection
+# ---------------------------------------------------------------------------
+
+# Per-IP cooldown: a sustained attack must not produce one email per check
+# cycle. The map is module-level and reset on backend restart, which is the
+# right behaviour: a restart counts as "operator intervened, re-arm alerts".
+_security_alerted_until: dict[str, datetime.datetime] = {}
+
+
+async def security_anomaly_detection_job() -> None:
+    """Detect a flood of state-changing API calls and notify operators.
+
+    Counts rows in `audit_log` per `client_ip` over the last
+    `audit_anomaly_window_minutes`. Any IP above `audit_anomaly_max_mutations`
+    triggers a security alert (email). Each IP is rate-limited by
+    `audit_anomaly_alert_cooldown_minutes` so a sustained attack does not
+    spam the inbox — one email per attacker per cooldown window.
+
+    Born of incident 2026-05-17 (15 h of automated scanning went undetected).
+    """
+    settings = get_settings()
+    if not settings.audit_log_enabled:
+        return
+
+    now = datetime.datetime.now(datetime.UTC)
+    since = now - datetime.timedelta(minutes=settings.audit_anomaly_window_minutes)
+    threshold = settings.audit_anomaly_max_mutations
+    cooldown = datetime.timedelta(minutes=settings.audit_anomaly_alert_cooldown_minutes)
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(AuditLog.client_ip, func.count().label("n"))
+            .where(AuditLog.created_at >= since)
+            .group_by(AuditLog.client_ip)
+            .having(func.count() > threshold),
+        )
+        offenders = list(result.all())
+
+    for client_ip, count in offenders:
+        # Per-IP cooldown — empty/null IP collapses to a single bucket.
+        key = client_ip or "(unknown)"
+        alerted_until = _security_alerted_until.get(key)
+        if alerted_until and now < alerted_until:
+            logger.debug(
+                "security_anomaly: IP %s still in cooldown (%s left)",
+                key, alerted_until - now,
+            )
+            continue
+        _security_alerted_until[key] = now + cooldown
+
+        logger.error(
+            "Security anomaly detected — IP %s made %d mutating requests in "
+            "the last %d min (threshold %d). Possible attack.",
+            key, count, settings.audit_anomaly_window_minutes, threshold,
+        )
+        subject = (
+            f"[SÉCURITÉ] Volume anormal d'écritures API "
+            f"({count} en {settings.audit_anomaly_window_minutes} min)"
+        )
+        body = (
+            "Le superviseur a détecté un volume anormal d'opérations d'écriture\n"
+            "(POST/PUT/PATCH/DELETE) sur l'API :\n\n"
+            f"  IP source : {key}\n"
+            f"  Nombre    : {count}\n"
+            f"  Fenêtre   : {settings.audit_anomaly_window_minutes} minutes\n"
+            f"  Seuil     : {threshold}\n\n"
+            "Cela peut indiquer une attaque automatisée ou un client buggé.\n"
+            "Consulter les logs backend et la table audit_log pour les détails.\n\n"
+            f"Prochaine alerte pour cette IP au plus tôt dans "
+            f"{settings.audit_anomaly_alert_cooldown_minutes} min."
+        )
+        try:
+            await notification_service.notify_security_event(subject, body)
+        except Exception:
+            # Notification failure must not crash the detection job — the log
+            # ERROR above is already the durable signal.
+            logger.exception("security_anomaly: notify_security_event raised")
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -1318,6 +1399,16 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         replace_existing=True,
         **safety,
     )
+    if settings.audit_log_enabled:
+        scheduler.add_job(
+            security_anomaly_detection_job,
+            trigger="interval",
+            seconds=settings.audit_anomaly_check_interval_seconds,
+            id="security_anomaly_detection",
+            name="Security anomaly detection (abnormal API write volume)",
+            replace_existing=True,
+            **safety,
+        )
 
 
 

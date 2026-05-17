@@ -153,6 +153,18 @@ class Settings(BaseSettings):
     battery_warning_pct: int = 25   # below → warning
     battery_critical_pct: int = 10  # below → critical
 
+    # Security audit log — the FastAPI middleware records every mutating
+    # request (POST/PUT/PATCH/DELETE on /api/v1/...) into the audit_log table.
+    # The companion detection job (security_anomaly_detection_job) counts rows
+    # per client IP over a sliding window and notifies operators when the
+    # threshold is exceeded.
+    audit_log_enabled: bool = True
+    audit_anomaly_window_minutes: int = 5
+    audit_anomaly_max_mutations: int = 50
+    audit_anomaly_check_interval_seconds: int = 60
+    # Per-IP cooldown — a sustained attack must not fire one alert per check.
+    audit_anomaly_alert_cooldown_minutes: int = 30
+
     # Auto-discovery — stale LR detection
     # An auto-discovered LR is considered "disappeared" if it has not been
     # rapported as a peer of any Rocket for more than `stale_lr_minutes` minutes.

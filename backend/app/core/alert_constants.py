@@ -102,6 +102,12 @@ AT_LR_DISAPPEARED  = "lr_disappeared"  # LR auto-découvert plus rapporté depui
 AT_PING_INSTABILITY = "ping_instability"
 AT_PING_LATENCY_HIGH = "ping_latency_high"
 
+# Sécurité — volume anormal d'écritures API détecté par
+# security_anomaly_detection_job sur la base de la table audit_log. N'est PAS
+# attaché à un device (événement système) — envoyé directement par email via
+# notification_service.notify_security_event.
+AT_SECURITY_ANOMALY = "security_anomaly"
+
 
 KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_ROCKET_DOWN, AT_LR_DOWN, AT_SWITCH_DOWN, AT_DEVICE_UNREACHABLE,
@@ -115,6 +121,7 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_AIRMAX_DOWN,
     AT_LR_DISCOVERED, AT_LR_IP_CHANGED, AT_LR_REASSIGNED, AT_LR_DISAPPEARED,
     AT_PING_INSTABILITY, AT_PING_LATENCY_HIGH,
+    AT_SECURITY_ANOMALY,
 })
 
 

@@ -102,6 +102,15 @@ class Settings(BaseSettings):
     # skip a device whose credentials are missing and log a warning instructing
     # the operator to set them via PUT /api/v1/devices/{id}.
 
+    # Default SSH credentials stamped on auto-discovered client LRs so the
+    # transit probe can reach them right away. The password MUST come from the
+    # environment — never hardcode it in source. Empty password ⇒ LRs are
+    # created without SSH creds and the transit probe skips them until an
+    # operator sets them via PUT /api/v1/devices/{id}.
+    lr_default_ssh_username: str = "ubnt"
+    lr_default_ssh_password: str = ""
+    lr_default_ssh_port: int = 22
+
     # Transit probe — disable entirely if LTU LR is not part of the topology
     transit_probe_enabled: bool = True
 

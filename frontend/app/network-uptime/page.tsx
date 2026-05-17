@@ -507,10 +507,12 @@ function Gantt({
 }
 
 function EpisodeLine({ episode: ep }: { episode: DowntimeEpisode }) {
+  const [flapsOpen, setFlapsOpen] = useState(false)
   const startDay = fmtDayMonth(ep.started_at)
   const startTime = fmtTimeOnly(ep.started_at)
   const sameDay = ep.ended_at && isSameDay(ep.started_at, ep.ended_at)
   const dotCls = ep.severity === 'critical' ? 'bg-red-500' : 'bg-amber-400'
+  const hasFlaps = ep.flap_count > 1 && ep.flaps.length > 0
 
   return (
     <li className="flex items-start gap-3 text-sm">
@@ -526,13 +528,21 @@ function EpisodeLine({ episode: ep }: { episode: DowntimeEpisode }) {
           ) : (
             <strong>{fmtDayMonth(ep.ended_at!)} {fmtTimeOnly(ep.ended_at!)}</strong>
           )}
-          {ep.flap_count > 1 && (
-            <span
-              title={`${ep.flap_count} pannes brutes fusionnées sur cette plage`}
-              className="ml-2 inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded bg-orange-50 text-orange-700 border border-orange-200"
+          {hasFlaps && (
+            <button
+              type="button"
+              onClick={() => setFlapsOpen(o => !o)}
+              title="Cliquer pour voir le détail de chaque coupure individuelle"
+              className="ml-2 inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 cursor-pointer transition-colors"
             >
-              ⚡ instable ×{ep.flap_count}
-            </span>
+              <span>⚡ instable ×{ep.flap_count}</span>
+              <svg
+                className={`w-2.5 h-2.5 transition-transform ${flapsOpen ? 'rotate-90' : ''}`}
+                fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
           )}
         </div>
         <div className="text-[11px] text-slate-500">
@@ -544,6 +554,42 @@ function EpisodeLine({ episode: ep }: { episode: DowntimeEpisode }) {
           {' · '}
           Incident #{ep.incident_id}
         </div>
+
+        {hasFlaps && flapsOpen && (
+          <div className="mt-2 ml-1 pl-3 border-l-2 border-orange-200 bg-orange-50/40 rounded-r py-1.5 pr-2">
+            <div className="text-[11px] font-medium text-orange-700 mb-1.5">
+              {ep.flap_count} coupures individuelles dans cet épisode :
+            </div>
+            <ol className="space-y-1">
+              {ep.flaps.map((f, i) => {
+                const fSameDay = f.ended_at && isSameDay(f.started_at, f.ended_at)
+                return (
+                  <li key={i} className="flex items-baseline gap-2 text-[11px] text-slate-700">
+                    <span className="font-mono text-orange-600 font-semibold shrink-0">
+                      #{i + 1}
+                    </span>
+                    <span>
+                      <strong>DOWN</strong> {fmtDayMonth(f.started_at)} {fmtTimeOnly(f.started_at)}
+                      {' → '}
+                      {f.ended_at ? (
+                        <>
+                          <strong>UP</strong>
+                          {' '}
+                          {fSameDay
+                            ? fmtTimeOnly(f.ended_at)
+                            : `${fmtDayMonth(f.ended_at)} ${fmtTimeOnly(f.ended_at)}`}
+                        </>
+                      ) : (
+                        <span className="text-red-600 font-semibold">encore DOWN</span>
+                      )}
+                      <span className="text-slate-500"> · durée {fmtDuration(f.duration_seconds)}</span>
+                    </span>
+                  </li>
+                )
+              })}
+            </ol>
+          </div>
+        )}
       </div>
     </li>
   )

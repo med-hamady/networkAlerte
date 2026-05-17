@@ -68,8 +68,8 @@ export default function LrHealthPage() {
         <div>
           <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Liaisons clients</h1>
           <p className="text-blue-400 text-sm mt-1">
-            Classification du comportement des LR clients sur 30 jours par 10 signaux indépendants —
-            seuls les LR avec ≥ 3 signaux actifs sont surfacés.
+            Classification du comportement des LR clients sur 30 jours par 10 indicateurs indépendants —
+            seuls les LR avec ≥ 3 indicateurs actifs sont surfacés.
           </p>
         </div>
       </div>
@@ -79,63 +79,123 @@ export default function LrHealthPage() {
           Comment le verdict est calculé
         </summary>
         <div className="px-4 pb-4 text-xs text-slate-600 space-y-3">
-          <p>Quatre métriques physiques évaluées, chacune sous deux angles (état + tendance), plus deux comparaisons aux voisins — soit 10 signaux indépendants.</p>
+          <p>
+            On évalue chaque LR client sur les <strong>30 derniers jours</strong> avec <strong>10 indicateurs indépendants</strong>.
+            Chaque indicateur renvoie <em>actif</em> (problème détecté) ou <em>inactif</em> (rien à signaler).
+            Le nombre d'indicateurs actifs détermine le verdict.
+          </p>
 
-          <table className="w-full text-[11px] border-collapse">
+          <p>
+            <strong>Composition des 10 indicateurs :</strong>
+          </p>
+          <ul className="list-disc list-inside space-y-0.5 ml-2">
+            <li><strong>4 métriques physiques × 2 angles d'analyse = 8 indicateurs</strong> (détail dans le tableau ci-dessous)</li>
+            <li><strong>+ 2 indicateurs de comparaison aux voisins</strong> du même Rocket</li>
+          </ul>
+
+          <p className="mt-2">
+            Pour chacune des 4 métriques, deux indicateurs distincts sont calculés :
+          </p>
+          <ul className="list-disc list-inside space-y-0.5 ml-2">
+            <li><strong>État</strong> — niveau moyen mauvais sur la fenêtre 30 jours ?</li>
+            <li><strong>Tendance</strong> — la métrique se dégrade-t-elle dans le temps (pente de régression linéaire) ?</li>
+          </ul>
+
+          <table className="w-full text-[11px] border-collapse mt-2">
             <thead>
               <tr className="bg-blue-50">
                 <th className="text-left px-2 py-1 border-b">Métrique</th>
-                <th className="text-left px-2 py-1 border-b">État (seuil)</th>
-                <th className="text-left px-2 py-1 border-b">Tendance (seuil)</th>
+                <th className="text-left px-2 py-1 border-b">Indicateur « État » actif si…</th>
+                <th className="text-left px-2 py-1 border-b">Indicateur « Tendance » actif si…</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-blue-50">
               <tr>
-                <td className="px-2 py-1"><strong>Signal dBm</strong></td>
-                <td className="px-2 py-1">moyenne ≤ seuil distance-bandé</td>
-                <td className="px-2 py-1">pente ≤ -1 dBm / semaine</td>
+                <td className="px-2 py-1 align-top">
+                  <strong>Signal dBm</strong>
+                  <div className="text-slate-400">puissance reçue (plus c'est proche de 0, mieux c'est)</div>
+                </td>
+                <td className="px-2 py-1 align-top">moyenne 30j <strong>≤ seuil dépendant de la distance</strong> (voir grille ci-dessous)</td>
+                <td className="px-2 py-1 align-top">le signal <strong>baisse de ≥ 1 dBm par semaine</strong></td>
               </tr>
               <tr>
-                <td className="px-2 py-1"><strong>Bruit</strong></td>
-                <td className="px-2 py-1">moyenne ≥ -85 dBm</td>
-                <td className="px-2 py-1">pente ≥ +1 dBm / semaine</td>
+                <td className="px-2 py-1 align-top">
+                  <strong>Bruit</strong>
+                  <div className="text-slate-400">plancher de bruit RF (plus c'est négatif, mieux c'est)</div>
+                </td>
+                <td className="px-2 py-1 align-top">moyenne 30j <strong>≥ -85 dBm</strong> (bruit trop élevé)</td>
+                <td className="px-2 py-1 align-top">le bruit <strong>monte de ≥ 1 dBm par semaine</strong></td>
               </tr>
               <tr>
-                <td className="px-2 py-1"><strong>CCQ</strong></td>
-                <td className="px-2 py-1">moyenne &lt; 75 %</td>
-                <td className="px-2 py-1">pente ≤ -2 % / semaine</td>
+                <td className="px-2 py-1 align-top">
+                  <strong>CCQ</strong>
+                  <div className="text-slate-400">qualité de la modulation (100 % = idéal)</div>
+                </td>
+                <td className="px-2 py-1 align-top">moyenne 30j <strong>&lt; 75 %</strong></td>
+                <td className="px-2 py-1 align-top">le CCQ <strong>chute de ≥ 2 points par semaine</strong></td>
               </tr>
               <tr>
-                <td className="px-2 py-1"><strong>Disponibilité</strong></td>
-                <td className="px-2 py-1">downtime &gt; 1 % de la fenêtre</td>
-                <td className="px-2 py-1">≥ 5 pannes distinctes</td>
+                <td className="px-2 py-1 align-top">
+                  <strong>Disponibilité</strong>
+                  <div className="text-slate-400">temps où le LR a répondu au ping</div>
+                </td>
+                <td className="px-2 py-1 align-top"><strong>downtime &gt; 1 %</strong> de la fenêtre 30j (≈ 7,2 h cumulées)</td>
+                <td className="px-2 py-1 align-top"><strong>≥ 5 pannes distinctes</strong> sur la fenêtre (instabilité récurrente)</td>
               </tr>
             </tbody>
           </table>
 
-          <p>
-            <strong>Seuil signal par distance :</strong>
-            {' '}&lt; 1 km : -55 dBm
-            {' '}· 1–3 km : -62 dBm
-            {' '}· 3–7 km : -68 dBm
-            {' '}· 7–12 km : -73 dBm
-            {' '}· &gt; 12 km : -78 dBm
-            {' '}(compense la perte de propagation 20·log d).
+          <p className="pt-1">
+            <strong>Grille du seuil « Signal dBm » par distance</strong> — plus le client est loin, plus on tolère un signal faible
+            (la perte de propagation suit la loi en 20·log d) :
+          </p>
+          <table className="w-full text-[11px] border-collapse">
+            <thead>
+              <tr className="bg-blue-50">
+                <th className="text-left px-2 py-1 border-b">Distance LR ↔ Rocket</th>
+                <th className="text-left px-2 py-1 border-b">Seuil « État Signal » actif si moyenne ≤</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-blue-50">
+              <tr><td className="px-2 py-1">&lt; 1 km</td><td className="px-2 py-1"><strong>-55 dBm</strong></td></tr>
+              <tr><td className="px-2 py-1">1 – 3 km</td><td className="px-2 py-1"><strong>-62 dBm</strong></td></tr>
+              <tr><td className="px-2 py-1">3 – 7 km</td><td className="px-2 py-1"><strong>-68 dBm</strong></td></tr>
+              <tr><td className="px-2 py-1">7 – 12 km</td><td className="px-2 py-1"><strong>-73 dBm</strong></td></tr>
+              <tr><td className="px-2 py-1">&gt; 12 km</td><td className="px-2 py-1"><strong>-78 dBm</strong></td></tr>
+            </tbody>
+          </table>
+
+          <p className="pt-1">
+            <strong>Les 2 indicateurs « Comparaison aux voisins »</strong> — on compare le LR aux autres LR connectés au
+            <strong> même Rocket</strong> et situés à une distance similaire (± 30 % de la distance du LR évalué, minimum 3 voisins requis).
+            But : distinguer une <em>mauvaise installation côté client</em> d'un <em>environnement RF dégradé pour tout le secteur</em>.
+          </p>
+          <ul className="list-disc list-inside space-y-0.5 ml-2">
+            <li><strong>Outlier Signal</strong> — actif si le Signal dBm du LR est nettement pire que celui de ses voisins.</li>
+            <li><strong>Outlier Bruit / CCQ</strong> — actif si le bruit ou le CCQ du LR est nettement pire que celui de ses voisins.</li>
+          </ul>
+          <p className="text-slate-500">
+            Si le LR a moins de 3 voisins comparables, ces 2 indicateurs restent inactifs (on ne pénalise pas un LR isolé).
           </p>
 
-          <p>
-            <strong>Outlier vs voisins</strong> (LR du même Rocket à ± 30 % de distance, min. 3 voisins) :
-            un signal pour le <em>signal_dbm</em> seul, un autre pour le <em>bruit ou CCQ</em>. Sépare
-            "mauvaise installation" de "environnement RF dégradé pour tout le secteur".
+          <p className="pt-1">
+            <strong>Verdict final</strong> — selon le nombre d'indicateurs actifs (sur 10) :
           </p>
-
-          <p>
-            <strong>Verdict :</strong>
-            {' '}0–2 signaux = stable (n'apparaît pas) —
-            {' '}<strong>3–4</strong> = À surveiller —
-            {' '}<strong>5–7</strong> = Suspect —
-            {' '}<strong>8+</strong> = Critique.
-          </p>
+          <table className="w-full text-[11px] border-collapse">
+            <thead>
+              <tr className="bg-blue-50">
+                <th className="text-left px-2 py-1 border-b">Indicateurs actifs</th>
+                <th className="text-left px-2 py-1 border-b">Verdict</th>
+                <th className="text-left px-2 py-1 border-b">Affichage</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-blue-50">
+              <tr><td className="px-2 py-1">0 – 2</td><td className="px-2 py-1">Stable</td><td className="px-2 py-1 text-slate-500">N'apparaît pas dans la liste</td></tr>
+              <tr><td className="px-2 py-1">3 – 4</td><td className="px-2 py-1"><strong>À surveiller</strong></td><td className="px-2 py-1">Bloc jaune</td></tr>
+              <tr><td className="px-2 py-1">5 – 7</td><td className="px-2 py-1"><strong>Suspect</strong></td><td className="px-2 py-1">Bloc orange</td></tr>
+              <tr><td className="px-2 py-1">8 – 10</td><td className="px-2 py-1"><strong>Critique</strong></td><td className="px-2 py-1">Bloc rouge</td></tr>
+            </tbody>
+          </table>
         </div>
       </details>
 

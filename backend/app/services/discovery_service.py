@@ -285,6 +285,7 @@ async def _reconcile_single_peer(
             name=_generate_device_name(peer, fallback_index),
             ip_address=ip,
             status="unknown",
+            location=parent.location,
             mac_address=mac,
             hostname=peer.get("hostname"),
             firmware_version=peer.get("firmware"),
@@ -354,6 +355,10 @@ async def _reconcile_single_peer(
     if device.rocket_id != parent.id:
         old_parent_id = device.rocket_id
         device.rocket_id = parent.id
+        # La LR a été physiquement réorientée vers un autre Rocket → on aligne
+        # sa localisation sur celle du nouveau Rocket (les LR sont des CPE
+        # physiquement situés sur le même site que leur Rocket parent).
+        device.location = parent.location
         result.reassigned.append((device, old_parent_id))
 
         old_parent_name = "aucun"
@@ -401,6 +406,16 @@ async def _reconcile_single_peer(
             device.name, device.firmware_version, new_firmware,
         )
         device.firmware_version = new_firmware
+
+    # Localisation — pour les LR auto-découvertes, on aligne en permanence sur
+    # le Rocket parent (le LR est physiquement sur le même site). Les LR créées
+    # manuellement (auto_discovered=False) ne sont jamais écrasées.
+    if device.auto_discovered and device.location != parent.location:
+        logger.info(
+            "Discovery: LR '%s' location resynchronisée : %r → %r (Rocket parent)",
+            device.name, device.location, parent.location,
+        )
+        device.location = parent.location
 
     return device
 

@@ -9,12 +9,12 @@ type-specific row in one flush.
 
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.exceptions import DeviceNotFoundError
-from app.models.device import ClientModem, Device, Rocket, UispPower, UispSwitch
+from app.models.device import ClientModem, Device, Lr, Rocket, UispPower, UispSwitch
 from app.schemas.device import (
     ClientModemCreate,
     DeviceCreate,
@@ -90,11 +90,35 @@ async def update_device(db: AsyncSession, device_id: int, data: DeviceUpdate) ->
     device = await get_device(db, device_id)
     update_data = data.model_dump(exclude_unset=True)
     update_data.pop("device_type", None)  # type is immutable
+
+    # Capture la localisation avant modification — sert à propager le
+    # changement aux LR auto-découvertes rattachées si c'est un Rocket.
+    old_location = device.location
+
     for field, value in update_data.items():
         if hasattr(device, field):
             setattr(device, field, value)
     await db.flush()
     await db.refresh(device)
+
+    # Propagation de la localisation : quand un Rocket change de site, on
+    # aligne automatiquement toutes ses LR auto-découvertes (les LR sont des
+    # CPE physiquement sur le même site que leur Rocket parent). Les LR
+    # créées manuellement (auto_discovered=False) ne sont pas touchées : si
+    # un opérateur les a saisies à la main, on respecte sa valeur.
+    if isinstance(device, Rocket) and "location" in update_data and device.location != old_location:
+        result = await db.execute(
+            update(Lr)
+            .where(Lr.rocket_id == device.id, Lr.auto_discovered.is_(True))
+            .values(location=device.location)
+        )
+        if result.rowcount:
+            logger.info(
+                "Propagé la nouvelle location %r du Rocket '%s' à %d LR auto-découverte(s)",
+                device.location, device.name, result.rowcount,
+            )
+        await db.flush()
+
     logger.info("Updated device: %s", device.name)
     return device
 

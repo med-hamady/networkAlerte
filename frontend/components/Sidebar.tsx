@@ -1,9 +1,10 @@
 'use client'
 
+import { useEffect } from 'react'
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import useSWR from 'swr'
-import { endpoints, fetcher } from '@/lib/api'
+import { endpoints, fetcher, logout, type CurrentUser } from '@/lib/api'
 import type { HealthResponse } from '@/lib/types'
 
 type NavLink = {
@@ -55,12 +56,39 @@ const sections: NavSection[] = [
 
 export default function Sidebar() {
   const pathname = usePathname()
+  const router = useRouter()
   const { data: health } = useSWR<HealthResponse>(
     endpoints.health,
     fetcher,
     { refreshInterval: 30_000 },
   )
+  // Identity of the logged-in operator. Used to (a) display who is logged in
+  // in the footer, (b) trigger a redirect to /login if the session is gone
+  // (an expired cookie returns 401 → fetcher throws → SWR returns no data;
+  // we treat that as "logged out" and bounce to the login page).
+  const { data: currentUser, error: userError } = useSWR<CurrentUser>(
+    endpoints.authMe,
+    fetcher,
+    { refreshInterval: 60_000, shouldRetryOnError: false },
+  )
   const dbOk = health?.database === 'connected'
+
+  const handleLogout = async () => {
+    try {
+      await logout()
+    } finally {
+      router.replace('/login')
+    }
+  }
+
+  // Auto-redirect to /login if the session expired server-side (the cookie
+  // exists so the middleware lets the page render, but /auth/me returns 401
+  // and the fetcher throws). One redirect per failed lookup.
+  useEffect(() => {
+    if (userError) {
+      router.replace('/login')
+    }
+  }, [userError, router])
 
   return (
     <aside className="w-60 min-h-screen bg-blue-900 flex flex-col shrink-0">
@@ -110,6 +138,33 @@ export default function Sidebar() {
         ))}
       </nav>
 
+      {/* Logged-in user + logout */}
+      <div className="px-4 py-3 border-t border-blue-800">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-full bg-blue-700 text-white text-xs font-bold flex items-center justify-center shrink-0">
+            {(currentUser?.username ?? '?').slice(0, 2).toUpperCase()}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm text-white font-medium truncate">
+              {currentUser?.full_name || currentUser?.username || '—'}
+            </p>
+            {currentUser?.full_name && (
+              <p className="text-[10px] text-blue-400 truncate">{currentUser.username}</p>
+            )}
+          </div>
+          <button
+            onClick={handleLogout}
+            title="Se déconnecter"
+            className="p-1.5 rounded-lg text-blue-300 hover:text-white hover:bg-blue-800 transition-colors shrink-0"
+          >
+            <LogoutIcon className="w-4 h-4" />
+          </button>
+        </div>
+        {userError && (
+          <p className="text-[10px] text-red-300 mt-1">Session expirée — reconnecte-toi.</p>
+        )}
+      </div>
+
       {/* System status footer */}
       <div className="px-4 py-4 border-t border-blue-800">
         <div className="flex items-center gap-2 px-1">
@@ -130,6 +185,15 @@ export default function Sidebar() {
         </div>
       </div>
     </aside>
+  )
+}
+
+function LogoutIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round"
+        d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+    </svg>
   )
 }
 

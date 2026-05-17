@@ -27,6 +27,10 @@ export const fetcher = (url: string) =>
   })
 
 export const endpoints = {
+  authLogin:            `${API_BASE}/auth/login`,
+  authLogout:           `${API_BASE}/auth/logout`,
+  authMe:               `${API_BASE}/auth/me`,
+  authChangePassword:   `${API_BASE}/auth/change-password`,
   health:               `${API_BASE}/health`,
   devices:              `${API_BASE}/devices`,
   device:               (id: number) => `${API_BASE}/devices/${id}`,
@@ -51,6 +55,42 @@ export const endpoints = {
   badInstallations:     (days = 30) => `${API_BASE}/lr-health/bad-installations?days=${days}`,
   downtimeLog:          (startIso: string, endIso: string) =>
     `${API_BASE}/network-uptime/downtime-log?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`,
+}
+
+// ---------------------------------------------------------------------------
+// Auth helpers (login / logout / current user / change password)
+// ---------------------------------------------------------------------------
+
+export interface CurrentUser {
+  id: number
+  username: string
+  full_name: string | null
+  enabled: boolean
+  last_login_at: string | null
+}
+
+export async function logout(): Promise<void> {
+  // The cookie is HttpOnly so we cannot clear it client-side — only the
+  // backend can (Set-Cookie with Max-Age=0 in the logout response).
+  await fetch(endpoints.authLogout, { method: 'POST' })
+}
+
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  const res = await fetch(endpoints.authChangePassword, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
+  })
+  if (!res.ok && res.status !== 204) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
+  }
 }
 
 export interface DiagResult { ok: boolean; message: string }

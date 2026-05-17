@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import verify_api_key
+from app.api.deps import require_user_or_api_key
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.alert import Alert
@@ -35,7 +35,7 @@ async def health_check(db: AsyncSession = Depends(get_db)) -> HealthResponse:
     )
 
 
-@router.get("/health/notifications", dependencies=[Depends(verify_api_key)])
+@router.get("/health/notifications", dependencies=[Depends(require_user_or_api_key)])
 async def notifications_health(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:

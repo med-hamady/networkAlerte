@@ -37,6 +37,7 @@ from app.core.alert_constants import (
     AT_LR_REASSIGNED,
     Severity,
 )
+from app.core.config import get_settings
 from app.models.alert import Alert
 from app.models.device import Device, Lr, Rocket
 from app.schemas.device import normalize_mac
@@ -45,11 +46,11 @@ from app.services import incident_service, notification_service
 logger = logging.getLogger(__name__)
 
 
-# Credentials SSH standard pour toutes les LR côté client A2.
-# Appliqués automatiquement à chaque LR auto-découverte ; un opérateur peut
-# toujours les écraser ensuite via PUT /api/v1/devices/{id}.
-_LR_DEFAULT_SSH_USERNAME = "ubnt"
-_LR_DEFAULT_SSH_PASSWORD = "A2HQ@87654321"  # noqa: S105
+# Credentials SSH standard pour les LR côté client A2, appliqués automatiquement
+# à chaque LR auto-découverte (un opérateur peut les écraser via PUT). Le secret
+# n'est PLUS en dur ici : il vient de Settings (.env, LR_DEFAULT_SSH_PASSWORD).
+# Si le mot de passe est vide, la LR est créée sans credentials SSH et la sonde
+# transit la saute jusqu'à ce qu'un opérateur les renseigne.
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +280,7 @@ async def _reconcile_single_peer(
             return None
 
         model_variant = _infer_model_variant(peer, parent)
+        settings = get_settings()
         device = Lr(
             name=_generate_device_name(peer, fallback_index),
             ip_address=ip,
@@ -291,12 +293,13 @@ async def _reconcile_single_peer(
             auto_discovered=True,
             first_discovered_at=now,
             last_discovered_at=now,
-            # Toutes les LR côté client partagent les mêmes credentials SSH
-            # (déploiement standardisé A2). La sonde transit en a besoin dès
-            # la découverte — sans cela, le job lr_transit_probe skip le device.
-            ssh_username=_LR_DEFAULT_SSH_USERNAME,
-            ssh_password=_LR_DEFAULT_SSH_PASSWORD,
-            ssh_port=22,
+            # Credentials SSH standard côté client A2 — lus depuis .env
+            # (LR_DEFAULT_SSH_*), jamais en dur. La sonde transit en a besoin
+            # dès la découverte ; si le mot de passe est vide elle saute la LR
+            # jusqu'à ce qu'un opérateur le renseigne via PUT.
+            ssh_username=settings.lr_default_ssh_username or None,
+            ssh_password=settings.lr_default_ssh_password or None,
+            ssh_port=settings.lr_default_ssh_port,
         )
         session.add(device)
         await session.flush()  # populate device.id for the lifecycle incident

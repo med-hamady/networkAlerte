@@ -36,8 +36,11 @@ export const dynamic = 'force-dynamic'
 const BACKEND_URL = process.env.BACKEND_URL ?? 'http://backend:8000'
 const API_KEY = process.env.API_KEY ?? ''
 
-// Methods that cannot mutate state — relayed without the same-origin guard.
-const SAFE_METHODS = new Set(['GET', 'HEAD'])
+// The same-origin guard applies to EVERY method, reads included: the proxy
+// injects the secret API key, so a relayed GET is an authenticated read. An
+// attacker hitting /api/proxy/... directly must not get data back either
+// (information disclosure). The dashboard's own fetch() calls are same-origin
+// and therefore unaffected.
 
 // Headers we never forward back to the browser (they come from the upstream
 // fetch response and would confuse Next.js / break decompression).
@@ -50,11 +53,12 @@ const HOP_BY_HOP = new Set([
 ])
 
 /**
- * Returns true if a state-changing request can be proven to come from our own
- * page. Primary signal: the browser-set `Sec-Fetch-Site` header (unspoofable
- * from scripts). Fallback: `Origin`/`Referer` host equals the request host.
+ * Returns true if a request can be proven to come from our own page (any
+ * method — reads included, since the proxy adds the secret key). Primary
+ * signal: the browser-set `Sec-Fetch-Site` header (unspoofable from scripts).
+ * Fallback: `Origin`/`Referer` host equals the request host.
  */
-function isSameOriginMutation(req: NextRequest): boolean {
+function isSameOriginRequest(req: NextRequest): boolean {
   const secFetchSite = req.headers.get('sec-fetch-site')
   if (secFetchSite) {
     // Browser-supplied and script-immutable. The dashboard is a single origin
@@ -84,8 +88,8 @@ function isSameOriginMutation(req: NextRequest): boolean {
     }
   }
 
-  // No Sec-Fetch-Site, no Origin, no Referer on a write request → not a real
-  // browser navigation from our app. Reject (this is the curl/sqlmap shape).
+  // No Sec-Fetch-Site, no Origin, no Referer → not a real browser request
+  // from our app. Reject (this is the curl/sqlmap shape).
   return false
 }
 
@@ -94,7 +98,7 @@ async function proxy(req: NextRequest, ctx: { params: { path: string[] } }) {
   const search = req.nextUrl.search
   const target = `${BACKEND_URL}/api/v1/${path}${search}`
 
-  if (!SAFE_METHODS.has(req.method) && !isSameOriginMutation(req)) {
+  if (!isSameOriginRequest(req)) {
     // Do NOT forward — and do not inject the API key. Log for incident
     // visibility (shows up in `docker compose logs frontend`).
     console.warn(
@@ -104,7 +108,7 @@ async function proxy(req: NextRequest, ctx: { params: { path: string[] } }) {
         `ua=${req.headers.get('user-agent') ?? 'none'}`,
     )
     return NextResponse.json(
-      { detail: 'Forbidden: cross-origin write requests are not allowed.' },
+      { detail: 'Forbidden: cross-origin requests are not allowed.' },
       { status: 403 },
     )
   }

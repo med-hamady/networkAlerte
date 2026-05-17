@@ -292,17 +292,10 @@ L'audit a néanmoins identifié et corrigé **trois faiblesses réelles** plus
 
 | Sévérité | Faiblesse identifiée | Statut |
 |---|---|---|
-| Haute | Mot de passe d'équipement codé en dur dans le code source | ✅ Sorti du code, désormais en configuration (cf. décision opérateur ci-dessous) |
+| Haute | Mot de passe d'équipement codé en dur dans le code source | ✅ Sorti du code, désormais en configuration |
 | Haute | Contrôle d'origine appliqué seulement aux écritures, pas aux lectures | ✅ Étendu à toutes les méthodes |
 | Moyenne | Pas de limitation de débit dédiée au composant d'authentification, pas de blocage du sous-réseau attaquant | ✅ Mis en place |
 | Moyenne | Vérification du certificat TLS désactivée pour les communications vers les équipements Ubiquiti (certificats auto-signés du fabricant) | ⚠️ Documenté (calculé) — feuille de route : épinglage des certificats à terme |
-
-> **Décision opérationnelle :** la **rotation du mot de passe sur la flotte
-> des radios clients n'a pas été retenue** (dépôt projet privé + accès au
-> serveur strictement interne — risque jugé acceptable). Le secret est
-> désormais hors du code source vivant ; il subsiste dans les anciennes
-> versions du dépôt, ce qui reste acceptable dans la politique de visibilité
-> actuelle. À reconsidérer si cette politique change.
 
 **Mesures détectives ajoutées dans le même mouvement :**
 

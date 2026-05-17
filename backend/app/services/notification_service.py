@@ -270,3 +270,47 @@ async def notify_incident_opened(device: Device, incident: Incident) -> bool:
 async def notify_incident_resolved(device: Device, incident: Incident) -> bool:
     """Notify configured channels when an incident is resolved, gated by policy."""
     return await _dispatch(device, incident, NotificationEvent.RESOLVED)
+
+
+async def notify_security_event(
+    subject: str,
+    body_text: str,
+    body_html: str | None = None,
+) -> bool:
+    """Send a security/audit alert via configured email channels.
+
+    Bypasses the Incident pipeline — security events are system-level (no
+    device id) and must not depend on alert_policy gating. The per-delivery
+    timeout matches the incident path so a stalled SMTP cannot freeze the
+    detection job. Returns True if at least one channel delivered.
+    """
+    targets = await _resolve_channels()
+    if not targets:
+        logger.warning(
+            "notify_security_event: no notification channels configured — "
+            "security alert NOT sent (subject=%r)",
+            subject,
+        )
+        return False
+    delivered = False
+    for target in targets:
+        if target.kind != AlertChannel.EMAIL:
+            continue
+        try:
+            ok = await asyncio.wait_for(
+                email_service.send_email(target.recipients, subject, body_text, body_html),
+                timeout=_DELIVERY_TIMEOUT_S,
+            )
+        except TimeoutError:
+            logger.error(
+                "notify_security_event: channel %s timed out after %.0fs",
+                target.label, _DELIVERY_TIMEOUT_S,
+            )
+            ok = False
+        except Exception:
+            logger.exception(
+                "notify_security_event: channel %s raised", target.label,
+            )
+            ok = False
+        delivered = delivered or bool(ok)
+    return delivered

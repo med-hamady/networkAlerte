@@ -9,7 +9,7 @@ type-specific row in one flush.
 
 import logging
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -107,17 +107,23 @@ async def update_device(db: AsyncSession, device_id: int, data: DeviceUpdate) ->
     # créées manuellement (auto_discovered=False) ne sont pas touchées : si
     # un opérateur les a saisies à la main, on respecte sa valeur.
     if isinstance(device, Rocket) and "location" in update_data and device.location != old_location:
-        result = await db.execute(
-            update(Lr)
-            .where(Lr.rocket_id == device.id, Lr.auto_discovered.is_(True))
-            .values(location=device.location)
-        )
-        if result.rowcount:
+        # On charge les LR et on assigne par instance ORM. Un
+        # update(Lr).values(location=...) en masse échoue : `location` est
+        # porté par la table parente `devices` (joined-table inheritance),
+        # pas par `lrs` — SQLAlchemy ne sait pas l'écrire via la sous-classe.
+        lrs = (
+            await db.execute(
+                select(Lr).where(Lr.rocket_id == device.id, Lr.auto_discovered.is_(True))
+            )
+        ).scalars().all()
+        for lr in lrs:
+            lr.location = device.location
+        if lrs:
+            await db.flush()
             logger.info(
                 "Propagé la nouvelle location %r du Rocket '%s' à %d LR auto-découverte(s)",
-                device.location, device.name, result.rowcount,
+                device.location, device.name, len(lrs),
             )
-        await db.flush()
 
     logger.info("Updated device: %s", device.name)
     return device

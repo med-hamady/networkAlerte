@@ -3,9 +3,9 @@
 import { useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
-import { formatBytes } from '@/lib/types'
+import { formatBytes, formatUptime } from '@/lib/types'
 
-type Period = '24h' | '7d' | '30d'
+type Period = '24h' | '7d' | '30d' | 'lifetime'
 
 type ClientConsumption = {
   device_id: number
@@ -18,20 +18,40 @@ type ClientConsumption = {
   total_bytes: number
   samples: number
   has_data: boolean
+  peer_uptime_s: number | null
 }
 
 type ConsumptionResponse = {
   period: Period
-  period_start: string
+  period_start: string | null
   period_end: string
+  data_start: string | null
   items: ClientConsumption[]
 }
 
 const PERIODS: { value: Period; label: string }[] = [
-  { value: '24h', label: '24 heures' },
-  { value: '7d',  label: '7 jours'   },
-  { value: '30d', label: '30 jours'  },
+  { value: '24h',      label: '24 heures' },
+  { value: '7d',       label: '7 jours'   },
+  { value: '30d',      label: '30 jours'  },
+  { value: 'lifetime', label: 'Depuis démarrage' },
 ]
+
+function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString('fr-FR', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  })
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 3600) return formatUptime(seconds)
+  const d = Math.floor(seconds / 86400)
+  if (d >= 1) {
+    const h = Math.floor((seconds % 86400) / 3600)
+    return `${d}j ${h}h`
+  }
+  return formatUptime(seconds)
+}
 
 export default function ClientsPage() {
   const [period, setPeriod] = useState<Period>('24h')
@@ -45,14 +65,29 @@ export default function ClientsPage() {
   const maxTotal = items.reduce((m, i) => Math.max(m, i.total_bytes), 0)
   const grandTotal = items.reduce((s, i) => s + i.total_bytes, 0)
 
+  const isLifetime = period === 'lifetime'
+  // Real measurement window — relevant only for sliding-window views, and
+  // only when DB has less history than the requested period (after a fresh
+  // deploy or for a long window like 30d on a young dataset).
+  const showPartial =
+    !isLifetime &&
+    data?.data_start != null &&
+    data?.period_start != null &&
+    new Date(data.data_start).getTime() > new Date(data.period_start).getTime() + 60_000
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Consommation clients</h1>
           <p className="text-blue-400 text-sm mt-1">
-            Volume RX/TX cumulé par LR sur la fenêtre choisie — agrégé depuis les compteurs
-            <span className="font-mono"> txBytes</span> / <span className="font-mono">rxBytes</span> exposés par chaque Rocket via son API LTU.
+            {isLifetime ? (
+              <>Volume cumulé par CPE <strong>depuis la dernière association au Rocket</strong> — compteur radio,
+              remis à zéro si l'AP ou le CPE redémarre.</>
+            ) : (
+              <>Volume téléchargé / uploadé par CPE sur la fenêtre choisie — agrégé depuis les compteurs
+              <span className="font-mono"> txBytes</span> / <span className="font-mono">rxBytes</span> de l'API LTU du Rocket.</>
+            )}
           </p>
         </div>
 
@@ -72,6 +107,19 @@ export default function ClientsPage() {
           ))}
         </div>
       </div>
+
+      {showPartial && data?.data_start && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-800 flex items-start gap-2">
+          <svg className="w-4 h-4 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4c-.77-1.33-2.69-1.33-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z" />
+          </svg>
+          <div>
+            <strong>Fenêtre partielle</strong> — l'historique en base ne couvre pas encore toute la période demandée.
+            Les totaux affichés ne couvrent que <strong>{formatDateTime(data.data_start)} → maintenant</strong>.
+            La vue sera complète une fois assez d'historique accumulé.
+          </div>
+        </div>
+      )}
 
       {items.length > 0 && (
         <div className="bg-white border border-blue-100 rounded-xl px-4 py-3 shadow-sm flex flex-wrap gap-x-6 gap-y-1 text-sm">
@@ -98,7 +146,14 @@ export default function ClientsPage() {
             <table className="w-full text-sm">
               <thead className="bg-blue-50 border-b border-blue-100">
                 <tr>
-                  {['Client', 'Rocket parent', 'Download ⬇', 'Upload ⬆', 'Total', 'Part relative'].map(h => (
+                  {[
+                    'Client',
+                    'Rocket parent',
+                    'Download ⬇',
+                    'Upload ⬆',
+                    'Total',
+                    isLifetime ? 'Lien actif depuis' : 'Part relative',
+                  ].map(h => (
                     <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
                       {h}
                     </th>
@@ -127,7 +182,13 @@ export default function ClientsPage() {
                         {row.has_data ? formatBytes(row.total_bytes) : <span className="text-blue-300">—</span>}
                       </td>
                       <td className="px-4 py-3 min-w-[180px]">
-                        {!row.has_data ? (
+                        {isLifetime ? (
+                          row.peer_uptime_s != null ? (
+                            <span className="text-xs text-slate-700">{formatDuration(row.peer_uptime_s)}</span>
+                          ) : (
+                            <span className="text-blue-300 text-xs">—</span>
+                          )
+                        ) : !row.has_data ? (
                           <span className="text-blue-300 text-xs">pas encore d'échantillons</span>
                         ) : (
                           <div className="flex items-center gap-2">
@@ -153,8 +214,12 @@ export default function ClientsPage() {
       )}
 
       <p className="text-[11px] text-blue-400">
-        Volumes mesurés sur le lien radio entre le Rocket et chaque CPE (≠ trafic Internet effectif si NAT/local).
-        Les CPE qui n'ont pas au moins deux relevés sur la fenêtre apparaissent sans valeur — il faut ~2 min après leur (re)connexion.
+        {isLifetime
+          ? <>Le compteur radio reflète le trafic depuis la dernière association du CPE à l'AP. Une coupure radio,
+            un redémarrage CPE ou AP remet ce compteur à zéro — la colonne « Lien actif depuis » donne le contexte.</>
+          : <>Volumes mesurés sur le lien radio entre le Rocket et chaque CPE (≠ trafic Internet effectif si NAT/local).
+            Les CPE sans au moins deux relevés sur la fenêtre apparaissent sans valeur — il faut ~2 min après leur (re)connexion.</>
+        }
       </p>
     </div>
   )

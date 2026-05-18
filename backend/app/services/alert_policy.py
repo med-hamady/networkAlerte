@@ -39,6 +39,7 @@ from app.core.alert_constants import (
     AT_LR_DISCOVERED,
     AT_LR_DOWN,
     AT_LR_IP_CHANGED,
+    AT_LR_LINK_SUBSTANDARD,
     AT_LR_NO_TRANSIT,
     AT_LR_REASSIGNED,
     AT_RADIO_INTERFACE_DOWN,
@@ -245,6 +246,18 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
         notify_immediately=False,
         channels=_CHANNELS_WARNING,
         groupable=True,
+    ),
+    AT_LR_LINK_SUBSTANDARD: AlertPolicy(
+        alert_type=AT_LR_LINK_SUBSTANDARD,
+        severity=Severity.CRITICAL,
+        recommended_action=(
+            "Lien client sous au moins un plancher (potentiel/capacité/débit RX) "
+            "sur ~5 min · Vérifier alignement antenne et ligne de visée · "
+            "Vérifier interférences et largeur de canal · Reprendre l'installation"
+        ),
+        notify_immediately=True,
+        channels=_CHANNELS_CRITICAL,
+        groupable=False,
     ),
 
     # --- Radio quality UL — uplink (warning, deferred) -----------------------

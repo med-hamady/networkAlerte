@@ -83,6 +83,11 @@ AT_LR_NO_TRANSIT        = "lr_no_transit"
 # Switch port speed degraded (port UP mais vitesse < 1000 Mbps)
 AT_SWITCH_PORT_SPEED_LOW = "switch_port_speed_low"
 
+# Lien client sous le seuil — incident CONSOLIDÉ (per-LR) : déclenché si ≥1
+# plancher parmi potentiel du lien / capacité totale / débit RX local / RX
+# distant est franchi. Sévérité critique, anti-flap 5 cycles.
+AT_LR_LINK_SUBSTANDARD = "lr_link_substandard"
+
 # Uplink (UL) quality — métriques bidirectionnelles du lien radio
 AT_CCQ_UL_LOW      = "ccq_ul_low"
 AT_CINR_UL_LOW     = "cinr_ul_low"
@@ -116,7 +121,7 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_CAPACITY_LOW, AT_HIGH_RX_TX_ERRORS, AT_THROUGHPUT_ANOMALY,
     AT_UISP_POWER_UNREACH, AT_BATTERY_LOW_WARN, AT_BATTERY_LOW_CRIT,
     AT_VOLTAGE_ANOMALY, AT_TRANSIT_UNAVAILABLE, AT_SWITCH_PORT_DOWN,
-    AT_LR_NO_TRANSIT, AT_SWITCH_PORT_SPEED_LOW,
+    AT_LR_NO_TRANSIT, AT_SWITCH_PORT_SPEED_LOW, AT_LR_LINK_SUBSTANDARD,
     AT_CCQ_UL_LOW, AT_CINR_UL_LOW, AT_CAPACITY_UL_LOW,
     AT_AIRMAX_DOWN,
     AT_LR_DISCOVERED, AT_LR_IP_CHANGED, AT_LR_REASSIGNED, AT_LR_DISAPPEARED,

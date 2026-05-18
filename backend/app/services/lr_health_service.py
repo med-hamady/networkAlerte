@@ -31,6 +31,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import get_settings
 from app.core.radio_thresholds import (
     signal_distance_band_label,
     signal_warning_threshold,
@@ -60,10 +61,10 @@ _TRACKED_METRICS: tuple[str, ...] = (
     _M_REMOTE_RATE,
 )
 
-# Floors — below the 30-day mean of these is a "bad installation" indicator.
-_MIN_LINK_POTENTIAL_PCT = 60.0
-_MIN_TOTAL_CAPACITY_MBPS = 60.0
-_MIN_RX_RATE_IDX = 6.0
+# Floors live in Settings (single source shared with the lr_link_substandard
+# alert rule): settings.lr_link_potential_min_pct / lr_total_capacity_min_mbps
+# / lr_rx_rate_min_idx. Read at request time so a config change applies to
+# both the page and the alerting without code edits.
 
 # Verdict thresholds (out of 5 active indicators).
 _VERDICT_WATCH_AT = 1
@@ -89,10 +90,13 @@ async def get_bad_installations(
 
     metric_stats = await _fetch_metric_stats(db, lr_ids, cutoff)
     latest_metrics = await _fetch_latest_metrics(db, lr_ids)
+    settings = get_settings()
 
     items: list[BadInstallationRow] = []
     for lr in lrs:
-        signals = _build_signals(lr=lr, metric_stats=metric_stats.get(lr.id, {}))
+        signals = _build_signals(
+            lr=lr, metric_stats=metric_stats.get(lr.id, {}), settings=settings
+        )
         active = sum(1 for s in signals if s.active)
         verdict = _verdict(active)
         if verdict == "stable":
@@ -226,7 +230,11 @@ def _level_signal(
 def _build_signals(
     lr: Lr,
     metric_stats: dict[str, dict[str, float]],
+    settings,
 ) -> list[SignalEvidence]:
+    pot_floor = settings.lr_link_potential_min_pct
+    cap_floor = settings.lr_total_capacity_min_mbps
+    rate_floor = settings.lr_rx_rate_min_idx
     # ─── 1. Signal — état (distance-banded, unchanged method) ───────────────
     signal_stat = metric_stats.get(_M_SIGNAL, {})
     signal_warn = signal_warning_threshold(lr.distance_m)
@@ -258,48 +266,48 @@ def _build_signals(
             key="link_potential_state",
             label="Potentiel du lien — état",
             stat=metric_stats.get(_M_LINK_POT, {}),
-            floor=_MIN_LINK_POTENTIAL_PCT,
+            floor=pot_floor,
             unit=" %",
             fmt="{:.0f}",
             detail=(
                 "Potentiel du lien (moyenne des linkScore DL/UL). "
-                f"Indicateur actif si la moyenne 30 j est < {_MIN_LINK_POTENTIAL_PCT:.0f} %."
+                f"Indicateur actif si la moyenne 30 j est < {pot_floor:.0f} %."
             ),
         ),
         _level_signal(
             key="total_capacity_state",
             label="Capacité totale — état",
             stat=metric_stats.get(_M_TOTAL_CAP, {}),
-            floor=_MIN_TOTAL_CAPACITY_MBPS,
+            floor=cap_floor,
             unit=" Mbps",
             fmt="{:.0f}",
             detail=(
                 "Capacité totale du lien (capacity.combined). "
-                f"Indicateur actif si la moyenne 30 j est < {_MIN_TOTAL_CAPACITY_MBPS:.0f} Mbps."
+                f"Indicateur actif si la moyenne 30 j est < {cap_floor:.0f} Mbps."
             ),
         ),
         _level_signal(
             key="local_rate_state",
             label="Débit RX local — état",
             stat=metric_stats.get(_M_LOCAL_RATE, {}),
-            floor=_MIN_RX_RATE_IDX,
+            floor=rate_floor,
             unit="×",
             fmt="{:.0f}",
             detail=(
                 "Multiplicateur de modulation RX local (mcs.txRate). "
-                f"Indicateur actif si la moyenne 30 j est < ×{_MIN_RX_RATE_IDX:.0f}."
+                f"Indicateur actif si la moyenne 30 j est < ×{rate_floor:.0f}."
             ),
         ),
         _level_signal(
             key="remote_rate_state",
             label="Débit RX distant — état",
             stat=metric_stats.get(_M_REMOTE_RATE, {}),
-            floor=_MIN_RX_RATE_IDX,
+            floor=rate_floor,
             unit="×",
             fmt="{:.0f}",
             detail=(
                 "Multiplicateur de modulation RX distant (mcs.rxRate). "
-                f"Indicateur actif si la moyenne 30 j est < ×{_MIN_RX_RATE_IDX:.0f}."
+                f"Indicateur actif si la moyenne 30 j est < ×{rate_floor:.0f}."
             ),
         ),
     ]

@@ -131,6 +131,13 @@ class Settings(BaseSettings):
     capacity_low_warning_pct: float = 30.0   # below → warning
     capacity_low_critical_pct: float = 15.0  # below → critical
 
+    # Per-LR link floors — single source shared by the lr-health page
+    # classification AND the lr_link_substandard alert rule. Below any of
+    # these (30-day mean for the page, live mean for the rule) = bad link.
+    lr_link_potential_min_pct: float = 60.0    # link_potential_pct floor
+    lr_total_capacity_min_mbps: float = 60.0   # total_capacity_mbps floor
+    lr_rx_rate_min_idx: float = 6.0            # local/remote_rx_rate_idx floor (×N)
+
     # Anomaly thresholds — RX/TX error rate (errors / total bytes, %)
     rx_tx_error_warning_pct: float = 1.0    # above → warning
     rx_tx_error_critical_pct: float = 5.0   # above → critical
@@ -144,6 +151,9 @@ class Settings(BaseSettings):
     error_failure_threshold: int = 2
     radio_degraded_failure_threshold: int = 2
     throughput_anomaly_failure_threshold: int = 3
+    # link_potential/capacity/RX-rate are very volatile → debounce hard:
+    # opens on the 5th consecutive bad cycle (count > 4), ~5 min sustained.
+    lr_link_substandard_failure_threshold: int = 4
 
     # Throughput anomaly — detect sudden drops vs exponential moving average
     throughput_anomaly_drop_pct: float = 50.0   # alert if rate < EMA * (1 - drop_pct/100)

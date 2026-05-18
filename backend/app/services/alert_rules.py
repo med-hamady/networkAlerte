@@ -826,6 +826,79 @@ class ThroughputAnomalyRule(AlertRule):
         )
 
 
+class LrLinkSubstandardRule(AlertRule):
+    """Lien client sous le seuil — incident CONSOLIDÉ (per-LR).
+
+    Un seul incident critique si AU MOINS un des planchers est franchi :
+      - link_potential_pct  < settings.lr_link_potential_min_pct   (60 %)
+      - total_capacity_mbps < settings.lr_total_capacity_min_mbps   (60 Mbps)
+      - local_rx_rate_idx   < settings.lr_rx_rate_min_idx           (×6)
+      - remote_rx_rate_idx  < settings.lr_rx_rate_min_idx           (×6)
+
+    Le message liste les métriques fautives. Seules les métriques présentes
+    sont évaluées ; si aucune n'est rapportée → skip (pas de data, on
+    n'incrémente pas l'anti-flap). Anti-flap : 5 cycles consécutifs
+    (settings.lr_link_substandard_failure_threshold) car ces métriques sont
+    très volatiles.
+    """
+
+    alert_type = "lr_link_substandard"
+
+    def evaluate(self, device_name: str, metrics: dict, settings) -> AlertEvalResult:
+        # (label, value, floor, unit, fmt)
+        checks = [
+            ("Potentiel du lien", metrics.get("link_potential_pct"),
+             settings.lr_link_potential_min_pct, "%", "{:.0f}"),
+            ("Capacité totale", metrics.get("total_capacity_mbps"),
+             settings.lr_total_capacity_min_mbps, " Mbps", "{:.1f}"),
+            ("Débit RX local", metrics.get("local_rx_rate_idx"),
+             settings.lr_rx_rate_min_idx, "×", "{:.0f}"),
+            ("Débit RX distant", metrics.get("remote_rx_rate_idx"),
+             settings.lr_rx_rate_min_idx, "×", "{:.0f}"),
+        ]
+        present = [(n, v, fl, u, f) for (n, v, fl, u, f) in checks if v is not None]
+        if not present:
+            return AlertEvalResult(
+                alert_type=self.alert_type,
+                severity=None,
+                metric_name="lr_link_floors",
+                metric_value=None,
+                threshold_value=None,
+                message="",
+                skip=True,
+            )
+
+        breached = [(n, v, fl, u, f) for (n, v, fl, u, f) in present if v < fl]
+        if breached:
+            parts = [
+                f"{n} {f.format(v)}{u} (plancher {f.format(fl)}{u})"
+                for (n, v, fl, u, f) in breached
+            ]
+            n0, v0, fl0, _u0, _f0 = breached[0]
+            return AlertEvalResult(
+                alert_type=self.alert_type,
+                severity="critical",
+                metric_name="lr_link_floors",
+                metric_value=round(float(v0), 1),
+                threshold_value=float(fl0),
+                message=(
+                    f"ALERTE CRITIQUE : lien client dégradé sur {device_name} — "
+                    + " ; ".join(parts)
+                ),
+            )
+        return AlertEvalResult(
+            alert_type=self.alert_type,
+            severity=None,
+            metric_name="lr_link_floors",
+            metric_value=None,
+            threshold_value=None,
+            message=(
+                f"RECOVERY : lien client de {device_name} repassé "
+                f"au-dessus de tous les seuils"
+            ),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Mapping device_type → règles applicables
 # ---------------------------------------------------------------------------
@@ -854,6 +927,7 @@ _LR_RULES: list[AlertRule] = [
     RadioLinkDegradedRule(),
     CapacityLowRule(),
     CapacityLowULRule(),
+    LrLinkSubstandardRule(),
 ]
 
 _SWITCH_RULES: list[AlertRule] = [
@@ -893,6 +967,7 @@ FAILURE_THRESHOLDS: dict[str, str] = {
     "high_rx_tx_errors": "error_failure_threshold",
     "radio_link_degraded": "radio_degraded_failure_threshold",
     "throughput_anomaly": "throughput_anomaly_failure_threshold",
+    "lr_link_substandard": "lr_link_substandard_failure_threshold",
     # Immediate rules (threshold = 0) are not listed here
 }
 

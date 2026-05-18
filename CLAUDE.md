@@ -178,7 +178,7 @@ backend/app/
 - [x] **Alert engine** — `alert_engine.py` (évalue règles, gère AlertState DB, ouvre/résout incidents, appelle corrélation)
 - [x] **AlertState persisté en DB** — compteurs anti-flapping survivent aux redémarrages (sauf ping = in-memory)
 - [x] **Corrélation de causes** — `alert_correlation.py` (ex: rocket_down causé par switch_down, avec corrélation temporelle)
-- [x] **22 alert_types** centralisés — `core/alert_constants.py`
+- [x] **23 alert_types** centralisés — `core/alert_constants.py`
 - [x] **Détection anomalies radio** — signal dBm, CCQ, CINR, capacité lien, taux d'erreurs
 - [x] **Détection anomalies power** — batterie + voltage hors plage (20–56 V)
 - [x] **Détection port switch** — port DOWN ou vitesse < 1000 Mbps
@@ -211,7 +211,7 @@ backend/app/
 | `uisp_switch` | Ping + SNMP standard (ports, vitesse, erreurs) |
 | `uisp_power` | Ping + API REST (voltage, current, power, batterie) |
 
-### 22 Alert types
+### 23 Alert types
 | Catégorie | alert_type | Déclencheur |
 |---|---|---|
 | Disponibilité | `rocket_down` | Ping LTU Rocket échoue ×3 |
@@ -236,6 +236,7 @@ backend/app/
 | Switch | `switch_port_speed_low` | Port UP mais vitesse < 1000 Mbps |
 | Transit | `transit_unavailable` | (réservé) |
 | Transit | `lr_no_transit` | SSH OK mais ping internet échoue depuis LTU LR |
+| Lien client | `lr_link_substandard` | Incident **consolidé** per-LR : ≥1 plancher franchi (potentiel < 60 %, capacité totale < 60 Mbps, débit RX local/distant < ×6) sur 5 cycles — critique |
 
 ### API Endpoints
 | Méthode | Chemin | Auth | Description |

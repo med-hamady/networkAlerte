@@ -30,6 +30,7 @@ from app.core.alert_constants import (
     AT_LR_DISCOVERED,
     AT_LR_DOWN,
     AT_LR_IP_CHANGED,
+    AT_LR_LINK_SUBSTANDARD,
     AT_LR_NO_TRANSIT,
     AT_LR_REASSIGNED,
     AT_PING_INSTABILITY,
@@ -75,6 +76,7 @@ ALERT_TYPE_LABELS: dict[str, str] = {
     AT_CAPACITY_LOW:         "Capacité du lien radio faible",
     AT_HIGH_RX_TX_ERRORS:    "Taux d'erreurs réseau élevé",
     AT_THROUGHPUT_ANOMALY:   "Anomalie de débit détectée",
+    AT_LR_LINK_SUBSTANDARD:  "Lien client sous le seuil",
 
     # Radio quality UL (uplink — client → base)
     AT_CCQ_UL_LOW:           "Qualité de connexion côté client faible",
@@ -127,6 +129,7 @@ METRIC_LABELS: dict[str, str] = {
     "rx_rate_pct":     "Capacité de réception (%)",
     "error_rate_pct":  "Taux d'erreurs (%)",
     "tx_drop_pct":     "Taux de paquets perdus (%)",
+    "lr_link_floors":  "Plancher lien client (potentiel/capacité/débit)",
 
     # Interfaces / counts
     "radio_if_up":     "État interface radio",

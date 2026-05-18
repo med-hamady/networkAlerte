@@ -11,6 +11,10 @@ Metrics extracted from wireless.peers[0] and wireless.radios[0]:
   cinr_db / ul_cinr_db  : DL/UL CINR (dB)
   tx_rate_mbps / rx_rate_mbps : actual DL/UL capacity (Kbps → Mbps)
   tx_ideal_mbps / rx_ideal_mbps : ideal (uncapped) DL/UL capacity
+  total_capacity_mbps : DL + UL actual capacity — UI "Total Capacity"
+  link_potential_pct  : (DL+UL actual) / (DL+UL ideal) × 100 — UI "Link Potential"
+  local_rx_rate_idx   : AP-side RX modulation multiplier (UI "Local RX Data Rate", e.g. 10 = 10x)
+  remote_rx_rate_idx  : CPE-side RX modulation multiplier (UI "Remote RX Data Rate", e.g. 6 = 6x)
   remote_signal_dbm : downlink signal at CPE from AP (dBm)
   remote_noise_dbm  : noise floor at CPE (dBm)
   remote_eirp_dbm   : AP transmit power EIRP (dBm)
@@ -123,6 +127,37 @@ def _float(val: object) -> float | None:
         return None
 
 
+def _rate_idx(link_quality: dict, direction: str) -> float | None:
+    """Extract the modulation-rate multiplier index from a ``linkQuality`` dict.
+
+    The LTU dashboard shows this as "Nx" (1x..12x). Firmware exposes it under
+    ``linkQuality.rate`` — observed as a ``{dl, ul}`` sub-dict on recent
+    builds, but older/variant builds flatten it (``rateDl``/``rateUl``) or
+    nest the index under ``rate.{dir}.index``. We probe those shapes and
+    return a plain float (e.g. 10.0 for "10x"); None if absent.
+
+    ``direction`` is ``"dl"`` or ``"ul"``. Keep the raw caller log
+    (``linkQuality`` keys) handy if this stays None on real hardware — that
+    tells us the actual key without guessing further.
+    """
+    if not isinstance(link_quality, dict):
+        return None
+    rate = link_quality.get("rate")
+    if isinstance(rate, dict):
+        val = rate.get(direction)
+        if isinstance(val, dict):  # rate.{dir}.index variant
+            val = val.get("index", val.get("rate"))
+        idx = _float(val)
+        if idx is not None:
+            return idx
+    # Flattened fallbacks: rateDl / rateUl, dataRateDl / dataRateUl
+    for key in (f"rate{direction.capitalize()}", f"dataRate{direction.capitalize()}"):
+        idx = _float(link_quality.get(key))
+        if idx is not None:
+            return idx
+    return None
+
+
 def _extract_peer_radio_metrics(peer: dict) -> dict[str, float | None]:
     """Extract per-peer radio metrics from a single ``wireless.peers[i]`` entry.
 
@@ -141,6 +176,11 @@ def _extract_peer_radio_metrics(peer: dict) -> dict[str, float | None]:
         "rx_rate_mbps":      None,
         "tx_ideal_mbps":     None,
         "rx_ideal_mbps":     None,
+        # Derived link summary (UI "Total Capacity" / "Link Potential")
+        "total_capacity_mbps": None,
+        "link_potential_pct":  None,
+        "local_rx_rate_idx":   None,
+        "remote_rx_rate_idx":  None,
         # CPE-side metrics (remote)
         "remote_signal_dbm": None,
         "remote_noise_dbm":  None,
@@ -195,6 +235,14 @@ def _extract_peer_radio_metrics(peer: dict) -> dict[str, float | None]:
             result["tx_ideal_mbps"] = dl_ideal / 1000.0
         if ul_ideal is not None:
             result["rx_ideal_mbps"] = ul_ideal / 1000.0
+        # AP RX = uplink (CPE → AP), same convention as rx_rate_mbps = capacity.ul
+        result["local_rx_rate_idx"] = _rate_idx(lq, "ul")
+        if not isinstance(lq, dict) or lq.get("rate") is None:
+            logger.debug(
+                "LTU linkQuality has no 'rate' key — local keys=%s "
+                "(adjust _rate_idx if data-rate index is needed)",
+                list(lq.keys()) if isinstance(lq, dict) else type(lq),
+            )
 
     # Remote side — metrics measured at the CPE (downlink: AP → CPE)
     remote = peer.get("remote")
@@ -205,6 +253,21 @@ def _extract_peer_radio_metrics(peer: dict) -> dict[str, float | None]:
         result["remote_noise_dbm"]  = _float(noise if noise is not None else rlq.get("noise"))
         eirp = rlq.get("outputPower")
         result["remote_eirp_dbm"]   = _float(eirp if eirp is not None else rlq.get("eirp"))
+        # CPE RX = downlink (AP → CPE)
+        result["remote_rx_rate_idx"] = _rate_idx(rlq, "dl")
+
+    # Derived link summary — mirrors the LTU dashboard header.
+    # Total Capacity = actual DL + actual UL throughput.
+    tx_r, rx_r = result["tx_rate_mbps"], result["rx_rate_mbps"]
+    if tx_r is not None and rx_r is not None:
+        total = tx_r + rx_r
+        result["total_capacity_mbps"] = round(total, 2)
+        # Link Potential = actual total / ideal total × 100 (capped at 100%).
+        tx_i, rx_i = result["tx_ideal_mbps"], result["rx_ideal_mbps"]
+        if tx_i is not None and rx_i is not None and (tx_i + rx_i) > 0:
+            result["link_potential_pct"] = round(
+                min(total / (tx_i + rx_i) * 100.0, 100.0), 1
+            )
 
     return result
 

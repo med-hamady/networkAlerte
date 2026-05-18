@@ -18,6 +18,10 @@ Metrics dict keys (sourced from SNMP + LTU API + ping):
   rx_rate_mbps      : float   — current UL throughput (Mbps)
   tx_ideal_mbps     : float   — rated DL capacity (Mbps)
   rx_ideal_mbps     : float   — rated UL capacity (Mbps)
+  total_capacity_mbps : float — DL+UL actual capacity (UI "Total Capacity"); informational
+  link_potential_pct  : float — actual/ideal total ×100 (UI "Link Potential"); informational
+  local_rx_rate_idx   : float — AP-side RX modulation multiplier (UI "Local RX Data Rate"); informational
+  remote_rx_rate_idx  : float — CPE-side RX modulation multiplier (UI "Remote RX Data Rate"); informational
   radio_in_errors   : float   — cumulative RX error counter
   radio_out_errors  : float   — cumulative TX error counter
   radio_rx_bytes    : float   — cumulative RX byte counter

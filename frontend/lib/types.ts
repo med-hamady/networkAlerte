@@ -233,6 +233,7 @@ export const ALERT_TYPE_LABELS: Record<string, string> = {
   capacity_low:            'Capacité du lien radio faible',
   high_rx_tx_errors:       "Taux d'erreurs réseau élevé",
   throughput_anomaly:      'Anomalie de débit détectée',
+  lr_link_substandard:     'Lien client sous le seuil',
   // Qualité radio UL (montant — client → base)
   ccq_ul_low:              'Qualité de connexion côté client faible',
   cinr_ul_low:             'Qualité du signal côté client faible (CINR)',
@@ -275,6 +276,7 @@ export const METRIC_LABELS: Record<string, string> = {
   rx_rate_pct:     'Capacité de réception (%)',
   error_rate_pct:  "Taux d'erreurs (%)",
   tx_drop_pct:     'Taux de paquets perdus (%)',
+  lr_link_floors:  'Plancher lien client (potentiel/capacité/débit)',
   radio_if_up:     'État interface radio',
   eth_if_up:       'État interface Ethernet',
   peer_count:      'Nombre de clients connectés',

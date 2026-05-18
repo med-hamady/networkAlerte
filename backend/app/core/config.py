@@ -120,6 +120,11 @@ class Settings(BaseSettings):
     # Anomaly thresholds — radio link (LTU Rocket / LTU LR)
     signal_warning_dbm: int = -70   # below → warning incident
     signal_critical_dbm: int = -80  # below → critical incident
+    # Tolerance band on signal: an incident opens only when the signal is
+    # this many dBm *below* the (distance-banded) threshold, so a 1-2 dBm
+    # dip at the boundary is absorbed instead of flapping into an incident.
+    # Applied to signal_low only (warning + critical). 0 = strict threshold.
+    signal_tolerance_dbm: float = 5.0
     ccq_warning_pct: int = 75       # below → warning incident
     ccq_critical_pct: int = 50      # below → critical incident
 

@@ -146,6 +146,7 @@ backend/app/
 | `PING_DOWN_THRESHOLD` | Pings consécutifs échoués avant incident (défaut 3) |
 | `SIGNAL_WARN_DBM` | Seuil signal warning (défaut -70 dBm) |
 | `SIGNAL_CRIT_DBM` | Seuil signal critical (défaut -80 dBm) |
+| `SIGNAL_TOLERANCE_DBM` | Marge de tolérance signal — l'incident `signal_low` n'ouvre qu'à `seuil − tolérance` (défaut 5 dBm ; 0 = strict) |
 | `CCQ_WARN_PCT` | Seuil CCQ warning (défaut 75%) |
 | `CCQ_CRIT_PCT` | Seuil CCQ critical (défaut 50%) |
 | `CINR_WARN_DB` | Seuil CINR warning (défaut 20 dB) |

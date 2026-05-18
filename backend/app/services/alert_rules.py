@@ -225,28 +225,39 @@ class SignalLowRule(AlertRule):
         crit_dbm = signal_critical_threshold(distance_m, settings.signal_critical_dbm)
         band = signal_distance_band_label(distance_m)
 
-        if signal < crit_dbm:
+        # Tolerance band: an incident opens only when the signal is clearly
+        # below the threshold (threshold − margin), not on a 1-2 dBm dip at
+        # the boundary. dBm is negative (lower = worse) so the effective
+        # trigger is more negative. threshold_value stores the effective
+        # trigger so the incident stays self-consistent in the UI/history.
+        margin = float(settings.signal_tolerance_dbm)
+        crit_open = crit_dbm - margin
+        warn_open = warn_dbm - margin
+
+        if signal < crit_open:
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity="critical",
                 metric_name="signal_dbm",
                 metric_value=signal,
-                threshold_value=float(crit_dbm),
+                threshold_value=float(crit_open),
                 message=(
                     f"ALERTE CRITIQUE : signal radio faible sur {device_name} : "
-                    f"{signal:.1f} dBm (seuil critique {crit_dbm:.0f} dBm, {band})"
+                    f"{signal:.1f} dBm (seuil critique {crit_dbm:.0f} dBm "
+                    f"− tolérance {margin:.0f} dBm → déclenche ≤ {crit_open:.0f} dBm, {band})"
                 ),
             )
-        if signal < warn_dbm:
+        if signal < warn_open:
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity="warning",
                 metric_name="signal_dbm",
                 metric_value=signal,
-                threshold_value=float(warn_dbm),
+                threshold_value=float(warn_open),
                 message=(
                     f"ALERTE WARNING : signal radio dégradé sur {device_name} : "
-                    f"{signal:.1f} dBm (seuil warning {warn_dbm:.0f} dBm, {band})"
+                    f"{signal:.1f} dBm (seuil warning {warn_dbm:.0f} dBm "
+                    f"− tolérance {margin:.0f} dBm → déclenche ≤ {warn_open:.0f} dBm, {band})"
                 ),
             )
         return AlertEvalResult(

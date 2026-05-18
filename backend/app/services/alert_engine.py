@@ -207,6 +207,29 @@ async def _inject_error_deltas(
     return metrics
 
 
+async def _inject_open_alert_types(
+    db: AsyncSession,
+    device_id: int,
+    metrics: dict,
+) -> dict:
+    """Inject the set of alert_types that currently have an OPEN incident
+    for this device as ``_open_alert_types``.
+
+    Hysteresis-aware rules (signal_low) read this to use a stricter line to
+    OPEN and the nominal line to RESOLVE — no flapping in the margin band.
+    """
+    metrics = dict(metrics)
+    rows = await db.execute(
+        select(Incident.alert_type).where(
+            Incident.device_id == device_id,
+            Incident.status == "open",
+            Incident.alert_type.is_not(None),
+        )
+    )
+    metrics["_open_alert_types"] = set(rows.scalars().all())
+    return metrics
+
+
 # ---------------------------------------------------------------------------
 # Correlation — update probable_cause on open incidents
 # ---------------------------------------------------------------------------
@@ -300,6 +323,8 @@ async def evaluate_device_metrics(
     metrics = await _inject_error_deltas(db, device.id, metrics)
     # Inject EMA baseline for throughput anomaly detection
     metrics = await _inject_throughput_baseline(db, device.id, metrics)
+    # Inject open-incident set for hysteresis-aware rules (signal_low)
+    metrics = await _inject_open_alert_types(db, device.id, metrics)
 
     active_alert_types: set[str] = set()
 

@@ -25,27 +25,37 @@ const VERDICT_BADGE: Record<BadInstallationVerdict, string> = {
   watch:    'bg-amber-100 text-amber-800 border-amber-300',
 }
 
-function fmt(value: number | null, suffix: string, digits = 0): string {
+function fmt(value: number | null | undefined, suffix: string, digits = 0): string {
   if (value === null || value === undefined) return '—'
   return `${value.toFixed(digits)}${suffix}`
 }
 
+// Signal: distance-banded floor passed in; ~10 dB below warn = critical band.
 function signalClass(dbm: number | null, warningThreshold: number): string {
   if (dbm === null) return 'text-blue-300'
-  if (dbm <= warningThreshold - 10) return 'text-red-600 font-semibold'  // critical band ~10 dB below warn
+  if (dbm <= warningThreshold - 10) return 'text-red-600 font-semibold'
   if (dbm <= warningThreshold)      return 'text-amber-600 font-medium'
   return 'text-slate-700'
 }
-function noiseClass(dbm: number | null): string {
-  if (dbm === null) return 'text-blue-300'
-  if (dbm >= -75) return 'text-red-600 font-semibold'
-  if (dbm >= -85) return 'text-amber-600 font-medium'
+// Potentiel du lien — plancher 60 %.
+function potentialClass(v: number | null): string {
+  if (v === null) return 'text-blue-300'
+  if (v < 60) return 'text-red-600 font-semibold'
+  if (v < 70) return 'text-amber-600 font-medium'
   return 'text-slate-700'
 }
-function ccqClass(pct: number | null): string {
-  if (pct === null) return 'text-blue-300'
-  if (pct < 50) return 'text-red-600 font-semibold'
-  if (pct < 75) return 'text-amber-600 font-medium'
+// Capacité totale — plancher 60 Mbps.
+function capacityClass(v: number | null): string {
+  if (v === null) return 'text-blue-300'
+  if (v < 60) return 'text-red-600 font-semibold'
+  if (v < 75) return 'text-amber-600 font-medium'
+  return 'text-slate-700'
+}
+// Débit RX (local/distant) — plancher ×6.
+function rateClass(v: number | null): string {
+  if (v === null) return 'text-blue-300'
+  if (v < 6) return 'text-red-600 font-semibold'
+  if (v < 8) return 'text-amber-600 font-medium'
   return 'text-slate-700'
 }
 
@@ -68,8 +78,8 @@ export default function LrHealthPage() {
         <div>
           <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Liaisons clients</h1>
           <p className="text-blue-400 text-sm mt-1">
-            Classification du comportement des LR clients sur 30 jours par 10 indicateurs indépendants —
-            seuls les LR avec ≥ 3 indicateurs actifs sont surfacés.
+            Classification des LR clients sur 30 jours par 5 indicateurs de niveau indépendants —
+            tout LR avec ≥ 1 indicateur actif est surfacé.
           </p>
         </div>
       </div>
@@ -80,67 +90,57 @@ export default function LrHealthPage() {
         </summary>
         <div className="px-4 pb-4 text-xs text-slate-600 space-y-3">
           <p>
-            On évalue chaque LR client sur les <strong>30 derniers jours</strong> avec <strong>10 indicateurs indépendants</strong>.
-            Chaque indicateur renvoie <em>actif</em> (problème détecté) ou <em>inactif</em> (rien à signaler).
-            Le nombre d'indicateurs actifs détermine le verdict.
+            On évalue chaque LR client sur les <strong>30 derniers jours</strong> avec
+            <strong> 5 indicateurs de niveau indépendants</strong>. Chaque indicateur compare la
+            <strong> moyenne 30 j</strong> de la métrique à un plancher : sous le plancher = <em>actif</em>.
+            Un indicateur sans aucune mesure sur la période reste <em>inactif</em> (une donnée
+            manquante ne pénalise jamais le LR).
           </p>
-
-          <p>
-            <strong>Composition des 10 indicateurs :</strong>
-          </p>
-          <ul className="list-disc list-inside space-y-0.5 ml-2">
-            <li><strong>4 métriques physiques × 2 angles d'analyse = 8 indicateurs</strong> (détail dans le tableau ci-dessous)</li>
-            <li><strong>+ 2 indicateurs de comparaison aux voisins</strong> du même Rocket</li>
-          </ul>
-
-          <p className="mt-2">
-            Pour chacune des 4 métriques, deux indicateurs distincts sont calculés :
-          </p>
-          <ul className="list-disc list-inside space-y-0.5 ml-2">
-            <li><strong>État</strong> — niveau moyen mauvais sur la fenêtre 30 jours ?</li>
-            <li><strong>Tendance</strong> — la métrique se dégrade-t-elle dans le temps (pente de régression linéaire) ?</li>
-          </ul>
 
           <table className="w-full text-[11px] border-collapse mt-2">
             <thead>
               <tr className="bg-blue-50">
-                <th className="text-left px-2 py-1 border-b">Métrique</th>
-                <th className="text-left px-2 py-1 border-b">Indicateur « État » actif si…</th>
-                <th className="text-left px-2 py-1 border-b">Indicateur « Tendance » actif si…</th>
+                <th className="text-left px-2 py-1 border-b">Indicateur</th>
+                <th className="text-left px-2 py-1 border-b">Actif si la moyenne 30 j…</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-blue-50">
               <tr>
                 <td className="px-2 py-1 align-top">
                   <strong>Signal dBm</strong>
-                  <div className="text-slate-400">puissance reçue (plus c'est proche de 0, mieux c'est)</div>
+                  <div className="text-slate-400">puissance reçue (méthode inchangée, seuil dépendant de la distance)</div>
                 </td>
-                <td className="px-2 py-1 align-top">moyenne 30j <strong>≤ seuil dépendant de la distance</strong> (voir grille ci-dessous)</td>
-                <td className="px-2 py-1 align-top">le signal <strong>baisse de ≥ 1 dBm par semaine</strong></td>
+                <td className="px-2 py-1 align-top">
+                  est <strong>≤ seuil distance-bandé</strong> (grille ci-dessous)
+                </td>
               </tr>
               <tr>
                 <td className="px-2 py-1 align-top">
-                  <strong>Bruit</strong>
-                  <div className="text-slate-400">plancher de bruit RF (plus c'est négatif, mieux c'est)</div>
+                  <strong>Potentiel du lien</strong>
+                  <div className="text-slate-400">moyenne des linkScore DL/UL (100 % = idéal)</div>
                 </td>
-                <td className="px-2 py-1 align-top">moyenne 30j <strong>≥ -85 dBm</strong> (bruit trop élevé)</td>
-                <td className="px-2 py-1 align-top">le bruit <strong>monte de ≥ 1 dBm par semaine</strong></td>
+                <td className="px-2 py-1 align-top">est <strong>&lt; 60 %</strong></td>
               </tr>
               <tr>
                 <td className="px-2 py-1 align-top">
-                  <strong>CCQ</strong>
-                  <div className="text-slate-400">qualité de la modulation (100 % = idéal)</div>
+                  <strong>Capacité totale</strong>
+                  <div className="text-slate-400">débit total réel du lien (DL + UL)</div>
                 </td>
-                <td className="px-2 py-1 align-top">moyenne 30j <strong>&lt; 75 %</strong></td>
-                <td className="px-2 py-1 align-top">le CCQ <strong>chute de ≥ 2 points par semaine</strong></td>
+                <td className="px-2 py-1 align-top">est <strong>&lt; 60 Mbps</strong></td>
               </tr>
               <tr>
                 <td className="px-2 py-1 align-top">
-                  <strong>Disponibilité</strong>
-                  <div className="text-slate-400">temps où le LR a répondu au ping</div>
+                  <strong>Débit RX local</strong>
+                  <div className="text-slate-400">multiplicateur de modulation RX local (1×…12×)</div>
                 </td>
-                <td className="px-2 py-1 align-top"><strong>downtime &gt; 1 %</strong> de la fenêtre 30j (≈ 7,2 h cumulées)</td>
-                <td className="px-2 py-1 align-top"><strong>≥ 5 pannes distinctes</strong> sur la fenêtre (instabilité récurrente)</td>
+                <td className="px-2 py-1 align-top">est <strong>&lt; ×6</strong></td>
+              </tr>
+              <tr>
+                <td className="px-2 py-1 align-top">
+                  <strong>Débit RX distant</strong>
+                  <div className="text-slate-400">multiplicateur de modulation RX distant (1×…12×)</div>
+                </td>
+                <td className="px-2 py-1 align-top">est <strong>&lt; ×6</strong></td>
               </tr>
             </tbody>
           </table>
@@ -153,7 +153,7 @@ export default function LrHealthPage() {
             <thead>
               <tr className="bg-blue-50">
                 <th className="text-left px-2 py-1 border-b">Distance LR ↔ Rocket</th>
-                <th className="text-left px-2 py-1 border-b">Seuil « État Signal » actif si moyenne ≤</th>
+                <th className="text-left px-2 py-1 border-b">Indicateur « Signal » actif si moyenne ≤</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-blue-50">
@@ -166,20 +166,7 @@ export default function LrHealthPage() {
           </table>
 
           <p className="pt-1">
-            <strong>Les 2 indicateurs « Comparaison aux voisins »</strong> — on compare le LR aux autres LR connectés au
-            <strong> même Rocket</strong> et situés à une distance similaire (± 30 % de la distance du LR évalué, minimum 3 voisins requis).
-            But : distinguer une <em>mauvaise installation côté client</em> d'un <em>environnement RF dégradé pour tout le secteur</em>.
-          </p>
-          <ul className="list-disc list-inside space-y-0.5 ml-2">
-            <li><strong>Outlier Signal</strong> — actif si le Signal dBm du LR est nettement pire que celui de ses voisins.</li>
-            <li><strong>Outlier Bruit / CCQ</strong> — actif si le bruit ou le CCQ du LR est nettement pire que celui de ses voisins.</li>
-          </ul>
-          <p className="text-slate-500">
-            Si le LR a moins de 3 voisins comparables, ces 2 indicateurs restent inactifs (on ne pénalise pas un LR isolé).
-          </p>
-
-          <p className="pt-1">
-            <strong>Verdict final</strong> — selon le nombre d'indicateurs actifs (sur 10) :
+            <strong>Verdict final</strong> — selon le nombre d'indicateurs actifs (sur 5) :
           </p>
           <table className="w-full text-[11px] border-collapse">
             <thead>
@@ -190,10 +177,10 @@ export default function LrHealthPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-blue-50">
-              <tr><td className="px-2 py-1">0 – 2</td><td className="px-2 py-1">Stable</td><td className="px-2 py-1 text-slate-500">N'apparaît pas dans la liste</td></tr>
-              <tr><td className="px-2 py-1">3 – 4</td><td className="px-2 py-1"><strong>À surveiller</strong></td><td className="px-2 py-1">Bloc jaune</td></tr>
-              <tr><td className="px-2 py-1">5 – 7</td><td className="px-2 py-1"><strong>Suspect</strong></td><td className="px-2 py-1">Bloc orange</td></tr>
-              <tr><td className="px-2 py-1">8 – 10</td><td className="px-2 py-1"><strong>Critique</strong></td><td className="px-2 py-1">Bloc rouge</td></tr>
+              <tr><td className="px-2 py-1">0</td><td className="px-2 py-1">Stable</td><td className="px-2 py-1 text-slate-500">N'apparaît pas dans la liste</td></tr>
+              <tr><td className="px-2 py-1">1</td><td className="px-2 py-1"><strong>À surveiller</strong></td><td className="px-2 py-1">Bloc jaune</td></tr>
+              <tr><td className="px-2 py-1">2</td><td className="px-2 py-1"><strong>Suspect</strong></td><td className="px-2 py-1">Bloc orange</td></tr>
+              <tr><td className="px-2 py-1">3 – 5</td><td className="px-2 py-1"><strong>Critique</strong></td><td className="px-2 py-1">Bloc rouge</td></tr>
             </tbody>
           </table>
         </div>
@@ -206,7 +193,7 @@ export default function LrHealthPage() {
       ) : items.length === 0 ? (
         <div className="bg-white border border-blue-100 rounded-xl px-6 py-12 text-center shadow-sm">
           <p className="text-green-600 font-semibold text-sm">✓ Toutes les installations sont stables sur 30 jours</p>
-          <p className="text-blue-400 text-xs mt-1">Aucun LR n'atteint le seuil de 3 signaux actifs</p>
+          <p className="text-blue-400 text-xs mt-1">Aucun LR n'a d'indicateur actif</p>
         </div>
       ) : (
         <div className="space-y-4">
@@ -224,7 +211,7 @@ export default function LrHealthPage() {
                 <table className="w-full text-sm">
                   <thead className="bg-blue-50 border-b border-blue-100">
                     <tr>
-                      {['Client', 'Rocket / distance', 'Verdict', 'Signaux actifs', 'Métriques actuelles', 'Disponibilité 30j', ''].map(h => (
+                      {['Client', 'Rocket / distance', 'Verdict', 'Indicateurs actifs', 'Métriques actuelles', ''].map(h => (
                         <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
                           {h}
                         </th>
@@ -252,7 +239,7 @@ export default function LrHealthPage() {
 
                         <td className="px-4 py-3 whitespace-nowrap">
                           <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${VERDICT_BADGE[verdict]}`}>
-                            {row.active_signals_count}/10 signaux
+                            {row.active_signals_count}/5 indicateurs
                           </span>
                         </td>
 
@@ -264,23 +251,20 @@ export default function LrHealthPage() {
 
                         <td className="px-4 py-3 text-xs whitespace-nowrap">
                           <div className={signalClass(row.latest_signal_dbm, row.signal_warning_threshold)}
-                               title={`Seuil warn pour ce LR : ${row.signal_warning_threshold.toFixed(0)} dBm`}>
+                               title={`Seuil signal pour ce LR : ${row.signal_warning_threshold.toFixed(0)} dBm`}>
                             Signal {fmt(row.latest_signal_dbm, ' dBm')}
                           </div>
-                          <div className={noiseClass(row.latest_noise_dbm)}>
-                            Bruit {fmt(row.latest_noise_dbm, ' dBm')}
+                          <div className={potentialClass(row.latest_link_potential_pct)}>
+                            Potentiel {fmt(row.latest_link_potential_pct, ' %')}
                           </div>
-                          <div className={ccqClass(row.latest_ccq_pct)}>
-                            CCQ {fmt(row.latest_ccq_pct, ' %')}
+                          <div className={capacityClass(row.latest_total_capacity_mbps)}>
+                            Capacité {fmt(row.latest_total_capacity_mbps, ' Mbps', 1)}
                           </div>
-                        </td>
-
-                        <td className="px-4 py-3 text-xs">
-                          <div className="text-slate-700">
-                            {row.downtime_hours.toFixed(1)} h éteint
+                          <div className={rateClass(row.latest_local_rx_rate_idx)}>
+                            RX local {row.latest_local_rx_rate_idx !== null ? `×${row.latest_local_rx_rate_idx.toFixed(0)}` : '—'}
                           </div>
-                          <div className="text-slate-500 text-[11px]">
-                            {row.outages_count} panne(s)
+                          <div className={rateClass(row.latest_remote_rx_rate_idx)}>
+                            RX distant {row.latest_remote_rx_rate_idx !== null ? `×${row.latest_remote_rx_rate_idx.toFixed(0)}` : '—'}
                           </div>
                         </td>
 

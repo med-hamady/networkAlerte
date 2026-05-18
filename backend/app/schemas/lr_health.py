@@ -4,10 +4,10 @@ from pydantic import BaseModel, ConfigDict
 
 
 class SignalEvidence(BaseModel):
-    """One independent diagnostic signal evaluated against an LR.
+    """One independent diagnostic indicator evaluated against an LR.
 
-    The 10 signals together yield the verdict. `active` is the binary
-    "this signal fired" outcome; `value` and `detail` give the operator
+    The 5 indicators together yield the verdict. `active` is the binary
+    "this indicator fired" outcome; `value` and `detail` give the operator
     the raw numbers so a verdict can be explained, not just trusted.
     """
 
@@ -32,21 +32,19 @@ class BadInstallationRow(BaseModel):
     rocket_id: int | None
     rocket_name: str | None
 
-    # Verdict
+    # Verdict (out of 5 indicators)
     verdict: str               # watch | suspect | critical
     active_signals_count: int
     signals: list[SignalEvidence]
 
-    # Downtime context (the only "incident" type that matters for this view)
-    outages_count: int
-    downtime_hours: float
-
-    # Latest values of the four tracked physical metrics
+    # Latest values of the metrics behind the 5 indicators
     latest_signal_dbm: float | None
-    latest_noise_dbm: float | None
-    latest_ccq_pct: float | None
+    latest_link_potential_pct: float | None
+    latest_total_capacity_mbps: float | None
+    latest_local_rx_rate_idx: float | None
+    latest_remote_rx_rate_idx: float | None
 
-    # Threshold actually used for this LR (depends on distance band)
+    # Distance-banded signal threshold actually used for this LR
     signal_warning_threshold: float
 
 

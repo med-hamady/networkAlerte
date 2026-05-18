@@ -523,12 +523,11 @@ export interface BadInstallationRow {
   active_signals_count: number
   signals: SignalEvidence[]
 
-  outages_count: number
-  downtime_hours: number
-
   latest_signal_dbm: number | null
-  latest_noise_dbm: number | null
-  latest_ccq_pct: number | null
+  latest_link_potential_pct: number | null
+  latest_total_capacity_mbps: number | null
+  latest_local_rx_rate_idx: number | null
+  latest_remote_rx_rate_idx: number | null
 
   signal_warning_threshold: number
 }

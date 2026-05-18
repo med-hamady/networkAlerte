@@ -177,21 +177,29 @@ async def collect_ltu_metrics(
 
     LTU firmware v2.x does not expose the Ubiquiti airMAX enterprise MIB.
     Instead we monitor the ath0 wireless interface via standard IF-MIB:
-      - radio_if_up    : 1.0 = interface UP, 0.0 = DOWN
-      - radio_rx_bytes : cumulative received bytes (Counter32)
-      - radio_tx_bytes : cumulative transmitted bytes (Counter32)
+      - radio_if_up      : 1.0 = interface UP, 0.0 = DOWN
+      - radio_rx_bytes   : cumulative received bytes (Counter32, wraps at 4 GB)
+      - radio_tx_bytes   : cumulative transmitted bytes (Counter32)
+      - radio_rx_bytes64 : cumulative received bytes (Counter64, ifHCInOctets — no wrap)
+      - radio_tx_bytes64 : cumulative transmitted bytes (Counter64, ifHCOutOctets)
       - radio_in_errors / radio_out_errors : error counters
-      - uptime_seconds : device uptime
+      - uptime_seconds   : device uptime
+
+    Counter32 fields stay populated for backward compatibility (alert_rules
+    consumes them to compute error rates). Counter64 fields are the source
+    of truth for per-client consumption aggregation over long windows.
     """
     engine = _get_engine()
     metrics: dict[str, float | None] = {
-        "radio_if_up":    None,
-        "radio_rx_bytes": None,
-        "radio_tx_bytes": None,
+        "radio_if_up":      None,
+        "radio_rx_bytes":   None,
+        "radio_tx_bytes":   None,
+        "radio_rx_bytes64": None,
+        "radio_tx_bytes64": None,
         "radio_in_errors":  None,
         "radio_out_errors": None,
-        "eth_if_up":      None,
-        "uptime_seconds": None,
+        "eth_if_up":        None,
+        "uptime_seconds":   None,
     }
 
     # Uptime (standard)
@@ -212,10 +220,16 @@ async def collect_ltu_metrics(
         with contextlib.suppress(TypeError, ValueError):
             metrics["radio_if_up"] = 1.0 if int(status) == 1 else 0.0
 
-    # Traffic and error counters
+    # Traffic and error counters. ifHCInOctets/ifHCOutOctets (Counter64,
+    # ifXTable) are queried alongside the legacy Counter32 — devices that
+    # don't expose ifXTable return None for the 64-bit variant and
+    # consumption aggregation falls back to the 32-bit series with wrap
+    # handling.
     for metric, base_oid in [
         ("radio_rx_bytes",   _IF_IN_OCTETS),
         ("radio_tx_bytes",   _IF_OUT_OCTETS),
+        ("radio_rx_bytes64", _IF_HC_IN),
+        ("radio_tx_bytes64", _IF_HC_OUT),
         ("radio_in_errors",  _IF_IN_ERRORS),
         ("radio_out_errors", _IF_OUT_ERRORS),
     ]:

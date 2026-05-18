@@ -908,31 +908,7 @@ async def ltu_api_poll_job() -> None:
 
     logger.info("LTU API poll — checking %d device(s)", len(devices))
 
-    unit_map = {
-        "signal_dbm":        "dBm",
-        "noise_dbm":         "dBm",
-        "ccq_pct":           "%",
-        "ul_ccq_pct":        "%",
-        "cinr_db":           "dB",
-        "ul_cinr_db":        "dB",
-        "tx_rate_mbps":      "Mbps",
-        "rx_rate_mbps":      "Mbps",
-        "tx_ideal_mbps":     "Mbps",
-        "rx_ideal_mbps":     "Mbps",
-        "total_capacity_mbps": "Mbps",
-        "link_potential_pct":  "%",
-        "local_rx_rate_idx":   "x",
-        "remote_rx_rate_idx":  "x",
-        "remote_signal_dbm": "dBm",
-        "remote_noise_dbm":  "dBm",
-        "remote_eirp_dbm":   "dBm",
-        "distance_m":        "m",
-        "peer_uptime_s":     "s",
-        "peer_cpu_pct":      "%",
-        "peer_ram_pct":      "%",
-        "peer_tx_kbps":      "Kbps",
-        "peer_rx_kbps":      "Kbps",
-    }
+    unit_map = ltu_api_service.METRIC_UNITS
 
     for device in devices:
         if not device.ssh_username or not device.ssh_password:

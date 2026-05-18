@@ -33,6 +33,35 @@ from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Single source of truth for the unit of every per-peer / AP metric the LTU
+# API yields. Consumed by the poll job (DeviceMetric.unit) AND the live
+# metrics endpoint — keep them in sync by importing this, never re-declaring.
+METRIC_UNITS: dict[str, str] = {
+    "signal_dbm":          "dBm",
+    "noise_dbm":           "dBm",
+    "ccq_pct":             "%",
+    "ul_ccq_pct":          "%",
+    "cinr_db":             "dB",
+    "ul_cinr_db":          "dB",
+    "tx_rate_mbps":        "Mbps",
+    "rx_rate_mbps":        "Mbps",
+    "tx_ideal_mbps":       "Mbps",
+    "rx_ideal_mbps":       "Mbps",
+    "total_capacity_mbps": "Mbps",
+    "link_potential_pct":  "%",
+    "local_rx_rate_idx":   "x",
+    "remote_rx_rate_idx":  "x",
+    "remote_signal_dbm":   "dBm",
+    "remote_noise_dbm":    "dBm",
+    "remote_eirp_dbm":     "dBm",
+    "distance_m":          "m",
+    "peer_uptime_s":       "s",
+    "peer_cpu_pct":        "%",
+    "peer_ram_pct":        "%",
+    "peer_tx_kbps":        "Kbps",
+    "peer_rx_kbps":        "Kbps",
+}
+
 
 class LTUApiClient:
     """HTTPS client for the LTU local REST API (UDAPI v1.0)."""

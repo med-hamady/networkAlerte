@@ -18,8 +18,9 @@ from app.schemas.device import (
     RocketRead,
     UispPowerRead,
     UispSwitchRead,
+    normalize_mac,
 )
-from app.services import device_service, lan_discovery, ssh_service
+from app.services import device_service, lan_discovery, ltu_api_service, ssh_service
 
 router = APIRouter()
 
@@ -129,6 +130,80 @@ async def get_device_metrics_latest(
             collected_at=row.collected_at,
         )
         for row in rows
+    }
+
+
+@router.get("/{device_id}/metrics/live", response_model=dict[str, MetricPoint])
+async def get_device_metrics_live(
+    device_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, MetricPoint]:
+    """Fetch radio metrics LIVE from the device, bypassing the 60 s snapshot.
+
+    Radio values (signal, capacity, link potential, RX rates…) fluctuate
+    per-second; the poll job's last DB row lags the device dashboard. For an
+    LR we hit its parent Rocket's HTTP API and extract this LR's peer
+    (matched by MAC); for a Rocket we hit its own API. Display-only — the
+    poll job still owns history/alerting. Non-2xx on any failure so the UI
+    can keep showing the DB value.
+    """
+    device = await device_service.get_device(db, device_id)
+
+    if device.device_type == "rocket":
+        rocket: Rocket = device  # type: ignore[assignment]
+        lr_mac: str | None = None
+    elif device.device_type == "lr":
+        if device.rocket_id is None:
+            raise HTTPException(status_code=409, detail="LR sans Rocket parent — pas de source live.")
+        rocket = (
+            await db.execute(select(Rocket).where(Rocket.id == device.rocket_id))
+        ).scalar_one_or_none()
+        if rocket is None:
+            raise HTTPException(status_code=409, detail="Rocket parent introuvable.")
+        lr_mac = device.mac_address
+    else:
+        raise HTTPException(status_code=400, detail="Métriques live : LR ou Rocket uniquement.")
+
+    if rocket.radio_tech != "ltu":
+        raise HTTPException(status_code=409, detail="Live indisponible : Rocket airMAX (SNMP only).")
+    if not rocket.ssh_username or not rocket.ssh_password:
+        raise HTTPException(status_code=503, detail="Identifiants API du Rocket manquants en base.")
+
+    rocket_ap, all_peers, per_peer = await ltu_api_service.collect_ltu_api_full(
+        host=rocket.ip_address,
+        username=rocket.ssh_username,
+        password=rocket.ssh_password,
+        port=443,
+    )
+    if rocket_ap is None:
+        raise HTTPException(status_code=502, detail="Rocket injoignable (API HTTP).")
+
+    if lr_mac is not None:
+        try:
+            want = normalize_mac(lr_mac)
+        except ValueError:
+            want = lr_mac.lower()
+        src: dict[str, float | None] | None = next(
+            (m for mac, m in per_peer if mac and mac.lower() == want), None
+        )
+        if src is None:
+            raise HTTPException(
+                status_code=404,
+                detail="LR absent des peers du Rocket à cet instant (lien radio down ?).",
+            )
+    else:
+        src = dict(rocket_ap)
+        src["peer_count"] = float(len(all_peers))
+
+    now = datetime.datetime.now(datetime.UTC)
+    return {
+        name: MetricPoint(
+            value=value,
+            unit=ltu_api_service.METRIC_UNITS.get(name),
+            collected_at=now,
+        )
+        for name, value in src.items()
+        if value is not None
     }
 
 

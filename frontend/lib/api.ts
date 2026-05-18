@@ -37,6 +37,7 @@ export const endpoints = {
   incidents:            `${API_BASE}/incidents`,
   incident:             (id: number) => `${API_BASE}/incidents/${id}`,
   deviceMetrics:        (id: number) => `${API_BASE}/devices/${id}/metrics/latest`,
+  deviceMetricsLive:    (id: number) => `${API_BASE}/devices/${id}/metrics/live`,
   checkSsh:             (id: number) => `${API_BASE}/devices/${id}/check-ssh`,
   checkPing:            (id: number) => `${API_BASE}/devices/${id}/check-ping`,
   pingFromLr:           (id: number) => `${API_BASE}/devices/${id}/ping-from-lr`,

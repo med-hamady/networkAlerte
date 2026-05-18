@@ -11,7 +11,8 @@ import DeviceImage from './DeviceImage'
 import DevicePolicyOverridesEditor from './DevicePolicyOverridesEditor'
 
 const RADIO_TYPES = new Set(['rocket', 'lr'])
-const REFRESH     = 15_000
+const REFRESH      = 15_000
+const LIVE_REFRESH = 10_000
 
 interface Props {
   device: Device | null
@@ -64,11 +65,24 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
     ? devices.filter(d => parentRocketId(d) === device.id)
     : []
 
-  const { data: metrics } = useSWR<DeviceMetrics>(
+  const { data: dbMetrics } = useSWR<DeviceMetrics>(
     (isRadio || isSwitch || isPower) ? endpoints.deviceMetrics(device.id) : null,
     fetcher,
     { refreshInterval: REFRESH },
   )
+  // Radio values fluctuate per-second, so the 60 s poll snapshot lags the
+  // device dashboard. For LR/Rocket, also pull a live reading from the
+  // (parent) Rocket API and let it override the DB values key-by-key: the
+  // DB shows instantly, live replaces as soon as it lands.
+  const { data: liveMetrics, isValidating: liveValidating } = useSWR<DeviceMetrics>(
+    isRadio ? endpoints.deviceMetricsLive(device.id) : null,
+    fetcher,
+    { refreshInterval: LIVE_REFRESH, shouldRetryOnError: false },
+  )
+  const metrics: DeviceMetrics | undefined =
+    dbMetrics || liveMetrics ? { ...(dbMetrics ?? {}), ...(liveMetrics ?? {}) } : undefined
+  const liveState: 'live' | 'loading' | 'deferred' =
+    liveMetrics ? 'live' : liveValidating ? 'loading' : 'deferred'
 
   return (
     <>
@@ -181,7 +195,7 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
 
         {/* Radio metrics */}
         {isRadio && metrics && (
-          <Section title="Métriques radio">
+          <Section title={<>Métriques radio<LiveBadge state={liveState} /></>}>
             {metrics.eth_if_up?.value != null && device.device_type === 'rocket' && (
               <MetricRow label="Lien switch (eth0)" value={<LinkStatus up={metrics.eth_if_up.value === 1} />} />
             )}
@@ -438,7 +452,36 @@ function LRMiniCard({ lr, onClick }: { lr: Device; onClick: () => void }) {
 
 /* ─── Sub-components ─── */
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function LiveBadge({ state }: { state: 'live' | 'loading' | 'deferred' }) {
+  if (state === 'live') {
+    return (
+      <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-semibold text-green-600 normal-case tracking-normal align-middle">
+        <span className="relative flex h-1.5 w-1.5">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-70" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-green-500" />
+        </span>
+        temps réel
+      </span>
+    )
+  }
+  if (state === 'loading') {
+    return (
+      <span className="ml-2 text-[10px] font-medium text-blue-400 normal-case tracking-normal align-middle animate-pulse">
+        actualisation…
+      </span>
+    )
+  }
+  return (
+    <span
+      className="ml-2 text-[10px] text-blue-300 normal-case tracking-normal align-middle"
+      title="API du Rocket injoignable — affichage du dernier relevé (≤ 60 s)"
+    >
+      différé ≤ 60 s
+    </span>
+  )
+}
+
+function Section({ title, children }: { title: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="space-y-2.5">
       <p className="text-blue-400 text-xs uppercase tracking-widest font-semibold">{title}</p>

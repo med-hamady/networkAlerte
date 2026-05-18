@@ -127,10 +127,16 @@ class Settings(BaseSettings):
     signal_tolerance_dbm: float = 5.0
     ccq_warning_pct: int = 75       # below → warning incident
     ccq_critical_pct: int = 50      # below → critical incident
+    # Hysteresis band for ccq_low / ccq_ul_low: opens at threshold − this,
+    # resolves only at the nominal threshold. 0 = strict.
+    ccq_tolerance_pct: float = 5.0
 
     # Anomaly thresholds — CINR (dB)
     cinr_warning_db: float = 20.0   # below → warning
     cinr_critical_db: float = 10.0  # below → critical
+    # Hysteresis band for cinr_low / cinr_ul_low: opens at threshold − this,
+    # resolves only at the nominal threshold. 0 = strict.
+    cinr_tolerance_db: float = 3.0
 
     # Anomaly thresholds — link capacity (% of ideal/rated capacity)
     capacity_low_warning_pct: float = 30.0   # below → warning

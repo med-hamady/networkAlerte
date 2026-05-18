@@ -290,28 +290,38 @@ class CINRLowRule(AlertRule):
                 message="",
                 skip=True,
             )
-        if cinr < settings.cinr_critical_db:
+        # Hysteresis: open at threshold − margin, resolve only at the
+        # nominal threshold while an incident is already open (no flapping
+        # in the band). The engine injects the open-incident set.
+        margin = float(settings.cinr_tolerance_db)
+        is_open = self.alert_type in (metrics.get("_open_alert_types") or ())
+        crit_line = settings.cinr_critical_db if is_open else settings.cinr_critical_db - margin
+        warn_line = settings.cinr_warning_db if is_open else settings.cinr_warning_db - margin
+
+        if cinr < crit_line:
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity="critical",
                 metric_name="cinr_db",
                 metric_value=cinr,
-                threshold_value=settings.cinr_critical_db,
+                threshold_value=float(crit_line),
                 message=(
                     f"ALERTE CRITIQUE : CINR DL faible sur {device_name} : "
-                    f"{cinr:.1f} dB (seuil critique {settings.cinr_critical_db} dB)"
+                    f"{cinr:.1f} dB (seuil critique {settings.cinr_critical_db} dB, "
+                    f"bande de tolérance {margin:.0f} dB)"
                 ),
             )
-        if cinr < settings.cinr_warning_db:
+        if cinr < warn_line:
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity="warning",
                 metric_name="cinr_db",
                 metric_value=cinr,
-                threshold_value=settings.cinr_warning_db,
+                threshold_value=float(warn_line),
                 message=(
                     f"ALERTE WARNING : CINR DL faible sur {device_name} : "
-                    f"{cinr:.1f} dB (seuil warning {settings.cinr_warning_db} dB)"
+                    f"{cinr:.1f} dB (seuil warning {settings.cinr_warning_db} dB, "
+                    f"bande de tolérance {margin:.0f} dB)"
                 ),
             )
         return AlertEvalResult(
@@ -341,28 +351,37 @@ class CCQLowRule(AlertRule):
                 message="",
                 skip=True,
             )
-        if ccq < settings.ccq_critical_pct:
+        # Hysteresis: open at threshold − margin, resolve only at the
+        # nominal threshold while an incident is already open.
+        margin = float(settings.ccq_tolerance_pct)
+        is_open = self.alert_type in (metrics.get("_open_alert_types") or ())
+        crit_line = settings.ccq_critical_pct if is_open else settings.ccq_critical_pct - margin
+        warn_line = settings.ccq_warning_pct if is_open else settings.ccq_warning_pct - margin
+
+        if ccq < crit_line:
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity="critical",
                 metric_name="ccq_pct",
                 metric_value=ccq,
-                threshold_value=float(settings.ccq_critical_pct),
+                threshold_value=float(crit_line),
                 message=(
                     f"ALERTE CRITIQUE : CCQ DL faible sur {device_name} : "
-                    f"{ccq:.1f}% (seuil critique {settings.ccq_critical_pct}%)"
+                    f"{ccq:.1f}% (seuil critique {settings.ccq_critical_pct}%, "
+                    f"bande de tolérance {margin:.0f}%)"
                 ),
             )
-        if ccq < settings.ccq_warning_pct:
+        if ccq < warn_line:
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity="warning",
                 metric_name="ccq_pct",
                 metric_value=ccq,
-                threshold_value=float(settings.ccq_warning_pct),
+                threshold_value=float(warn_line),
                 message=(
                     f"ALERTE WARNING : CCQ DL faible sur {device_name} : "
-                    f"{ccq:.1f}% (seuil warning {settings.ccq_warning_pct}%)"
+                    f"{ccq:.1f}% (seuil warning {settings.ccq_warning_pct}%, "
+                    f"bande de tolérance {margin:.0f}%)"
                 ),
             )
         return AlertEvalResult(
@@ -624,28 +643,37 @@ class CCQLowULRule(AlertRule):
                 message="",
                 skip=True,
             )
-        if ccq_ul < settings.ccq_critical_pct:
+        # Hysteresis: open at threshold − margin, resolve only at the
+        # nominal threshold while an incident is already open.
+        margin = float(settings.ccq_tolerance_pct)
+        is_open = self.alert_type in (metrics.get("_open_alert_types") or ())
+        crit_line = settings.ccq_critical_pct if is_open else settings.ccq_critical_pct - margin
+        warn_line = settings.ccq_warning_pct if is_open else settings.ccq_warning_pct - margin
+
+        if ccq_ul < crit_line:
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity="critical",
                 metric_name="ul_ccq_pct",
                 metric_value=ccq_ul,
-                threshold_value=float(settings.ccq_critical_pct),
+                threshold_value=float(crit_line),
                 message=(
                     f"ALERTE CRITIQUE : CCQ UL faible sur {device_name} : "
-                    f"{ccq_ul:.1f}% (seuil critique {settings.ccq_critical_pct}%)"
+                    f"{ccq_ul:.1f}% (seuil critique {settings.ccq_critical_pct}%, "
+                    f"bande de tolérance {margin:.0f}%)"
                 ),
             )
-        if ccq_ul < settings.ccq_warning_pct:
+        if ccq_ul < warn_line:
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity="warning",
                 metric_name="ul_ccq_pct",
                 metric_value=ccq_ul,
-                threshold_value=float(settings.ccq_warning_pct),
+                threshold_value=float(warn_line),
                 message=(
                     f"ALERTE WARNING : CCQ UL faible sur {device_name} : "
-                    f"{ccq_ul:.1f}% (seuil warning {settings.ccq_warning_pct}%)"
+                    f"{ccq_ul:.1f}% (seuil warning {settings.ccq_warning_pct}%, "
+                    f"bande de tolérance {margin:.0f}%)"
                 ),
             )
         return AlertEvalResult(
@@ -675,28 +703,37 @@ class CINRLowULRule(AlertRule):
                 message="",
                 skip=True,
             )
-        if cinr_ul < settings.cinr_critical_db:
+        # Hysteresis: open at threshold − margin, resolve only at the
+        # nominal threshold while an incident is already open.
+        margin = float(settings.cinr_tolerance_db)
+        is_open = self.alert_type in (metrics.get("_open_alert_types") or ())
+        crit_line = settings.cinr_critical_db if is_open else settings.cinr_critical_db - margin
+        warn_line = settings.cinr_warning_db if is_open else settings.cinr_warning_db - margin
+
+        if cinr_ul < crit_line:
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity="critical",
                 metric_name="ul_cinr_db",
                 metric_value=cinr_ul,
-                threshold_value=settings.cinr_critical_db,
+                threshold_value=float(crit_line),
                 message=(
                     f"ALERTE CRITIQUE : CINR UL faible sur {device_name} : "
-                    f"{cinr_ul:.1f} dB (seuil critique {settings.cinr_critical_db} dB)"
+                    f"{cinr_ul:.1f} dB (seuil critique {settings.cinr_critical_db} dB, "
+                    f"bande de tolérance {margin:.0f} dB)"
                 ),
             )
-        if cinr_ul < settings.cinr_warning_db:
+        if cinr_ul < warn_line:
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity="warning",
                 metric_name="ul_cinr_db",
                 metric_value=cinr_ul,
-                threshold_value=settings.cinr_warning_db,
+                threshold_value=float(warn_line),
                 message=(
                     f"ALERTE WARNING : CINR UL faible sur {device_name} : "
-                    f"{cinr_ul:.1f} dB (seuil warning {settings.cinr_warning_db} dB)"
+                    f"{cinr_ul:.1f} dB (seuil warning {settings.cinr_warning_db} dB, "
+                    f"bande de tolérance {margin:.0f} dB)"
                 ),
             )
         return AlertEvalResult(

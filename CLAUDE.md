@@ -149,8 +149,10 @@ backend/app/
 | `SIGNAL_TOLERANCE_DBM` | Marge de tolérance signal — l'incident `signal_low` n'ouvre qu'à `seuil − tolérance` (défaut 5 dBm ; 0 = strict) |
 | `CCQ_WARN_PCT` | Seuil CCQ warning (défaut 75%) |
 | `CCQ_CRIT_PCT` | Seuil CCQ critical (défaut 50%) |
+| `CCQ_TOLERANCE_PCT` | Bande d'hystérésis CCQ DL+UL — ouvre à `seuil − tol`, résout au seuil nominal (défaut 5% ; 0 = strict) |
 | `CINR_WARN_DB` | Seuil CINR warning (défaut 20 dB) |
 | `CINR_CRIT_DB` | Seuil CINR critical (défaut 10 dB) |
+| `CINR_TOLERANCE_DB` | Bande d'hystérésis CINR DL+UL — ouvre à `seuil − tol`, résout au seuil nominal (défaut 3 dB ; 0 = strict) |
 | `BATTERY_WARNING_PCT` | Seuil batterie warning (défaut 25%) |
 | `BATTERY_CRITICAL_PCT` | Seuil batterie critical (défaut 10%) |
 

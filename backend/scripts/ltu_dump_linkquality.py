@@ -21,7 +21,7 @@ import asyncio
 import json
 import sys
 
-from app.services.ltu_api_service import LTUApiClient, _rate_idx
+from app.services.ltu_api_service import LTUApiClient, _mcs_rate
 
 
 def _dump_link_quality(label: str, lq: object) -> None:
@@ -32,8 +32,12 @@ def _dump_link_quality(label: str, lq: object) -> None:
     print(f"  keys: {sorted(lq.keys())}")
     print("  full linkQuality JSON:")
     print(json.dumps(lq, indent=2, default=str))
-    print(f"  _rate_idx(lq,'dl') -> {_rate_idx(lq, 'dl')}")
-    print(f"  _rate_idx(lq,'ul') -> {_rate_idx(lq, 'ul')}")
+    print(f"  _mcs_rate(lq,'txRate') -> {_mcs_rate(lq, 'txRate')}  (local_rx_rate_idx)")
+    print(f"  _mcs_rate(lq,'rxRate') -> {_mcs_rate(lq, 'rxRate')}  (remote_rx_rate_idx)")
+    cap = lq.get("capacity") if isinstance(lq, dict) else None
+    if isinstance(cap, dict):
+        c, ci = cap.get("combined"), cap.get("combinedIdeal")
+        print(f"  capacity.combined={c} combinedIdeal={ci}")
 
 
 async def main() -> int:

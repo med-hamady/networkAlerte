@@ -200,6 +200,28 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
             {metrics.tx_ideal_mbps?.value != null && <MetricRow label="Capacité DL"     value={`${metrics.tx_ideal_mbps.value.toFixed(1)} Mbps`} />}
             {metrics.rx_ideal_mbps?.value != null && <MetricRow label="Capacité UL"     value={`${metrics.rx_ideal_mbps.value.toFixed(1)} Mbps`} />}
 
+            {(metrics.total_capacity_mbps?.value != null ||
+              metrics.link_potential_pct?.value != null ||
+              metrics.local_rx_rate_idx?.value != null ||
+              metrics.remote_rx_rate_idx?.value != null) && (
+              <>
+                <div className="border-t border-blue-100 my-1" />
+                <p className="text-blue-300 text-xs uppercase tracking-wider">Résumé du lien</p>
+                {metrics.total_capacity_mbps?.value != null && (
+                  <MetricRow label="Capacité totale" value={`${metrics.total_capacity_mbps.value.toFixed(2)} Mbps`} />
+                )}
+                {metrics.link_potential_pct?.value != null && (
+                  <MetricRow label="Potentiel du lien" value={<LinkPotentialValue pct={metrics.link_potential_pct.value} />} />
+                )}
+                {metrics.local_rx_rate_idx?.value != null && (
+                  <MetricRow label="Débit RX local" value={<RateIdxValue idx={metrics.local_rx_rate_idx.value} />} />
+                )}
+                {metrics.remote_rx_rate_idx?.value != null && (
+                  <MetricRow label="Débit RX distant" value={<RateIdxValue idx={metrics.remote_rx_rate_idx.value} />} />
+                )}
+              </>
+            )}
+
             {metrics.remote_signal_dbm?.value != null && (
               <>
                 <div className="border-t border-blue-100 my-1" />
@@ -466,6 +488,25 @@ function VoltageValue({ volts }: { volts: number }) {
 function BatteryValue({ pct, warn, crit }: { pct: number; warn: number; crit: number }) {
   const color = pct < crit ? 'text-red-500' : pct < warn ? 'text-yellow-500' : 'text-green-600'
   return <span className={`font-semibold ${color}`}>{pct.toFixed(0)} %</span>
+}
+
+function LinkPotentialValue({ pct }: { pct: number }) {
+  // Hardcoded bands (no env threshold for this informational metric): mirrors
+  // the UISP dashboard "Excellent Link" wording — ≥90 % excellent, 70–90 %
+  // correct, <70 % weak link.
+  const color = pct < 70 ? 'text-red-500' : pct < 90 ? 'text-yellow-500' : 'text-green-600'
+  const label = pct < 70 ? 'faible' : pct < 90 ? 'correct' : 'excellent'
+  return (
+    <span className={`font-semibold ${color}`}>
+      {pct.toFixed(0)} % <span className="font-normal opacity-70">({label})</span>
+    </span>
+  )
+}
+
+function RateIdxValue({ idx }: { idx: number }) {
+  // Modulation multiplier ("Nx", 1..12) — higher is better. No "expected"
+  // reference is collected, so left neutral to avoid implying a false threshold.
+  return <span className="font-semibold text-slate-700">{idx.toFixed(0)}×</span>
 }
 
 

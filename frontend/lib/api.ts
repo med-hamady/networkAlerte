@@ -42,7 +42,6 @@ export const endpoints = {
   checkPing:            (id: number) => `${API_BASE}/devices/${id}/check-ping`,
   pingFromLr:           (id: number) => `${API_BASE}/devices/${id}/ping-from-lr`,
   pingTarget:           (lrId: number) => `${API_BASE}/devices/${lrId}/ping-target`,
-  shellTicket:          (id: number) => `${API_BASE}/devices/${id}/shell-ticket`,
   discoverModems:       (lrId: number) => `${API_BASE}/devices/${lrId}/discover-modems`,
   systemInfo:           `${API_BASE}/system/info`,
   alertPolicies:        `${API_BASE}/alert-policies`,
@@ -230,16 +229,6 @@ export interface TestEmailResult {
 export async function sendTestEmail(): Promise<TestEmailResult> {
   const res = await fetch(endpoints.testEmail, { method: 'POST' })
   return jsonOrThrow<TestEmailResult>(res)
-}
-
-export interface ShellTicketResponse {
-  ticket: string
-  expires_in: number
-}
-
-export async function requestShellTicket(deviceId: number): Promise<ShellTicketResponse> {
-  const res = await fetch(endpoints.shellTicket(deviceId), { method: 'POST' })
-  return jsonOrThrow<ShellTicketResponse>(res)
 }
 
 export interface LanNeighbor {

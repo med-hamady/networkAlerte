@@ -177,8 +177,9 @@ class ClientModem(Device):
     """Customer-side modem (TP-Link, Huawei, ZTE, ...) behind an LR.
 
     The modem sits in the client LAN behind the LR's NAT, so it's not directly
-    reachable from the supervisor. Interactive access goes through an SSH jump
-    via the parent LR (services/jump_session.open_jump_channel).
+    reachable from the supervisor. It is inventoried and its reachability is
+    probed from the parent LR (the ping-from-LR diagnostic). There is no
+    interactive shell — most customer modems expose a web UI only.
     """
 
     __tablename__ = "client_modems"
@@ -192,8 +193,8 @@ class ClientModem(Device):
     )
     lr: Mapped["Lr | None"] = relationship(foreign_keys=[lr_id], lazy="selectin")
 
-    # ssh / telnet — telnet is reserved (501) until a real model is available
-    # to test against; the field is here so the UI can already pick it.
+    # Vestigial inventory metadata — no feature uses these since the
+    # interactive shell was removed. Kept to avoid a destructive migration.
     management_protocol: Mapped[str] = mapped_column(String(10), default="ssh", nullable=False)
     management_port: Mapped[int] = mapped_column(Integer, default=22, nullable=False)
     management_username: Mapped[str | None] = mapped_column(String(100), nullable=True)

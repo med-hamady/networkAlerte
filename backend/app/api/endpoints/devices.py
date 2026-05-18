@@ -264,12 +264,10 @@ async def ping_from_lr(
     device_id: int,
     db: AsyncSession = Depends(get_db),
 ) -> DiagResult:
-    """Ping a client modem from its parent LR (the SSH jump host).
+    """Ping a client modem from its parent LR.
 
     The modem sits behind the LR's NAT and is unreachable from the
-    supervisor directly, so reachability is checked from the LR itself —
-    the same path the interactive shell uses. Verifies L3 connectivity
-    before the operator opens a terminal.
+    supervisor directly, so reachability is checked from the LR itself.
     """
     device = await device_service.get_device(db, device_id)
     if not isinstance(device, ClientModem):

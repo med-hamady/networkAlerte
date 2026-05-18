@@ -1,7 +1,6 @@
 'use client'
 
 import { useState } from 'react'
-import Link from 'next/link'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type { Device, Lr } from '@/lib/types'
@@ -144,16 +143,6 @@ export default function DevicesPage() {
                             <RadarIcon className="w-4 h-4" />
                           </button>
                         )}
-                        {d.device_type === 'client_modem' && (
-                          <Link
-                            href={`/devices/${d.id}/terminal`}
-                            onClick={(e) => e.stopPropagation()}
-                            title="Ouvrir un terminal"
-                            className="p-1.5 rounded-lg text-purple-500 hover:text-purple-800 hover:bg-purple-100 transition-colors"
-                          >
-                            <TerminalIcon className="w-4 h-4" />
-                          </Link>
-                        )}
                         <button
                           onClick={(e) => openEdit(d, e)}
                           title="Modifier"
@@ -208,15 +197,6 @@ function PencilIcon({ className }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round"
         d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 012.828 2.828L11.828 15.828a2 2 0 01-1.414.586H7v-3a2 2 0 01.586-1.414z" />
-    </svg>
-  )
-}
-
-function TerminalIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round"
-        d="M5 7l4 4-4 4M11 15h6M4 5h16a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1z" />
     </svg>
   )
 }

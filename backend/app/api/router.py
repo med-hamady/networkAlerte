@@ -5,7 +5,6 @@ from app.api.endpoints import (
     alert_policies,
     auth,
     clients,
-    device_shell,
     devices,
     health,
     incidents,
@@ -30,10 +29,6 @@ api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 # Next.js proxy) OR a valid X-API-Key header (direct admin / integration use).
 _auth = [Depends(require_user_or_api_key)]
 api_router.include_router(devices.router, prefix="/devices", tags=["devices"], dependencies=_auth)
-# device_shell mounts the WebSocket on /devices/{id}/shell — no router-level auth
-# because browsers cannot attach custom headers to a WebSocket. The ticket
-# endpoint inside this router applies require_user_or_api_key per-route instead.
-api_router.include_router(device_shell.router, prefix="/devices", tags=["devices"])
 api_router.include_router(incidents.router, prefix="/incidents", tags=["incidents"], dependencies=_auth)
 api_router.include_router(lr_health.router, prefix="/lr-health", tags=["lr-health"], dependencies=_auth)
 api_router.include_router(clients.router, prefix="/clients", tags=["clients"], dependencies=_auth)

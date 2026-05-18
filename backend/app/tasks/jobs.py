@@ -457,8 +457,8 @@ async def device_ping_job() -> None:
     async with async_session_factory() as session:
         # Skip client_modem rows: they sit behind an LR's NAT and are NOT
         # reachable by ICMP from the supervisor — pinging them would trigger
-        # constant device_unreachable incidents. Their reachability is
-        # implicitly checked when the operator opens a shell session.
+        # constant device_unreachable incidents. Reachability is checked
+        # on demand via the ping-from-LR diagnostic instead.
         result = await session.execute(
             select(Device).where(Device.device_type != "client_modem")
         )

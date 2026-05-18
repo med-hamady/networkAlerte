@@ -204,7 +204,7 @@ class UispSwitchUpdate(_DeviceBaseUpdate):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Client modem — TP-Link / Huawei / ZTE behind an LR (NAT)
-# Reached via SSH jump through the parent LR — see services/jump_session.
+# Inventoried only; reachability is probed from the parent LR (ping-from-LR).
 # ─────────────────────────────────────────────────────────────────────────────
 
 

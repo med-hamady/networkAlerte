@@ -60,6 +60,8 @@ METRIC_UNITS: dict[str, str] = {
     "peer_ram_pct":        "%",
     "peer_tx_kbps":        "Kbps",
     "peer_rx_kbps":        "Kbps",
+    "peer_tx_bytes":       "B",
+    "peer_rx_bytes":       "B",
 }
 
 
@@ -209,6 +211,11 @@ def _extract_peer_radio_metrics(peer: dict) -> dict[str, float | None]:
         "peer_ram_pct":      None,
         "peer_tx_kbps":      None,
         "peer_rx_kbps":      None,
+        # Cumulative byte counters from AP's perspective for this peer.
+        # AP→CPE (downlink, customer's download) = txBytes; CPE→AP = rxBytes.
+        # Reported in 64-bit range by LTU firmware → no wrap handling needed.
+        "peer_tx_bytes":     None,
+        "peer_rx_bytes":     None,
     }
 
     if not isinstance(peer, dict):
@@ -228,6 +235,10 @@ def _extract_peer_radio_metrics(peer: dict) -> dict[str, float | None]:
             result["peer_tx_kbps"] = _float(tx if tx is not None else counters.get("tx"))
             rx = counters.get("rxkbps")
             result["peer_rx_kbps"] = _float(rx if rx is not None else counters.get("rx"))
+            # Cumulative byte counters (LTU firmware uses 64-bit txBytes/rxBytes
+            # in common.counters). Source-of-truth for per-client consumption.
+            result["peer_tx_bytes"] = _float(counters.get("txBytes"))
+            result["peer_rx_bytes"] = _float(counters.get("rxBytes"))
 
     # Local side — metrics measured at the AP (uplink: CPE → AP)
     local = peer.get("local")

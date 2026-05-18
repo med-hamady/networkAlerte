@@ -1,12 +1,15 @@
 """Per-client cumulative consumption over a sliding time window.
 
-Each LR's `ath0` radio interface is polled every 60 s by the SNMP job, which
-writes Counter64 (`radio_rx_bytes64` / `radio_tx_bytes64`) and Counter32
-(`radio_rx_bytes` / `radio_tx_bytes`) byte counters into `device_metrics`.
+Each LR's traffic is captured by the parent Rocket's LTU HTTP API
+(`/api/v1.0/statistics`), which exposes per-peer 64-bit cumulative byte
+counters in `wireless.peers[i].common.counters.txBytes` / `rxBytes`.
+The `ltu_api_poll_job` (60 s cadence) fans these counters out as
+DeviceMetric rows on each child LR under the names `peer_tx_bytes` and
+`peer_rx_bytes`.
 
 This endpoint sums the positive deltas of those counters over the requested
-window — handling Counter32 wrap-around and firmware-restart counter resets
-— and returns one row per LR client.
+window — gracefully skipping firmware reboots that reset the counter to 0 —
+and returns one row per LR client.
 """
 
 from __future__ import annotations
@@ -25,10 +28,6 @@ from app.models.device import Lr
 from app.models.device_metric import DeviceMetric
 
 router = APIRouter()
-
-# ifInOctets / ifOutOctets are Counter32 — wraps at 2**32. A negative delta of
-# magnitude < this implies "wrap"; larger implies "reset/restart" (skip).
-_COUNTER32_MOD = 2 ** 32
 
 # Max plausible bytes per 60 s poll interval — 1 Gbps × 60 s ≈ 7.5 GB. Any
 # computed delta exceeding this is rejected as a counter glitch.
@@ -53,7 +52,7 @@ class ClientConsumption(BaseModel):
     tx_bytes: int
     total_bytes: int
     samples: int
-    counter_source: Literal["counter64", "counter32", "none"]
+    has_data: bool
 
 
 class ClientConsumptionResponse(BaseModel):
@@ -63,18 +62,14 @@ class ClientConsumptionResponse(BaseModel):
     items: list[ClientConsumption]
 
 
-def _sum_positive_deltas(
-    samples: list[float],
-    *,
-    is_counter32: bool,
-) -> int:
+def _sum_positive_deltas(samples: list[float]) -> int:
     """Sum positive deltas between successive samples.
 
-    Counter32 wrap is detected when the next sample is *less* than the previous
-    one AND the wrap-corrected delta `(2**32 - prev) + curr` stays within the
-    plausible per-cycle budget. Anything beyond that (oversized delta in either
-    direction) is treated as a counter reset and skipped — the reset itself
-    contributes nothing, but the next positive delta resumes accumulation.
+    The LTU API returns 64-bit counters that effectively never wrap, so the
+    only legitimate negative delta is a firmware reset (CPE reboot) → we
+    skip that step but resume accumulating on the next sample. Any positive
+    delta larger than the plausible per-cycle budget is also rejected as a
+    counter glitch.
     """
     if len(samples) < 2:
         return 0
@@ -82,16 +77,9 @@ def _sum_positive_deltas(
     prev = samples[0]
     for curr in samples[1:]:
         delta = curr - prev
-        if delta >= 0:
-            if delta <= _MAX_PLAUSIBLE_DELTA_BYTES:
-                total += int(delta)
-            # else: glitch / spurious huge jump → skip
-        elif is_counter32:
-            wrapped = (_COUNTER32_MOD - prev) + curr
-            if 0 < wrapped <= _MAX_PLAUSIBLE_DELTA_BYTES:
-                total += int(wrapped)
-            # else: real reset → skip
-        # else (Counter64 negative): real reset → skip
+        if 0 <= delta <= _MAX_PLAUSIBLE_DELTA_BYTES:
+            total += int(delta)
+        # else: reset (delta < 0) or glitch (delta > budget) → skip
         prev = curr
     return total
 
@@ -120,10 +108,7 @@ async def get_clients_consumption(
         )
 
     lr_ids = [lr.id for lr in lrs]
-    metric_names = (
-        "radio_rx_bytes64", "radio_tx_bytes64",
-        "radio_rx_bytes",   "radio_tx_bytes",
-    )
+    metric_names = ("peer_tx_bytes", "peer_rx_bytes")
 
     samples_result = await db.execute(
         select(
@@ -140,29 +125,20 @@ async def get_clients_consumption(
     )
 
     # device_id → metric_name → ordered list of values
-    by_device: dict[int, dict[str, list[float]]] = {lr.id: {n: [] for n in metric_names} for lr in lrs}
+    by_device: dict[int, dict[str, list[float]]] = {
+        lr.id: {n: [] for n in metric_names} for lr in lrs
+    }
     for device_id, metric_name, metric_value in samples_result.all():
         by_device[device_id][metric_name].append(metric_value)
 
     items: list[ClientConsumption] = []
     for lr in lrs:
         per_metric = by_device[lr.id]
-        # Prefer Counter64 series when we have enough samples (≥2 needed for a delta).
-        if len(per_metric["radio_rx_bytes64"]) >= 2 or len(per_metric["radio_tx_bytes64"]) >= 2:
-            source: Literal["counter64", "counter32", "none"] = "counter64"
-            rx = _sum_positive_deltas(per_metric["radio_rx_bytes64"], is_counter32=False)
-            tx = _sum_positive_deltas(per_metric["radio_tx_bytes64"], is_counter32=False)
-            samples_used = len(per_metric["radio_rx_bytes64"]) + len(per_metric["radio_tx_bytes64"])
-        elif len(per_metric["radio_rx_bytes"]) >= 2 or len(per_metric["radio_tx_bytes"]) >= 2:
-            source = "counter32"
-            rx = _sum_positive_deltas(per_metric["radio_rx_bytes"], is_counter32=True)
-            tx = _sum_positive_deltas(per_metric["radio_tx_bytes"], is_counter32=True)
-            samples_used = len(per_metric["radio_rx_bytes"]) + len(per_metric["radio_tx_bytes"])
-        else:
-            source = "none"
-            rx = 0
-            tx = 0
-            samples_used = 0
+        rx_samples = per_metric["peer_rx_bytes"]
+        tx_samples = per_metric["peer_tx_bytes"]
+        has_data = len(rx_samples) >= 2 or len(tx_samples) >= 2
+        rx = _sum_positive_deltas(rx_samples) if has_data else 0
+        tx = _sum_positive_deltas(tx_samples) if has_data else 0
 
         items.append(ClientConsumption(
             device_id=lr.id,
@@ -173,8 +149,8 @@ async def get_clients_consumption(
             rx_bytes=rx,
             tx_bytes=tx,
             total_bytes=rx + tx,
-            samples=samples_used,
-            counter_source=source,
+            samples=len(rx_samples) + len(tx_samples),
+            has_data=has_data,
         ))
 
     items.sort(key=lambda i: i.total_bytes, reverse=True)

@@ -17,7 +17,7 @@ type ClientConsumption = {
   tx_bytes: number
   total_bytes: number
   samples: number
-  counter_source: 'counter64' | 'counter32' | 'none'
+  has_data: boolean
 }
 
 type ConsumptionResponse = {
@@ -32,12 +32,6 @@ const PERIODS: { value: Period; label: string }[] = [
   { value: '7d',  label: '7 jours'   },
   { value: '30d', label: '30 jours'  },
 ]
-
-const SOURCE_LABEL: Record<ClientConsumption['counter_source'], string> = {
-  counter64: 'Counter64',
-  counter32: 'Counter32 (wrap géré)',
-  none:      'Aucune donnée',
-}
 
 export default function ClientsPage() {
   const [period, setPeriod] = useState<Period>('24h')
@@ -57,8 +51,8 @@ export default function ClientsPage() {
         <div>
           <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Consommation clients</h1>
           <p className="text-blue-400 text-sm mt-1">
-            Volume RX/TX cumulé par LR sur la fenêtre choisie — agrégé depuis les compteurs SNMP
-            <span className="font-mono"> ifHCInOctets</span> / <span className="font-mono">ifHCOutOctets</span>.
+            Volume RX/TX cumulé par LR sur la fenêtre choisie — agrégé depuis les compteurs
+            <span className="font-mono"> txBytes</span> / <span className="font-mono">rxBytes</span> exposés par chaque Rocket via son API LTU.
           </p>
         </div>
 
@@ -104,7 +98,7 @@ export default function ClientsPage() {
             <table className="w-full text-sm">
               <thead className="bg-blue-50 border-b border-blue-100">
                 <tr>
-                  {['Client', 'Rocket parent', 'RX', 'TX', 'Total', 'Part relative', 'Source'].map(h => (
+                  {['Client', 'Rocket parent', 'Download (RX)', 'Upload (TX)', 'Total', 'Part relative'].map(h => (
                     <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
                       {h}
                     </th>
@@ -124,17 +118,17 @@ export default function ClientsPage() {
                         {row.rocket_name ?? <span className="text-blue-300">— sans parent —</span>}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-700">
-                        {row.counter_source === 'none' ? '—' : formatBytes(row.rx_bytes)}
+                        {row.has_data ? formatBytes(row.rx_bytes) : <span className="text-blue-300">—</span>}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-700">
-                        {row.counter_source === 'none' ? '—' : formatBytes(row.tx_bytes)}
+                        {row.has_data ? formatBytes(row.tx_bytes) : <span className="text-blue-300">—</span>}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap font-mono text-sm font-semibold text-slate-800">
-                        {row.counter_source === 'none' ? '—' : formatBytes(row.total_bytes)}
+                        {row.has_data ? formatBytes(row.total_bytes) : <span className="text-blue-300">—</span>}
                       </td>
                       <td className="px-4 py-3 min-w-[180px]">
-                        {row.counter_source === 'none' ? (
-                          <span className="text-blue-300 text-xs">—</span>
+                        {!row.has_data ? (
+                          <span className="text-blue-300 text-xs">pas encore d'échantillons</span>
                         ) : (
                           <div className="flex items-center gap-2">
                             <div className="flex-1 h-2 rounded-full bg-blue-50 overflow-hidden">
@@ -149,20 +143,6 @@ export default function ClientsPage() {
                           </div>
                         )}
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-[11px]">
-                        <span
-                          className={`px-2 py-0.5 rounded border ${
-                            row.counter_source === 'counter64'
-                              ? 'bg-green-50 text-green-700 border-green-200'
-                              : row.counter_source === 'counter32'
-                              ? 'bg-amber-50 text-amber-700 border-amber-200'
-                              : 'bg-slate-50 text-slate-400 border-slate-200'
-                          }`}
-                          title={`${row.samples} échantillons`}
-                        >
-                          {SOURCE_LABEL[row.counter_source]}
-                        </span>
-                      </td>
                     </tr>
                   )
                 })}
@@ -173,8 +153,8 @@ export default function ClientsPage() {
       )}
 
       <p className="text-[11px] text-blue-400">
-        Les compteurs SNMP comptent le trafic radio brut sur <span className="font-mono">ath0</span> (incluant trames de contrôle).
-        Les nouveaux clients sans suffisamment d'échantillons pour la fenêtre apparaissent à « Aucune donnée ».
+        Volumes mesurés sur le lien radio entre le Rocket et chaque CPE (≠ trafic Internet effectif si NAT/local).
+        Les CPE qui n'ont pas au moins deux relevés sur la fenêtre apparaissent sans valeur — il faut ~2 min après leur (re)connexion.
       </p>
     </div>
   )

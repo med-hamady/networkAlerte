@@ -19,7 +19,7 @@ Metrics dict keys (sourced from SNMP + LTU API + ping):
   tx_ideal_mbps     : float   — rated DL capacity (Mbps)
   rx_ideal_mbps     : float   — rated UL capacity (Mbps)
   total_capacity_mbps : float — capacity.combined (UI "Total Capacity"); informational
-  link_potential_pct  : float — combined/combinedIdeal ×100 (UI "Link Potential"); informational
+  link_potential_pct  : float — mean(linkScore dl/ul) ≈ UI "Link Potential"; informational
   local_rx_rate_idx   : float — mcs.txRate, downlink "Nx" (UI "Local RX Data Rate"); informational
   remote_rx_rate_idx  : float — mcs.rxRate, uplink "Nx" (UI "Remote RX Data Rate"); informational
   radio_in_errors   : float   — cumulative RX error counter

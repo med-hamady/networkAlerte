@@ -12,7 +12,7 @@ Metrics extracted from wireless.peers[0] and wireless.radios[0]:
   tx_rate_mbps / rx_rate_mbps : actual DL/UL capacity (Kbps → Mbps)
   tx_ideal_mbps / rx_ideal_mbps : ideal (uncapped) DL/UL capacity
   total_capacity_mbps : capacity.combined (Kbps→Mbps) — UI "Total Capacity"
-  link_potential_pct  : capacity.combined / combinedIdeal ×100 — UI "Link Potential"
+  link_potential_pct  : mean(linkScore.dl, linkScore.ul) — UI "Link Potential"
   local_rx_rate_idx   : mcs.txRate, AP→CPE downlink "Nx" — UI "Local RX Data Rate"
   remote_rx_rate_idx  : mcs.rxRate, CPE→AP uplink "Nx" — UI "Remote RX Data Rate"
   remote_signal_dbm : downlink signal at CPE from AP (dBm)
@@ -230,17 +230,22 @@ def _extract_peer_radio_metrics(peer: dict) -> dict[str, float | None]:
         #   rxRate = CPE→AP uplink   → the LR's "Remote RX Data Rate"
         result["local_rx_rate_idx"]  = _mcs_rate(lq, "txRate")
         result["remote_rx_rate_idx"] = _mcs_rate(lq, "rxRate")
-        # Link summary straight from the device (authoritative — same numbers
-        # as the dashboard header). capacity.combined = actual total (Kbps),
-        # combinedIdeal = best achievable; Link Potential = their ratio.
-        combined       = _float(_nested(lq, "capacity", "combined"))
-        combined_ideal = _float(_nested(lq, "capacity", "combinedIdeal"))
+        # Total Capacity = device's own combined actual capacity (Kbps→Mbps);
+        # matches the dashboard "TOTAL CAPACITY" exactly.
+        combined = _float(_nested(lq, "capacity", "combined"))
         if combined is not None:
             result["total_capacity_mbps"] = round(combined / 1000.0, 2)
-            if combined_ideal and combined_ideal > 0:
-                result["link_potential_pct"] = round(
-                    min(combined / combined_ideal * 100.0, 100.0), 1
-                )
+        # Link Potential ≈ the device's own link-quality score, NOT a
+        # capacity ratio: combined/combinedIdeal stays 100% (both flat at
+        # 103680) while the dashboard % swings 88–99 with RF. Confirmed on a
+        # simultaneous capture — dashboard 89.2% vs mean(linkScore.dl 96.4,
+        # ul 80.3) = 88.4 (diff = sampling jitter, both move per-second).
+        # linkScore.dl/ul are already extracted above as ccq_pct/ul_ccq_pct.
+        dl_score, ul_score = result["ccq_pct"], result["ul_ccq_pct"]
+        if dl_score is not None and ul_score is not None:
+            result["link_potential_pct"] = round((dl_score + ul_score) / 2.0, 1)
+        elif dl_score is not None:
+            result["link_potential_pct"] = round(dl_score, 1)
 
     # Remote side — metrics measured at the CPE (downlink: AP → CPE)
     remote = peer.get("remote")
@@ -252,18 +257,12 @@ def _extract_peer_radio_metrics(peer: dict) -> dict[str, float | None]:
         eirp = rlq.get("outputPower")
         result["remote_eirp_dbm"]   = _float(eirp if eirp is not None else rlq.get("eirp"))
 
-    # Fallback for firmware without capacity.combined: derive Total Capacity
-    # and Link Potential from the per-direction actual/ideal fields instead.
+    # Fallback Total Capacity for firmware without capacity.combined
+    # (Link Potential is linkScore-based, independent of capacity).
     if result["total_capacity_mbps"] is None:
         tx_r, rx_r = result["tx_rate_mbps"], result["rx_rate_mbps"]
         if tx_r is not None and rx_r is not None:
-            total = tx_r + rx_r
-            result["total_capacity_mbps"] = round(total, 2)
-            tx_i, rx_i = result["tx_ideal_mbps"], result["rx_ideal_mbps"]
-            if tx_i is not None and rx_i is not None and (tx_i + rx_i) > 0:
-                result["link_potential_pct"] = round(
-                    min(total / (tx_i + rx_i) * 100.0, 100.0), 1
-                )
+            result["total_capacity_mbps"] = round(tx_r + rx_r, 2)
 
     return result
 

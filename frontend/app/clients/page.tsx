@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
-import { formatBytes, formatUptime } from '@/lib/types'
+import { formatBytes } from '@/lib/types'
 
 type Period = '24h' | '7d' | '30d' | 'lifetime'
 
@@ -18,7 +18,7 @@ type ClientConsumption = {
   total_bytes: number
   samples: number
   has_data: boolean
-  peer_uptime_s: number | null
+  first_sample_at: string | null
 }
 
 type ConsumptionResponse = {
@@ -43,14 +43,10 @@ function formatDateTime(iso: string): string {
   })
 }
 
-function formatDuration(seconds: number): string {
-  if (seconds < 3600) return formatUptime(seconds)
-  const d = Math.floor(seconds / 86400)
-  if (d >= 1) {
-    const h = Math.floor((seconds % 86400) / 3600)
-    return `${d}j ${h}h`
-  }
-  return formatUptime(seconds)
+function shortDate(iso: string): string {
+  return new Date(iso).toLocaleDateString('fr-FR', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+  })
 }
 
 export default function ClientsPage() {
@@ -82,8 +78,8 @@ export default function ClientsPage() {
           <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Consommation clients</h1>
           <p className="text-blue-400 text-sm mt-1">
             {isLifetime ? (
-              <>Volume cumulé par CPE <strong>depuis la dernière association au Rocket</strong> — compteur radio,
-              remis à zéro si l'AP ou le CPE redémarre.</>
+              <>Volume cumulé par CPE <strong>depuis le début du monitoring</strong> — somme des deltas
+              persistée côté serveur, conservée à travers les redémarrages AP/CPE et les coupures radio.</>
             ) : (
               <>Volume téléchargé / uploadé par CPE sur la fenêtre choisie — agrégé depuis les compteurs
               <span className="font-mono"> txBytes</span> / <span className="font-mono">rxBytes</span> de l'API LTU du Rocket.</>
@@ -152,7 +148,7 @@ export default function ClientsPage() {
                     'Download ⬇',
                     'Upload ⬆',
                     'Total',
-                    isLifetime ? 'Lien actif depuis' : 'Part relative',
+                    isLifetime ? 'Supervisé depuis' : 'Part relative',
                   ].map(h => (
                     <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
                       {h}
@@ -183,8 +179,8 @@ export default function ClientsPage() {
                       </td>
                       <td className="px-4 py-3 min-w-[180px]">
                         {isLifetime ? (
-                          row.peer_uptime_s != null ? (
-                            <span className="text-xs text-slate-700">{formatDuration(row.peer_uptime_s)}</span>
+                          row.first_sample_at != null ? (
+                            <span className="text-xs text-slate-700">{shortDate(row.first_sample_at)}</span>
                           ) : (
                             <span className="text-blue-300 text-xs">—</span>
                           )
@@ -215,8 +211,9 @@ export default function ClientsPage() {
 
       <p className="text-[11px] text-blue-400">
         {isLifetime
-          ? <>Le compteur radio reflète le trafic depuis la dernière association du CPE à l'AP. Une coupure radio,
-            un redémarrage CPE ou AP remet ce compteur à zéro — la colonne « Lien actif depuis » donne le contexte.</>
+          ? <>Le compteur radio du firmware se remet à zéro à chaque réassociation du CPE. Le superviseur compense
+            en sommant les deltas positifs entre chaque relevé — le total reste donc valide même après plusieurs
+            redémarrages du Rocket ou du CPE. La colonne « Supervisé depuis » donne la date du tout premier relevé en base.</>
           : <>Volumes mesurés sur le lien radio entre le Rocket et chaque CPE (≠ trafic Internet effectif si NAT/local).
             Les CPE sans au moins deux relevés sur la fenêtre apparaissent sans valeur — il faut ~2 min après leur (re)connexion.</>
         }

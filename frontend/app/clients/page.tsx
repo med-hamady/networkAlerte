@@ -13,8 +13,8 @@ type ClientConsumption = {
   ip_address: string
   rocket_id: number | null
   rocket_name: string | null
-  rx_bytes: number
-  tx_bytes: number
+  download_bytes: number
+  upload_bytes: number
   total_bytes: number
   samples: number
   has_data: boolean
@@ -98,7 +98,7 @@ export default function ClientsPage() {
             <table className="w-full text-sm">
               <thead className="bg-blue-50 border-b border-blue-100">
                 <tr>
-                  {['Client', 'Rocket parent', 'Download (RX)', 'Upload (TX)', 'Total', 'Part relative'].map(h => (
+                  {['Client', 'Rocket parent', 'Download ⬇', 'Upload ⬆', 'Total', 'Part relative'].map(h => (
                     <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
                       {h}
                     </th>
@@ -118,10 +118,10 @@ export default function ClientsPage() {
                         {row.rocket_name ?? <span className="text-blue-300">— sans parent —</span>}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-700">
-                        {row.has_data ? formatBytes(row.rx_bytes) : <span className="text-blue-300">—</span>}
+                        {row.has_data ? formatBytes(row.download_bytes) : <span className="text-blue-300">—</span>}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-700">
-                        {row.has_data ? formatBytes(row.tx_bytes) : <span className="text-blue-300">—</span>}
+                        {row.has_data ? formatBytes(row.upload_bytes) : <span className="text-blue-300">—</span>}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap font-mono text-sm font-semibold text-slate-800">
                         {row.has_data ? formatBytes(row.total_bytes) : <span className="text-blue-300">—</span>}

@@ -43,13 +43,20 @@ _PERIOD_TO_TIMEDELTA: dict[Period, datetime.timedelta] = {
 
 
 class ClientConsumption(BaseModel):
+    """Per-client consumption, customer-centric.
+
+    download_bytes = traffic the customer received (AP→CPE), sourced from
+                     the API's `txBytes` (AP-perspective) on `peer_tx_bytes`.
+    upload_bytes   = traffic the customer sent (CPE→AP), sourced from
+                     `rxBytes` on `peer_rx_bytes`.
+    """
     device_id: int
     name: str
     ip_address: str
     rocket_id: int | None
     rocket_name: str | None
-    rx_bytes: int
-    tx_bytes: int
+    download_bytes: int
+    upload_bytes: int
     total_bytes: int
     samples: int
     has_data: bool
@@ -134,11 +141,13 @@ async def get_clients_consumption(
     items: list[ClientConsumption] = []
     for lr in lrs:
         per_metric = by_device[lr.id]
-        rx_samples = per_metric["peer_rx_bytes"]
-        tx_samples = per_metric["peer_tx_bytes"]
-        has_data = len(rx_samples) >= 2 or len(tx_samples) >= 2
-        rx = _sum_positive_deltas(rx_samples) if has_data else 0
-        tx = _sum_positive_deltas(tx_samples) if has_data else 0
+        # AP's txBytes = AP→CPE = customer download
+        # AP's rxBytes = CPE→AP = customer upload
+        download_samples = per_metric["peer_tx_bytes"]
+        upload_samples   = per_metric["peer_rx_bytes"]
+        has_data = len(download_samples) >= 2 or len(upload_samples) >= 2
+        download = _sum_positive_deltas(download_samples) if has_data else 0
+        upload   = _sum_positive_deltas(upload_samples)   if has_data else 0
 
         items.append(ClientConsumption(
             device_id=lr.id,
@@ -146,10 +155,10 @@ async def get_clients_consumption(
             ip_address=lr.ip_address,
             rocket_id=lr.rocket_id,
             rocket_name=lr.rocket.name if lr.rocket else None,
-            rx_bytes=rx,
-            tx_bytes=tx,
-            total_bytes=rx + tx,
-            samples=len(rx_samples) + len(tx_samples),
+            download_bytes=download,
+            upload_bytes=upload,
+            total_bytes=download + upload,
+            samples=len(download_samples) + len(upload_samples),
             has_data=has_data,
         ))
 

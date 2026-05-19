@@ -42,7 +42,6 @@ from app.models.device_metric import DeviceMetric
 from app.models.power_status_log import PowerStatusLog
 from app.services import (
     alert_engine,
-    client_block_service,
     digest_service,
     discovery_service,
     email_service,
@@ -456,17 +455,12 @@ async def device_ping_job() -> None:
         settings = await threshold_service.get_effective_settings(_ts_session, base_settings)
 
     async with async_session_factory() as session:
-        # Skip client_modem AND lr rows: both sit behind the radio link / an
-        # LR's NAT and are NOT reachable by ICMP from the supervisor — pinging
-        # them would trigger constant false device-down incidents. Their
-        # liveness is authoritative from elsewhere:
-        #   - lr           : presence as an associated peer in the parent
-        #                     Rocket's station table (reconcile_peers sets
-        #                     status/last_seen; stale_lr_detection_job opens
-        #                     AT_LR_DISAPPEARED when the peer is gone).
-        #   - client_modem : on-demand ping-from-LR diagnostic.
+        # Skip client_modem rows: they sit behind an LR's NAT and are NOT
+        # reachable by ICMP from the supervisor — pinging them would trigger
+        # constant device_unreachable incidents. Reachability is checked
+        # on demand via the ping-from-LR diagnostic instead.
         result = await session.execute(
-            select(Device).where(Device.device_type.notin_(("client_modem", "lr")))
+            select(Device).where(Device.device_type != "client_modem")
         )
         devices = list(result.scalars().all())
 
@@ -1151,29 +1145,6 @@ async def lr_transit_probe_job() -> None:
         await session.commit()
 
 
-async def client_block_enforcement_job() -> None:
-    """Re-assert the LAN-port shutdown on every LR marked client_blocked.
-
-    Makes a client block survive an LR reboot (the port comes back UP on
-    boot, this re-cuts it within one cycle) and retries blocks that could not
-    be enforced at click time (LR briefly unreachable). Idempotent — shutting
-    an already-down port is a no-op.
-    """
-    async with async_session_factory() as session:
-        try:
-            enforced = await client_block_service.enforce_blocked_clients(session)
-            if enforced:
-                logger.info(
-                    "Client block enforcement — %d LR maintenu(s) coupé(s)",
-                    enforced,
-                )
-            else:
-                logger.debug("Client block enforcement: aucun LR bloqué")
-        except Exception:
-            await session.rollback()
-            raise
-
-
 async def stale_lr_detection_job() -> None:
     """
     Detect auto-discovered LRs that have stopped appearing in Rocket peer-lists.
@@ -1222,12 +1193,6 @@ async def stale_lr_detection_job() -> None:
                     f"Vérifier alimentation et lien radio. Comparer avec les incidents "
                     f"lr_down / cpe_disconnected sur ce device et son parent."
                 )
-                # Peer gone from every Rocket's station table beyond the grace
-                # window → this is the LR's real "down" (it is excluded from
-                # ICMP, so reconcile_peers is the only writer that sets it up;
-                # nothing else can flip it down). reconcile_peers will set it
-                # back to "up" the moment the peer reappears.
-                lr.status = "down"
                 await _open_and_notify(
                     session, lr, title, "warning", description,
                     alert_type=AT_LR_DISAPPEARED,
@@ -1400,14 +1365,6 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         replace_existing=True,
         **safety,
     )
-    if settings.client_block_enforcement_enabled:
-        scheduler.add_job(
-            client_block_enforcement_job,
-            trigger="interval", seconds=settings.client_block_enforce_interval,
-            id="client_block_enforcement", name="Client block enforcement",
-            replace_existing=True,
-            **safety,
-        )
     scheduler.add_job(
         warning_digest_job,
         trigger="interval", minutes=settings.warning_digest_minutes,

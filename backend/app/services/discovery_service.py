@@ -284,7 +284,13 @@ async def _reconcile_single_peer(
         device = Lr(
             name=_generate_device_name(peer, fallback_index),
             ip_address=ip,
-            status="unknown",
+            # An LR appearing in the Rocket's station table IS reachable over
+            # the radio — that is its authoritative liveness signal (its mgmt
+            # IP is typically NOT ICMP-routable from the supervisor, so it is
+            # excluded from device_ping_job). stale_lr_detection_job flips it
+            # back when the peer stops being reported.
+            status="up",
+            last_seen=now,
             location=parent.location,
             mac_address=mac,
             hostname=peer.get("hostname"),
@@ -329,6 +335,10 @@ async def _reconcile_single_peer(
     device.last_discovered_at = now
     if device.first_discovered_at is None:
         device.first_discovered_at = now
+    # Still an associated peer → reachable over the radio. This is the LR's
+    # authoritative liveness (it is excluded from ICMP device_ping_job).
+    device.status = "up"
+    device.last_seen = now
 
     # IP change (only if MAC matched — we trust the MAC as identity)
     if mac and ip and device.ip_address != ip:

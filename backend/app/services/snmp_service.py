@@ -40,6 +40,7 @@ from pysnmp.hlapi.asyncio import (
     SnmpEngine,
     UdpTransportTarget,
     getCmd,
+    nextCmd,
 )
 
 logger = logging.getLogger(__name__)
@@ -102,13 +103,19 @@ _UBNT_STA_CCQ     = "1.3.6.1.4.1.41112.1.4.5.1.4.1"  # CCQ ×10 (e.g. 995 = 99.5
 _UBNT_STA_SIGNAL  = "1.3.6.1.4.1.41112.1.4.5.1.5.1"  # Remote signal (dBm, negative int)
 _UBNT_STA_NOISE   = "1.3.6.1.4.1.41112.1.4.5.1.6.1"  # Noise floor (dBm)
 
-# UBNT Enterprise MIB — airOS multi-peer station table (ubntStaTable)
-# Used by Rocket M / NanoStation M when multiple CPE clients are associated.
-# Walking these tables exposes every connected peer (one row per peer).
-_UBNT_STA_MAC_BASE     = "1.3.6.1.4.1.41112.1.4.7.1.1"   # MAC (OctetString)
-_UBNT_STA_LASTIP_BASE  = "1.3.6.1.4.1.41112.1.4.7.1.14"  # Last known IPv4 (varies by firmware)
-_UBNT_STA_HOSTNAME_BASE = "1.3.6.1.4.1.41112.1.4.7.1.5"  # Station hostname when published
-_UBNT_STA_TABLE_MAX    = 64                               # cap walk to avoid runaway loops
+# UBNT Enterprise MIB — airOS multi-peer station table (ubntStaTable).
+# Exposes one row per associated CPE/LR peer. The row index is NOT a dense
+# 1..N integer: it is <wlanIfIndex>.<6 MAC octets in decimal>, e.g.
+#   ...4.7.1.1.1.108.99.248.184.230.173  (1 + 6c:63:f8:b8:e6:ad)
+# so the table MUST be GETNEXT-walked, never GET-probed by a guessed index.
+# Column layout verified on Rocket Prism 5AC, airOS XC v8.7.11 (SNMPv1 only):
+#   .1  = peer MAC (OctetString)
+#   .2  = peer model string  (e.g. "LiteBeam 5AC")
+#   .10 = peer mgmt IPv4     (dotted string)
+_UBNT_STA_MAC_COL   = "1.3.6.1.4.1.41112.1.4.7.1.1"
+_UBNT_STA_MODEL_COL = "1.3.6.1.4.1.41112.1.4.7.1.2"
+_UBNT_STA_IP_COL    = "1.3.6.1.4.1.41112.1.4.7.1.10"
+_UBNT_STA_MAX_ROWS  = 128                              # cap walk to avoid runaway loops
 
 
 async def _snmp_get(
@@ -144,6 +151,50 @@ async def _snmp_get(
     except Exception as exc:
         logger.debug("SNMP exception (%s, %s): %s", host, oid, exc)
     return None
+
+
+async def _snmp_walk(
+    engine: SnmpEngine,
+    host: str,
+    community: str,
+    base_oid: str,
+    port: int,
+    timeout: int,
+    mp_model: int = 1,
+    max_rows: int = 128,
+) -> list[tuple[str, Any]]:
+    """GETNEXT-walk a subtree. Returns [(oid_str, value), ...] under base_oid.
+
+    Needed for SNMP tables whose index is not a dense 1..N integer (e.g. the
+    UBNT station table indexed by MAC). SNMPv1-safe: airOS XC v8.x answers only
+    in SNMPv1 (mp_model=0) and signals end-of-table with a noSuchName error
+    status, which terminates the walk just like the subtree-boundary check.
+    """
+    results: list[tuple[str, Any]] = []
+    cur = base_oid
+    prefix = base_oid + "."
+    try:
+        for _ in range(max_rows):
+            error_indication, error_status, _, var_binds = await nextCmd(
+                engine,
+                CommunityData(community, mpModel=mp_model),
+                UdpTransportTarget((host, port), timeout=timeout, retries=0),
+                ContextData(),
+                ObjectType(ObjectIdentity(cur)),
+                lexicographicMode=False,
+            )
+            if error_indication or error_status or not var_binds:
+                break
+            name, value = var_binds[0][0]
+            name_str = str(name)
+            # Stop as soon as GETNEXT walks past the requested subtree.
+            if name_str != base_oid and not name_str.startswith(prefix):
+                break
+            results.append((name_str, value))
+            cur = name_str
+    except Exception as exc:
+        logger.debug("SNMP walk exception (%s, %s): %s", host, base_oid, exc)
+    return results
 
 
 async def _find_if_index(
@@ -491,47 +542,51 @@ async def discover_airmax_peers(
       [{"mac": "aa:bb:...", "mgmt_ip": "10.x.y.z", "hostname": "...",
         "model": None, "firmware": None}, ...]
 
-    Empty list when the device exposes no station entries or the MIB branch is
-    not implemented (e.g. firmware that ships only the single-station OIDs at
-    `.4.5.*.1`). This is non-fatal — the caller treats "no peers" as "nothing
-    to reconcile this cycle".
+    Empty list when the device exposes no station entries. This is non-fatal —
+    the caller treats "no peers" as "nothing to reconcile this cycle".
+
+    The station table is indexed by <wlanIfIndex>.<6 MAC octets>, so we walk
+    the MAC column to enumerate rows, then reuse each row's index suffix to
+    fetch its IP and model columns. airOS XC v8.x answers only in SNMPv1
+    (mp_model=0) — the default.
     """
     engine = _get_engine()
     peers: list[dict[str, str | None]] = []
 
-    for i in range(1, _UBNT_STA_TABLE_MAX + 1):
-        mac_raw = await _snmp_get(
-            engine, host, community, f"{_UBNT_STA_MAC_BASE}.{i}", port, timeout, mp_model,
-        )
-        if mac_raw is None:
-            # First missing index = end of table (UBNT stations are dense from .1)
-            break
+    mac_rows = await _snmp_walk(
+        engine, host, community, _UBNT_STA_MAC_COL, port, timeout, mp_model,
+        max_rows=_UBNT_STA_MAX_ROWS,
+    )
+    for oid_str, mac_raw in mac_rows:
+        # Row index suffix: everything after the column base, i.e.
+        # "<wlanIfIndex>.<6 MAC octets>" — reused verbatim for the other columns.
+        idx = oid_str[len(_UBNT_STA_MAC_COL) + 1:]
+        if not idx:
+            continue
         mac = _format_mac_from_octets(mac_raw)
         if mac is None:
-            # Unparseable MAC at this index — skip but keep walking, sometimes
-            # firmware leaves placeholder rows.
+            # Placeholder/unparseable row — skip but keep walking.
             continue
 
         ip_raw = await _snmp_get(
-            engine, host, community, f"{_UBNT_STA_LASTIP_BASE}.{i}", port, timeout, mp_model,
+            engine, host, community, f"{_UBNT_STA_IP_COL}.{idx}", port, timeout, mp_model,
         )
         mgmt_ip = _format_ip_from_snmp(ip_raw)
 
-        hostname_raw = await _snmp_get(
-            engine, host, community, f"{_UBNT_STA_HOSTNAME_BASE}.{i}", port, timeout, mp_model,
+        model_raw = await _snmp_get(
+            engine, host, community, f"{_UBNT_STA_MODEL_COL}.{idx}", port, timeout, mp_model,
         )
-        hostname = str(hostname_raw).strip() if hostname_raw is not None else None
-        # Some firmwares emit non-printable padding for empty hostname slots —
-        # drop anything that is not strictly printable ASCII (DNS-safe charset).
-        if hostname and not all(c.isprintable() and c.isascii() for c in hostname):
-            hostname = None
+        model = str(model_raw).strip() if model_raw is not None else None
+        # Drop non-printable padding some firmwares emit for empty slots.
+        if model and not all(c.isprintable() and c.isascii() for c in model):
+            model = None
 
         peers.append({
             "mac":      mac,
             "mgmt_ip":  mgmt_ip,
-            "hostname": hostname or None,
-            "model":    None,    # not available via this MIB branch
-            "firmware": None,    # not available via this MIB branch
+            "hostname": None,          # this firmware exposes no station hostname
+            "model":    model or None,  # e.g. "LiteBeam 5AC" → _infer_model_variant
+            "firmware": None,           # not available via this MIB branch
         })
 
     if peers:

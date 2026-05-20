@@ -215,12 +215,19 @@ async def _send_ping_latency_email(
 
 
 # rule_category buckets used to pick SNMP poll variants.
-# LTU Rockets → standard IF-MIB. LRs are NOT polled via SNMP — their metrics
-# come from the parent Rocket's HTTP API (peer fan-out in ltu_api_poll_job).
+# LTU Rockets → standard IF-MIB. LTU LRs are NOT polled via SNMP — their
+# metrics come from the parent Rocket's HTTP API (peer fan-out in
+# ltu_api_poll_job).
 RADIO_RULE_CATEGORIES = {"ltu_rocket"}
 
 # airMAX Rockets → UBNT Enterprise MIB + IF-MIB.
 AIRMAX_RULE_CATEGORIES = {"airmax_rocket"}
+
+# airMAX LRs (LiteBeam family) → polled directly via SNMP. Their parent
+# Rocket airMAX exposes peer identification only (ubntStaTable), not the
+# per-peer signal/CCQ/rates that LTU Rockets fan out via HTTP — so each
+# LiteBeam must be SNMP'd on its own management IP.
+AIRMAX_LR_VARIANTS = {"litebeam_5ac", "litebeam_m5"}
 
 # Switches → standard SNMP (uptime only).
 SWITCH_RULE_CATEGORIES = {"uisp_switch"}
@@ -589,9 +596,8 @@ async def snmp_poll_job() -> None:
 
     async with async_session_factory() as session:
         # Polymorphic load — pulls Rocket and UispSwitch instances with their
-        # subtype columns. LRs are excluded: they are not directly reachable
-        # for SNMP (they sit behind the radio link) — their metrics come from
-        # the parent Rocket's HTTP API poll fan-out.
+        # subtype columns. LTU LRs stay excluded: their per-peer metrics come
+        # from the parent Rocket's HTTP API fan-out in ltu_api_poll_job.
         result = await session.execute(
             select(Device).where(
                 Device.status == "up",
@@ -600,6 +606,18 @@ async def snmp_poll_job() -> None:
             )
         )
         devices = list(result.scalars().all())
+
+        # airMAX LRs (LiteBeam 5AC/M5) — SNMP'd directly. Their parent
+        # Rocket airMAX exposes only peer identification via SNMP, not the
+        # per-peer radio metrics LTU Rockets fan out via HTTP.
+        result = await session.execute(
+            select(Lr).where(
+                Lr.status == "up",
+                Lr.snmp_community.is_not(None),
+                Lr.model_variant.in_(AIRMAX_LR_VARIANTS),
+            )
+        )
+        devices.extend(result.scalars().all())
 
     if not devices:
         logger.debug("No SNMP-eligible devices — skipping SNMP poll")
@@ -611,7 +629,8 @@ async def snmp_poll_job() -> None:
         community = device.snmp_community or settings.snmp_default_community
         category = device.rule_category
 
-        if category in AIRMAX_RULE_CATEGORIES:
+        is_airmax_lr = isinstance(device, Lr) and device.model_variant in AIRMAX_LR_VARIANTS
+        if is_airmax_lr or category in AIRMAX_RULE_CATEGORIES:
             metrics = await snmp_service.collect_airmax_metrics(
                 host=device.ip_address,
                 community=community,

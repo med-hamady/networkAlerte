@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.device import ClientModem, Device, Lr, Rocket
 from app.models.device_metric import DeviceMetric
@@ -26,8 +27,11 @@ from app.services import (
     device_service,
     lan_discovery,
     ltu_api_service,
+    snmp_service,
     ssh_service,
 )
+
+_AIRMAX_LR_VARIANTS = {"litebeam_5ac", "litebeam_m5"}
 
 router = APIRouter()
 
@@ -140,6 +144,49 @@ async def get_device_metrics_latest(
     }
 
 
+_AIRMAX_METRIC_UNITS = {
+    "signal_dbm": "dBm",
+    "noise_dbm": "dBm",
+    "cinr_db": "dB",
+    "ccq_pct": "%",
+    "tx_rate_mbps": "Mbps",
+    "rx_rate_mbps": "Mbps",
+    "radio_rx_bytes": "B",
+    "radio_tx_bytes": "B",
+    "radio_in_errors": "",
+    "radio_out_errors": "",
+    "radio_if_up": "",
+    "eth_if_up": "",
+    "uptime_seconds": "s",
+}
+
+
+async def _live_metrics_airmax_snmp(device: Lr) -> dict[str, MetricPoint]:
+    """Live SNMP fetch on an airMAX LR (LiteBeam 5AC/M5)."""
+    settings = get_settings()
+    community = device.snmp_community or settings.snmp_default_community
+    if not community:
+        raise HTTPException(status_code=503, detail="SNMP community non configurée pour ce LR.")
+    metrics = await snmp_service.collect_airmax_metrics(
+        host=device.ip_address,
+        community=community,
+        port=settings.snmp_port,
+        timeout=settings.snmp_timeout,
+    )
+    if not any(v is not None for v in metrics.values()):
+        raise HTTPException(status_code=502, detail="LR injoignable en SNMP.")
+    now = datetime.datetime.now(datetime.UTC)
+    return {
+        name: MetricPoint(
+            value=value,
+            unit=_AIRMAX_METRIC_UNITS.get(name, ""),
+            collected_at=now,
+        )
+        for name, value in metrics.items()
+        if value is not None
+    }
+
+
 @router.get("/{device_id}/metrics/live", response_model=dict[str, MetricPoint])
 async def get_device_metrics_live(
     device_id: int,
@@ -160,6 +207,11 @@ async def get_device_metrics_live(
         rocket: Rocket = device  # type: ignore[assignment]
         lr_mac: str | None = None
     elif device.device_type == "lr":
+        # airMAX LRs (LiteBeam) — fetched SNMP-direct because the parent
+        # Rocket airMAX exposes peer identification only, not per-peer radio
+        # metrics. LTU LRs continue through the parent-HTTP path below.
+        if device.model_variant in _AIRMAX_LR_VARIANTS:
+            return await _live_metrics_airmax_snmp(device)
         if device.rocket_id is None:
             raise HTTPException(status_code=409, detail="LR sans Rocket parent — pas de source live.")
         rocket = (

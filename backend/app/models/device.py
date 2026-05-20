@@ -140,6 +140,41 @@ class Lr(Device):
     # Link characteristic reported by the parent Rocket's API.
     distance_m: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # ── Client internet block ────────────────────────────────────────────────
+    # Cutting a client = SSH into this LR and shutting its LAN-facing port
+    # (`lan_interface`, default eth0). SSH itself reaches the LR through the
+    # radio link (ath0 → Rocket → supervisor), so the management plane survives
+    # the cut. `client_blocked` is the *intent*; `client_block_enforced_at` is
+    # the last time the shutdown was actually re-asserted on the device. They
+    # can diverge: intent recorded but device unreachable → the enforcement job
+    # keeps retrying. NEVER point lan_interface at ath0/br0 — that would lock
+    # the supervisor out of the LR. The earlier `devices.is_suspended` flag was
+    # a no-op (no enforcement); this pair is the real mechanism.
+    client_blocked: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false",
+    )
+    client_blocked_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    client_blocked_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    lan_interface: Mapped[str] = mapped_column(
+        String(20), default="eth0", nullable=False, server_default="eth0",
+    )
+    client_block_enforced_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    # How the block is enforced on the LR:
+    #   "full"          → shut `lan_interface` (total internet cut).
+    #   "whatsapp_only" → iptables allowlist (DNS + Meta/WhatsApp RETURN, rest
+    #                     DROP) so the client keeps WhatsApp while the rest of
+    #                     the internet is cut. Touches no interface, so it is
+    #                     immune to the lock-out trap that `full` must guard.
+    # Persisted so the enforcement job re-asserts the right mechanism after a
+    # reboot. Default "full" keeps pre-existing blocked LRs unchanged.
+    block_mode: Mapped[str] = mapped_column(
+        String(20), default="full", nullable=False, server_default="full",
+    )
+
     __mapper_args__ = {"polymorphic_identity": "lr", "polymorphic_load": "selectin"}
 
 

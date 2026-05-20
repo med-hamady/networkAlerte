@@ -164,6 +164,12 @@ class LrUpdate(_DeviceBaseUpdate):
     ssh_username: str | None = None
     ssh_password: str | None = None
     ssh_port: int | None = None
+    # Operator may correct the LAN port name per device (rare: almost always
+    # eth0). The block/unblock *flags* are intentionally NOT settable here —
+    # they go through the dedicated endpoints so the SSH shutdown actually
+    # runs. A PUT-set boolean with nothing enforcing it was the is_suspended
+    # mistake. ssh_service refuses radio/management interfaces regardless.
+    lan_interface: str | None = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -290,6 +296,12 @@ class LrRead(_DeviceBaseRead):
     ssh_host_fingerprint: str | None = None
     has_ssh_password: bool = False
     distance_m: float | None = None
+    client_blocked: bool = False
+    client_blocked_at: datetime.datetime | None = None
+    client_blocked_reason: str | None = None
+    lan_interface: str = "eth0"
+    client_block_enforced_at: datetime.datetime | None = None
+    block_mode: str = "full"
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs: Any) -> "LrRead":

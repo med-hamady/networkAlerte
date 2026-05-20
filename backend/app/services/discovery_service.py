@@ -41,7 +41,7 @@ from app.core.config import get_settings
 from app.models.alert import Alert
 from app.models.device import Device, Lr, Rocket
 from app.schemas.device import normalize_mac
-from app.services import incident_service, notification_service
+from app.services import client_block_service, incident_service, notification_service
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +301,11 @@ async def _reconcile_single_peer(
             ssh_username=settings.lr_default_ssh_username or None,
             ssh_password=settings.lr_default_ssh_password or None,
             ssh_port=settings.lr_default_ssh_port,
+            # Field-verified per-family default — LTU needs eth0.1, airMAX eth0.
+            # The dynamic guard would refuse a wrong eth0 on LTU, but the block
+            # would simply fail until the operator corrected it. Setting the
+            # right default at creation means the feature works out of the box.
+            lan_interface=client_block_service.default_lan_interface(model_variant),
         )
         session.add(device)
         await session.flush()  # populate device.id for the lifecycle incident

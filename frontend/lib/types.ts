@@ -44,7 +44,15 @@ export interface Lr extends DeviceBase {
   ssh_host_fingerprint: string | null
   has_ssh_password: boolean
   distance_m: number | null
+  client_blocked: boolean
+  client_blocked_at: string | null
+  client_blocked_reason: string | null
+  lan_interface: string
+  client_block_enforced_at: string | null
+  block_mode: BlockMode
 }
+
+export type BlockMode = 'full' | 'whatsapp_only'
 
 export interface UispPower extends DeviceBase {
   device_type: 'uisp_power'

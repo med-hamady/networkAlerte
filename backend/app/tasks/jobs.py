@@ -42,6 +42,7 @@ from app.models.device_metric import DeviceMetric
 from app.models.power_status_log import PowerStatusLog
 from app.services import (
     alert_engine,
+    client_block_service,
     digest_service,
     discovery_service,
     email_service,
@@ -1227,6 +1228,27 @@ async def warning_digest_job() -> None:
             raise
 
 
+async def client_block_enforcement_job() -> None:
+    """Re-assert every active client block so it survives an LR reboot.
+
+    A rebooted LR comes back with its LAN port UP and its iptables flushed —
+    the client would silently regain internet. This job re-applies the active
+    block (port shutdown or WhatsApp-only filter, per Lr.block_mode) on every
+    LR still marked client_blocked, and retries blocks that couldn't be applied
+    at click time. Idempotent: a no-op when nothing changed.
+    """
+    async with async_session_factory() as session:
+        try:
+            n = await client_block_service.enforce_blocked_clients(session)
+            if n:
+                logger.info("Client-block enforcement — %d LR(s) renforcé(s)", n)
+            else:
+                logger.debug("Client-block enforcement — rien à renforcer")
+        except Exception:
+            await session.rollback()
+            raise
+
+
 # ---------------------------------------------------------------------------
 # Security — abnormal API write volume detection
 # ---------------------------------------------------------------------------
@@ -1379,6 +1401,15 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         replace_existing=True,
         **safety,
     )
+    if settings.client_block_enforcement_enabled:
+        scheduler.add_job(
+            client_block_enforcement_job,
+            trigger="interval", seconds=settings.client_block_enforce_interval,
+            id="client_block_enforcement",
+            name="Client block enforcement (re-assert blocks after LR reboot)",
+            replace_existing=True,
+            **safety,
+        )
     if settings.audit_log_enabled:
         scheduler.add_job(
             security_anomaly_detection_job,

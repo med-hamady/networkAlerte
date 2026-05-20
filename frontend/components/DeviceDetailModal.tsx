@@ -2,9 +2,9 @@
 
 import React from 'react'
 import useSWR from 'swr'
-import { endpoints, fetcher, runDiag } from '@/lib/api'
+import { endpoints, fetcher, runDiag, setClientBlock } from '@/lib/api'
 import type { DiagResult } from '@/lib/api'
-import type { Device, DeviceMetrics } from '@/lib/types'
+import type { BlockMode, Device, DeviceMetrics, Lr } from '@/lib/types'
 import { deviceLabel, formatDate, timeAgo, formatBytes, formatUptime, parentRocketId } from '@/lib/types'
 import { useThresholds } from '@/lib/useThresholds'
 import DeviceImage from './DeviceImage'
@@ -367,6 +367,9 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
           <p className="text-blue-300 text-sm italic">Métriques UISP Power en attente de collecte…</p>
         )}
 
+        {/* Accès client (LR uniquement) */}
+        {device.device_type === 'lr' && <ClientAccessSection lr={device} />}
+
         {/* Diagnostics */}
         {device.device_type === 'lr' && (
           <Section title="Diagnostics">
@@ -550,6 +553,210 @@ function RateIdxValue({ idx }: { idx: number }) {
   // Modulation multiplier ("Nx", 1..12) — higher is better. No "expected"
   // reference is collected, so left neutral to avoid implying a false threshold.
   return <span className="font-semibold text-slate-700">{idx.toFixed(0)}×</span>
+}
+
+
+/* ─── Client internet access (block / unblock) ─── */
+
+function ClientAccessSection({ lr }: { lr: Lr }) {
+  const [blocked, setBlocked]       = React.useState(lr.client_blocked)
+  const [enforcedAt, setEnforcedAt] = React.useState(lr.client_block_enforced_at)
+  const [reason, setReason]         = React.useState('')
+  const [mode, setMode]             = React.useState<BlockMode>(lr.block_mode ?? 'full')
+  const [confirming, setConfirming] = React.useState(false)
+  const [busy, setBusy]             = React.useState(false)
+  const [feedback, setFeedback]     = React.useState<{ ok: boolean; message: string } | null>(null)
+
+  // Re-sync if the operator navigates between devices without unmounting.
+  React.useEffect(() => {
+    setBlocked(lr.client_blocked)
+    setEnforcedAt(lr.client_block_enforced_at)
+    setReason('')
+    setMode(lr.block_mode ?? 'full')
+    setConfirming(false)
+    setFeedback(null)
+  }, [lr.id, lr.client_blocked, lr.client_block_enforced_at, lr.block_mode])
+
+  const act = async (block: boolean) => {
+    setBusy(true)
+    setFeedback(null)
+    try {
+      const res = await setClientBlock(
+        lr.id, block, block ? reason : undefined, block ? mode : undefined,
+      )
+      setBlocked(res.client_blocked)
+      setEnforcedAt(res.client_block_enforced_at)
+      setFeedback({ ok: res.ok, message: res.message })
+      setConfirming(false)
+      if (block) setReason('')
+    } catch (e) {
+      setFeedback({ ok: false, message: e instanceof Error ? e.message : 'Erreur réseau' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Blocked intent recorded but the SSH cut not yet applied on the device.
+  const pendingEnforcement = blocked && enforcedAt == null
+
+  return (
+    <Section title="Accès internet du client">
+      <div className="flex items-center justify-between gap-4 text-sm">
+        <span className="text-blue-400">État</span>
+        {blocked ? (
+          <span className="font-semibold text-red-500">● Accès coupé</span>
+        ) : (
+          <span className="font-semibold text-green-600">● Accès actif</span>
+        )}
+      </div>
+
+      {blocked && (
+        <>
+          <MetricRow
+            label="Mode"
+            value={
+              lr.block_mode === 'whatsapp_only' ? (
+                <span className="text-amber-600 font-semibold">WhatsApp autorisé</span>
+              ) : (
+                <span className="text-red-500 font-semibold">Coupure totale</span>
+              )
+            }
+          />
+          {lr.client_blocked_reason && (
+            <MetricRow label="Motif" value={lr.client_blocked_reason} />
+          )}
+          <MetricRow
+            label="Coupé depuis"
+            value={lr.client_blocked_at ? timeAgo(lr.client_blocked_at) : "à l'instant"}
+          />
+          <MetricRow
+            label="Blocage appliqué"
+            value={
+              pendingEnforcement ? (
+                <span className="text-yellow-600 font-semibold">en attente (LR injoignable)</span>
+              ) : (
+                <span className="text-slate-600">{timeAgo(enforcedAt)}</span>
+              )
+            }
+          />
+        </>
+      )}
+
+      <p className="text-[11px] text-blue-400 leading-relaxed">
+        <strong>Coupure totale</strong> : ferme le port LAN
+        (<code className="bg-blue-50 px-1 rounded">{lr.lan_interface}</code>) du LR via SSH.
+        <strong> WhatsApp autorisé</strong> : filtre iptables laissant DNS + WhatsApp
+        (le client garde WhatsApp pour le support / paiement ; Facebook &amp; Instagram
+        passent aussi, même infra Meta). Le LR reste supervisé (SSH via le lien radio)
+        et le blocage est ré-appliqué automatiquement après un redémarrage du LR.
+      </p>
+
+      {feedback && (
+        <div className={`rounded-lg px-3 py-2 text-xs ${
+          feedback.ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'
+        }`}>
+          {feedback.message}
+        </div>
+      )}
+
+      {!confirming && (
+        <button
+          onClick={() => { setFeedback(null); setConfirming(true) }}
+          disabled={busy}
+          className={`w-full mt-1 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-40 ${
+            blocked
+              ? 'bg-green-600 text-white hover:bg-green-700'
+              : 'bg-red-600 text-white hover:bg-red-700'
+          }`}
+        >
+          {blocked ? "Rétablir l'accès" : "Couper l'accès internet"}
+        </button>
+      )}
+
+      {confirming && !blocked && (
+        <div className="space-y-2 mt-1">
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setMode('full')}
+              className={`py-2 px-2 rounded-lg text-xs font-semibold border transition-colors ${
+                mode === 'full'
+                  ? 'bg-red-600 text-white border-red-600'
+                  : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50'
+              }`}
+            >
+              Coupure totale
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode('whatsapp_only')}
+              className={`py-2 px-2 rounded-lg text-xs font-semibold border transition-colors ${
+                mode === 'whatsapp_only'
+                  ? 'bg-amber-500 text-white border-amber-500'
+                  : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50'
+              }`}
+            >
+              WhatsApp autorisé
+            </button>
+          </div>
+          <textarea
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            placeholder="Motif (ex : impayé facture #1234) — optionnel"
+            rows={2}
+            className="w-full text-sm rounded-lg border border-blue-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-red-200"
+          />
+          <p className="text-[11px] text-red-500">
+            {mode === 'whatsapp_only' ? (
+              <>Le client <strong>{lr.name}</strong> perdra internet sauf WhatsApp (DNS + Meta).</>
+            ) : (
+              <>Le client <strong>{lr.name}</strong> perdra immédiatement tout internet.</>
+            )}
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => act(true)}
+              disabled={busy}
+              className="flex-1 py-2 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700 disabled:opacity-40"
+            >
+              {busy ? 'Coupure…' : 'Confirmer la coupure'}
+            </button>
+            <button
+              onClick={() => { setConfirming(false); setReason('') }}
+              disabled={busy}
+              className="px-4 py-2 rounded-lg bg-blue-50 text-blue-600 text-sm font-semibold hover:bg-blue-100 disabled:opacity-40"
+            >
+              Annuler
+            </button>
+          </div>
+        </div>
+      )}
+
+      {confirming && blocked && (
+        <div className="space-y-2 mt-1">
+          <p className="text-[11px] text-green-700">
+            L'accès internet de <strong>{lr.name}</strong> sera rétabli.
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => act(false)}
+              disabled={busy}
+              className="flex-1 py-2 rounded-lg bg-green-600 text-white text-sm font-semibold hover:bg-green-700 disabled:opacity-40"
+            >
+              {busy ? 'Rétablissement…' : 'Confirmer le rétablissement'}
+            </button>
+            <button
+              onClick={() => setConfirming(false)}
+              disabled={busy}
+              className="px-4 py-2 rounded-lg bg-blue-50 text-blue-600 text-sm font-semibold hover:bg-blue-100 disabled:opacity-40"
+            >
+              Annuler
+            </button>
+          </div>
+        </div>
+      )}
+    </Section>
+  )
 }
 
 

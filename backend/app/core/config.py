@@ -114,6 +114,64 @@ class Settings(BaseSettings):
     # Transit probe — disable entirely if LTU LR is not part of the topology
     transit_probe_enabled: bool = True
 
+    # Client internet block — the enforcement job re-asserts the LAN-port
+    # shutdown on every LR marked client_blocked, so a block survives an LR
+    # reboot (the port comes back UP on boot) and retries blocks that could
+    # not be applied at click time. The block *state* itself lives per-LR in
+    # the DB (lrs.client_blocked) — only the loop's on/off + cadence is env.
+    client_block_enforcement_enabled: bool = True
+    client_block_enforce_interval: int = 120
+
+    # Default block flavour applied when the operator doesn't pick one:
+    #   "full"          → shut the LR LAN port (total cut).
+    #   "whatsapp_only" → iptables allowlist (DNS + Meta ranges) so the client
+    #                     keeps WhatsApp while the rest of internet is cut.
+    client_block_default_mode: str = "full"
+
+    # IPv4 ranges left reachable in whatsapp_only mode. WhatsApp has no
+    # isolable CIDR: its servers (messages, media, call relays) live in Meta's
+    # AS32934, shared with Facebook/Instagram — allowing these ranges makes
+    # WhatsApp fully work but also lets FB/IG through (documented, accepted:
+    # IP-level filtering on airOS/LTU cannot separate them). DNS (UDP/TCP 53)
+    # is always allowed in addition to these so names resolve. Comma-separated;
+    # tune if Meta publishes new prefixes.
+    #
+    # 57.144.0.0/15 and 163.70.128.0/17 were added 2026-05-19 after a field
+    # test showed WhatsApp messages dropping: the production MikroTik
+    # address-list of "Whatsapp" peers contained dozens of live IPs in
+    # 57.144.x / 57.145.x and 163.70.128.x / 163.70.151.x that the previous
+    # CIDR list missed entirely. These are Meta's more recent IPv4 blocks.
+    whatsapp_allow_cidrs: str = (
+        "31.13.24.0/21,31.13.64.0/18,31.13.96.0/19,45.64.40.0/22,"
+        "57.144.0.0/15,"
+        "66.220.144.0/20,69.63.176.0/20,69.171.224.0/19,74.119.76.0/22,"
+        "102.132.96.0/20,103.4.96.0/22,129.134.0.0/16,157.240.0.0/16,"
+        "163.70.128.0/17,"
+        "173.252.64.0/18,179.60.192.0/22,185.60.216.0/22,204.15.20.0/22"
+    )
+
+    @property
+    def whatsapp_allow_cidr_list(self) -> list[str]:
+        """Parse whatsapp_allow_cidrs into a clean list of CIDR strings."""
+        return [c.strip() for c in self.whatsapp_allow_cidrs.split(",") if c.strip()]
+
+    # Domains resolved to 0.0.0.0 by the LR's dnsmasq in whatsapp_only mode.
+    # Field-verified necessity (2026-05-19): the Meta IP allowlist alone lets
+    # Facebook/Instagram through because they share Meta's IP space with
+    # WhatsApp. Returning 0.0.0.0 at DNS time makes the client's TCP connect
+    # to 0.0.0.0 fail immediately — FB/IG cannot establish a session even
+    # though their IPs would have passed the iptables allowlist. Extend if
+    # Meta ships new top-level domains for FB/IG/Threads etc.
+    blocked_domains_whatsapp_only: str = (
+        "facebook.com,fbcdn.net,fbsbx.com,fb.com,fb.gg,"
+        "messenger.com,instagram.com,cdninstagram.com,threads.net"
+    )
+
+    @property
+    def blocked_domains_whatsapp_only_list(self) -> list[str]:
+        """Parse blocked_domains_whatsapp_only into a clean list of domains."""
+        return [d.strip() for d in self.blocked_domains_whatsapp_only.split(",") if d.strip()]
+
     # Switch port monitoring is configured per-UispSwitch in the database
     # (max_ports / rocket_port_index / port_min_speed_mbps). No global defaults.
 

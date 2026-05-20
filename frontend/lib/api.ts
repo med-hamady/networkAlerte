@@ -3,6 +3,7 @@ import type {
   AlertRecord,
   BadInstallationRow,
   BadInstallationsResponse,
+  BlockMode,
   Device,
   DeviceFormData,
   DowntimeLogResponse,
@@ -43,6 +44,8 @@ export const endpoints = {
   pingFromLr:           (id: number) => `${API_BASE}/devices/${id}/ping-from-lr`,
   pingTarget:           (lrId: number) => `${API_BASE}/devices/${lrId}/ping-target`,
   discoverModems:       (lrId: number) => `${API_BASE}/devices/${lrId}/discover-modems`,
+  blockClient:          (lrId: number) => `${API_BASE}/devices/${lrId}/block-client`,
+  unblockClient:        (lrId: number) => `${API_BASE}/devices/${lrId}/unblock-client`,
   systemInfo:           `${API_BASE}/system/info`,
   alertPolicies:        `${API_BASE}/alert-policies`,
   alertPolicy:          (alertType: string) => `${API_BASE}/alert-policies/${alertType}`,
@@ -112,6 +115,41 @@ export async function pingTargetFromLr(lrId: number, target: string): Promise<Di
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json() as Promise<DiagResult>
+}
+
+export interface ClientBlockResult {
+  ok: boolean
+  message: string
+  client_blocked: boolean
+  block_mode: BlockMode
+  client_block_enforced_at: string | null
+}
+
+// Block / unblock a client's internet on its LR over SSH. `mode` picks the
+// flavour: 'full' (shut LAN port — total cut) or 'whatsapp_only' (iptables
+// allowlist leaving DNS + WhatsApp reachable). `block=false` ignores
+// reason/mode and fully restores access.
+export async function setClientBlock(
+  lrId: number,
+  block: boolean,
+  reason?: string,
+  mode?: BlockMode,
+): Promise<ClientBlockResult> {
+  const res = await fetch(
+    block ? endpoints.blockClient(lrId) : endpoints.unblockClient(lrId),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: block
+        ? JSON.stringify({ reason: reason ?? null, mode: mode ?? null })
+        : undefined,
+    },
+  )
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
+  }
+  return res.json() as Promise<ClientBlockResult>
 }
 
 async function jsonOrThrow<T>(res: Response): Promise<T> {

@@ -1,5 +1,6 @@
 import datetime
 import ipaddress
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -20,7 +21,13 @@ from app.schemas.device import (
     UispSwitchRead,
     normalize_mac,
 )
-from app.services import device_service, lan_discovery, ltu_api_service, ssh_service
+from app.services import (
+    client_block_service,
+    device_service,
+    lan_discovery,
+    ltu_api_service,
+    ssh_service,
+)
 
 router = APIRouter()
 
@@ -410,6 +417,73 @@ async def discover_modems(
         lr_id=device.id,
         candidates=[LanNeighborOut(**n.__dict__) for n in neighbours],
     )
+
+
+class BlockClientRequest(BaseModel):
+    reason: str | None = None
+    # "full" = total cut (shut LAN port). "whatsapp_only" = iptables allowlist
+    # leaving DNS + WhatsApp/Meta reachable. Omitted → server default.
+    mode: Literal["full", "whatsapp_only"] | None = None
+
+
+class ClientBlockResult(BaseModel):
+    ok: bool
+    message: str
+    client_blocked: bool
+    block_mode: str
+    client_block_enforced_at: datetime.datetime | None
+
+
+def _block_result(lr: Lr, ok: bool, message: str) -> ClientBlockResult:
+    return ClientBlockResult(
+        ok=ok,
+        message=message,
+        client_blocked=lr.client_blocked,
+        block_mode=lr.block_mode,
+        client_block_enforced_at=lr.client_block_enforced_at,
+    )
+
+
+@router.post("/{device_id}/block-client", response_model=ClientBlockResult)
+async def block_client(
+    device_id: int,
+    body: BlockClientRequest,
+    db: AsyncSession = Depends(get_db),
+) -> ClientBlockResult:
+    """Cut a client's internet by shutting its LR's LAN port over SSH.
+
+    Two modes: `full` (shut the LAN port — total cut) or `whatsapp_only`
+    (iptables allowlist leaving DNS + WhatsApp reachable). SSH reaches the LR
+    through the radio link, so the LR stays manageable. The block is persisted
+    and re-asserted by the enforcement job — it survives an LR reboot. Only
+    valid on LR devices.
+    """
+    device = await device_service.get_device(db, device_id)
+    if not isinstance(device, Lr):
+        raise HTTPException(
+            status_code=400,
+            detail="Le blocage client n'est disponible que sur les LR.",
+        )
+    ok, message = await client_block_service.block_client(
+        db, device, body.reason, body.mode
+    )
+    return _block_result(device, ok, message)
+
+
+@router.post("/{device_id}/unblock-client", response_model=ClientBlockResult)
+async def unblock_client(
+    device_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> ClientBlockResult:
+    """Restore a client's internet by bringing its LR's LAN port back up."""
+    device = await device_service.get_device(db, device_id)
+    if not isinstance(device, Lr):
+        raise HTTPException(
+            status_code=400,
+            detail="Le déblocage client n'est disponible que sur les LR.",
+        )
+    ok, message = await client_block_service.unblock_client(db, device)
+    return _block_result(device, ok, message)
 
 
 @router.post("/{device_id}/check-ping", response_model=DiagResult)

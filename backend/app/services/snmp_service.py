@@ -598,6 +598,27 @@ async def discover_airmax_peers(
     return peers
 
 
+async def get_sysname(
+    host: str,
+    community: str = "public",
+    port: int = 161,
+    timeout: int = 2,
+    mp_model: int = 0,
+) -> str | None:
+    """Fetch sysName.0 (RFC1213) from a device — the friendly name set in airOS.
+
+    Default mp_model=0 (SNMPv1) targets airOS XC v8 firmware, which doesn't
+    answer SNMPv2c. Returns None if the device is unreachable, doesn't expose
+    sysName, or returns a blank value.
+    """
+    engine = _get_engine()
+    raw = await _snmp_get(engine, host, community, "1.3.6.1.2.1.1.5.0", port, timeout, mp_model)
+    if raw is None:
+        return None
+    name = str(raw).strip()
+    return name or None
+
+
 async def collect_standard_metrics(
     host: str,
     community: str = "public",

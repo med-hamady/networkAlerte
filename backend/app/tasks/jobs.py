@@ -12,6 +12,7 @@ Scheduled supervision jobs.
 import asyncio
 import datetime
 import logging
+import re
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import func, select
@@ -229,6 +230,14 @@ AIRMAX_RULE_CATEGORIES = {"airmax_rocket"}
 # per-peer signal/CCQ/rates that LTU Rockets fan out via HTTP — so each
 # LiteBeam must be SNMP'd on its own management IP.
 AIRMAX_LR_VARIANTS = {"litebeam_5ac", "litebeam_m5"}
+
+# Matches the auto-generated LR names from discovery_service._generate_device_name
+# ("LR B44279" / "LR 10.135.7.237" / "LR auto #3"). Used to decide whether the
+# SNMP sysName from a LiteBeam can safely overwrite the device's name — a
+# manually edited name (anything not matching) is always preserved.
+_AUTO_LR_NAME = re.compile(
+    r"^LR ([0-9A-F]{6}|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|auto #\d+)$"
+)
 
 # Switches → standard SNMP (uptime only).
 SWITCH_RULE_CATEGORIES = {"uisp_switch"}
@@ -706,6 +715,28 @@ async def snmp_poll_job() -> None:
 
             # Delegate anomaly detection to alert engine
             await alert_engine.evaluate_device_metrics(session, dev, metrics, settings)
+
+            # airMAX LRs — pull sysName so the UI shows the friendly device
+            # name configured in airOS instead of the auto-generated MAC-suffix
+            # name (e.g. "LR B44279" → "44910449- Habib Khoumein"). Only
+            # overwrites `name` when it still matches the auto-generated
+            # pattern, so a manually edited name is always preserved.
+            if is_airmax_lr:
+                sysname = await snmp_service.get_sysname(
+                    host=device.ip_address,
+                    community=community,
+                    port=settings.snmp_port,
+                    timeout=settings.snmp_timeout,
+                )
+                if sysname:
+                    if dev.hostname != sysname:
+                        dev.hostname = sysname
+                    if _AUTO_LR_NAME.match(dev.name) and dev.name != sysname:
+                        logger.info(
+                            "airMAX LR auto-rename — '%s' (%s) → '%s'",
+                            dev.name, device.ip_address, sysname,
+                        )
+                        dev.name = sysname
 
             # Auto-discovery for airMAX Rockets — walks the UBNT station table
             # via SNMP and feeds the same reconcile_peers() pipeline as LTU API.

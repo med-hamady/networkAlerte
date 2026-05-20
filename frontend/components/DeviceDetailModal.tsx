@@ -598,6 +598,9 @@ function ClientAccessSection({ lr }: { lr: Lr }) {
 
   // Blocked intent recorded but the SSH cut not yet applied on the device.
   const pendingEnforcement = blocked && enforcedAt == null
+  // Bridge mode = misconfig — block feature can't work on this LR until the
+  // operator switches it back to router mode in airOS.
+  const isBridge = lr.topology_mode === 'bridge'
 
   return (
     <Section title="Accès internet du client">
@@ -609,6 +612,19 @@ function ClientAccessSection({ lr }: { lr: Lr }) {
           <span className="font-semibold text-green-600">● Accès actif</span>
         )}
       </div>
+
+      {isBridge && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs text-amber-900 space-y-1">
+          <p className="font-semibold">⚠️ LR en mode bridge — blocage indisponible</p>
+          <p className="leading-relaxed">
+            Ce LR est en mode bridge (L2-transparent). Le trafic du client ne traverse ni iptables
+            ni le dnsmasq du LR, donc le blocage ne pourrait rien couper. Pour utiliser cette
+            fonctionnalité, reconfigure le LR en <strong>mode routeur</strong> via son interface
+            web (airOS), puis attends la prochaine détection automatique (~1 h) ou relance le job
+            <code className="bg-amber-100 px-1 rounded mx-1">lr_topology_check</code>.
+          </p>
+        </div>
+      )}
 
       {blocked && (
         <>
@@ -662,8 +678,9 @@ function ClientAccessSection({ lr }: { lr: Lr }) {
       {!confirming && (
         <button
           onClick={() => { setFeedback(null); setConfirming(true) }}
-          disabled={busy}
-          className={`w-full mt-1 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-40 ${
+          disabled={busy || (isBridge && !blocked)}
+          title={isBridge && !blocked ? 'Indisponible — LR en mode bridge' : undefined}
+          className={`w-full mt-1 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
             blocked
               ? 'bg-green-600 text-white hover:bg-green-700'
               : 'bg-red-600 text-white hover:bg-red-700'

@@ -358,6 +358,118 @@ _DNSMASQ_CONF = "/etc/dnsmasq.conf"
 _DNS_BLOCK_BEGIN = "CLIENTBLOCK_BEGIN"
 _DNS_BLOCK_END = "CLIENTBLOCK_END"
 
+# Interface name prefixes used by the topology heuristic. A bridge whose
+# members include BOTH a radio iface and a wired iface = bridge mode (the LR
+# is L2-transparent for the customer LAN). A bridge with only one of these,
+# or no bridge that mixes them, means the LR is in router mode and the
+# client-block feature can work.
+_RADIO_PREFIXES = ("ath", "wifi", "wlan")
+_WIRED_PREFIXES = ("eth",)
+
+
+def _detect_lr_topology_sync(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    expected_fingerprint: str | None,
+) -> tuple[str, str, str | None]:
+    """Detect whether the LR is in 'router' or 'bridge' mode.
+
+    Returns (mode, message, observed_fingerprint) where mode is one of:
+      - "router"  : no bridge mixes radio (ath*/wifi*/wlan*) with wired (eth*).
+                    Client traffic crosses iptables FORWARD → block feature works.
+      - "bridge"  : at least one bridge contains both a radio iface and a wired
+                    iface → LR is L2-transparent → block feature is bypassed.
+      - "unknown" : SSH or parse failed; caller keeps the previous value.
+
+    Heuristic basis (field-verified 2026-05-19 on two devices):
+      - airMAX LiteBeam, router mode : br0 = {ath0} only. eth0 routed (172.16.0.1/24).
+      - LTU LR, router mode          : br0 = {eth0.2}, br1 = {eth0.1}. ath0 standalone.
+      - Bridge mode                  : br0 (or any br*) contains {ath0, eth0} together.
+    """
+    try:
+        transport, observed = _open_transport(
+            host, port, username, password, expected_fingerprint
+        )
+    except _FingerprintMismatchError as exc:
+        logger.error("topology host-key mismatch — %s — %s", host, exc)
+        return "unknown", f"SSH host-key mismatch: {exc}", None
+    except Exception as exc:
+        logger.debug("topology SSH connect failed — %s — %s", host, exc)
+        return "unknown", f"SSH connect failed: {exc}", None
+
+    try:
+        # Enumerate every bridge and list its members via sysfs (works on
+        # busybox airOS where brctl output is brittle).
+        script = (
+            'for br in /sys/class/net/br*; do '
+            '[ -d "$br/brif" ] || continue; '
+            'echo "BR=$(basename "$br")"; '
+            'ls "$br/brif" 2>/dev/null; '
+            'done'
+        )
+        code, out = _exec_capture(transport, script, timeout=10)
+        if code != 0:
+            return (
+                "unknown",
+                f"Topology probe failed (exit {code}) — check SSH user is root.",
+                observed,
+            )
+        if not out:
+            # No /sys/class/net/br* directories at all → no bridges → router-ish,
+            # but unusual on airOS where br0 always exists. Treat as router.
+            return "router", "Aucun bridge détecté — mode routeur", observed
+
+        bridges: dict[str, set[str]] = {}
+        current_br: str | None = None
+        for line in out.splitlines():
+            line = line.strip()
+            if line.startswith("BR="):
+                current_br = line[3:]
+                bridges[current_br] = set()
+            elif current_br and line:
+                bridges[current_br].add(line)
+
+        mixed: list[str] = []
+        for br_name, members in bridges.items():
+            has_radio = any(
+                m.startswith(_RADIO_PREFIXES) for m in members
+            )
+            has_wired = any(
+                m.startswith(_WIRED_PREFIXES) for m in members
+            )
+            if has_radio and has_wired:
+                mixed.append(f"{br_name}={sorted(members)}")
+
+        if mixed:
+            return (
+                "bridge",
+                f"Mode bridge détecté : {'; '.join(mixed)} (radio + wired ensemble)",
+                observed,
+            )
+        # Build a concise breakdown for diagnostics
+        summary = "; ".join(
+            f"{br}={sorted(m)}" for br, m in sorted(bridges.items())
+        ) or "(aucun bridge)"
+        return "router", f"Mode routeur — {summary}", observed
+    finally:
+        transport.close()
+
+
+async def detect_lr_topology(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    expected_fingerprint: str | None = None,
+) -> tuple[str, str, str | None]:
+    """SSH into the LR and detect router vs bridge mode — non-blocking."""
+    return await asyncio.to_thread(
+        _detect_lr_topology_sync,
+        host, port, username, password, expected_fingerprint,
+    )
+
 
 def _detect_client_context(
     transport: paramiko.Transport,

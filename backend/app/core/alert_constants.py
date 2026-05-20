@@ -102,6 +102,12 @@ AT_LR_IP_CHANGED   = "lr_ip_changed"   # MAC connue mais IP différente
 AT_LR_REASSIGNED   = "lr_reassigned"   # LR vu sur un autre Rocket que son parent actuel
 AT_LR_DISAPPEARED  = "lr_disappeared"  # LR auto-découvert plus rapporté depuis N min
 
+# Configuration misconfig — LR en mode bridge alors qu'on attend du routeur.
+# En bridge, le client-block (full / whatsapp_only) ne marche pas (le trafic
+# client ne passe ni par iptables FORWARD ni par le dnsmasq local du LR).
+# Levé par lr_topology_check_job, résolu automatiquement si le LR repasse en routeur.
+AT_LR_BRIDGE_MODE_MISCONFIG = "lr_bridge_mode_misconfig"
+
 # Ping quality — instabilité ponctuelle (pas d'incident, info email)
 # et latence élevée (incident warning/critical, email forcé)
 AT_PING_INSTABILITY = "ping_instability"
@@ -125,6 +131,7 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_CCQ_UL_LOW, AT_CINR_UL_LOW, AT_CAPACITY_UL_LOW,
     AT_AIRMAX_DOWN,
     AT_LR_DISCOVERED, AT_LR_IP_CHANGED, AT_LR_REASSIGNED, AT_LR_DISAPPEARED,
+    AT_LR_BRIDGE_MODE_MISCONFIG,
     AT_PING_INSTABILITY, AT_PING_LATENCY_HIGH,
     AT_SECURITY_ANOMALY,
 })

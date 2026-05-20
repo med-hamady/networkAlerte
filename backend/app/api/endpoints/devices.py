@@ -516,6 +516,21 @@ async def block_client(
             status_code=400,
             detail="Le blocage client n'est disponible que sur les LR.",
         )
+    if device.topology_mode == "bridge":
+        # Bridge mode → iptables FORWARD and the local dnsmasq are bypassed.
+        # Any block we apply would silently fail to actually cut the client.
+        # Refuse with a clear message; the misconfig is also tracked as an
+        # incident (AT_LR_BRIDGE_MODE_MISCONFIG) so the operator is notified.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Le LR '{device.name}' est en mode bridge. Le blocage client "
+                f"ne peut pas fonctionner dans cette configuration (le LR est "
+                f"L2-transparent, iptables et dnsmasq sont contournés). "
+                f"Reconfigurer le LR en mode routeur via son interface web "
+                f"(airOS), puis réessayer."
+            ),
+        )
     ok, message = await client_block_service.block_client(
         db, device, body.reason, body.mode
     )

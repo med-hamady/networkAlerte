@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 
 from app.core.alert_constants import (
     AT_AIRMAX_DOWN,
+    AT_LR_BRIDGE_MODE_MISCONFIG,
     AT_LR_DISAPPEARED,
     AT_LR_DOWN,
     AT_LR_NO_TRANSIT,
@@ -1247,6 +1248,95 @@ async def warning_digest_job() -> None:
             raise
 
 
+async def lr_topology_check_job() -> None:
+    """Detect router vs bridge mode on every SSH-reachable LR.
+
+    The client-block feature (full + whatsapp_only) only works on a router-
+    mode LR. In bridge mode the LR is L2-transparent: iptables FORWARD and
+    the local dnsmasq are not in the client's path, so any block silently
+    fails to actually cut anything. We open a warning incident
+    (AT_LR_BRIDGE_MODE_MISCONFIG) so the operator reconfigures the LR back
+    to router mode, and surface a badge in the UI via Lr.topology_mode.
+
+    Runs hourly — bridge/router is a config decision that doesn't change at
+    high frequency, no need to thrash the SSH connection.
+    """
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Lr).where(
+                Lr.ssh_username.is_not(None),
+                Lr.ssh_password.is_not(None),
+            )
+        )
+        lrs = list(result.scalars().all())
+
+    if not lrs:
+        logger.debug("LR topology check: no LR with SSH credentials")
+        return
+
+    logger.info("LR topology check — probing %d LR(s)", len(lrs))
+
+    async with async_session_factory() as session:
+        for lr in lrs:
+            dev = await session.get(Lr, lr.id)
+            if dev is None:
+                continue
+
+            mode, msg, observed_fp = await ssh_service.detect_lr_topology(
+                host=dev.ip_address,
+                port=dev.ssh_port or 22,
+                username=dev.ssh_username,
+                password=dev.ssh_password,
+                expected_fingerprint=dev.ssh_host_fingerprint,
+            )
+            if observed_fp and dev.ssh_host_fingerprint != observed_fp:
+                dev.ssh_host_fingerprint = observed_fp
+
+            previous = dev.topology_mode
+            # Only persist confirmed states — "unknown" (probe failed) must
+            # not erase a previously-known router/bridge classification.
+            if mode in ("router", "bridge"):
+                dev.topology_mode = mode
+
+            if mode == "bridge":
+                title = f"Mauvaise config : LR '{dev.name}' en mode bridge"
+                description = (
+                    f"Le LR {dev.name} ({dev.ip_address}) est détecté en mode "
+                    f"bridge ({msg}). Le blocage client (Coupure totale / "
+                    f"WhatsApp autorisé) ne peut PAS fonctionner sur ce LR "
+                    f"tant qu'il reste en bridge — le trafic du client ne "
+                    f"traverse ni iptables FORWARD ni le dnsmasq local. "
+                    f"Reconfigurer le LR en mode routeur via son interface "
+                    f"web (airOS) pour que la feature soit opérationnelle."
+                )
+                await _open_and_notify(
+                    session, dev, title, "warning", description,
+                    alert_type=AT_LR_BRIDGE_MODE_MISCONFIG,
+                )
+                logger.warning(
+                    "LR topology — '%s' (id=%d) en mode bridge : %s",
+                    dev.name, dev.id, msg,
+                )
+            elif mode == "router" and previous == "bridge":
+                # Topology fixed by the operator → resolve the incident
+                await _resolve_and_notify(
+                    session, dev,
+                    title=f"RECOVERY : LR '{dev.name}' repassé en mode routeur",
+                    alert_type=AT_LR_BRIDGE_MODE_MISCONFIG,
+                )
+                logger.info(
+                    "LR topology — '%s' (id=%d) repassé en mode routeur",
+                    dev.name, dev.id,
+                )
+            elif mode == "unknown":
+                logger.debug(
+                    "LR topology — '%s' (id=%d) probe failed : %s",
+                    dev.name, dev.id, msg,
+                )
+
+            await session.commit()
+
+
 async def client_block_enforcement_job() -> None:
     """Re-assert every active client block so it survives an LR reboot.
 
@@ -1417,6 +1507,14 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         stale_lr_detection_job,
         trigger="interval", minutes=settings.stale_lr_check_interval_minutes,
         id="stale_lr_detection", name="Stale LR detection",
+        replace_existing=True,
+        **safety,
+    )
+    scheduler.add_job(
+        lr_topology_check_job,
+        trigger="interval", minutes=settings.lr_topology_check_interval_minutes,
+        id="lr_topology_check",
+        name="LR topology check (router vs bridge misconfig)",
         replace_existing=True,
         **safety,
     )

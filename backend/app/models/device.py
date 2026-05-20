@@ -174,6 +174,15 @@ class Lr(Device):
     block_mode: Mapped[str] = mapped_column(
         String(20), default="full", nullable=False, server_default="full",
     )
+    # Router vs bridge mode — detected by lr_topology_check_job over SSH.
+    # The client-block feature only works in router mode (the LR must be in
+    # the IP path of the client). In bridge mode (L2-transparent), iptables
+    # FORWARD and the local dnsmasq are bypassed; the block endpoint refuses
+    # with a clear message and the UI surfaces a misconfig badge.
+    # Values: "router" | "bridge" | "unknown" (detection not yet run).
+    topology_mode: Mapped[str] = mapped_column(
+        String(10), default="unknown", nullable=False, server_default="unknown",
+    )
 
     __mapper_args__ = {"polymorphic_identity": "lr", "polymorphic_load": "selectin"}
 

@@ -251,6 +251,14 @@ class Settings(BaseSettings):
     stale_lr_check_interval_minutes: int = 5
     stale_lr_minutes: int = 10
 
+    # LR topology check — router vs bridge detection. The client-block feature
+    # only works on router-mode LRs (in bridge the LR is L2-transparent and
+    # iptables/dnsmasq are bypassed). The job opens a warning incident
+    # (AT_LR_BRIDGE_MODE_MISCONFIG) on bridge-mode LRs so the operator
+    # reconfigures them. Bridge/router is a stable config decision so a
+    # 60-min cadence is plenty and keeps SSH load low.
+    lr_topology_check_interval_minutes: int = 60
+
     @computed_field(repr=False)
     @property
     def database_url(self) -> str:

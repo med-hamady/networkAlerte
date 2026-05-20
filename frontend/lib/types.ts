@@ -50,9 +50,11 @@ export interface Lr extends DeviceBase {
   lan_interface: string
   client_block_enforced_at: string | null
   block_mode: BlockMode
+  topology_mode: TopologyMode
 }
 
 export type BlockMode = 'full' | 'whatsapp_only'
+export type TopologyMode = 'router' | 'bridge' | 'unknown'
 
 export interface UispPower extends DeviceBase {
   device_type: 'uisp_power'

@@ -302,6 +302,7 @@ class LrRead(_DeviceBaseRead):
     lan_interface: str = "eth0"
     client_block_enforced_at: datetime.datetime | None = None
     block_mode: str = "full"
+    topology_mode: str = "unknown"  # "router" | "bridge" | "unknown"
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs: Any) -> "LrRead":

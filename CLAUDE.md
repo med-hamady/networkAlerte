@@ -213,6 +213,7 @@ backend/app/
 | `lr_transit_probe_job` | 60s | SSH → LTU LR → ping internet (1.1.1.1, 8.8.8.8) — détecte coupure transit |
 | `warning_digest_job` | 15 min | Regroupe les warnings en un seul message pour éviter la fatigue d'alerte |
 | `client_block_enforcement_job` | 120s | Ré-applique le blocage actif (port LAN ou filtre WhatsApp, selon `block_mode`) sur chaque LR `client_blocked` (survit au reboot du LR) |
+| `lr_topology_check_job` | 60 min | Détecte mode routeur vs bridge sur chaque LR (via SSH) ; ouvre un incident `lr_bridge_mode_misconfig` (warning) si bridge → le blocage n'est pas opérationnel sur ce LR tant qu'il n'est pas repassé en routeur |
 
 ### Device types reconnus
 | `device_type` | Polling |
@@ -222,7 +223,7 @@ backend/app/
 | `uisp_switch` | Ping + SNMP standard (ports, vitesse, erreurs) |
 | `uisp_power` | Ping + API REST (voltage, current, power, batterie) |
 
-### 23 Alert types
+### 24 Alert types
 | Catégorie | alert_type | Déclencheur |
 |---|---|---|
 | Disponibilité | `rocket_down` | Ping LTU Rocket échoue ×3 |
@@ -248,6 +249,7 @@ backend/app/
 | Transit | `transit_unavailable` | (réservé) |
 | Transit | `lr_no_transit` | SSH OK mais ping internet échoue depuis LTU LR |
 | Lien client | `lr_link_substandard` | Incident **consolidé** per-LR : ≥1 plancher franchi (potentiel < 60 %, capacité totale < 60 Mbps, débit RX local/distant < ×6) sur 5 cycles — critique |
+| Config | `lr_bridge_mode_misconfig` | LR détecté en mode bridge (au lieu de routeur) → le blocage client ne peut pas fonctionner ; l'opérateur doit reconfigurer le LR en routeur via airOS |
 
 ### API Endpoints
 | Méthode | Chemin | Auth | Description |

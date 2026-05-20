@@ -253,11 +253,15 @@ async def collect_ltu_metrics(
         "uptime_seconds":   None,
     }
 
-    # Uptime (standard)
+    # Uptime (standard) — also our reachability probe (bail out early on
+    # timeout to avoid burning ~80 s on _find_if_index walks per unreachable
+    # device, which starves the scheduler when many LRs are down).
     raw = await _snmp_get(engine, host, community, "1.3.6.1.2.1.1.3.0", port, timeout)
-    if raw is not None:
-        with contextlib.suppress(TypeError, ValueError):
-            metrics["uptime_seconds"] = round(int(raw) / 100.0, 1)
+    if raw is None:
+        logger.debug("LTU SNMP unreachable on %s — skipping detail poll", host)
+        return metrics
+    with contextlib.suppress(TypeError, ValueError):
+        metrics["uptime_seconds"] = round(int(raw) / 100.0, 1)
 
     # Find radio interface index (ath0 / wlan0)
     idx = await _find_if_index(engine, host, community, port, timeout, _RADIO_IF_NAMES)
@@ -342,11 +346,15 @@ async def collect_airmax_metrics(
         "rx_rate_mbps":   None,
     }
 
-    # Standard uptime
+    # Standard uptime — also our reachability probe. An unreachable device
+    # would otherwise burn ~80 s per cycle on _find_if_index walks (20 GETs
+    # × 2 s timeout × 2 interfaces), starving the scheduler.
     raw = await _snmp_get(engine, host, community, "1.3.6.1.2.1.1.3.0", port, timeout, mp_model)
-    if raw is not None:
-        with contextlib.suppress(TypeError, ValueError):
-            metrics["uptime_seconds"] = round(int(raw) / 100.0, 1)
+    if raw is None:
+        logger.debug("airMAX SNMP unreachable on %s — skipping detail poll", host)
+        return metrics
+    with contextlib.suppress(TypeError, ValueError):
+        metrics["uptime_seconds"] = round(int(raw) / 100.0, 1)
 
     # UBNT Enterprise MIB — wireless station stats
     airmax_poll: list[tuple[str, str, object]] = [

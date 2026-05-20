@@ -1,11 +1,23 @@
 """Per-client cumulative consumption.
 
-Each LR's traffic is captured by the parent Rocket's LTU HTTP API
-(`/api/v1.0/statistics`), which exposes per-peer 64-bit cumulative byte
-counters in `wireless.peers[i].common.counters.txBytes` / `rxBytes`.
-The `ltu_api_poll_job` (60 s cadence) fans these counters out as
-DeviceMetric rows on each child LR under the names `peer_tx_bytes` and
-`peer_rx_bytes`.
+Two source paths depending on LR family:
+
+  - LTU LRs: per-peer byte counters from the parent Rocket's HTTP API
+    (`wireless.peers[i].common.counters.txBytes / rxBytes`), fanned out
+    by `ltu_api_poll_job` as `peer_tx_bytes` / `peer_rx_bytes` on each
+    child LR (64-bit, no wrap).
+
+  - airMAX LRs (LiteBeam 5AC/M5): IF-MIB byte counters from the LR's
+    own SNMP (`radio_rx_bytes` / `radio_tx_bytes` on ath0), polled by
+    `snmp_poll_job`. The parent Rocket airMAX exposes peer identification
+    only — no per-peer byte counters — so the LR has to be polled
+    directly. These are 32-bit counters that wrap at ~4 GB; the wrap is
+    absorbed by the sum-of-positive-deltas accounting (one cycle lost
+    per wrap, bounded).
+
+Direction mapping (customer-centric):
+  download (AP → CPE)  ←  LTU: peer_tx_bytes    | airMAX: radio_rx_bytes
+  upload   (CPE → AP)  ←  LTU: peer_rx_bytes    | airMAX: radio_tx_bytes
 
 All views (24h / 7d / 30d / lifetime) sum the *positive deltas* between
 successive samples — never the raw counter snapshot. The firmware counter
@@ -37,6 +49,8 @@ router = APIRouter()
 # Max plausible bytes per 60 s poll interval — 1 Gbps × 60 s ≈ 7.5 GB. Any
 # computed delta exceeding this is rejected as a counter glitch.
 _MAX_PLAUSIBLE_DELTA_BYTES = 8 * 1024 ** 3
+
+_AIRMAX_LR_VARIANTS = {"litebeam_5ac", "litebeam_m5"}
 
 Period = Literal["24h", "7d", "30d", "lifetime"]
 
@@ -133,7 +147,12 @@ async def get_clients_consumption(
         )
 
     lr_ids = [lr.id for lr in lrs]
-    metric_names = ("peer_tx_bytes", "peer_rx_bytes")
+    # Both metric families queried in one pass — per-LR mapping below picks
+    # peer_* for LTU LRs and radio_* for airMAX LRs (LiteBeam).
+    metric_names = (
+        "peer_tx_bytes", "peer_rx_bytes",
+        "radio_rx_bytes", "radio_tx_bytes",
+    )
 
     samples_result = await db.execute(
         select(
@@ -165,8 +184,14 @@ async def get_clients_consumption(
     items: list[ClientConsumption] = []
     for lr in lrs:
         per_metric = by_device[lr.id]
-        download_samples = per_metric["peer_tx_bytes"]
-        upload_samples   = per_metric["peer_rx_bytes"]
+        if lr.model_variant in _AIRMAX_LR_VARIANTS:
+            # LR-side IF-MIB counters — radio interface RX = customer download.
+            download_samples = per_metric["radio_rx_bytes"]
+            upload_samples   = per_metric["radio_tx_bytes"]
+        else:
+            # AP-side per-peer counters — peer TX from AP = customer download.
+            download_samples = per_metric["peer_tx_bytes"]
+            upload_samples   = per_metric["peer_rx_bytes"]
         has_data = len(download_samples) >= 2 or len(upload_samples) >= 2
         download = _sum_positive_deltas(download_samples) if has_data else 0
         upload   = _sum_positive_deltas(upload_samples)   if has_data else 0

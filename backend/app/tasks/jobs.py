@@ -620,12 +620,13 @@ async def snmp_poll_job() -> None:
         # airMAX LRs (LiteBeam 5AC/M5) — SNMP'd directly. Their parent
         # Rocket airMAX exposes only peer identification via SNMP, not the
         # per-peer radio metrics LTU Rockets fan out via HTTP.
-        # NOTE: no snmp_community filter here — auto-discovered LRs are
-        # created with NULL community; the per-device branch below falls
-        # back to settings.snmp_default_community (default "public").
+        # snmp_community must be set explicitly — auto-discovered LRs come in
+        # with NULL community and are not polled until an operator opts them
+        # in (UI or SQL: UPDATE devices SET snmp_community='public' WHERE …).
         result = await session.execute(
             select(Lr).where(
                 Lr.status == "up",
+                Lr.snmp_community.is_not(None),
                 Lr.model_variant.in_(AIRMAX_LR_VARIANTS),
             )
         )

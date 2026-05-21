@@ -28,6 +28,7 @@ const sections: NavSection[] = [
       { href: '/devices',    label: 'Équipements',         icon: ServerIcon    },
       { href: '/lr-health',  label: 'Liaisons clients',    icon: LinkIcon      },
       { href: '/clients',    label: 'Consommation clients', icon: TrafficIcon  },
+      { href: '/access',     label: 'Accès clients',       icon: ShieldIcon   },
     ],
   },
   {
@@ -308,6 +309,16 @@ function TrafficIcon({ className }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round"
         d="M3 17l4-4 4 4 7-7m0 0V5m0 5h-5" />
+    </svg>
+  )
+}
+
+function ShieldIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round"
+        d="M12 3l8 4v5c0 5-3.5 8.5-8 9-4.5-.5-8-4-8-9V7l8-4z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 13l2 2 4-4" />
     </svg>
   )
 }

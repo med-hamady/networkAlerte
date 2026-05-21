@@ -1102,17 +1102,30 @@ async def lr_transit_probe_job() -> None:
             return
 
         # ── 2. Vérifier l'accès SSH sur le réseau local ──────────────────────
-        ssh_ok, ssh_msg, observed_fp = await ssh_service.check_ssh_access(
+        primary_pw = lr.ssh_password
+        ssh_ok, ssh_msg, observed_fp, used_pw = await ssh_service.check_ssh_access(
             lr.ip_address,
             lr.ssh_port,
             lr.ssh_username,
-            lr.ssh_password,
+            primary_pw,
             expected_fingerprint=lr.ssh_host_fingerprint,
+            fallback_passwords=settings.lr_fallback_password_list,
         )
 
         if ssh_ok and observed_fp and lr.ssh_host_fingerprint != observed_fp:
             # First-seen fingerprint — pin it so subsequent connects detect MITM.
             lr.ssh_host_fingerprint = observed_fp
+
+        # Fallback password worked — promote it to primary so future cycles
+        # skip the ladder. Logged so operators see the auto-heal.
+        if used_pw and used_pw != primary_pw:
+            logger.info(
+                "lr_transit_probe: LR '%s' (%s) — primary password rejected, "
+                "fallback succeeded → promoting working password on LR.",
+                lr.name, lr.ip_address,
+            )
+            lr.ssh_password = used_pw
+            primary_pw = used_pw
 
         if not ssh_ok:
             # L'équipement ne répond pas en SSH sur le réseau local.
@@ -1127,11 +1140,13 @@ async def lr_transit_probe_job() -> None:
             return
 
         # ── 3. Ping internet depuis le LTU LR ────────────────────────────────
-        ping_ok, ping_detail, _ = await ssh_service.ping_targets_via_ssh(
+        # Pas besoin de re-passer les fallbacks ici : la vérif SSH ci-dessus a
+        # déjà promu le bon mot de passe sur le LR.
+        ping_ok, ping_detail, _, _ = await ssh_service.ping_targets_via_ssh(
             lr.ip_address,
             lr.ssh_port,
             lr.ssh_username,
-            lr.ssh_password,
+            primary_pw,
             probe_ips,
             expected_fingerprint=lr.ssh_host_fingerprint,
         )
@@ -1295,6 +1310,7 @@ async def lr_topology_check_job() -> None:
     Runs hourly — bridge/router is a config decision that doesn't change at
     high frequency, no need to thrash the SSH connection.
     """
+    settings = get_settings()
     async with async_session_factory() as session:
         result = await session.execute(
             select(Lr).where(
@@ -1316,15 +1332,24 @@ async def lr_topology_check_job() -> None:
             if dev is None:
                 continue
 
-            mode, msg, observed_fp = await ssh_service.detect_lr_topology(
+            primary_pw = dev.ssh_password
+            mode, msg, observed_fp, used_pw = await ssh_service.detect_lr_topology(
                 host=dev.ip_address,
                 port=dev.ssh_port or 22,
                 username=dev.ssh_username,
-                password=dev.ssh_password,
+                password=primary_pw,
                 expected_fingerprint=dev.ssh_host_fingerprint,
+                fallback_passwords=settings.lr_fallback_password_list,
             )
             if observed_fp and dev.ssh_host_fingerprint != observed_fp:
                 dev.ssh_host_fingerprint = observed_fp
+            if used_pw and used_pw != primary_pw:
+                logger.info(
+                    "lr_topology_check: LR '%s' (%s) — fallback password "
+                    "succeeded → promoting on LR.",
+                    dev.name, dev.ip_address,
+                )
+                dev.ssh_password = used_pw
 
             previous = dev.topology_mode
             # Only persist confirmed states — "unknown" (probe failed) must

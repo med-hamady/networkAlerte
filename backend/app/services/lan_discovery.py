@@ -322,7 +322,8 @@ def _discover_sync(
     username: str,
     password: str,
     expected_fingerprint: str | None,
-) -> list[LanNeighbor]:
+    fallback_passwords: list[str] | None = None,
+) -> tuple[list[LanNeighbor], str | None]:
     """Open SSH to LR, sweep its customer LAN subnet, return its neighbours.
 
     Only the connected subnet(s) that do NOT contain the default gateway
@@ -330,10 +331,14 @@ def _discover_sync(
     lives. The WISP management/backbone subnet (the one with the gateway,
     e.g. 10.135/16 shared by every LR) is skipped entirely so the list is
     just the real modem(s), not infra.
+
+    Returns (neighbours, used_password) — the 2nd element is the password
+    that authenticated so the caller can promote a fallback hit onto the LR.
     """
-    transport, _observed = _open_transport(
+    transport, _observed, used_pw = _open_transport(
         host=host, port=port, username=username, password=password,
         expected_fingerprint=expected_fingerprint,
+        fallback_passwords=fallback_passwords,
     )
     try:
         # 1) Routing table: default gateway + directly-connected subnets,
@@ -406,7 +411,7 @@ def _discover_sync(
         [str(n) for _i, n in uplink_subnets] or "none",
         len(sweep),
     )
-    return neighbours
+    return neighbours, used_pw
 
 
 def _ip_sort_key(ip: str) -> tuple[int, ...]:
@@ -423,8 +428,12 @@ async def discover_via_lr(
     username: str,
     password: str,
     expected_fingerprint: str | None = None,
-) -> list[LanNeighbor]:
-    """Async wrapper — paramiko is sync, runs in a worker thread."""
+    fallback_passwords: list[str] | None = None,
+) -> tuple[list[LanNeighbor], str | None]:
+    """Async wrapper — paramiko is sync, runs in a worker thread.
+
+    Returns (neighbours, used_password)."""
     return await asyncio.to_thread(
         _discover_sync, host, port, username, password, expected_fingerprint,
+        fallback_passwords,
     )

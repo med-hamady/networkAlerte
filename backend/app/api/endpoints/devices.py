@@ -1,5 +1,6 @@
 import datetime
 import ipaddress
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -32,6 +33,8 @@ from app.services import (
 )
 
 _AIRMAX_LR_VARIANTS = {"litebeam_5ac", "litebeam_m5"}
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -291,6 +294,24 @@ def _ssh_credentials(device: Device) -> tuple[str | None, str | None, int]:
     return (None, None, 22)
 
 
+def _promote_lr_password(
+    device: Device, primary: str | None, used: str | None, db: AsyncSession
+) -> None:
+    """Persist a fallback password that authenticated on an LR (auto-heal).
+
+    Restricted to Lr devices: a Rocket's ``ssh_password`` is its HTTPS API
+    secret (port 443), not a real SSH password, so we never clobber it. The
+    session is committed by the get_db dependency on request teardown.
+    """
+    if isinstance(device, Lr) and used and primary and used != primary:
+        logger.info(
+            "check-ssh: LR '%s' (%s) — fallback password succeeded, "
+            "promoting on LR row.",
+            device.name, device.ip_address,
+        )
+        device.ssh_password = used
+
+
 @router.post("/{device_id}/check-ssh", response_model=DiagResult)
 async def check_ssh(
     device_id: int,
@@ -305,16 +326,18 @@ async def check_ssh(
             message="SSH credentials missing on this device — set ssh_username/ssh_password via PUT /api/v1/devices/{id}.",
         )
     fingerprint = getattr(device, "ssh_host_fingerprint", None)
-    ok, msg, observed_fp = await ssh_service.check_ssh_access(
+    ok, msg, observed_fp, used_pw = await ssh_service.check_ssh_access(
         host=device.ip_address,
         port=port,
         username=username,
         password=password,
         expected_fingerprint=fingerprint,
+        fallback_passwords=get_settings().lr_fallback_password_list,
     )
     if ok and observed_fp and fingerprint != observed_fp:
         device.ssh_host_fingerprint = observed_fp
         await db.flush()
+    _promote_lr_password(device, password, used_pw, db)
     return DiagResult(ok=ok, message=msg)
 
 
@@ -345,17 +368,19 @@ async def ping_from_lr(
             ok=False,
             message=f"Le LR parent ({lr.name}) n'a pas d'identifiants SSH.",
         )
-    ok, msg, observed_fp = await ssh_service.ping_targets_via_ssh(
+    ok, msg, observed_fp, used_pw = await ssh_service.ping_targets_via_ssh(
         host=lr.ip_address,
         port=lr.ssh_port or 22,
         username=lr.ssh_username,
         password=lr.ssh_password,
         targets=[device.ip_address],
         expected_fingerprint=lr.ssh_host_fingerprint,
+        fallback_passwords=get_settings().lr_fallback_password_list,
     )
     if ok and observed_fp and lr.ssh_host_fingerprint != observed_fp:
         lr.ssh_host_fingerprint = observed_fp
         await db.flush()
+    _promote_lr_password(lr, lr.ssh_password, used_pw, db)
     if ok:
         message = f"Modem {device.ip_address} joignable depuis le LR {lr.name}."
     else:
@@ -400,17 +425,19 @@ async def ping_target(
             status_code=422,
             detail="target doit être une adresse IP valide.",
         ) from exc
-    ok, msg, observed_fp = await ssh_service.ping_targets_via_ssh(
+    ok, msg, observed_fp, used_pw = await ssh_service.ping_targets_via_ssh(
         host=device.ip_address,
         port=device.ssh_port or 22,
         username=device.ssh_username,
         password=device.ssh_password,
         targets=[target],
         expected_fingerprint=device.ssh_host_fingerprint,
+        fallback_passwords=get_settings().lr_fallback_password_list,
     )
     if ok and observed_fp and device.ssh_host_fingerprint != observed_fp:
         device.ssh_host_fingerprint = observed_fp
         await db.flush()
+    _promote_lr_password(device, device.ssh_password, used_pw, db)
     if ok:
         message = f"{target} joignable depuis le LR {device.name}."
     else:
@@ -455,15 +482,17 @@ async def discover_modems(
             detail="LR has no SSH credentials — set ssh_username/ssh_password first.",
         )
     try:
-        neighbours = await lan_discovery.discover_via_lr(
+        neighbours, used_pw = await lan_discovery.discover_via_lr(
             host=device.ip_address,
             port=device.ssh_port or 22,
             username=device.ssh_username,
             password=device.ssh_password,
             expected_fingerprint=device.ssh_host_fingerprint,
+            fallback_passwords=get_settings().lr_fallback_password_list,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"SSH discovery failed: {exc}") from exc
+    _promote_lr_password(device, device.ssh_password, used_pw, db)
 
     return DiscoverModemsResponse(
         lr_id=device.id,
@@ -567,14 +596,16 @@ async def check_ping(
             message="SSH credentials missing on this device — set ssh_username/ssh_password via PUT /api/v1/devices/{id}.",
         )
     fingerprint = getattr(device, "ssh_host_fingerprint", None)
-    ok, msg, observed_fp = await ssh_service.check_ping_via_ssh(
+    ok, msg, observed_fp, used_pw = await ssh_service.check_ping_via_ssh(
         host=device.ip_address,
         port=port,
         username=username,
         password=password,
         expected_fingerprint=fingerprint,
+        fallback_passwords=get_settings().lr_fallback_password_list,
     )
     if ok and observed_fp and fingerprint != observed_fp:
         device.ssh_host_fingerprint = observed_fp
         await db.flush()
+    _promote_lr_password(device, password, used_pw, db)
     return DiagResult(ok=ok, message=msg)

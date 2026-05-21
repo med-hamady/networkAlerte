@@ -56,8 +56,9 @@ def _open_transport(
     password: str,
     expected_fingerprint: str | None,
     timeout: int = 6,
-) -> tuple[paramiko.Transport, str]:
-    """Open an authenticated SSH Transport and return it with the observed fp.
+    fallback_passwords: list[str] | None = None,
+) -> tuple[paramiko.Transport, str, str]:
+    """Open an authenticated SSH Transport and return (transport, fp, used_pw).
 
     We bypass `SSHClient.connect()` because it always calls `auth_password` with
     `fallback=True`, which makes paramiko probe an `auth_none` first. Several
@@ -65,29 +66,67 @@ def _open_transport(
     probe — OpenSSH works because it never sends `auth_none`. Calling
     `auth_password(fallback=False)` directly skips the probe and authenticates
     on the first try.
+
+    Fallback ladder
+    ---------------
+    When ``fallback_passwords`` is provided and the primary ``password`` auth
+    fails with ``AuthenticationException``, we close the transport and retry
+    against a fresh transport using each fallback in order. The third tuple
+    element is the password that actually authenticated — callers compare it
+    to the primary and persist it on the LR row when it differs, so old LRs
+    auto-heal to the right password after one successful cycle.
+
+    Any non-auth error (timeout, host-key mismatch, network) raises straight
+    away — we only ladder through fallbacks on real auth failures.
     """
-    sock = socket.create_connection((host, port), timeout=timeout)
-    transport = paramiko.Transport(sock)
-    try:
-        transport.start_client(timeout=timeout)
-        server_key = transport.get_remote_server_key()
-        observed = _fingerprint(server_key)
-        if expected_fingerprint is None:
+    candidates: list[str] = [password]
+    if fallback_passwords:
+        for fp in fallback_passwords:
+            if fp and fp not in candidates:
+                candidates.append(fp)
+
+    last_auth_exc: paramiko.AuthenticationException | None = None
+    for idx, candidate in enumerate(candidates):
+        sock = socket.create_connection((host, port), timeout=timeout)
+        transport = paramiko.Transport(sock)
+        try:
+            transport.start_client(timeout=timeout)
+            server_key = transport.get_remote_server_key()
+            observed = _fingerprint(server_key)
+            if expected_fingerprint is None:
+                # Only warn on the first attempt — successive retries land on the
+                # same host so re-logging adds noise without information.
+                if idx == 0:
+                    logger.warning(
+                        "SSH TOFU: accepting first-seen host key %s for %s — "
+                        "verify out-of-band and persist this value on the Device row",
+                        observed, host,
+                    )
+            elif observed != expected_fingerprint:
+                raise _FingerprintMismatchError(
+                    f"Host key mismatch for {host}: "
+                    f"expected {expected_fingerprint}, got {observed}",
+                )
+            transport.auth_password(username, candidate, fallback=False)
+        except paramiko.AuthenticationException as exc:
+            transport.close()
+            last_auth_exc = exc
+            continue
+        except Exception:
+            transport.close()
+            raise
+        if idx > 0:
             logger.warning(
-                "SSH TOFU: accepting first-seen host key %s for %s — "
-                "verify out-of-band and persist this value on the Device row",
-                observed, host,
+                "SSH auth: primary password rejected on %s — fallback #%d "
+                "succeeded. LR should be updated to use the working password.",
+                host, idx,
             )
-        elif observed != expected_fingerprint:
-            raise _FingerprintMismatchError(
-                f"Host key mismatch for {host}: "
-                f"expected {expected_fingerprint}, got {observed}",
-            )
-        transport.auth_password(username, password, fallback=False)
-    except Exception:
-        transport.close()
-        raise
-    return transport, observed
+        return transport, observed, candidate
+
+    # All candidates exhausted without authenticating.
+    raise last_auth_exc or paramiko.AuthenticationException(
+        f"SSH authentication failed against {host} (no passwords supplied)"
+    )
 
 
 def _exec(transport: paramiko.Transport, command: str, timeout: int) -> int:
@@ -249,13 +288,18 @@ def _set_iface_state_sync(
     interface: str,
     bring_up: bool,
     expected_fingerprint: str | None,
-) -> tuple[bool, str, str | None]:
+    fallback_passwords: list[str] | None,
+) -> tuple[bool, str, str | None, str | None]:
     """SSH into the device and bring `interface` admin up or down.
 
     Idempotent: re-applying the same state is harmless (this is what lets the
     enforcement job re-assert a block every cycle / after an LR reboot). Tries
     `ip link` first, falls back to busybox `ifconfig`. Verifies via the admin
     flag, not operstate, so it stays correct on an unplugged port.
+
+    Returns (ok, message, observed_fp, used_password). The 4th element is the
+    password that actually authenticated — caller compares it to the primary
+    to detect a fallback hit and persist the working password on the LR.
     """
     if not bring_up and interface in _PROTECTED_IFACES:
         return (
@@ -263,18 +307,20 @@ def _set_iface_state_sync(
             f"Interface protégée '{interface}' — refus : couper cette interface "
             f"déconnecterait le superviseur du LR (radio/loopback).",
             None,
+            None,
         )
 
     try:
-        transport, observed = _open_transport(
-            host, port, username, password, expected_fingerprint
+        transport, observed, used_pw = _open_transport(
+            host, port, username, password, expected_fingerprint,
+            fallback_passwords=fallback_passwords,
         )
     except _FingerprintMismatchError as exc:
         logger.error("set_iface host-key mismatch — %s — %s", host, exc)
-        return False, str(exc), None
+        return False, str(exc), None, None
     except Exception as exc:
         logger.debug("set_iface SSH connect failed — %s — %s", host, exc)
-        return False, str(exc), None
+        return False, str(exc), None, None
 
     action = "up" if bring_up else "down"
     iface = shlex.quote(interface)
@@ -292,6 +338,7 @@ def _set_iface_state_sync(
                     f"verrouillerait l'accès au LR. Vérifie lan_interface — "
                     f"sur LTU c'est typiquement eth0.1, pas eth0.",
                     observed,
+                    used_pw,
                 )
         code = _exec(
             transport, f"ip link set dev {iface} {action}", timeout=12
@@ -305,6 +352,7 @@ def _set_iface_state_sync(
                 f"Échec de la commande de mise {action} de {interface} "
                 f"(code {code}) — vérifier que l'utilisateur SSH est root.",
                 observed,
+                used_pw,
             )
         admin_up = _read_admin_up(transport, interface)
         if admin_up is not None and admin_up != bring_up:
@@ -313,6 +361,7 @@ def _set_iface_state_sync(
                 f"Commande acceptée mais {interface} toujours "
                 f"{'DOWN' if bring_up else 'UP'} — état non appliqué.",
                 observed,
+                used_pw,
             )
         state_str = "UP" if bring_up else "DOWN"
         verified = "" if admin_up is None else " (vérifié)"
@@ -320,6 +369,7 @@ def _set_iface_state_sync(
             True,
             f"Interface {interface} mise {state_str}{verified}.",
             observed,
+            used_pw,
         )
     finally:
         transport.close()
@@ -333,15 +383,20 @@ async def set_lan_interface(
     interface: str,
     bring_up: bool,
     expected_fingerprint: str | None = None,
-) -> tuple[bool, str, str | None]:
+    fallback_passwords: list[str] | None = None,
+) -> tuple[bool, str, str | None, str | None]:
     """SSH into the LR and bring its LAN port admin up/down — non-blocking.
 
-    Returns (ok, message, observed_fingerprint). Refuses protected interfaces
-    (radio/management) so an operator error can't lock the supervisor out.
+    Returns (ok, message, observed_fingerprint, used_password). Refuses
+    protected interfaces (radio/management) so an operator error can't lock
+    the supervisor out. ``used_password`` is the password that actually
+    authenticated — when it differs from ``password`` the caller should
+    persist it on the LR row.
     """
     return await asyncio.to_thread(
         _set_iface_state_sync,
-        host, port, username, password, interface, bring_up, expected_fingerprint,
+        host, port, username, password, interface, bring_up,
+        expected_fingerprint, fallback_passwords,
     )
 
 
@@ -373,10 +428,11 @@ def _detect_lr_topology_sync(
     username: str,
     password: str,
     expected_fingerprint: str | None,
-) -> tuple[str, str, str | None]:
+    fallback_passwords: list[str] | None,
+) -> tuple[str, str, str | None, str | None]:
     """Detect whether the LR is in 'router' or 'bridge' mode.
 
-    Returns (mode, message, observed_fingerprint) where mode is one of:
+    Returns (mode, message, observed_fingerprint, used_password) where mode is:
       - "router"  : no bridge mixes radio (ath*/wifi*/wlan*) with wired (eth*).
                     Client traffic crosses iptables FORWARD → block feature works.
       - "bridge"  : at least one bridge contains both a radio iface and a wired
@@ -389,15 +445,16 @@ def _detect_lr_topology_sync(
       - Bridge mode                  : br0 (or any br*) contains {ath0, eth0} together.
     """
     try:
-        transport, observed = _open_transport(
-            host, port, username, password, expected_fingerprint
+        transport, observed, used_pw = _open_transport(
+            host, port, username, password, expected_fingerprint,
+            fallback_passwords=fallback_passwords,
         )
     except _FingerprintMismatchError as exc:
         logger.error("topology host-key mismatch — %s — %s", host, exc)
-        return "unknown", f"SSH host-key mismatch: {exc}", None
+        return "unknown", f"SSH host-key mismatch: {exc}", None, None
     except Exception as exc:
         logger.debug("topology SSH connect failed — %s — %s", host, exc)
-        return "unknown", f"SSH connect failed: {exc}", None
+        return "unknown", f"SSH connect failed: {exc}", None, None
 
     try:
         # Enumerate every bridge and list its members via sysfs (works on
@@ -415,11 +472,12 @@ def _detect_lr_topology_sync(
                 "unknown",
                 f"Topology probe failed (exit {code}) — check SSH user is root.",
                 observed,
+                used_pw,
             )
         if not out:
             # No /sys/class/net/br* directories at all → no bridges → router-ish,
             # but unusual on airOS where br0 always exists. Treat as router.
-            return "router", "Aucun bridge détecté — mode routeur", observed
+            return "router", "Aucun bridge détecté — mode routeur", observed, used_pw
 
         bridges: dict[str, set[str]] = {}
         current_br: str | None = None
@@ -447,12 +505,13 @@ def _detect_lr_topology_sync(
                 "bridge",
                 f"Mode bridge détecté : {'; '.join(mixed)} (radio + wired ensemble)",
                 observed,
+                used_pw,
             )
         # Build a concise breakdown for diagnostics
         summary = "; ".join(
             f"{br}={sorted(m)}" for br, m in sorted(bridges.items())
         ) or "(aucun bridge)"
-        return "router", f"Mode routeur — {summary}", observed
+        return "router", f"Mode routeur — {summary}", observed, used_pw
     finally:
         transport.close()
 
@@ -463,11 +522,14 @@ async def detect_lr_topology(
     username: str,
     password: str,
     expected_fingerprint: str | None = None,
-) -> tuple[str, str, str | None]:
-    """SSH into the LR and detect router vs bridge mode — non-blocking."""
+    fallback_passwords: list[str] | None = None,
+) -> tuple[str, str, str | None, str | None]:
+    """SSH into the LR and detect router vs bridge mode — non-blocking.
+
+    Returns (mode, message, observed_fp, used_password)."""
     return await asyncio.to_thread(
         _detect_lr_topology_sync,
-        host, port, username, password, expected_fingerprint,
+        host, port, username, password, expected_fingerprint, fallback_passwords,
     )
 
 
@@ -529,7 +591,8 @@ def _set_whatsapp_only_sync(
     allow_cidrs: list[str],
     deny_domains: list[str],
     expected_fingerprint: str | None,
-) -> tuple[bool, str, str | None]:
+    fallback_passwords: list[str] | None,
+) -> tuple[bool, str, str | None, str | None]:
     """Install/remove the WhatsApp-only restriction on the LR (3 layers).
 
     The Meta IP allowlist alone is insufficient — WhatsApp shares Meta's IP
@@ -554,15 +617,16 @@ def _set_whatsapp_only_sync(
     pass. Touches no interface, so the supervisor cannot be locked out.
     """
     try:
-        transport, observed = _open_transport(
-            host, port, username, password, expected_fingerprint
+        transport, observed, used_pw = _open_transport(
+            host, port, username, password, expected_fingerprint,
+            fallback_passwords=fallback_passwords,
         )
     except _FingerprintMismatchError as exc:
         logger.error("whatsapp_only host-key mismatch — %s — %s", host, exc)
-        return False, str(exc), None
+        return False, str(exc), None, None
     except Exception as exc:
         logger.debug("whatsapp_only SSH connect failed — %s — %s", host, exc)
-        return False, str(exc), None
+        return False, str(exc), None, None
 
     try:
         subnet, lr_ip = _detect_client_context(transport)
@@ -573,6 +637,7 @@ def _set_whatsapp_only_sync(
                 "poser le filtre WhatsApp. Vérifie que le LR route bien un "
                 "réseau client privé.",
                 observed,
+                used_pw,
             )
 
         # Validate inputs before shelling out — never trust caller arrays.
@@ -673,6 +738,7 @@ def _set_whatsapp_only_sync(
                 f"Échec de l'application du filtre WhatsApp-only (code {code}) — "
                 f"vérifier que l'utilisateur SSH est root et qu'iptables existe.",
                 observed,
+                used_pw,
             )
         vcode = _exec(transport, f"sh -c {shlex.quote(verify)}", timeout=12)
         if vcode != 0:
@@ -682,6 +748,7 @@ def _set_whatsapp_only_sync(
                 f"Commande acceptée mais le filtre WhatsApp-only n'a pas été "
                 f"{state} correctement (vérification KO).",
                 observed,
+                used_pw,
             )
         if enable:
             msg = (
@@ -694,7 +761,7 @@ def _set_whatsapp_only_sync(
                 f"Filtre WhatsApp-only retiré sur {subnet} (DNS, dnsmasq, "
                 f"iptables : tout rétabli)."
             )
-        return True, msg, observed
+        return True, msg, observed, used_pw
     finally:
         transport.close()
 
@@ -708,18 +775,22 @@ async def set_whatsapp_only(
     allow_cidrs: list[str],
     deny_domains: list[str],
     expected_fingerprint: str | None = None,
-) -> tuple[bool, str, str | None]:
+    fallback_passwords: list[str] | None = None,
+) -> tuple[bool, str, str | None, str | None]:
     """SSH into the LR and apply/remove the 3-layer WhatsApp-only restriction.
 
     See ``_set_whatsapp_only_sync`` for the mechanism. ``allow_cidrs`` are the
     Meta IP ranges left reachable; ``deny_domains`` are DNS names resolved to
     0.0.0.0 by the LR's dnsmasq to neutralise FB/IG which would otherwise pass
     via the IP allowlist (they share Meta's IP space).
+
+    Returns (ok, message, observed_fp, used_password).
     """
     return await asyncio.to_thread(
         _set_whatsapp_only_sync,
         host, port, username, password,
         enable, allow_cidrs, deny_domains, expected_fingerprint,
+        fallback_passwords,
     )
 
 
@@ -729,18 +800,22 @@ def _ssh_check_sync(
     username: str,
     password: str,
     expected_fingerprint: str | None,
-) -> tuple[bool, str, str | None]:
+    fallback_passwords: list[str] | None,
+) -> tuple[bool, str, str | None, str | None]:
     try:
-        transport, observed = _open_transport(host, port, username, password, expected_fingerprint)
+        transport, observed, used_pw = _open_transport(
+            host, port, username, password, expected_fingerprint,
+            fallback_passwords=fallback_passwords,
+        )
         transport.close()
         logger.debug("SSH check OK — %s:%d (fp=%s)", host, port, observed)
-        return True, "OK", observed
+        return True, "OK", observed, used_pw
     except _FingerprintMismatchError as exc:
         logger.error("SSH host-key mismatch — %s:%d — %s", host, port, exc)
-        return False, str(exc), None
+        return False, str(exc), None, None
     except Exception as exc:
         logger.debug("SSH check failed — %s:%d — %s", host, port, exc)
-        return False, str(exc), None
+        return False, str(exc), None, None
 
 
 def _ping_via_ssh_sync(
@@ -749,24 +824,28 @@ def _ping_via_ssh_sync(
     username: str,
     password: str,
     expected_fingerprint: str | None,
-) -> tuple[bool, str, str | None]:
+    fallback_passwords: list[str] | None,
+) -> tuple[bool, str, str | None, str | None]:
     try:
-        transport, observed = _open_transport(host, port, username, password, expected_fingerprint)
+        transport, observed, used_pw = _open_transport(
+            host, port, username, password, expected_fingerprint,
+            fallback_passwords=fallback_passwords,
+        )
     except _FingerprintMismatchError as exc:
         logger.error("Ping-via-SSH host-key mismatch — %s — %s", host, exc)
-        return False, str(exc), None
+        return False, str(exc), None, None
     except Exception as exc:
         logger.debug("Ping-via-SSH failed — %s — %s", host, exc)
-        return False, str(exc), None
+        return False, str(exc), None, None
 
     try:
         exit_code = _exec(transport, "ping -c 2 -W 2 8.8.8.8", timeout=10)
         ok = exit_code == 0
         logger.debug("Ping-via-SSH %s → %s (exit %d)", host, "OK" if ok else "KO", exit_code)
-        return ok, "Joignable" if ok else "Non joignable", observed
+        return ok, "Joignable" if ok else "Non joignable", observed, used_pw
     except Exception as exc:
         logger.debug("Ping-via-SSH exec failed — %s — %s", host, exc)
-        return False, str(exc), observed
+        return False, str(exc), observed, used_pw
     finally:
         transport.close()
 
@@ -778,28 +857,32 @@ def _ping_targets_via_ssh_sync(
     password: str,
     targets: list[str],
     expected_fingerprint: str | None,
-) -> tuple[bool, str, str | None]:
-    """
-    Open one SSH session and try to ping each target IP in order.
-    Returns (True, target, observed_fingerprint) as soon as one target
-    is reachable, or (False, message, observed_fp) otherwise.
+    fallback_passwords: list[str] | None,
+) -> tuple[bool, str, str | None, str | None]:
+    """Open one SSH session and try to ping each target IP in order.
+
+    Returns (True, target, observed_fingerprint, used_password) as soon as
+    one target is reachable, or (False, message, fp, used_pw) otherwise.
     """
     try:
-        transport, observed = _open_transport(host, port, username, password, expected_fingerprint)
+        transport, observed, used_pw = _open_transport(
+            host, port, username, password, expected_fingerprint,
+            fallback_passwords=fallback_passwords,
+        )
     except _FingerprintMismatchError as exc:
         logger.error("ping_targets_via_ssh host-key mismatch %s — %s", host, exc)
-        return False, str(exc), None
+        return False, str(exc), None, None
     except Exception as exc:
         logger.debug("ping_targets_via_ssh: SSH connect failed %s — %s", host, exc)
-        return False, str(exc), None
+        return False, str(exc), None, None
 
     try:
         for target in targets:
             exit_code = _exec(transport, f"ping -c 2 -W 3 {shlex.quote(target)}", timeout=12)
             logger.debug("ping_targets_via_ssh %s → %s exit=%d", host, target, exit_code)
             if exit_code == 0:
-                return True, target, observed
-        return False, f"Aucune cible joignable parmi {targets}", observed
+                return True, target, observed, used_pw
+        return False, f"Aucune cible joignable parmi {targets}", observed, used_pw
     finally:
         transport.close()
 
@@ -810,10 +893,12 @@ async def check_ssh_access(
     username: str,
     password: str,
     expected_fingerprint: str | None = None,
-) -> tuple[bool, str, str | None]:
-    """Return (ok, message, observed_fingerprint) — non-blocking."""
+    fallback_passwords: list[str] | None = None,
+) -> tuple[bool, str, str | None, str | None]:
+    """Return (ok, message, observed_fingerprint, used_password) — non-blocking."""
     return await asyncio.to_thread(
         _ssh_check_sync, host, port, username, password, expected_fingerprint,
+        fallback_passwords,
     )
 
 
@@ -823,10 +908,12 @@ async def check_ping_via_ssh(
     username: str,
     password: str,
     expected_fingerprint: str | None = None,
-) -> tuple[bool, str, str | None]:
-    """SSH into device, run ping 8.8.8.8, return (reachable, message, fp)."""
+    fallback_passwords: list[str] | None = None,
+) -> tuple[bool, str, str | None, str | None]:
+    """SSH into device, run ping 8.8.8.8, return (reachable, message, fp, used_pw)."""
     return await asyncio.to_thread(
         _ping_via_ssh_sync, host, port, username, password, expected_fingerprint,
+        fallback_passwords,
     )
 
 
@@ -837,8 +924,12 @@ async def ping_targets_via_ssh(
     password: str,
     targets: list[str],
     expected_fingerprint: str | None = None,
-) -> tuple[bool, str, str | None]:
-    """SSH into device and try each target IP in order."""
+    fallback_passwords: list[str] | None = None,
+) -> tuple[bool, str, str | None, str | None]:
+    """SSH into device and try each target IP in order.
+
+    Returns (ok, target_or_msg, observed_fp, used_password)."""
     return await asyncio.to_thread(
-        _ping_targets_via_ssh_sync, host, port, username, password, targets, expected_fingerprint,
+        _ping_targets_via_ssh_sync, host, port, username, password, targets,
+        expected_fingerprint, fallback_passwords,
     )

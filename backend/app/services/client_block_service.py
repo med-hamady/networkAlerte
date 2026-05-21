@@ -85,18 +85,38 @@ def _pin_fp(lr: Lr, ok: bool, observed_fp: str | None) -> None:
         lr.ssh_host_fingerprint = observed_fp
 
 
+def _promote_password(lr: Lr, primary: str, used: str | None) -> None:
+    """Auto-heal: persist the fallback password that just authenticated.
+
+    Called after every SSH operation that supports fallbacks. When ``used``
+    differs from ``primary`` the LR was running on an old password — record
+    the working one so the next cycle authenticates on the first try.
+    """
+    if used and used != primary:
+        logger.info(
+            "client_block: LR '%s' (%s) — fallback SSH password succeeded, "
+            "promoting on LR row.",
+            lr.name, lr.ip_address,
+        )
+        lr.ssh_password = used
+
+
 async def _set_full(lr: Lr, cut: bool) -> tuple[bool, str]:
     """Shut (cut=True) / restore (cut=False) the LR's LAN port over SSH."""
-    ok, msg, observed_fp = await ssh_service.set_lan_interface(
+    settings = get_settings()
+    primary_pw = lr.ssh_password
+    ok, msg, observed_fp, used_pw = await ssh_service.set_lan_interface(
         host=lr.ip_address,
         port=lr.ssh_port or 22,
         username=lr.ssh_username,
-        password=lr.ssh_password,
+        password=primary_pw,
         interface=lr.lan_interface,
         bring_up=not cut,
         expected_fingerprint=lr.ssh_host_fingerprint,
+        fallback_passwords=settings.lr_fallback_password_list,
     )
     _pin_fp(lr, ok, observed_fp)
+    _promote_password(lr, primary_pw, used_pw)
     return ok, msg
 
 
@@ -109,17 +129,20 @@ async def _set_whatsapp(lr: Lr, on: bool) -> tuple[bool, str]:
     settings so an operator can tune them without redeploying.
     """
     settings = get_settings()
-    ok, msg, observed_fp = await ssh_service.set_whatsapp_only(
+    primary_pw = lr.ssh_password
+    ok, msg, observed_fp, used_pw = await ssh_service.set_whatsapp_only(
         host=lr.ip_address,
         port=lr.ssh_port or 22,
         username=lr.ssh_username,
-        password=lr.ssh_password,
+        password=primary_pw,
         enable=on,
         allow_cidrs=settings.whatsapp_allow_cidr_list,
         deny_domains=settings.blocked_domains_whatsapp_only_list,
         expected_fingerprint=lr.ssh_host_fingerprint,
+        fallback_passwords=settings.lr_fallback_password_list,
     )
     _pin_fp(lr, ok, observed_fp)
+    _promote_password(lr, primary_pw, used_pw)
     return ok, msg
 
 

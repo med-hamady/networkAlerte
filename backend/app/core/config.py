@@ -111,6 +111,20 @@ class Settings(BaseSettings):
     lr_default_ssh_password: str = ""
     lr_default_ssh_port: int = 22
 
+    # Fallback passwords tried (in order) when the LR's stored ssh_password
+    # fails with AuthenticationException. Lets older LRs still using a
+    # historical password keep working without each LR being re-credentialed
+    # by hand. When a fallback authenticates, the LR's ssh_password column is
+    # updated to the working value so subsequent cycles auth on the first try.
+    # CSV. Default contains the legacy "A2HQ@4321" — extend via env if other
+    # historical passwords are still in the field.
+    lr_fallback_ssh_passwords: str = "A2HQ@4321"
+
+    @property
+    def lr_fallback_password_list(self) -> list[str]:
+        """Parse lr_fallback_ssh_passwords into a non-empty list (or empty)."""
+        return [p for p in self.lr_fallback_ssh_passwords.split(",") if p]
+
     # Transit probe — disable entirely if LTU LR is not part of the topology
     transit_probe_enabled: bool = True
 

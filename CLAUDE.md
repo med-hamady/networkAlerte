@@ -75,7 +75,7 @@ backend/app/
 │   ├── snmp_service.py             # SNMP : LTU radio (ath0/eth0) + Switch (ports 1..N)
 │   ├── uisp_power_service.py       # API REST UISP Power (voltage, current, batterie)
 │   ├── ltu_api_service.py          # API HTTP LTU Rocket (signal, CCQ, CINR, CPE peers)
-│   ├── ssh_service.py              # SSH via paramiko : check_ssh_access, ping_targets_via_ssh, set_lan_interface, set_whatsapp_only, garde-fou _collect_forbidden_ifaces
+│   ├── ssh_service.py              # SSH via paramiko : check_ssh_access, ping_targets_via_ssh, set_lan_interface, set_whatsapp_only, garde-fou _collect_forbidden_ifaces, fallback de mot de passe (_open_transport essaie LR_FALLBACK_SSH_PASSWORDS sur AuthenticationException, retourne le mdp utilisé → promu sur le LR)
 │   ├── client_block_service.py     # Blocage client 2 modes (full / whatsapp_only) + enforcement
 │   ├── alert_engine.py             # Orchestrateur : évalue règles, gère AlertState, ouvre/résout incidents
 │   ├── alert_rules.py              # Règles d'alerte pure Python (sans DB) — 10+ règles
@@ -113,6 +113,13 @@ backend/app/
 > `devices` (colonnes `ssh_username`, `ssh_password`, `ssh_port`,
 > `uisp_power_username`, `uisp_power_password`, `uisp_power_port`).
 > Configuration via `PUT /api/v1/devices/{id}` ou le formulaire UI.
+>
+> **Fallback de mot de passe SSH** : `LR_FALLBACK_SSH_PASSWORDS` (env, CSV) liste
+> les anciens mots de passe essayés quand le `ssh_password` du LR échoue en auth.
+> Quand un fallback réussit, le `ssh_password` du LR est mis à jour avec le mot
+> de passe qui marche (auto-réparation, log INFO). S'applique à toutes les
+> opérations SSH sur LR (sonde transit, ping, blocage client, topologie,
+> découverte LAN, diagnostics check-ssh/check-ping).
 
 | Variable | Rôle |
 |---|---|
@@ -126,6 +133,7 @@ backend/app/
 | `DEBUG` | Mode debug SQLAlchemy |
 | `LOG_LEVEL` | Niveau de log (INFO, DEBUG, WARNING) |
 | `API_KEY` | Clé d'authentification API (header X-API-Key) |
+| `LR_FALLBACK_SSH_PASSWORDS` | Mots de passe SSH de fallback pour les LR (CSV) essayés quand le `ssh_password` stocké échoue ; le mdp qui marche est promu sur le LR. Défaut `A2HQ@4321` |
 | `SNMP_DEFAULT_COMMUNITY` | Community SNMP par défaut (ex: public) |
 | `SNMP_PORT` | Port SNMP (défaut 161) |
 | `SNMP_TIMEOUT` | Timeout SNMP en secondes |

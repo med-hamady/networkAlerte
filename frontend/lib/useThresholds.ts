@@ -18,7 +18,7 @@ export interface ThresholdMap {
 }
 
 const DEFAULTS: ThresholdMap = {
-  signal_warning_dbm: -70,
+  signal_warning_dbm: -75,
   signal_critical_dbm: -80,
   cinr_warning_db: 20,
   cinr_critical_db: 10,

@@ -4,11 +4,11 @@ Each LR is evaluated against **5 level indicators** on a 30-day sliding
 window and gets a verdict (stable / watch / suspect / critical).
 
 The 5 indicators (each is a "État" — the 30-day mean vs a floor; no trend):
-  1. Signal dBm       — mean ≤ distance-banded threshold (unchanged method)
-  2. Potentiel du lien — mean < 60 %      (link_potential_pct)
+  1. Signal dBm       — mean ≤ settings.signal_warning_dbm (flat, default -75)
+  2. Potentiel du lien — mean < family floor (LTU 50 % / airMAX 40 %)
   3. Capacité totale  — mean < 60 Mbps   (total_capacity_mbps)
-  4. Débit RX local   — mean < ×6        (local_rx_rate_idx)
-  5. Débit RX distant — mean < ×6        (remote_rx_rate_idx)
+  4. Débit RX local   — mean < family floor (LTU ×6 / airMAX ×6)
+  5. Débit RX distant — mean < family floor (LTU ×6 / airMAX ×6)
 
 Verdict (number of active indicators out of 5):
   0  → stable    (LR not surfaced)
@@ -17,9 +17,7 @@ Verdict (number of active indicators out of 5):
   3+ → critical  (Critique — à reprendre)
 
 An indicator only fires when there is at least one sample in the window
-(missing data never penalizes a LR). Signal thresholds are distance-banded
-— at 5 GHz, free-space path loss adds ~6 dB per doubling of distance, so a
-flat threshold either punishes long links or lets short links slack.
+(missing data never penalizes a LR).
 """
 
 import datetime
@@ -32,11 +30,31 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
-from app.core.radio_thresholds import (
-    signal_distance_band_label,
-    signal_warning_threshold,
-)
 from app.models.device import Lr
+
+_AIRMAX_LR_VARIANTS = frozenset({"litebeam_5ac", "litebeam_m5"})
+
+
+def _is_airmax_variant(model_variant: str | None) -> bool:
+    return model_variant in _AIRMAX_LR_VARIANTS
+
+
+def _link_potential_floor(model_variant: str | None, settings) -> float:
+    return (
+        settings.lr_link_potential_min_pct_airmax
+        if _is_airmax_variant(model_variant)
+        else settings.lr_link_potential_min_pct_ltu
+    )
+
+
+def _rx_rate_floor(model_variant: str | None, settings) -> float:
+    """Indicator floor for the lr-health page — the threshold that makes the
+    rate "État" indicator active. airMAX has a separate critical floor (×4)
+    but for the page we use the warning band (×6) so liaisons à risque
+    sortent dans le rapport 30 j."""
+    if _is_airmax_variant(model_variant):
+        return settings.lr_rx_rate_warning_idx_airmax
+    return settings.lr_rx_rate_critical_idx_ltu
 from app.models.device_metric import DeviceMetric
 from app.schemas.lr_health import (
     BadInstallationRow,
@@ -62,9 +80,9 @@ _TRACKED_METRICS: tuple[str, ...] = (
 )
 
 # Floors live in Settings (single source shared with the lr_link_substandard
-# alert rule): settings.lr_link_potential_min_pct / lr_total_capacity_min_mbps
-# / lr_rx_rate_min_idx. Read at request time so a config change applies to
-# both the page and the alerting without code edits.
+# alert rule). Read at request time so a config change applies to both the
+# page and the alerting without code edits. Family-banded (LTU vs airMAX)
+# since 2026-05-21 — voir _link_potential_floor / _rx_rate_floor.
 
 # Verdict thresholds (out of 5 active indicators).
 _VERDICT_WATCH_AT = 1
@@ -122,7 +140,10 @@ async def get_bad_installations(
                 latest_total_capacity_mbps=radio.get(_M_TOTAL_CAP),
                 latest_local_rx_rate_idx=radio.get(_M_LOCAL_RATE),
                 latest_remote_rx_rate_idx=radio.get(_M_REMOTE_RATE),
-                signal_warning_threshold=signal_warning_threshold(lr.distance_m),
+                signal_warning_threshold=float(settings.signal_warning_dbm),
+                link_potential_floor_pct=_link_potential_floor(lr.model_variant, settings),
+                total_capacity_floor_mbps=settings.lr_total_capacity_min_mbps,
+                rx_rate_floor_idx=_rx_rate_floor(lr.model_variant, settings),
             )
         )
 
@@ -232,19 +253,19 @@ def _build_signals(
     metric_stats: dict[str, dict[str, float]],
     settings,
 ) -> list[SignalEvidence]:
-    pot_floor = settings.lr_link_potential_min_pct
+    family = "airMAX" if _is_airmax_variant(lr.model_variant) else "LTU"
+    pot_floor = _link_potential_floor(lr.model_variant, settings)
     cap_floor = settings.lr_total_capacity_min_mbps
-    rate_floor = settings.lr_rx_rate_min_idx
-    # ─── 1. Signal — état (distance-banded, unchanged method) ───────────────
+    rate_floor = _rx_rate_floor(lr.model_variant, settings)
+    # ─── 1. Signal — état (flat threshold, no distance-banding) ─────────────
     signal_stat = metric_stats.get(_M_SIGNAL, {})
-    signal_warn = signal_warning_threshold(lr.distance_m)
-    band = signal_distance_band_label(lr.distance_m)
+    signal_warn = float(settings.signal_warning_dbm)
     s_mean = signal_stat.get("mean")
     s_samples = int(signal_stat.get("samples", 0))
     s_has = s_samples > 0 and s_mean is not None and not math.isnan(s_mean)
     s_active = s_has and s_mean <= signal_warn
     s_value = (
-        f"Moyenne {s_mean:.1f} dBm — seuil ≤ {signal_warn:.0f} dBm ({band})"
+        f"Moyenne {s_mean:.1f} dBm — seuil ≤ {signal_warn:.0f} dBm"
         if s_has
         else "Aucune mesure de signal sur la période"
     )
@@ -254,8 +275,8 @@ def _build_signals(
         active=s_active,
         value=s_value,
         detail=(
-            "Seuil distance-bandé : -55/-62/-68/-73/-78 dBm selon la distance"
-            f" LR–Rocket. Ce LR : {band} → seuil {signal_warn:.0f} dBm."
+            f"Seuil plat (sans distance-banding) : indicateur actif "
+            f"si la moyenne 30 j est ≤ {signal_warn:.0f} dBm."
         ),
     )
 
@@ -270,7 +291,7 @@ def _build_signals(
             unit=" %",
             fmt="{:.0f}",
             detail=(
-                "Potentiel du lien (moyenne des linkScore DL/UL). "
+                f"Potentiel du lien (moyenne des linkScore DL/UL) — famille {family}. "
                 f"Indicateur actif si la moyenne 30 j est < {pot_floor:.0f} %."
             ),
         ),
@@ -294,7 +315,7 @@ def _build_signals(
             unit="×",
             fmt="{:.0f}",
             detail=(
-                "Multiplicateur de modulation RX local (mcs.txRate). "
+                f"Multiplicateur de modulation RX local (mcs.txRate) — famille {family}. "
                 f"Indicateur actif si la moyenne 30 j est < ×{rate_floor:.0f}."
             ),
         ),
@@ -306,7 +327,7 @@ def _build_signals(
             unit="×",
             fmt="{:.0f}",
             detail=(
-                "Multiplicateur de modulation RX distant (mcs.rxRate). "
+                f"Multiplicateur de modulation RX distant (mcs.rxRate) — famille {family}. "
                 f"Indicateur actif si la moyenne 30 j est < ×{rate_floor:.0f}."
             ),
         ),

@@ -30,32 +30,32 @@ function fmt(value: number | null | undefined, suffix: string, digits = 0): stri
   return `${value.toFixed(digits)}${suffix}`
 }
 
-// Signal: distance-banded floor passed in; ~10 dB below warn = critical band.
+// Signal — seuil plat (warning ≤ -75 dBm par défaut). Critique ~10 dB plus bas.
 function signalClass(dbm: number | null, warningThreshold: number): string {
   if (dbm === null) return 'text-blue-300'
   if (dbm <= warningThreshold - 10) return 'text-red-600 font-semibold'
   if (dbm <= warningThreshold)      return 'text-amber-600 font-medium'
   return 'text-slate-700'
 }
-// Potentiel du lien — plancher 60 %.
-function potentialClass(v: number | null): string {
+// Potentiel du lien — plancher par famille (LTU 50 % / airMAX 40 %).
+function potentialClass(v: number | null, floor: number): string {
   if (v === null) return 'text-blue-300'
-  if (v < 60) return 'text-red-600 font-semibold'
-  if (v < 70) return 'text-amber-600 font-medium'
+  if (v < floor) return 'text-red-600 font-semibold'
+  if (v < floor + 10) return 'text-amber-600 font-medium'
   return 'text-slate-700'
 }
-// Capacité totale — plancher 60 Mbps.
-function capacityClass(v: number | null): string {
+// Capacité totale — plancher fixe (Mbps).
+function capacityClass(v: number | null, floor: number): string {
   if (v === null) return 'text-blue-300'
-  if (v < 60) return 'text-red-600 font-semibold'
-  if (v < 75) return 'text-amber-600 font-medium'
+  if (v < floor) return 'text-red-600 font-semibold'
+  if (v < floor + 15) return 'text-amber-600 font-medium'
   return 'text-slate-700'
 }
-// Débit RX (local/distant) — plancher ×6.
-function rateClass(v: number | null): string {
+// Débit RX (local/distant) — plancher par famille (LTU ×6 / airMAX ×6 warn, ×4 crit).
+function rateClass(v: number | null, floor: number): string {
   if (v === null) return 'text-blue-300'
-  if (v < 6) return 'text-red-600 font-semibold'
-  if (v < 8) return 'text-amber-600 font-medium'
+  if (v < floor) return 'text-red-600 font-semibold'
+  if (v < floor + 2) return 'text-amber-600 font-medium'
   return 'text-slate-700'
 }
 
@@ -101,17 +101,18 @@ export default function LrHealthPage() {
             <thead>
               <tr className="bg-blue-50">
                 <th className="text-left px-2 py-1 border-b">Indicateur</th>
-                <th className="text-left px-2 py-1 border-b">Actif si la moyenne 30 j…</th>
+                <th className="text-left px-2 py-1 border-b">LTU — actif si moyenne 30 j…</th>
+                <th className="text-left px-2 py-1 border-b">airMAX — actif si moyenne 30 j…</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-blue-50">
               <tr>
                 <td className="px-2 py-1 align-top">
                   <strong>Signal dBm</strong>
-                  <div className="text-slate-400">puissance reçue (méthode inchangée, seuil dépendant de la distance)</div>
+                  <div className="text-slate-400">puissance reçue (seuil plat)</div>
                 </td>
-                <td className="px-2 py-1 align-top">
-                  est <strong>≤ seuil distance-bandé</strong> (grille ci-dessous)
+                <td className="px-2 py-1 align-top" colSpan={2}>
+                  est <strong>≤ -75 dBm</strong> (configurable via SIGNAL_WARNING_DBM)
                 </td>
               </tr>
               <tr>
@@ -119,14 +120,15 @@ export default function LrHealthPage() {
                   <strong>Potentiel du lien</strong>
                   <div className="text-slate-400">moyenne des linkScore DL/UL (100 % = idéal)</div>
                 </td>
-                <td className="px-2 py-1 align-top">est <strong>&lt; 60 %</strong></td>
+                <td className="px-2 py-1 align-top">est <strong>&lt; 50 %</strong></td>
+                <td className="px-2 py-1 align-top">est <strong>&lt; 40 %</strong></td>
               </tr>
               <tr>
                 <td className="px-2 py-1 align-top">
                   <strong>Capacité totale</strong>
                   <div className="text-slate-400">débit total réel du lien (DL + UL)</div>
                 </td>
-                <td className="px-2 py-1 align-top">est <strong>&lt; 60 Mbps</strong></td>
+                <td className="px-2 py-1 align-top" colSpan={2}>est <strong>&lt; 60 Mbps</strong></td>
               </tr>
               <tr>
                 <td className="px-2 py-1 align-top">
@@ -134,6 +136,7 @@ export default function LrHealthPage() {
                   <div className="text-slate-400">multiplicateur de modulation RX local (1×…12×)</div>
                 </td>
                 <td className="px-2 py-1 align-top">est <strong>&lt; ×6</strong></td>
+                <td className="px-2 py-1 align-top">est <strong>&lt; ×6</strong> (critique &lt; ×4)</td>
               </tr>
               <tr>
                 <td className="px-2 py-1 align-top">
@@ -141,27 +144,8 @@ export default function LrHealthPage() {
                   <div className="text-slate-400">multiplicateur de modulation RX distant (1×…12×)</div>
                 </td>
                 <td className="px-2 py-1 align-top">est <strong>&lt; ×6</strong></td>
+                <td className="px-2 py-1 align-top">est <strong>&lt; ×6</strong> (critique &lt; ×4)</td>
               </tr>
-            </tbody>
-          </table>
-
-          <p className="pt-1">
-            <strong>Grille du seuil « Signal dBm » par distance</strong> — plus le client est loin, plus on tolère un signal faible
-            (la perte de propagation suit la loi en 20·log d) :
-          </p>
-          <table className="w-full text-[11px] border-collapse">
-            <thead>
-              <tr className="bg-blue-50">
-                <th className="text-left px-2 py-1 border-b">Distance LR ↔ Rocket</th>
-                <th className="text-left px-2 py-1 border-b">Indicateur « Signal » actif si moyenne ≤</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-blue-50">
-              <tr><td className="px-2 py-1">&lt; 1 km</td><td className="px-2 py-1"><strong>-55 dBm</strong></td></tr>
-              <tr><td className="px-2 py-1">1 – 3 km</td><td className="px-2 py-1"><strong>-62 dBm</strong></td></tr>
-              <tr><td className="px-2 py-1">3 – 7 km</td><td className="px-2 py-1"><strong>-68 dBm</strong></td></tr>
-              <tr><td className="px-2 py-1">7 – 12 km</td><td className="px-2 py-1"><strong>-73 dBm</strong></td></tr>
-              <tr><td className="px-2 py-1">&gt; 12 km</td><td className="px-2 py-1"><strong>-78 dBm</strong></td></tr>
             </tbody>
           </table>
 
@@ -251,19 +235,23 @@ export default function LrHealthPage() {
 
                         <td className="px-4 py-3 text-xs whitespace-nowrap">
                           <div className={signalClass(row.latest_signal_dbm, row.signal_warning_threshold)}
-                               title={`Seuil signal pour ce LR : ${row.signal_warning_threshold.toFixed(0)} dBm`}>
+                               title={`Seuil signal : ${row.signal_warning_threshold.toFixed(0)} dBm`}>
                             Signal {fmt(row.latest_signal_dbm, ' dBm')}
                           </div>
-                          <div className={potentialClass(row.latest_link_potential_pct)}>
+                          <div className={potentialClass(row.latest_link_potential_pct, row.link_potential_floor_pct)}
+                               title={`Plancher (${LR_MODEL_VARIANT_LABELS[row.model_variant] ?? row.model_variant}) : ${row.link_potential_floor_pct.toFixed(0)} %`}>
                             Potentiel {fmt(row.latest_link_potential_pct, ' %')}
                           </div>
-                          <div className={capacityClass(row.latest_total_capacity_mbps)}>
+                          <div className={capacityClass(row.latest_total_capacity_mbps, row.total_capacity_floor_mbps)}
+                               title={`Plancher : ${row.total_capacity_floor_mbps.toFixed(0)} Mbps`}>
                             Capacité {fmt(row.latest_total_capacity_mbps, ' Mbps', 1)}
                           </div>
-                          <div className={rateClass(row.latest_local_rx_rate_idx)}>
+                          <div className={rateClass(row.latest_local_rx_rate_idx, row.rx_rate_floor_idx)}
+                               title={`Plancher : ×${row.rx_rate_floor_idx.toFixed(0)}`}>
                             RX local {row.latest_local_rx_rate_idx !== null ? `×${row.latest_local_rx_rate_idx.toFixed(0)}` : '—'}
                           </div>
-                          <div className={rateClass(row.latest_remote_rx_rate_idx)}>
+                          <div className={rateClass(row.latest_remote_rx_rate_idx, row.rx_rate_floor_idx)}
+                               title={`Plancher : ×${row.rx_rate_floor_idx.toFixed(0)}`}>
                             RX distant {row.latest_remote_rx_rate_idx !== null ? `×${row.latest_remote_rx_rate_idx.toFixed(0)}` : '—'}
                           </div>
                         </td>

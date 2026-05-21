@@ -36,11 +36,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.core.radio_thresholds import (
-    signal_critical_threshold,
-    signal_distance_band_label,
-    signal_warning_threshold,
-)
+# Famille radio des LR : utilisée par les règles per-LR (lr_link_substandard)
+# pour choisir les seuils airMAX vs LTU. La règle lit `model_variant` injecté
+# dans la dict metrics par l'engine — voir alert_engine._inject_lr_context.
+_AIRMAX_LR_VARIANTS = frozenset({"litebeam_5ac", "litebeam_m5"})
+
+
+def _is_airmax_lr(metrics: dict) -> bool:
+    variant = metrics.get("model_variant")
+    return variant in _AIRMAX_LR_VARIANTS
 
 
 @dataclass
@@ -220,18 +224,16 @@ class SignalLowRule(AlertRule):
                 message="",
                 skip=True,
             )
-        distance_m = metrics.get("distance_m")
-        warn_dbm = signal_warning_threshold(distance_m, settings.signal_warning_dbm)
-        crit_dbm = signal_critical_threshold(distance_m, settings.signal_critical_dbm)
-        band = signal_distance_band_label(distance_m)
+        warn_dbm = float(settings.signal_warning_dbm)
+        crit_dbm = float(settings.signal_critical_dbm)
 
         # Hysteresis on a tolerance band (dBm is negative, lower = worse):
         #  - to OPEN : signal must be clearly below the threshold
-        #    (threshold − margin), so a 1-2 dBm dip never fires.
+        #    (threshold − margin), so a small dip never fires.
         #  - to RESOLVE : while an incident is already open we compare
         #    against the NOMINAL threshold, so it only clears on a genuine
         #    return to nominal — no flapping in the margin band.
-        # The engine injects the set of currently-open alert_types.
+        # Defaults strict (margin=0), engine injects the open-incident set.
         margin = float(settings.signal_tolerance_dbm)
         is_open = self.alert_type in (metrics.get("_open_alert_types") or ())
         crit_line = crit_dbm if is_open else crit_dbm - margin
@@ -246,8 +248,7 @@ class SignalLowRule(AlertRule):
                 threshold_value=float(crit_line),
                 message=(
                     f"ALERTE CRITIQUE : signal radio faible sur {device_name} : "
-                    f"{signal:.1f} dBm (seuil critique {crit_dbm:.0f} dBm, "
-                    f"bande de tolérance {margin:.0f} dBm, {band})"
+                    f"{signal:.1f} dBm (seuil critique {crit_dbm:.0f} dBm)"
                 ),
             )
         if signal < warn_line:
@@ -259,8 +260,7 @@ class SignalLowRule(AlertRule):
                 threshold_value=float(warn_line),
                 message=(
                     f"ALERTE WARNING : signal radio dégradé sur {device_name} : "
-                    f"{signal:.1f} dBm (seuil warning {warn_dbm:.0f} dBm, "
-                    f"bande de tolérance {margin:.0f} dBm, {band})"
+                    f"{signal:.1f} dBm (seuil warning {warn_dbm:.0f} dBm)"
                 ),
             )
         return AlertEvalResult(
@@ -423,9 +423,8 @@ class RadioLinkDegradedRule(AlertRule):
                 skip=True,
             )
 
-        distance_m = metrics.get("distance_m")
-        sig_warn = signal_warning_threshold(distance_m, settings.signal_warning_dbm)
-        sig_crit = signal_critical_threshold(distance_m, settings.signal_critical_dbm)
+        sig_warn = float(settings.signal_warning_dbm)
+        sig_crit = float(settings.signal_critical_dbm)
 
         if signal is not None and signal < sig_warn:
             bad_metrics.append(f"signal={signal:.1f}dBm")
@@ -880,34 +879,52 @@ class ThroughputAnomalyRule(AlertRule):
 class LrLinkSubstandardRule(AlertRule):
     """Lien client sous le seuil — incident CONSOLIDÉ (per-LR).
 
-    Un seul incident critique si AU MOINS un des planchers est franchi :
-      - link_potential_pct  < settings.lr_link_potential_min_pct   (60 %)
-      - total_capacity_mbps < settings.lr_total_capacity_min_mbps   (60 Mbps)
-      - local_rx_rate_idx   < settings.lr_rx_rate_min_idx           (×6)
-      - remote_rx_rate_idx  < settings.lr_rx_rate_min_idx           (×6)
+    Seuils par famille radio (engine injects ``model_variant`` dans metrics) :
 
-    Le message liste les métriques fautives. Seules les métriques présentes
-    sont évaluées ; si aucune n'est rapportée → skip (pas de data, on
-    n'incrémente pas l'anti-flap). Anti-flap : 5 cycles consécutifs
-    (settings.lr_link_substandard_failure_threshold) car ces métriques sont
-    très volatiles.
+    | Métrique                          | LTU                  | airMAX (Litebeam)    |
+    |-----------------------------------|----------------------|----------------------|
+    | link_potential_pct                | < 50 % → critical    | < 40 % → critical    |
+    | total_capacity_mbps               | < 60 Mbps → critical | < 60 Mbps → critical |
+    | local_rx_rate_idx / remote_rx_idx | < ×6 → critical      | < ×4 critical /      |
+    |                                   | (pas de warning)     | 4 ≤ rx < 6 → warning |
+
+    Sévérité de l'incident = pire sévérité parmi les métriques en infraction
+    (critical l'emporte). Le message liste toutes les métriques fautives.
+    Seules les métriques présentes sont évaluées ; si aucune n'est rapportée
+    → skip (pas de data, on n'incrémente pas l'anti-flap). Anti-flap :
+    5 cycles consécutifs (lr_link_substandard_failure_threshold) car ces
+    métriques sont très volatiles.
     """
 
     alert_type = "lr_link_substandard"
 
     def evaluate(self, device_name: str, metrics: dict, settings) -> AlertEvalResult:
-        # (label, value, floor, unit, fmt)
+        airmax = _is_airmax_lr(metrics)
+        link_pot_floor = (
+            settings.lr_link_potential_min_pct_airmax
+            if airmax
+            else settings.lr_link_potential_min_pct_ltu
+        )
+        rx_rate_crit = (
+            settings.lr_rx_rate_critical_idx_airmax
+            if airmax
+            else settings.lr_rx_rate_critical_idx_ltu
+        )
+        # airMAX = warning band 4-6 ; LTU = no warning, critical-only at <6
+        rx_rate_warn = settings.lr_rx_rate_warning_idx_airmax if airmax else None
+
+        # (label, value, crit_floor, warn_floor or None, unit, fmt)
         checks = [
             ("Potentiel du lien", metrics.get("link_potential_pct"),
-             settings.lr_link_potential_min_pct, "%", "{:.0f}"),
+             link_pot_floor, None, "%", "{:.0f}"),
             ("Capacité totale", metrics.get("total_capacity_mbps"),
-             settings.lr_total_capacity_min_mbps, " Mbps", "{:.1f}"),
+             settings.lr_total_capacity_min_mbps, None, " Mbps", "{:.1f}"),
             ("Débit RX local", metrics.get("local_rx_rate_idx"),
-             settings.lr_rx_rate_min_idx, "×", "{:.0f}"),
+             rx_rate_crit, rx_rate_warn, "×", "{:.0f}"),
             ("Débit RX distant", metrics.get("remote_rx_rate_idx"),
-             settings.lr_rx_rate_min_idx, "×", "{:.0f}"),
+             rx_rate_crit, rx_rate_warn, "×", "{:.0f}"),
         ]
-        present = [(n, v, fl, u, f) for (n, v, fl, u, f) in checks if v is not None]
+        present = [c for c in checks if c[1] is not None]
         if not present:
             return AlertEvalResult(
                 alert_type=self.alert_type,
@@ -919,22 +936,49 @@ class LrLinkSubstandardRule(AlertRule):
                 skip=True,
             )
 
-        breached = [(n, v, fl, u, f) for (n, v, fl, u, f) in present if v < fl]
-        if breached:
-            parts = [
-                f"{n} {f.format(v)}{u} (plancher {f.format(fl)}{u})"
-                for (n, v, fl, u, f) in breached
-            ]
-            n0, v0, fl0, _u0, _f0 = breached[0]
+        crit_parts: list[str] = []
+        warn_parts: list[str] = []
+        worst_value: float | None = None
+        worst_floor: float | None = None
+        for label, value, crit_fl, warn_fl, unit, fmt in present:
+            if value < crit_fl:
+                crit_parts.append(
+                    f"{label} {fmt.format(value)}{unit} "
+                    f"(plancher critique {fmt.format(crit_fl)}{unit})"
+                )
+                if worst_value is None:
+                    worst_value, worst_floor = float(value), float(crit_fl)
+            elif warn_fl is not None and value < warn_fl:
+                warn_parts.append(
+                    f"{label} {fmt.format(value)}{unit} "
+                    f"(plancher warning {fmt.format(warn_fl)}{unit})"
+                )
+                if worst_value is None:
+                    worst_value, worst_floor = float(value), float(warn_fl)
+
+        if crit_parts:
+            parts = crit_parts + warn_parts
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity="critical",
                 metric_name="lr_link_floors",
-                metric_value=round(float(v0), 1),
-                threshold_value=float(fl0),
+                metric_value=round(worst_value, 1) if worst_value is not None else None,
+                threshold_value=worst_floor,
                 message=(
                     f"ALERTE CRITIQUE : lien client dégradé sur {device_name} — "
                     + " ; ".join(parts)
+                ),
+            )
+        if warn_parts:
+            return AlertEvalResult(
+                alert_type=self.alert_type,
+                severity="warning",
+                metric_name="lr_link_floors",
+                metric_value=round(worst_value, 1) if worst_value is not None else None,
+                threshold_value=worst_floor,
+                message=(
+                    f"ALERTE WARNING : lien client dégradé sur {device_name} — "
+                    + " ; ".join(warn_parts)
                 ),
             )
         return AlertEvalResult(

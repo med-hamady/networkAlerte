@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.models.alert import Alert
 from app.models.alert_state import AlertState
-from app.models.device import Device
+from app.models.device import Device, Lr
 from app.models.incident import Incident
 from app.services import incident_service, notification_service
 from app.services.alert_rules import AlertEvalResult, get_failure_threshold, get_rules_for_device
@@ -325,6 +325,11 @@ async def evaluate_device_metrics(
     metrics = await _inject_throughput_baseline(db, device.id, metrics)
     # Inject open-incident set for hysteresis-aware rules (signal_low)
     metrics = await _inject_open_alert_types(db, device.id, metrics)
+    # For LRs, surface model_variant so per-family rules (lr_link_substandard)
+    # can pick LTU vs airMAX thresholds without changing the rule signature.
+    if isinstance(device, Lr) and "model_variant" not in metrics:
+        metrics = dict(metrics)
+        metrics["model_variant"] = device.model_variant
 
     active_alert_types: set[str] = set()
 

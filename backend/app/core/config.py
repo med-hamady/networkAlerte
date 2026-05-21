@@ -176,13 +176,17 @@ class Settings(BaseSettings):
     # (max_ports / rocket_port_index / port_min_speed_mbps). No global defaults.
 
     # Anomaly thresholds — radio link (LTU Rocket / LTU LR)
-    signal_warning_dbm: int = -70   # below → warning incident
+    # Operator-mandated bands (2026-05-21) : warning quand le signal descend
+    # entre -75 et -80 dBm, critical strictement sous -80 dBm. Pas de
+    # distance-banding (la grille -55/-62/-68/-73/-78 a été retirée car elle
+    # divergeait de ces seuils sur les liens courts).
+    signal_warning_dbm: int = -75   # below → warning incident
     signal_critical_dbm: int = -80  # below → critical incident
     # Tolerance band on signal: an incident opens only when the signal is
-    # this many dBm *below* the (distance-banded) threshold, so a 1-2 dBm
-    # dip at the boundary is absorbed instead of flapping into an incident.
-    # Applied to signal_low only (warning + critical). 0 = strict threshold.
-    signal_tolerance_dbm: float = 5.0
+    # this many dBm *below* the threshold, so a small dip at the boundary
+    # is absorbed instead of flapping into an incident. Default 0 = strict
+    # thresholds (anti-flap delegated to signal_failure_threshold cycles).
+    signal_tolerance_dbm: float = 0.0
     ccq_warning_pct: int = 75       # below → warning incident
     ccq_critical_pct: int = 50      # below → critical incident
     # Hysteresis band for ccq_low / ccq_ul_low: opens at threshold − this,
@@ -203,9 +207,19 @@ class Settings(BaseSettings):
     # Per-LR link floors — single source shared by the lr-health page
     # classification AND the lr_link_substandard alert rule. Below any of
     # these (30-day mean for the page, live mean for the rule) = bad link.
-    lr_link_potential_min_pct: float = 60.0    # link_potential_pct floor
-    lr_total_capacity_min_mbps: float = 60.0   # total_capacity_mbps floor
-    lr_rx_rate_min_idx: float = 6.0            # local/remote_rx_rate_idx floor (×N)
+    #
+    # link_potential et débit RX sont déclinés par famille radio (2026-05-21) :
+    # le matériel LTU et l'airMAX (Litebeam) ne supportent pas les mêmes
+    # bornes — un Litebeam à 45 % de link_potential reste exploitable alors
+    # qu'un LTU à 45 % est franchement dégradé.
+    lr_link_potential_min_pct_ltu: float = 50.0     # LTU floor (%)
+    lr_link_potential_min_pct_airmax: float = 40.0  # airMAX floor (%)
+    lr_total_capacity_min_mbps: float = 60.0        # total_capacity_mbps floor
+
+    # Débit RX (mcs idx) — LTU : critical seul ; airMAX : warning + critical.
+    lr_rx_rate_critical_idx_ltu: float = 6.0    # LTU < 6 → critical (no warn)
+    lr_rx_rate_warning_idx_airmax: float = 6.0  # airMAX : 4 ≤ rx < 6 → warning
+    lr_rx_rate_critical_idx_airmax: float = 4.0 # airMAX < 4 → critical
 
     # Anomaly thresholds — RX/TX error rate (errors / total bytes, %)
     rx_tx_error_warning_pct: float = 1.0    # above → warning

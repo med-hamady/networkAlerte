@@ -64,7 +64,7 @@ async def test_signal_warning_one_cycle_no_incident(db, settings, patch_notif):
     """1 cycle dégradé → compteur=1, seuil=2 → pas d'incident."""
     device = await _make_rocket(db)
 
-    await evaluate_device_metrics(db, device, {"signal_dbm": -75.0}, settings)
+    await evaluate_device_metrics(db, device, {"signal_dbm": -78.0}, settings)
     await db.flush()
 
     # Pas d'incident ouvert
@@ -90,7 +90,7 @@ async def test_signal_warning_three_cycles_opens_incident(db, settings, patch_no
     device = await _make_rocket(db)
 
     for _ in range(3):
-        await evaluate_device_metrics(db, device, {"signal_dbm": -75.0}, settings)
+        await evaluate_device_metrics(db, device, {"signal_dbm": -78.0}, settings)
         await db.flush()
 
     result = await db.execute(
@@ -104,8 +104,8 @@ async def test_signal_warning_three_cycles_opens_incident(db, settings, patch_no
     assert incident is not None
     assert incident.severity == "warning"
     assert incident.metric_name == "signal_dbm"
-    assert incident.metric_value == -75.0
-    assert incident.threshold_value == -70.0
+    assert incident.metric_value == -78.0
+    assert incident.threshold_value == -75.0
     assert incident.last_triggered_at is not None
 
 
@@ -135,7 +135,7 @@ async def test_signal_recovery_resolves_incident(db, settings, patch_notif):
 
     # Ouvrir l'incident
     for _ in range(3):
-        await evaluate_device_metrics(db, device, {"signal_dbm": -75.0}, settings)
+        await evaluate_device_metrics(db, device, {"signal_dbm": -78.0}, settings)
         await db.flush()
 
     # Recovery
@@ -292,7 +292,7 @@ async def test_alert_state_persisted_and_incremented(db, settings, patch_notif):
     device = await _make_rocket(db)
 
     for expected_count in range(1, 4):
-        await evaluate_device_metrics(db, device, {"signal_dbm": -75.0}, settings)
+        await evaluate_device_metrics(db, device, {"signal_dbm": -78.0}, settings)
         await db.flush()
 
         result = await db.execute(
@@ -313,7 +313,7 @@ async def test_alert_state_reset_on_recovery(db, settings, patch_notif):
 
     # 2 cycles dégradés
     for _ in range(2):
-        await evaluate_device_metrics(db, device, {"signal_dbm": -75.0}, settings)
+        await evaluate_device_metrics(db, device, {"signal_dbm": -78.0}, settings)
         await db.flush()
 
     # Recovery
@@ -381,7 +381,7 @@ async def test_radio_link_degraded_two_metrics(db, settings, patch_notif):
 
     for _ in range(3):
         await evaluate_device_metrics(db, device, {
-            "signal_dbm": -75.0,
+            "signal_dbm": -78.0,
             "cinr_db": 15.0,
         }, settings)
         await db.flush()

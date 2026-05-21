@@ -145,9 +145,15 @@ backend/app/
 | `SMTP_TO` | Destinataire(s) emails |
 | `WARNING_DIGEST_MINUTES` | Intervalle digest warnings (défaut 15 min) |
 | `PING_DOWN_THRESHOLD` | Pings consécutifs échoués avant incident (défaut 3) |
-| `SIGNAL_WARN_DBM` | Seuil signal warning (défaut -70 dBm) |
-| `SIGNAL_CRIT_DBM` | Seuil signal critical (défaut -80 dBm) |
-| `SIGNAL_TOLERANCE_DBM` | Marge de tolérance signal — l'incident `signal_low` n'ouvre qu'à `seuil − tolérance` (défaut 5 dBm ; 0 = strict) |
+| `SIGNAL_WARNING_DBM` | Seuil signal warning (défaut -75 dBm — un signal entre -75 et -80 = warning) |
+| `SIGNAL_CRITICAL_DBM` | Seuil signal critical (défaut -80 dBm — strictement sous -80 = critique) |
+| `SIGNAL_TOLERANCE_DBM` | Marge de tolérance signal — l'incident `signal_low` n'ouvre qu'à `seuil − tolérance` (défaut 0 dBm — strict ; mettre 2-5 si flapping autour du seuil) |
+| `LR_LINK_POTENTIAL_MIN_PCT_LTU` | Plancher link_potential pour les LR LTU (défaut 50 %) |
+| `LR_LINK_POTENTIAL_MIN_PCT_AIRMAX` | Plancher link_potential pour les LR airMAX/Litebeam (défaut 40 %) |
+| `LR_TOTAL_CAPACITY_MIN_MBPS` | Plancher capacité totale du lien (défaut 60 Mbps) |
+| `LR_RX_RATE_CRITICAL_IDX_LTU` | LTU : critical strict si rate local/remote < ×6 (pas de warning) |
+| `LR_RX_RATE_WARNING_IDX_AIRMAX` | airMAX : warning si rate local/remote < ×6 (défaut 6.0) |
+| `LR_RX_RATE_CRITICAL_IDX_AIRMAX` | airMAX : critical si rate local/remote < ×4 (défaut 4.0) |
 | `CCQ_WARN_PCT` | Seuil CCQ warning (défaut 75%) |
 | `CCQ_CRIT_PCT` | Seuil CCQ critical (défaut 50%) |
 | `CCQ_TOLERANCE_PCT` | Bande d'hystérésis CCQ DL+UL — ouvre à `seuil − tol`, résout au seuil nominal (défaut 5% ; 0 = strict) |
@@ -248,7 +254,7 @@ backend/app/
 | Switch | `switch_port_speed_low` | Port UP mais vitesse < 1000 Mbps |
 | Transit | `transit_unavailable` | (réservé) |
 | Transit | `lr_no_transit` | SSH OK mais ping internet échoue depuis LTU LR |
-| Lien client | `lr_link_substandard` | Incident **consolidé** per-LR : ≥1 plancher franchi (potentiel < 60 %, capacité totale < 60 Mbps, débit RX local/distant < ×6) sur 5 cycles — critique |
+| Lien client | `lr_link_substandard` | Incident **consolidé** per-LR — seuils par famille radio. LTU : potentiel < 50 % / capacité < 60 Mbps / RX < ×6 → critical. airMAX : potentiel < 40 % / capacité < 60 Mbps / RX < ×4 → critical, 4 ≤ RX < 6 → warning. Anti-flap : 5 cycles. |
 | Config | `lr_bridge_mode_misconfig` | LR détecté en mode bridge (au lieu de routeur) → le blocage client ne peut pas fonctionner ; l'opérateur doit reconfigurer le LR en routeur via airOS |
 
 ### API Endpoints

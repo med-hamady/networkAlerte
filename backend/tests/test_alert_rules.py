@@ -31,12 +31,15 @@ from app.services.alert_rules import (
 def make_settings(**overrides):
     """Return a minimal settings-like SimpleNamespace."""
     defaults = dict(
-        signal_warning_dbm=-70,
+        signal_warning_dbm=-75,
         signal_critical_dbm=-80,
+        signal_tolerance_dbm=0.0,
         ccq_warning_pct=75,
         ccq_critical_pct=50,
+        ccq_tolerance_pct=0.0,
         cinr_warning_db=20.0,
         cinr_critical_db=10.0,
+        cinr_tolerance_db=0.0,
         capacity_low_warning_pct=30.0,
         capacity_low_critical_pct=15.0,
         rx_tx_error_warning_pct=1.0,
@@ -50,6 +53,14 @@ def make_settings(**overrides):
         throughput_anomaly_drop_pct=50.0,
         throughput_anomaly_min_mbps=1.0,
         throughput_anomaly_failure_threshold=3,
+        # LR link substandard — per-family floors
+        lr_link_potential_min_pct_ltu=50.0,
+        lr_link_potential_min_pct_airmax=40.0,
+        lr_total_capacity_min_mbps=60.0,
+        lr_rx_rate_critical_idx_ltu=6.0,
+        lr_rx_rate_warning_idx_airmax=6.0,
+        lr_rx_rate_critical_idx_airmax=4.0,
+        lr_link_substandard_failure_threshold=4,
     )
     defaults.update(overrides)
     return types.SimpleNamespace(**defaults)
@@ -128,11 +139,11 @@ class TestSignalLowRule:
         assert r.severity is None
 
     def test_warning_signal(self):
-        r = self.rule.evaluate(DEVICE_NAME, {"signal_dbm": -72.0}, SETTINGS)
+        r = self.rule.evaluate(DEVICE_NAME, {"signal_dbm": -78.0}, SETTINGS)
         assert r.severity == "warning"
         assert r.alert_type == "signal_low"
-        assert r.metric_value == pytest.approx(-72.0)
-        assert r.threshold_value == -70
+        assert r.metric_value == pytest.approx(-78.0)
+        assert r.threshold_value == -75
 
     def test_critical_signal(self):
         r = self.rule.evaluate(DEVICE_NAME, {"signal_dbm": -82.0}, SETTINGS)
@@ -140,8 +151,8 @@ class TestSignalLowRule:
         assert r.threshold_value == -80
 
     def test_exactly_at_warning_threshold_is_ok(self):
-        # At exactly -70 dBm, signal is NOT below warning → no alert
-        r = self.rule.evaluate(DEVICE_NAME, {"signal_dbm": -70.0}, SETTINGS)
+        # At exactly -75 dBm, signal is NOT below warning → no alert
+        r = self.rule.evaluate(DEVICE_NAME, {"signal_dbm": -75.0}, SETTINGS)
         assert r.severity is None
 
     def test_no_metric_no_alert(self):
@@ -206,13 +217,13 @@ class TestRadioLinkDegradedRule:
 
     def test_one_bad_metric_no_alert(self):
         r = self.rule.evaluate(DEVICE_NAME, {
-            "signal_dbm": -75.0, "cinr_db": 25.0, "ccq_pct": 90.0,
+            "signal_dbm": -78.0, "cinr_db": 25.0, "ccq_pct": 90.0,
         }, SETTINGS)
         assert r.severity is None
 
     def test_two_bad_metrics_warning(self):
         r = self.rule.evaluate(DEVICE_NAME, {
-            "signal_dbm": -75.0, "cinr_db": 15.0, "ccq_pct": 90.0,
+            "signal_dbm": -78.0, "cinr_db": 15.0, "ccq_pct": 90.0,
         }, SETTINGS)
         assert r.severity == "warning"
         assert r.alert_type == "radio_link_degraded"

@@ -44,8 +44,12 @@ class BadInstallationRow(BaseModel):
     latest_local_rx_rate_idx: float | None
     latest_remote_rx_rate_idx: float | None
 
-    # Distance-banded signal threshold actually used for this LR
-    signal_warning_threshold: float
+    # Per-LR floors actually applied (distance-banding removed 2026-05-21;
+    # link_potential and rx_rate floors are family-banded LTU vs airMAX).
+    signal_warning_threshold: float       # flat — settings.signal_warning_dbm
+    link_potential_floor_pct: float       # family floor
+    total_capacity_floor_mbps: float
+    rx_rate_floor_idx: float              # family floor
 
 
 class BadInstallationsResponse(BaseModel):

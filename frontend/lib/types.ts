@@ -542,6 +542,9 @@ export interface BadInstallationRow {
   latest_remote_rx_rate_idx: number | null
 
   signal_warning_threshold: number
+  link_potential_floor_pct: number
+  total_capacity_floor_mbps: number
+  rx_rate_floor_idx: number
 }
 
 export const VERDICT_LABELS: Record<BadInstallationVerdict, string> = {

@@ -20,8 +20,9 @@ from app.services.alert_engine import evaluate_device_metrics
 
 def make_settings(**overrides):
     defaults = dict(
-        signal_warning_dbm=-70,
+        signal_warning_dbm=-75,
         signal_critical_dbm=-80,
+        signal_tolerance_dbm=0.0,
         ccq_warning_pct=75,
         ccq_critical_pct=50,
         cinr_warning_db=20.0,
@@ -125,7 +126,7 @@ async def test_signal_bad_first_cycle_no_incident():
 
         await evaluate_device_metrics(
             db, device,
-            {"signal_dbm": -75.0},
+            {"signal_dbm": -78.0},
             settings,
         )
 
@@ -166,7 +167,7 @@ async def test_signal_bad_third_cycle_opens_incident():
 
         await evaluate_device_metrics(
             db, device,
-            {"signal_dbm": -75.0},
+            {"signal_dbm": -78.0},
             settings,
         )
 

@@ -9,8 +9,7 @@ export interface ThresholdMap {
   cinr_critical_db: number
   ccq_warning_pct: number
   ccq_critical_pct: number
-  ping_latency_warn_ms: number
-  ping_latency_crit_ms: number
+  lr_latency_critical_ms: number
   battery_warning_pct: number
   battery_critical_pct: number
   // Pass-through for any other threshold key
@@ -24,8 +23,7 @@ const DEFAULTS: ThresholdMap = {
   cinr_critical_db: 10,
   ccq_warning_pct: 75,
   ccq_critical_pct: 50,
-  ping_latency_warn_ms: 100,
-  ping_latency_crit_ms: 300,
+  lr_latency_critical_ms: 100,
   battery_warning_pct: 25,
   battery_critical_pct: 10,
 }

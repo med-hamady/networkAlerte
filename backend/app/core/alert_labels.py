@@ -30,11 +30,11 @@ from app.core.alert_constants import (
     AT_LR_DISCOVERED,
     AT_LR_DOWN,
     AT_LR_IP_CHANGED,
+    AT_LR_LATENCY_HIGH,
     AT_LR_LINK_SUBSTANDARD,
     AT_LR_NO_TRANSIT,
     AT_LR_REASSIGNED,
     AT_PING_INSTABILITY,
-    AT_PING_LATENCY_HIGH,
     AT_RADIO_INTERFACE_DOWN,
     AT_RADIO_LINK_DEGRADED,
     AT_ROCKET_DOWN,
@@ -96,10 +96,10 @@ ALERT_TYPE_LABELS: dict[str, str] = {
     # Transit
     AT_TRANSIT_UNAVAILABLE:  "Transit Internet indisponible",
     AT_LR_NO_TRANSIT:        "Client (LR) sans accès Internet",
+    AT_LR_LATENCY_HIGH:      "Latence élevée du LR vers Internet",
 
     # Ping quality
-    AT_PING_INSTABILITY:     "Latence ping instable",
-    AT_PING_LATENCY_HIGH:    "Latence ping élevée",
+    AT_PING_INSTABILITY:     "Ping instable",
 
     # Sécurité
     AT_SECURITY_ANOMALY:     "Volume anormal d'écritures API détecté",
@@ -136,8 +136,8 @@ METRIC_LABELS: dict[str, str] = {
     "eth_if_up":       "État interface Ethernet",
     "peer_count":      "Nombre de clients connectés",
 
-    # Ping
-    "ping_latency_ms": "Latence ping (ms)",
+    # Ping — la seule métrique de latence exploitée est LR → Internet.
+    "lr_latency_ms":      "Latence LR → Internet (ms)",
 }
 
 

@@ -22,8 +22,8 @@ from app.core.alert_constants import (
     AT_LR_BRIDGE_MODE_MISCONFIG,
     AT_LR_DISAPPEARED,
     AT_LR_DOWN,
+    AT_LR_LATENCY_HIGH,
     AT_LR_NO_TRANSIT,
-    AT_PING_LATENCY_HIGH,
     AT_ROCKET_DOWN,
     AT_SWITCH_DOWN,
 )
@@ -64,7 +64,6 @@ logger = logging.getLogger(__name__)
 # AlertState. Picking a leading underscore keeps it out of the regular alert
 # vocabulary (no policy, no incident, no formatter touches it).
 _PING_FAILURE_STATE_KEY = "_ping_failures"
-_PING_LATENCY_FAILURE_STATE_KEY = "_ping_latency_failures"
 
 
 async def _get_ping_failure_count(session, device_id: int) -> int:
@@ -101,42 +100,8 @@ async def _set_ping_failure_count(session, device_id: int, count: int) -> None:
         state.last_evaluated_at = now
 
 
-async def _get_latency_failure_count(session, device_id: int) -> int:
-    """Read the persisted consecutive high-latency cycle count."""
-    res = await session.execute(
-        select(AlertState).where(
-            AlertState.device_id == device_id,
-            AlertState.alert_type == _PING_LATENCY_FAILURE_STATE_KEY,
-        )
-    )
-    state = res.scalar_one_or_none()
-    return state.failure_count if state else 0
-
-
-async def _set_latency_failure_count(session, device_id: int, count: int) -> None:
-    """Upsert the persisted consecutive high-latency cycle count."""
-    res = await session.execute(
-        select(AlertState).where(
-            AlertState.device_id == device_id,
-            AlertState.alert_type == _PING_LATENCY_FAILURE_STATE_KEY,
-        )
-    )
-    state = res.scalar_one_or_none()
-    now = datetime.datetime.now(datetime.UTC)
-    if state is None:
-        session.add(AlertState(
-            device_id=device_id,
-            alert_type=_PING_LATENCY_FAILURE_STATE_KEY,
-            failure_count=count,
-            last_evaluated_at=now,
-        ))
-    else:
-        state.failure_count = count
-        state.last_evaluated_at = now
-
-
 async def _send_ping_instability_email(
-    device: Device, failures: int, threshold: int, latency_ms: float | None
+    device: Device, failures: int, threshold: int,
 ) -> bool:
     """
     Send an INFO email when a device recovered from N consecutive ping failures
@@ -147,15 +112,11 @@ async def _send_ping_instability_email(
     if not recipients:
         return False
 
-    latency_str = (
-        f"{latency_ms:.1f} ms" if latency_ms is not None else "non mesurée"
-    )
     subject = f"[INFO] Instabilité ping — {device.name}"
     body_text = (
         f"Information : {device.name} ({device.ip_address}) a eu {failures} ping(s) "
         f"consécutif(s) raté(s) avant de redevenir joignable.\n\n"
-        f"Aucun incident n'a été ouvert (seuil critique = {threshold} cycles).\n"
-        f"Latence du ping de récupération : {latency_str}.\n\n"
+        f"Aucun incident n'a été ouvert (seuil critique = {threshold} cycles).\n\n"
         f"À surveiller : possible dégradation latente du lien."
     )
     body_html = (
@@ -163,56 +124,9 @@ async def _send_ping_instability_email(
         f"<p><strong>{device.name}</strong> ({device.ip_address}) a eu "
         f"<strong>{failures} ping(s) consécutif(s) raté(s)</strong> avant de redevenir "
         f"joignable.</p>"
-        f"<p>Aucun incident ouvert (seuil critique = {threshold} cycles).<br>"
-        f"Latence du ping de récupération : <strong>{latency_str}</strong>.</p>"
+        f"<p>Aucun incident ouvert (seuil critique = {threshold} cycles).</p>"
         f"<p><em>À surveiller : possible dégradation latente du lien.</em></p>"
     )
-    return await email_service.send_email(recipients, subject, body_text, body_html)
-
-
-async def _send_ping_latency_email(
-    device: Device,
-    latency_ms: float,
-    threshold_ms: float,
-    severity: str,
-    cycles: int,
-    event: str,
-) -> bool:
-    """
-    Send an email for a high-latency event (opened or resolved).
-    `event` is "opened" or "resolved".
-    """
-    settings = get_settings()
-    recipients = settings.notification_email_list
-    if not recipients:
-        return False
-
-    if event == "resolved":
-        subject = f"[RECOVERY] Latence redevenue normale — {device.name}"
-        body_text = (
-            f"La latence vers {device.name} ({device.ip_address}) est revenue sous le seuil "
-            f"({latency_ms:.1f} ms)."
-        )
-        body_html = (
-            f"<h3>Latence normale</h3>"
-            f"<p>La latence vers <strong>{device.name}</strong> ({device.ip_address}) "
-            f"est revenue sous le seuil : <strong>{latency_ms:.1f} ms</strong>.</p>"
-        )
-    else:
-        tag = "ALERTE CRITIQUE" if severity == "critical" else "ALERTE"
-        subject = f"[{tag}] Latence élevée — {device.name}"
-        body_text = (
-            f"{tag} — Latence élevée vers {device.name} ({device.ip_address}).\n"
-            f"Latence mesurée : {latency_ms:.1f} ms (seuil {severity} : {threshold_ms:.0f} ms).\n"
-            f"Cycles consécutifs au-dessus du seuil : {cycles}."
-        )
-        body_html = (
-            f"<h3>Latence élevée — {severity.upper()}</h3>"
-            f"<p><strong>{device.name}</strong> ({device.ip_address}) — "
-            f"latence mesurée : <strong>{latency_ms:.1f} ms</strong> "
-            f"(seuil {severity} : {threshold_ms:.0f} ms).</p>"
-            f"<p>Cycles consécutifs au-dessus du seuil : <strong>{cycles}</strong>.</p>"
-        )
     return await email_service.send_email(recipients, subject, body_text, body_html)
 
 
@@ -333,74 +247,87 @@ async def _resolve_and_notify(
         )
 
 
-async def _evaluate_ping_latency(
-    session, device: Device, latency_ms: float, settings,
+async def _evaluate_lr_latency(
+    session, lr: Device, avg_rtt_ms: float, settings,
 ) -> None:
     """
-    Apply latency thresholds: increment counter when above warn, open incident
-    after `ping_latency_failure_threshold` consecutive bad cycles, resolve
-    when latency drops back. Severity = critical above crit threshold.
-    Notifications are sent by email regardless of policy.
+    LR → Internet latency anti-flap: open a critical incident when the average
+    RTT measured from the LR stays at or above `lr_latency_critical_ms` for
+    `lr_latency_failure_threshold` consecutive cycles. Resolve as soon as one
+    cycle drops back below the threshold.
+
+    State (consecutive bad cycles) is persisted in AlertState keyed by
+    AT_LR_LATENCY_HIGH so it survives a backend restart.
     """
-    warn = settings.ping_latency_warn_ms
-    crit = settings.ping_latency_crit_ms
+    threshold = settings.lr_latency_critical_ms
+    needed = settings.lr_latency_failure_threshold
 
-    if latency_ms < warn:
-        # Latency back to normal — reset counter and resolve incident if any.
-        prev = await _get_latency_failure_count(session, device.id)
-        if prev > 0:
-            await _set_latency_failure_count(session, device.id, 0)
-        resolved = await incident_service.resolve_incidents(
-            session, device.id,
-            title=f"Latence élevée — {device.name}",
-            alert_type=AT_PING_LATENCY_HIGH,
+    state_res = await session.execute(
+        select(AlertState).where(
+            AlertState.device_id == lr.id,
+            AlertState.alert_type == AT_LR_LATENCY_HIGH,
         )
-        for inc in resolved:
-            ok = await _send_ping_latency_email(
-                device, latency_ms, warn, "warning", 0, "resolved",
-            )
-            await _create_alert_record(
-                session, inc, f"RECOVERY: latence normale — {device.name}", ok,
-            )
-        return
+    )
+    state = state_res.scalar_one_or_none()
+    if state is None:
+        state = AlertState(
+            device_id=lr.id,
+            alert_type=AT_LR_LATENCY_HIGH,
+            failure_count=0,
+        )
+        session.add(state)
+        await session.flush()
 
-    # Above warn threshold — bump counter.
-    cycles = await _get_latency_failure_count(session, device.id) + 1
-    await _set_latency_failure_count(session, device.id, cycles)
+    now = datetime.datetime.now(datetime.UTC)
+    state.last_evaluated_at = now
 
-    if cycles < settings.ping_latency_failure_threshold:
+    if avg_rtt_ms < threshold:
+        # Back under threshold — reset and resolve any open incident.
+        if state.failure_count > 0:
+            state.failure_count = 0
+        await _resolve_and_notify(
+            session, lr,
+            title=f"RECOVERY : latence {lr.name} → Internet redevenue normale",
+            alert_type=AT_LR_LATENCY_HIGH,
+        )
         logger.info(
-            "PING LATENCY HIGH %s (%s) — %.1f ms (%d/%d cycles, seuil non atteint)",
-            device.name, device.ip_address, latency_ms,
-            cycles, settings.ping_latency_failure_threshold,
+            "lr_latency: %s → %s = %.1f ms (< %.0f ms, OK)",
+            lr.name, settings.lr_latency_target, avg_rtt_ms, threshold,
         )
         return
 
-    severity = "critical" if latency_ms >= crit else "warning"
-    threshold_used = crit if severity == "critical" else warn
-    title = f"Latence élevée — {device.name}"
+    state.failure_count += 1
+    count = state.failure_count
+
+    if count < needed:
+        logger.warning(
+            "lr_latency: %s → %s = %.1f ms ≥ %.0f ms (%d/%d cycles, seuil non atteint)",
+            lr.name, settings.lr_latency_target, avg_rtt_ms, threshold,
+            count, needed,
+        )
+        return
+
+    title = f"ALERTE CRITIQUE : latence élevée {lr.name} → Internet"
     description = (
-        f"{device.name} ({device.ip_address}) — latence ICMP : {latency_ms:.1f} ms "
-        f"(seuil {severity} : {threshold_used:.0f} ms). "
-        f"{cycles} cycles consécutifs au-dessus du seuil warning."
+        f"Latence moyenne mesurée depuis {lr.name} ({lr.ip_address}) vers "
+        f"{settings.lr_latency_target} : {avg_rtt_ms:.1f} ms "
+        f"(seuil critique : {threshold:.0f} ms, "
+        f"moyenne sur {settings.lr_latency_ping_count} pings).\n"
+        f"{count} cycles consécutifs au-dessus du seuil."
     )
     incident, is_new = await incident_service.open_incident(
-        session, device, title, severity, description,
-        alert_type=AT_PING_LATENCY_HIGH,
-        metric_name="ping_latency_ms",
-        metric_value=latency_ms,
-        threshold_value=threshold_used,
+        session, lr, title, "critical", description,
+        alert_type=AT_LR_LATENCY_HIGH,
+        metric_name="lr_latency_ms",
+        metric_value=avg_rtt_ms,
+        threshold_value=threshold,
     )
     if is_new:
-        ok = await _send_ping_latency_email(
-            device, latency_ms, threshold_used, severity, cycles, "opened",
-        )
-        await _create_alert_record(
-            session, incident, f"{title} — {severity}", ok,
-        )
+        ok = await notification_service.notify_incident_opened(lr, incident)
+        await _create_alert_record(session, incident, f"{title}", ok)
         logger.warning(
-            "PING LATENCY HIGH %s (%s) — incident %s ouvert (%.1f ms)",
-            device.name, device.ip_address, severity, latency_ms,
+            "lr_latency: %s → %s = %.1f ms ≥ %.0f ms — incident critique ouvert (%d cycles)",
+            lr.name, settings.lr_latency_target, avg_rtt_ms, threshold, count,
         )
 
 
@@ -500,9 +427,9 @@ async def device_ping_job() -> None:
     async with async_session_factory() as session:
         for device, result in zip(devices, ping_results, strict=True):
             if isinstance(result, Exception):
-                reachable, latency_ms = False, None
+                reachable = False
             else:
-                reachable, latency_ms = result
+                reachable, _ = result  # latency_ms discarded — supervisor-side latency unused
 
             dev = await session.get(Device, device.id)
             if dev is None:
@@ -518,13 +445,10 @@ async def device_ping_job() -> None:
                 dev.status = "up"
                 dev.last_seen = now
 
-                if latency_ms is not None:
-                    session.add(DeviceMetric(
-                        device_id=dev.id,
-                        metric_name="ping_latency_ms",
-                        metric_value=latency_ms,
-                        unit="ms",
-                    ))
+                # La latence ICMP superviseur ↔ device n'est plus exploitée :
+                # seule la latence LR → Internet (lr_internet_probe_job) est
+                # utile. On garde le ping en lui-même pour le UP/DOWN, mais on
+                # ne persiste pas le RTT.
 
                 recovery_title = f"RECOVERY : {dev.name} de nouveau disponible"
                 await _resolve_and_notify(session, dev, recovery_title, alert_type=at)
@@ -537,7 +461,7 @@ async def device_ping_job() -> None:
                     and prev_failures < settings.ping_down_threshold
                 ):
                     sent = await _send_ping_instability_email(
-                        dev, prev_failures, settings.ping_down_threshold, latency_ms,
+                        dev, prev_failures, settings.ping_down_threshold,
                     )
                     logger.info(
                         "PING INSTABILITY %s (%s) — %d échec(s) puis recovery, "
@@ -546,17 +470,7 @@ async def device_ping_job() -> None:
                         "envoyé" if sent else "non envoyé",
                     )
 
-                # Latency thresholds — anti-flap N consecutive cycles.
-                if latency_ms is not None:
-                    await _evaluate_ping_latency(
-                        session, dev, latency_ms, settings,
-                    )
-
-                logger.info(
-                    "UP   %s (%s)%s",
-                    dev.name, dev.ip_address,
-                    f" — {latency_ms:.1f} ms" if latency_ms is not None else "",
-                )
+                logger.info("UP   %s (%s)", dev.name, dev.ip_address)
             else:
                 dev.status = "down"
                 failures = await _get_ping_failure_count(session, dev.id) + 1
@@ -1059,160 +973,169 @@ async def ltu_api_poll_job() -> None:
             await session.commit()
 
 
-async def lr_transit_probe_job() -> None:
-    """
-    Vérifie la connectivité internet depuis le LTU LR lui-même via SSH.
+async def _evaluate_lr_transit(
+    session, lr: Device, ping_ok: bool, settings,
+) -> None:
+    """Anti-flap "LR sans transit" — ouvre/résout AT_LR_NO_TRANSIT.
 
-    Flux décisionnel
-    ----------------
-    1. Trouve le device LTU LR en base de données.
-    2. Tente une connexion SSH sur son IP locale (ex. 10.135.x.x).
-       - Échec SSH → l'équipement est probablement éteint ou non joignable
-         sur le réseau local → on ne lève pas d'alerte transit (le job de
-         ping gère déjà la disponibilité de l'équipement).
-    3. SSH OK → exécute "ping -c 2 -W 3 <cible>" depuis le LTU LR.
-       - Au moins une cible répond → transit OK → résoudre l'incident.
-       - Aucune cible ne répond → incrémenter le compteur (AlertState) →
-         ouvrir un incident critique après N cycles consécutifs.
-
-    Le compteur de cycles est persisté en base (AlertState) et survit
-    aux redémarrages du container.
+    Appelée par `lr_internet_probe_job` après une connexion SSH réussie.
+    Compteur persisté en AlertState (clé = AT_LR_NO_TRANSIT), seuil =
+    `transit_probe_threshold` cycles consécutifs KO avant ouverture critique.
+    Résolution dès qu'un cycle repasse en succès.
     """
-    settings = get_settings()
-    probe_ips = [ip.strip() for ip in settings.transit_probe_ips.split(",") if ip.strip()]
-    if not probe_ips:
-        logger.debug("lr_transit_probe: TRANSIT_PROBE_IPS vide — job ignoré")
+    state_res = await session.execute(
+        select(AlertState).where(
+            AlertState.device_id == lr.id,
+            AlertState.alert_type == AT_LR_NO_TRANSIT,
+        )
+    )
+    state = state_res.scalar_one_or_none()
+    if state is None:
+        state = AlertState(
+            device_id=lr.id,
+            alert_type=AT_LR_NO_TRANSIT,
+            failure_count=0,
+        )
+        session.add(state)
+        await session.flush()
+
+    state.last_evaluated_at = datetime.datetime.now(datetime.UTC)
+
+    if ping_ok:
+        if state.failure_count > 0:
+            state.failure_count = 0
+        await _resolve_and_notify(
+            session, lr,
+            "RECOVERY : LTU LR de nouveau joignable depuis internet via le lien radio",
+            alert_type=AT_LR_NO_TRANSIT,
+        )
         return
 
+    state.failure_count += 1
+    count = state.failure_count
+
+    if count < settings.transit_probe_threshold:
+        logger.warning(
+            "lr_internet_probe: %s (%s) KO transit %d/%d cycles — seuil non atteint",
+            lr.name, lr.ip_address, count, settings.transit_probe_threshold,
+        )
+        return
+
+    title = "ALERTE CRITIQUE : LTU LR sans transit internet via le lien radio"
+    desc = (
+        f"SSH vers {lr.ip_address} : OK — l'équipement est joignable sur le "
+        f"réseau local.\n"
+        f"Ping vers {settings.lr_latency_target} depuis {lr.name} : ÉCHOUE "
+        f"({count} cycles consécutifs).\n"
+        f"Le LTU LR est allumé mais ne peut pas joindre internet — "
+        f"problème probable sur le lien radio ou la configuration de routage."
+    )
+    await _open_and_notify(
+        session, lr, title, "critical", desc, alert_type=AT_LR_NO_TRANSIT,
+    )
+    logger.warning(
+        "lr_internet_probe: %s (%s) — SSH OK, ping %s ÉCHOUE (%d/%d cycles)",
+        lr.name, lr.ip_address, settings.lr_latency_target,
+        count, settings.transit_probe_threshold,
+    )
+
+
+async def lr_internet_probe_job() -> None:
+    """Sonde par LR : accès Internet (transit) + latence vers Google.
+
+    Pour chaque LR ayant des credentials SSH, une seule connexion SSH par
+    cycle exécute ``ping -c N`` vers `lr_latency_target` (8.8.8.8) puis :
+
+      - SSH KO              → équipement injoignable, géré par device_ping_job,
+                              on saute (pas d'alerte ici).
+      - SSH OK, ping KO     → `AT_LR_NO_TRANSIT` (anti-flap
+                              `transit_probe_threshold` cycles, critique).
+      - SSH OK, ping OK     → `AT_LR_NO_TRANSIT` résolu si présent, puis
+                              persistance `lr_latency_ms` et évaluation de la
+                              latence (`AT_LR_LATENCY_HIGH` critique si avg ≥
+                              `lr_latency_critical_ms` sur
+                              `lr_latency_failure_threshold` cycles).
+
+    Remplace l'ancien `lr_transit_probe_job` (qui n'évaluait qu'un seul LR
+    pour des raisons historiques de maquette). Tous les LR sont désormais
+    couverts, avec une seule session SSH par cycle.
+    """
+    settings = get_settings()
+
     async with async_session_factory() as session:
-        # ── 1. Trouver le LTU LR ─────────────────────────────────────────────
-        lr_res = await session.execute(select(Lr))
-        lr = lr_res.scalars().first()
-
-        if lr is None:
-            logger.debug("lr_transit_probe: aucun LTU LR enregistré — ignoré")
-            return
-
-        if not lr.ssh_username or not lr.ssh_password:
-            logger.warning(
-                "lr_transit_probe skip — LTU LR '%s' (id=%d) : credentials SSH "
-                "manquants en base. Configure-les via PUT /api/v1/devices/%d.",
-                lr.name, lr.id, lr.id,
+        result = await session.execute(
+            select(Lr).where(
+                Lr.ssh_username.is_not(None),
+                Lr.ssh_password.is_not(None),
             )
-            return
-
-        # ── 2. Vérifier l'accès SSH sur le réseau local ──────────────────────
-        primary_pw = lr.ssh_password
-        ssh_ok, ssh_msg, observed_fp, used_pw = await ssh_service.check_ssh_access(
-            lr.ip_address,
-            lr.ssh_port,
-            lr.ssh_username,
-            primary_pw,
-            expected_fingerprint=lr.ssh_host_fingerprint,
-            fallback_passwords=settings.lr_fallback_password_list,
         )
+        lrs = list(result.scalars().all())
 
-        if ssh_ok and observed_fp and lr.ssh_host_fingerprint != observed_fp:
-            # First-seen fingerprint — pin it so subsequent connects detect MITM.
-            lr.ssh_host_fingerprint = observed_fp
+    if not lrs:
+        logger.debug("lr_internet_probe: aucun LR avec credentials SSH — ignoré")
+        return
 
-        # Fallback password worked — promote it to primary so future cycles
-        # skip the ladder. Logged so operators see the auto-heal.
-        if used_pw and used_pw != primary_pw:
-            logger.info(
-                "lr_transit_probe: LR '%s' (%s) — primary password rejected, "
-                "fallback succeeded → promoting working password on LR.",
-                lr.name, lr.ip_address,
+    logger.info("lr_internet_probe — sonde sur %d LR(s)", len(lrs))
+
+    async with async_session_factory() as session:
+        for lr in lrs:
+            dev = await session.get(Lr, lr.id)
+            if dev is None:
+                continue
+
+            primary_pw = dev.ssh_password
+            ssh_ok, ping_ok, avg_rtt, msg, observed_fp, used_pw = (
+                await ssh_service.measure_latency_via_ssh(
+                    host=dev.ip_address,
+                    port=dev.ssh_port or 22,
+                    username=dev.ssh_username,
+                    password=primary_pw,
+                    target=settings.lr_latency_target,
+                    count=settings.lr_latency_ping_count,
+                    expected_fingerprint=dev.ssh_host_fingerprint,
+                    fallback_passwords=settings.lr_fallback_password_list,
+                )
             )
-            lr.ssh_password = used_pw
-            primary_pw = used_pw
 
-        if not ssh_ok:
-            # L'équipement ne répond pas en SSH sur le réseau local.
-            # Il est peut-être éteint ou pas encore démarré.
-            # On ne lève pas d'alerte transit — le ping job s'en charge.
-            logger.info(
-                "lr_transit_probe: SSH %s:%d impossible (%s) — "
-                "équipement probablement hors-ligne, alerte transit ignorée",
-                lr.ip_address, lr.ssh_port, ssh_msg,
-            )
+            if observed_fp and dev.ssh_host_fingerprint != observed_fp:
+                dev.ssh_host_fingerprint = observed_fp
+            if used_pw and used_pw != primary_pw:
+                logger.info(
+                    "lr_internet_probe: LR '%s' (%s) — fallback password "
+                    "succeeded → promoting on LR.",
+                    dev.name, dev.ip_address,
+                )
+                dev.ssh_password = used_pw
+
+            if not ssh_ok:
+                # Géré par device_ping_job (le LR est down). Pas d'alerte ici.
+                logger.debug(
+                    "lr_internet_probe: %s (%s) SSH KO — %s (skip, géré par device_ping_job)",
+                    dev.name, dev.ip_address, msg,
+                )
+                await session.commit()
+                continue
+
+            # SSH OK — d'abord évaluer le transit (binary OK/KO).
+            await _evaluate_lr_transit(session, dev, ping_ok, settings)
+
+            # Si transit OK et RTT mesuré → métrique + évaluation latence.
+            if ping_ok and avg_rtt is not None:
+                session.add(DeviceMetric(
+                    device_id=dev.id,
+                    metric_name="lr_latency_ms",
+                    metric_value=avg_rtt,
+                    unit="ms",
+                ))
+                await _evaluate_lr_latency(session, dev, avg_rtt, settings)
+            elif ping_ok:
+                # Ping a réussi (exit 0) mais RTT non parsé — défensif.
+                logger.debug(
+                    "lr_internet_probe: %s (%s) ping OK mais RTT non parsé — %s",
+                    dev.name, dev.ip_address, msg,
+                )
+
             await session.commit()
-            return
-
-        # ── 3. Ping internet depuis le LTU LR ────────────────────────────────
-        # Pas besoin de re-passer les fallbacks ici : la vérif SSH ci-dessus a
-        # déjà promu le bon mot de passe sur le LR.
-        ping_ok, ping_detail, _, _ = await ssh_service.ping_targets_via_ssh(
-            lr.ip_address,
-            lr.ssh_port,
-            lr.ssh_username,
-            primary_pw,
-            probe_ips,
-            expected_fingerprint=lr.ssh_host_fingerprint,
-        )
-
-        # ── 4. Récupérer / créer l'AlertState pour le compteur anti-flap ─────
-        state_res = await session.execute(
-            select(AlertState).where(
-                AlertState.device_id == lr.id,
-                AlertState.alert_type == AT_LR_NO_TRANSIT,
-            )
-        )
-        state = state_res.scalar_one_or_none()
-        if state is None:
-            state = AlertState(
-                device_id=lr.id,
-                alert_type=AT_LR_NO_TRANSIT,
-                failure_count=0,
-            )
-            session.add(state)
-            await session.flush()
-
-        now = datetime.datetime.now(datetime.UTC)
-        state.last_evaluated_at = now
-
-        # ── 5. Traiter le résultat ────────────────────────────────────────────
-        if ping_ok:
-            # Transit OK — réinitialiser et résoudre
-            state.failure_count = 0
-            await _resolve_and_notify(
-                session, lr,
-                "RECOVERY : LTU LR de nouveau joignable depuis internet via le lien radio",
-                alert_type=AT_LR_NO_TRANSIT,
-            )
-            logger.info(
-                "lr_transit_probe: OK — %s atteint depuis %s via SSH",
-                ping_detail, lr.ip_address,
-            )
-        else:
-            # Transit KO — incrémenter le compteur
-            state.failure_count += 1
-            count = state.failure_count
-
-            if count >= settings.transit_probe_threshold:
-                title = "ALERTE CRITIQUE : LTU LR sans transit internet via le lien radio"
-                desc = (
-                    f"SSH vers {lr.ip_address} : OK — l'équipement est joignable sur le "
-                    f"réseau local.\n"
-                    f"Ping vers {probe_ips} depuis {lr.name} : ÉCHOUE "
-                    f"({count} cycles consécutifs).\n"
-                    f"Le LTU LR est allumé mais ne peut pas joindre internet — "
-                    f"problème probable sur le lien radio ou la configuration de routage."
-                )
-                await _open_and_notify(
-                    session, lr, title, "critical", desc, alert_type=AT_LR_NO_TRANSIT,
-                )
-                logger.warning(
-                    "lr_transit_probe: KO — %s SSH OK, ping %s ÉCHOUE (%d/%d cycles)",
-                    lr.ip_address, probe_ips, count, settings.transit_probe_threshold,
-                )
-            else:
-                logger.warning(
-                    "lr_transit_probe: KO (%d/%d) — seuil non atteint",
-                    count, settings.transit_probe_threshold,
-                )
-
-        await session.commit()
 
 
 async def stale_lr_detection_job() -> None:
@@ -1540,14 +1463,14 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         replace_existing=True,
         **safety,
     )
-    if settings.transit_probe_enabled:
-        scheduler.add_job(
-            lr_transit_probe_job,
-            trigger="interval", seconds=settings.transit_probe_interval,
-            id="transit_probe", name="LR SSH transit probe",
-            replace_existing=True,
-            **safety,
-        )
+    scheduler.add_job(
+        lr_internet_probe_job,
+        trigger="interval", seconds=settings.lr_latency_interval,
+        id="lr_internet_probe",
+        name="LR → Internet probe (transit + latency, all LRs)",
+        replace_existing=True,
+        **safety,
+    )
     scheduler.add_job(
         ltu_api_poll_job,
         trigger="interval", seconds=settings.snmp_interval_seconds,

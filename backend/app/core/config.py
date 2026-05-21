@@ -57,16 +57,25 @@ class Settings(BaseSettings):
     # déclenche un email INFO. 0 = désactivé.
     ping_instability_threshold: int = 2
 
-    # Latence ping — seuils warning/critical (ms) et anti-flap
-    ping_latency_warn_ms: float = 100.0
-    ping_latency_crit_ms: float = 300.0
-    ping_latency_failure_threshold: int = 3
-
-    # Sonde de transit — vérifie que le trafic traverse bien le lien radio
-    # IPs séparées par virgule (au moins une doit répondre pour valider le transit)
-    transit_probe_ips: str = "1.1.1.1,8.8.8.8"
-    transit_probe_interval: int = 60
+    # Sonde LR → Internet — un seul job (`lr_internet_probe_job`) ouvre une
+    # session SSH par LR par cycle et exécute `ping -c N` vers la cible
+    # `lr_latency_target` (par défaut 8.8.8.8). Deux signaux en sortent :
+    #
+    #   - Transit (binaire) : si le ping échoue après `transit_probe_threshold`
+    #     cycles consécutifs (anti-flap, défaut 2 cycles ≈ 2 min) → incident
+    #     critique `lr_no_transit`.
+    #   - Latence (continue) : si avg RTT ≥ `lr_latency_critical_ms` (défaut
+    #     100 ms) pendant `lr_latency_failure_threshold` cycles consécutifs
+    #     (défaut 3 cycles ≈ 3 min) → incident critique `lr_latency_high`.
+    #
+    # Cadence pilotée par `lr_latency_interval` (secondes, défaut 60).
     transit_probe_threshold: int = 2
+
+    lr_latency_target: str = "8.8.8.8"
+    lr_latency_ping_count: int = 5
+    lr_latency_critical_ms: float = 100.0
+    lr_latency_failure_threshold: int = 3
+    lr_latency_interval: int = 60
 
     # Notifications — SMTP email
     smtp_enabled: bool = False
@@ -124,9 +133,6 @@ class Settings(BaseSettings):
     def lr_fallback_password_list(self) -> list[str]:
         """Parse lr_fallback_ssh_passwords into a non-empty list (or empty)."""
         return [p for p in self.lr_fallback_ssh_passwords.split(",") if p]
-
-    # Transit probe — disable entirely if LTU LR is not part of the topology
-    transit_probe_enabled: bool = True
 
     # Client internet block — the enforcement job re-asserts the LAN-port
     # shutdown on every LR marked client_blocked, so a block survives an LR

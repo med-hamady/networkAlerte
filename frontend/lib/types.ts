@@ -260,8 +260,7 @@ export const ALERT_TYPE_LABELS: Record<string, string> = {
   transit_unavailable:     'Transit Internet indisponible',
   lr_no_transit:           'Client (LR) sans accès Internet',
   // Ping
-  ping_instability:        'Latence ping instable',
-  ping_latency_high:       'Latence ping élevée',
+  ping_instability:        'Ping instable',
   // Auto-découverte
   lr_discovered:           'Nouveau client (LR) détecté',
   lr_ip_changed:           "Adresse IP d'un client modifiée",
@@ -290,7 +289,7 @@ export const METRIC_LABELS: Record<string, string> = {
   radio_if_up:     'État interface radio',
   eth_if_up:       'État interface Ethernet',
   peer_count:      'Nombre de clients connectés',
-  ping_latency_ms: 'Latence ping (ms)',
+  lr_latency_ms:   'Latence LR → Internet (ms)',
 }
 
 export function metricLabel(metricName: string | null): string {

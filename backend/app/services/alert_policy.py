@@ -39,6 +39,7 @@ from app.core.alert_constants import (
     AT_LR_DISCOVERED,
     AT_LR_DOWN,
     AT_LR_IP_CHANGED,
+    AT_LR_LATENCY_HIGH,
     AT_LR_LINK_SUBSTANDARD,
     AT_LR_NO_TRANSIT,
     AT_LR_REASSIGNED,
@@ -358,6 +359,18 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
             "LTU LR joignable localement (SSH OK) mais sans internet via le lien radio · "
             "Vérifier la liaison radio Rocket↔LR · Vérifier la route par défaut du LR · "
             "Vérifier si le Rocket a une connectivité internet"
+        ),
+        notify_immediately=True,
+        channels=_CHANNELS_CRITICAL,
+    ),
+    AT_LR_LATENCY_HIGH: AlertPolicy(
+        alert_type=AT_LR_LATENCY_HIGH,
+        severity=Severity.CRITICAL,
+        recommended_action=(
+            "Latence LR → Internet (Google) au-dessus du seuil · "
+            "Vérifier la qualité du lien radio Rocket↔LR (signal, CINR, interférences) · "
+            "Vérifier la saturation du transit en amont · "
+            "Comparer avec les autres LR pour isoler la cause (locale ou globale)"
         ),
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,

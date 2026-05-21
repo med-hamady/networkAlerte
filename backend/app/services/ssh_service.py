@@ -933,3 +933,114 @@ async def ping_targets_via_ssh(
         _ping_targets_via_ssh_sync, host, port, username, password, targets,
         expected_fingerprint, fallback_passwords,
     )
+
+
+# busybox ping (airOS) prints "round-trip min/avg/max = 1.2/3.4/5.6 ms".
+# iputils prints "rtt min/avg/max/mdev = …". Same field order, single regex.
+_PING_AVG_RE = re.compile(
+    r"(?:round-trip|rtt)\s+min/avg/max(?:/mdev)?\s*=\s*"
+    r"[\d.]+/([\d.]+)/[\d.]+"
+)
+
+
+def _measure_latency_via_ssh_sync(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    target: str,
+    count: int,
+    expected_fingerprint: str | None,
+    fallback_passwords: list[str] | None,
+) -> tuple[bool, bool, float | None, str, str | None, str | None]:
+    """Open SSH on the LR and ping `target` `count` times to measure avg RTT.
+
+    Returns ``(ssh_ok, ping_ok, avg_rtt_ms, message, observed_fp, used_pw)``,
+    a 3-state result so the caller can disambiguate :
+
+      - ``ssh_ok=False``                                  → device offline
+        (handled by device_ping_job — caller should skip).
+      - ``ssh_ok=True, ping_ok=False``                    → device reachable
+        but target unreachable (= no transit). avg is None.
+      - ``ssh_ok=True, ping_ok=True, avg_rtt_ms=float``   → all good, evaluate
+        latency against threshold.
+      - ``ssh_ok=True, ping_ok=True, avg_rtt_ms=None``    → ping ran but RTT
+        line couldn't be parsed (defensive, shouldn't normally happen).
+    """
+    try:
+        transport, observed, used_pw = _open_transport(
+            host, port, username, password, expected_fingerprint,
+            fallback_passwords=fallback_passwords,
+        )
+    except _FingerprintMismatchError as exc:
+        logger.error("measure_latency host-key mismatch %s — %s", host, exc)
+        return False, False, None, str(exc), None, None
+    except Exception as exc:
+        logger.debug("measure_latency SSH connect failed %s — %s", host, exc)
+        return False, False, None, str(exc), None, None
+
+    try:
+        cmd = f"ping -c {int(count)} -W 3 {shlex.quote(target)}"
+        # busybox ping prints the summary on stdout; we need its content,
+        # not just the exit code, so use _exec_capture.
+        timeout_s = max(15, int(count) * 3 + 5)
+        code, out = _exec_capture(transport, cmd, timeout=timeout_s)
+        if code != 0:
+            # SSH OK but ping failed entirely — caller treats this as no-transit.
+            return (
+                True, False, None,
+                f"ping {target} exit={code}",
+                observed, used_pw,
+            )
+        if not out:
+            return (
+                True, False, None,
+                f"ping {target}: stdout vide",
+                observed, used_pw,
+            )
+        m = _PING_AVG_RE.search(out)
+        if not m:
+            return (
+                True, True, None,
+                f"ping {target} OK mais RTT non parsé",
+                observed, used_pw,
+            )
+        try:
+            avg = float(m.group(1))
+        except ValueError:
+            return (
+                True, True, None,
+                f"ping {target}: valeur RTT invalide",
+                observed, used_pw,
+            )
+        return (
+            True, True, avg,
+            f"{target} avg={avg:.1f} ms",
+            observed, used_pw,
+        )
+    except Exception as exc:
+        logger.debug("measure_latency exec failed %s — %s", host, exc)
+        return True, False, None, str(exc), observed, used_pw
+    finally:
+        transport.close()
+
+
+async def measure_latency_via_ssh(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    target: str,
+    count: int = 5,
+    expected_fingerprint: str | None = None,
+    fallback_passwords: list[str] | None = None,
+) -> tuple[bool, bool, float | None, str, str | None, str | None]:
+    """SSH into device and measure avg RTT of `count` pings to `target`.
+
+    Returns ``(ssh_ok, ping_ok, avg_rtt_ms, message, observed_fp, used_pw)``.
+    """
+    return await asyncio.to_thread(
+        _measure_latency_via_ssh_sync,
+        host, port, username, password, target, count,
+        expected_fingerprint, fallback_passwords,
+    )

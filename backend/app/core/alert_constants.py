@@ -108,10 +108,14 @@ AT_LR_DISAPPEARED  = "lr_disappeared"  # LR auto-découvert plus rapporté depui
 # Levé par lr_topology_check_job, résolu automatiquement si le LR repasse en routeur.
 AT_LR_BRIDGE_MODE_MISCONFIG = "lr_bridge_mode_misconfig"
 
-# Ping quality — instabilité ponctuelle (pas d'incident, info email)
-# et latence élevée (incident warning/critical, email forcé)
+# Ping quality — instabilité ponctuelle (pas d'incident, info email).
 AT_PING_INSTABILITY = "ping_instability"
-AT_PING_LATENCY_HIGH = "ping_latency_high"
+
+# Latence LR → internet (Google) mesurée par SSH depuis le LR : on ping
+# 8.8.8.8 depuis le LR et on ouvre un incident critique si la moyenne RTT
+# est ≥ seuil pendant K cycles consécutifs. Seul signal de latence du
+# système — la latence superviseur → device n'est pas exploitée.
+AT_LR_LATENCY_HIGH = "lr_latency_high"
 
 # Sécurité — volume anormal d'écritures API détecté par
 # security_anomaly_detection_job sur la base de la table audit_log. N'est PAS
@@ -132,7 +136,7 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_AIRMAX_DOWN,
     AT_LR_DISCOVERED, AT_LR_IP_CHANGED, AT_LR_REASSIGNED, AT_LR_DISAPPEARED,
     AT_LR_BRIDGE_MODE_MISCONFIG,
-    AT_PING_INSTABILITY, AT_PING_LATENCY_HIGH,
+    AT_PING_INSTABILITY, AT_LR_LATENCY_HIGH,
     AT_SECURITY_ANOMALY,
 })
 

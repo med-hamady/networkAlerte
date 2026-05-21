@@ -136,18 +136,9 @@ THRESHOLD_SCHEMA: dict[str, dict[str, Any]] = {
         "max": 100,
         "step": 1,
     },
-    # Latence ping (ms)
-    "ping_latency_warn_ms": {
-        "label": "Latence ping — seuil warning",
-        "category": "ping_latency",
-        "unit": "ms",
-        "type": float,
-        "min": 1,
-        "max": 5000,
-        "step": 5,
-    },
-    "ping_latency_crit_ms": {
-        "label": "Latence ping — seuil critique",
+    # Latence LR → Internet (ms) — seule métrique de latence exploitée.
+    "lr_latency_critical_ms": {
+        "label": "Latence LR → Internet — seuil critique",
         "category": "ping_latency",
         "unit": "ms",
         "type": float,
@@ -171,15 +162,6 @@ THRESHOLD_SCHEMA: dict[str, dict[str, Any]] = {
         "unit": "cycles",
         "type": int,
         "min": 0,
-        "max": 10,
-        "step": 1,
-    },
-    "ping_latency_failure_threshold": {
-        "label": "Latence ping — cycles consécutifs avant incident",
-        "category": "antiflap",
-        "unit": "cycles",
-        "type": int,
-        "min": 1,
         "max": 10,
         "step": 1,
     },

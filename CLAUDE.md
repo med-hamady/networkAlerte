@@ -140,9 +140,12 @@ backend/app/
 | `SWITCH_MAX_PORTS` | Nombre de ports à scanner sur le switch |
 | `SWITCH_ROCKET_PORT_INDEX` | Index du port switch connecté au Rocket (0 = désactivé) |
 | `SWITCH_PORT_MIN_SPEED_MBPS` | Vitesse minimale attendue sur ce port (défaut 1000 Mbps) |
-| `TRANSIT_PROBE_IPS` | IPs à pinger depuis le LTU LR (ex: `1.1.1.1,8.8.8.8`) |
-| `TRANSIT_PROBE_INTERVAL` | Intervalle sonde transit (secondes) |
-| `TRANSIT_PROBE_THRESHOLD` | Cycles consécutifs KO avant incident transit |
+| `LR_LATENCY_TARGET` | Cible du ping LR → Internet (défaut `8.8.8.8`). Sert à la fois à la détection de transit et à la mesure de latence |
+| `LR_LATENCY_PING_COUNT` | Nombre de pings utilisés pour la moyenne RTT (défaut 5) |
+| `LR_LATENCY_CRITICAL_MS` | Seuil critique de latence LR → Internet en ms (défaut 100 ; incident critique si avg ≥ seuil) |
+| `LR_LATENCY_FAILURE_THRESHOLD` | Cycles consécutifs ≥ seuil avant ouverture de `lr_latency_high` (défaut 3 ≈ 3 min) |
+| `LR_LATENCY_INTERVAL` | Intervalle de la sonde LR → Internet (secondes, défaut 60) |
+| `TRANSIT_PROBE_THRESHOLD` | Cycles consécutifs sans transit avant ouverture de `lr_no_transit` (défaut 2) |
 | `SLACK_WEBHOOK_URL` | Webhook Slack pour les notifications |
 | `WEBHOOK_URL` | Webhook générique (JSON POST) |
 | `SMTP_HOST` | Serveur SMTP pour les emails |
@@ -196,7 +199,7 @@ backend/app/
 - [x] **SNMP Ubiquiti** — `snmp_service.py` (radio ath0/eth0 + switch ports 1..N)
 - [x] **UISP Power polling** — `uisp_power_service.py` (voltage, current, power, batterie)
 - [x] **API HTTP LTU Rocket** — `ltu_api_service.py` (signal, CCQ, CINR, TX/RX rates, CPE peers, distance)
-- [x] **Sonde transit SSH** — `ssh_service.py` + `lr_transit_probe_job` (ping internet depuis LTU LR via SSH)
+- [x] **Sonde LR → Internet** — `ssh_service.py` + `lr_internet_probe_job` (un seul SSH/LR/cycle : ping vers Google, deux signaux en sortie — `lr_no_transit` binaire et `lr_latency_high` continue)
 - [x] **Moteur de règles d'alerte** — `alert_rules.py` (10+ règles : signal, CCQ, CINR, capacité, erreurs, interfaces, CPE, throughput anomaly EMA)
 - [x] **Alert engine** — `alert_engine.py` (évalue règles, gère AlertState DB, ouvre/résout incidents, appelle corrélation)
 - [x] **AlertState persisté en DB** — compteurs anti-flapping survivent aux redémarrages (sauf ping = in-memory)
@@ -224,7 +227,7 @@ backend/app/
 | `snmp_poll_job` | 60s | Métriques SNMP LTU radio (ath0/eth0) + Switch (ports) → alert engine |
 | `power_poll_job` | 30s | API REST UISP Power (voltage, batterie) |
 | `ltu_api_poll_job` | 60s | API HTTP LTU Rocket (signal, CCQ, CINR, CPE auto-discovery) → alert engine |
-| `lr_transit_probe_job` | 60s | SSH → LTU LR → ping internet (1.1.1.1, 8.8.8.8) — détecte coupure transit |
+| `lr_internet_probe_job` | 60s | SSH sur **chaque LR** avec credentials → `ping -c 5` vers `LR_LATENCY_TARGET` (8.8.8.8). Détecte à la fois la perte de transit (`lr_no_transit` après 2 cycles KO) et la dégradation de latence (`lr_latency_high` si avg ≥ 100 ms sur 3 cycles) |
 | `warning_digest_job` | 15 min | Regroupe les warnings en un seul message pour éviter la fatigue d'alerte |
 | `client_block_enforcement_job` | 120s | Ré-applique le blocage actif (port LAN ou filtre WhatsApp, selon `block_mode`) sur chaque LR `client_blocked` (survit au reboot du LR) |
 | `lr_topology_check_job` | 60 min | Détecte mode routeur vs bridge sur chaque LR (via SSH) ; ouvre un incident `lr_bridge_mode_misconfig` (warning) si bridge → le blocage n'est pas opérationnel sur ce LR tant qu'il n'est pas repassé en routeur |
@@ -237,7 +240,7 @@ backend/app/
 | `uisp_switch` | Ping + SNMP standard (ports, vitesse, erreurs) |
 | `uisp_power` | Ping + API REST (voltage, current, power, batterie) |
 
-### 24 Alert types
+### 25 Alert types
 | Catégorie | alert_type | Déclencheur |
 |---|---|---|
 | Disponibilité | `rocket_down` | Ping LTU Rocket échoue ×3 |
@@ -262,6 +265,7 @@ backend/app/
 | Switch | `switch_port_speed_low` | Port UP mais vitesse < 1000 Mbps |
 | Transit | `transit_unavailable` | (réservé) |
 | Transit | `lr_no_transit` | SSH OK mais ping internet échoue depuis LTU LR |
+| Transit | `lr_latency_high` | Latence moyenne LR → `8.8.8.8` ≥ `LR_LATENCY_CRITICAL_MS` (défaut 100 ms) sur 3 cycles → critique |
 | Lien client | `lr_link_substandard` | Incident **consolidé** per-LR — seuils par famille radio. LTU : potentiel < 50 % / capacité < 60 Mbps / RX < ×6 → critical. airMAX : potentiel < 40 % / capacité < 60 Mbps / RX < ×4 → critical, 4 ≤ RX < 6 → warning. Anti-flap : 5 cycles. |
 | Config | `lr_bridge_mode_misconfig` | LR détecté en mode bridge (au lieu de routeur) → le blocage client ne peut pas fonctionner ; l'opérateur doit reconfigurer le LR en routeur via airOS |
 

@@ -179,14 +179,14 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
           {metrics?.uptime_seconds?.value != null && (
             <MetricRow label="Uptime" value={formatUptime(metrics.uptime_seconds.value)} />
           )}
-          {metrics?.ping_latency_ms?.value != null && (
+          {metrics?.lr_latency_ms?.value != null && (
             <MetricRow
-              label="Latence ping"
+              label="Latence Internet (moy.)"
               value={
                 <LatencyValue
-                  ms={metrics.ping_latency_ms.value}
-                  warn={thresholds.ping_latency_warn_ms}
-                  crit={thresholds.ping_latency_crit_ms}
+                  ms={metrics.lr_latency_ms.value}
+                  warn={thresholds.lr_latency_critical_ms}
+                  crit={thresholds.lr_latency_critical_ms}
                 />
               }
             />

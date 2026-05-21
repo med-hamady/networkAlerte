@@ -106,7 +106,6 @@ const EQUIPMENT_GROUPS: EquipmentGroup[] = [
     alertTypes: [
       'device_unreachable',
       'ping_instability',
-      'ping_latency_high',
     ],
   },
 ]

@@ -1,7 +1,7 @@
 """Behavior-based classification of client LR installations.
 
 Each LR is evaluated against **5 level indicators** on a 30-day sliding
-window and gets a verdict (stable / watch / suspect / critical).
+window and gets a verdict (stable / suspect / critical).
 
 The 5 indicators (each is a "État" — the 30-day mean vs a floor; no trend):
   1. Signal dBm       — mean ≤ settings.signal_warning_dbm (flat, default -75)
@@ -11,10 +11,9 @@ The 5 indicators (each is a "État" — the 30-day mean vs a floor; no trend):
   5. Débit RX distant — mean < family floor (LTU ×6 / airMAX ×6)
 
 Verdict (number of active indicators out of 5):
-  0  → stable    (LR not surfaced)
-  1  → watch     (À surveiller)
-  2  → suspect   (Suspect — à inspecter)
-  3+ → critical  (Critique — à reprendre)
+  0-2 → stable    (LR not surfaced)
+  3   → suspect   (Suspect — à inspecter)
+  4+  → critical  (Critique — à reprendre)
 
 An indicator only fires when there is at least one sample in the window
 (missing data never penalizes a LR).
@@ -84,11 +83,11 @@ _TRACKED_METRICS: tuple[str, ...] = (
 # since 2026-05-21 — voir _link_potential_floor / _rx_rate_floor.
 
 # Verdict thresholds (out of 5 active indicators).
-_VERDICT_WATCH_AT = 1
-_VERDICT_SUSPECT_AT = 2
-_VERDICT_CRITICAL_AT = 3
+# 3 → suspect (à inspecter), 4-5 → critical. Below 3 → stable (not surfaced).
+_VERDICT_SUSPECT_AT = 3
+_VERDICT_CRITICAL_AT = 4
 
-_VERDICT_ORDER = {"critical": 0, "suspect": 1, "watch": 2}
+_VERDICT_ORDER = {"critical": 0, "suspect": 1}
 
 
 async def get_bad_installations(
@@ -116,7 +115,9 @@ async def get_bad_installations(
         )
         active = sum(1 for s in signals if s.active)
         verdict = _verdict(active)
-        if verdict == "stable":
+        # On ne surface que les LR à ≥3/5 indicateurs actifs.
+        # 3 → suspect (à inspecter), 4-5 → critical. <3 → non affiché.
+        if active < _VERDICT_SUSPECT_AT:
             continue
 
         radio = latest_metrics.get(lr.id, {})
@@ -366,6 +367,4 @@ def _verdict(active_count: int) -> str:
         return "critical"
     if active_count >= _VERDICT_SUSPECT_AT:
         return "suspect"
-    if active_count >= _VERDICT_WATCH_AT:
-        return "watch"
     return "stable"

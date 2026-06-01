@@ -509,7 +509,7 @@ export interface Recommendation {
 
 // ─── Bad installations (Liaisons clients) ──────────────────────────────────
 
-export type BadInstallationVerdict = 'watch' | 'suspect' | 'critical'
+export type BadInstallationVerdict = 'suspect' | 'critical'
 
 export interface SignalEvidence {
   key: string         // recurrence | persistence | variety | gravity | outlier | duration
@@ -547,7 +547,6 @@ export interface BadInstallationRow {
 }
 
 export const VERDICT_LABELS: Record<BadInstallationVerdict, string> = {
-  watch:    'À surveiller',
   suspect:  'Suspect — à inspecter',
   critical: 'Critique — à reprendre',
 }

@@ -11,18 +11,16 @@ import type {
 } from '@/lib/types'
 import { LR_MODEL_VARIANT_LABELS, VERDICT_LABELS } from '@/lib/types'
 
-const VERDICT_GROUPS: BadInstallationVerdict[] = ['critical', 'suspect', 'watch']
+const VERDICT_GROUPS: BadInstallationVerdict[] = ['critical', 'suspect']
 
 const VERDICT_HEADER: Record<BadInstallationVerdict, string> = {
   critical: 'bg-red-50 border-red-200 text-red-700',
   suspect:  'bg-orange-50 border-orange-200 text-orange-700',
-  watch:    'bg-amber-50 border-amber-200 text-amber-700',
 }
 
 const VERDICT_BADGE: Record<BadInstallationVerdict, string> = {
   critical: 'bg-red-100 text-red-800 border-red-300',
   suspect:  'bg-orange-100 text-orange-800 border-orange-300',
-  watch:    'bg-amber-100 text-amber-800 border-amber-300',
 }
 
 function fmt(value: number | null | undefined, suffix: string, digits = 0): string {
@@ -79,7 +77,7 @@ export default function LrHealthPage() {
           <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Liaisons clients</h1>
           <p className="text-blue-400 text-sm mt-1">
             Classification des LR clients sur 30 jours par 5 indicateurs de niveau indépendants —
-            tout LR avec ≥ 1 indicateur actif est surfacé.
+            seuls les LR avec ≥ 3 indicateurs actifs sont surfacés.
           </p>
         </div>
       </div>
@@ -161,10 +159,9 @@ export default function LrHealthPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-blue-50">
-              <tr><td className="px-2 py-1">0</td><td className="px-2 py-1">Stable</td><td className="px-2 py-1 text-slate-500">N'apparaît pas dans la liste</td></tr>
-              <tr><td className="px-2 py-1">1</td><td className="px-2 py-1"><strong>À surveiller</strong></td><td className="px-2 py-1">Bloc jaune</td></tr>
-              <tr><td className="px-2 py-1">2</td><td className="px-2 py-1"><strong>Suspect</strong></td><td className="px-2 py-1">Bloc orange</td></tr>
-              <tr><td className="px-2 py-1">3 – 5</td><td className="px-2 py-1"><strong>Critique</strong></td><td className="px-2 py-1">Bloc rouge</td></tr>
+              <tr><td className="px-2 py-1">0 – 2</td><td className="px-2 py-1">Stable</td><td className="px-2 py-1 text-slate-500">N'apparaît pas dans la liste</td></tr>
+              <tr><td className="px-2 py-1">3</td><td className="px-2 py-1"><strong>Suspect</strong></td><td className="px-2 py-1">Bloc orange</td></tr>
+              <tr><td className="px-2 py-1">4 – 5</td><td className="px-2 py-1"><strong>Critique</strong></td><td className="px-2 py-1">Bloc rouge</td></tr>
             </tbody>
           </table>
         </div>

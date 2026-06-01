@@ -33,7 +33,7 @@ class BadInstallationRow(BaseModel):
     rocket_name: str | None
 
     # Verdict (out of 5 indicators)
-    verdict: str               # watch | suspect | critical
+    verdict: str               # suspect | critical
     active_signals_count: int
     signals: list[SignalEvidence]
 

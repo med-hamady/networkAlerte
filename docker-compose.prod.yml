@@ -15,10 +15,44 @@ services:
     # Pas de bind host: nginx parle au backend via le réseau Docker interne.
     # Pour debug, exposer ponctuellement: docker compose ... run --service-ports backend
     ports: !reset []
+    environment:
+      # Le scheduler tourne dans son propre container (service `scheduler` ci-dessous).
+      # Activer ici dupliquerait chaque job → SSH/alertes en double.
+      SCHEDULER_ENABLED: "false"
+      # API stateless : on peut scaler les workers en toute sécurité maintenant
+      # que le scheduler est isolé. Ajuster selon les CPU dispo.
+      UVICORN_WORKERS: "${UVICORN_WORKERS:-2}"
     deploy:
       resources:
         limits:
           memory: 512m
+
+  scheduler:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Force-on même si le .env l'a désactivé : ce container n'existe que pour ça.
+      SCHEDULER_ENABLED: "true"
+      RUN_MODE: "scheduler"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        # Attend que l'API tourne (donc que les migrations Alembic soient passées).
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   frontend:
     build:

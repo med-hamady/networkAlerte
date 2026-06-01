@@ -1063,16 +1063,20 @@ async def lr_internet_probe_job() -> None:
     settings = get_settings()
 
     async with async_session_factory() as session:
+        # Skip LRs already known DOWN by device_ping_job — sinon chaque cycle
+        # gaspille un timeout SSH (~10–30 s) par LR mort, en série. Le LR down
+        # est déjà couvert par lr_down ; on reprend la sonde dès qu'il remonte.
         result = await session.execute(
             select(Lr).where(
                 Lr.ssh_username.is_not(None),
                 Lr.ssh_password.is_not(None),
+                Lr.status == "up",
             )
         )
         lrs = list(result.scalars().all())
 
     if not lrs:
-        logger.debug("lr_internet_probe: aucun LR avec credentials SSH — ignoré")
+        logger.debug("lr_internet_probe: aucun LR up avec credentials SSH — ignoré")
         return
 
     logger.info("lr_internet_probe — sonde sur %d LR(s)", len(lrs))

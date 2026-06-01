@@ -101,7 +101,7 @@ backend/app/
 - **Pydantic validation** : tout I/O API passe par des schemas dans `schemas/`.
 - **Config via env** : toutes les variables de config dans `.env`, lues par `Settings` (pydantic-settings). `database_url` est un `@computed_field` construit depuis les `POSTGRES_*` vars.
 - **Alembic async** : migrations via `async_engine_from_config` avec asyncpg. Créer une migration après chaque changement de modèle.
-- **Scheduler lifecycle** : lié au lifespan FastAPI. En production avec plusieurs workers, un seul worker doit tourner le scheduler (ou utiliser un job store persistant).
+- **Scheduler lifecycle** : lié au lifespan FastAPI en dev (un seul container). En prod, le scheduler tourne dans un **container dédié** (`RUN_MODE=scheduler`, entrée `app/tasks/runner.py`) et le `backend` a `SCHEDULER_ENABLED=false` → uvicorn peut scaler à plusieurs workers sans dupliquer les jobs.
 - **alert_constants.py** : source unique de vérité pour les `alert_type` strings. Ne jamais redéfinir ces constantes dans d'autres modules.
 - **AlertState** : les compteurs anti-flapping sont persistés en DB (pas in-memory) pour survivre aux redémarrages, sauf les compteurs de ping qui restent in-memory (`_failure_counts` dans jobs.py).
 - **Authentification** : toutes les routes sauf `/health` sont protégées par `verify_api_key` (header `X-API-Key`).
@@ -124,6 +124,8 @@ backend/app/
 | Variable | Rôle |
 |---|---|
 | `APP_ENV` | `development` (reload) ou `production` (workers, pas de reload) |
+| `RUN_MODE` | `api` (défaut — uvicorn + migrations) ou `scheduler` (process scheduler standalone, voir `app/tasks/runner.py`). Utilisé par le container `scheduler` en prod. |
+| `UVICORN_WORKERS` | Nombre de workers uvicorn en prod (défaut 1). Ne dépasser 1 **que** si le scheduler tourne dans son container dédié (`SCHEDULER_ENABLED=false` côté backend), sinon les jobs s'exécutent N fois. |
 | `POSTGRES_HOST` | Hôte PostgreSQL |
 | `POSTGRES_PORT` | Port PostgreSQL (défaut 5432) |
 | `POSTGRES_USER` | Utilisateur DB |
@@ -314,7 +316,7 @@ Le système est prévu pour être déployé sur un serveur physique après valid
 
 ### Points d'attention pour la production
 - Mettre `APP_ENV=production` dans le `.env` du serveur → uvicorn sans `--reload`, avec workers
-- **APScheduler + plusieurs workers** : utiliser `--workers 1` en production pour éviter les jobs dupliqués. Si passage à plusieurs workers nécessaire, ajouter un job store PostgreSQL ou Redis.
+- **Scheduler isolé en prod** : `docker-compose.prod.yml` ajoute un container dédié `scheduler` (`RUN_MODE=scheduler`, `SCHEDULER_ENABLED=true`) qui exécute APScheduler en process séparé. Le `backend` tourne avec `SCHEDULER_ENABLED=false` et peut scaler à `UVICORN_WORKERS>1` sans dupliquer les jobs (sinon chaque worker démarrerait son propre scheduler → SSH/alertes en double). Les migrations Alembic restent gérées par le container `backend` ; le `scheduler` attend `backend: service_healthy` avant de démarrer.
 - Séparer les volumes Docker pour les données PostgreSQL sur un stockage persistant.
 - Mettre en place un reverse proxy (nginx ou Caddy) devant uvicorn.
 - Remplacer les mots de passe et l'`API_KEY` par des valeurs fortes dans `.env`.

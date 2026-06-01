@@ -233,6 +233,7 @@ backend/app/
 | `warning_digest_job` | 15 min | Regroupe les warnings en un seul message pour éviter la fatigue d'alerte |
 | `client_block_enforcement_job` | 120s | Ré-applique le blocage actif (port LAN ou filtre WhatsApp, selon `block_mode`) sur chaque LR `client_blocked` (survit au reboot du LR) |
 | `lr_topology_check_job` | 60 min | Détecte mode routeur vs bridge sur chaque LR (via SSH) ; ouvre un incident `lr_bridge_mode_misconfig` (warning) si bridge → le blocage n'est pas opérationnel sur ce LR tant qu'il n'est pas repassé en routeur |
+| `lr_health_matview_refresh_job` | 15 min | `REFRESH MATERIALIZED VIEW CONCURRENTLY lr_health_metric_stats_30d` — pré-calcule l'agrégat 30 j utilisé par `/lr-health/bad-installations`. Sans cette vue, l'endpoint faisait un seq scan de ~4 s sur `device_metrics` (16 M+ rows en prod) ; avec la vue, l'endpoint passe à <100 ms. La fenêtre glissante 30 j est encodée dans la vue (`now() - interval '30 days'`), réévaluée à chaque refresh. |
 
 ### Device types reconnus
 | `device_type` | Polling |

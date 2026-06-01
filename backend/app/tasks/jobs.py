@@ -1323,6 +1323,48 @@ async def lr_topology_check_job() -> None:
             await session.commit()
 
 
+async def lr_health_matview_refresh_job() -> None:
+    """Refresh the `lr_health_metric_stats_30d` materialized view.
+
+    Uses REFRESH MATERIALIZED VIEW CONCURRENTLY so readers of /lr-health are
+    never blocked — Postgres computes the new state into a staging table
+    then swaps atomically. Requires the UNIQUE index on (device_id,
+    metric_name) created by migration o6a7b8c9d0e1.
+
+    REFRESH CONCURRENTLY must run outside an explicit transaction → we use
+    AUTOCOMMIT on the engine connection.
+
+    Cost: ~5 s of background CPU/IO every 15 min (≈ 0.5 % of one CPU).
+    Side effect: keeps the /lr-health/bad-installations endpoint <100 ms
+    instead of ~4 s seq-scan on device_metrics (16 M+ rows in prod).
+    """
+    from sqlalchemy import text
+    from app.db.session import engine
+
+    started = datetime.datetime.now(datetime.UTC)
+    try:
+        async with engine.connect() as conn:
+            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            await conn.execute(
+                text("REFRESH MATERIALIZED VIEW CONCURRENTLY lr_health_metric_stats_30d")
+            )
+        elapsed = (datetime.datetime.now(datetime.UTC) - started).total_seconds()
+        logger.info("lr_health matview refresh — done in %.2f s", elapsed)
+        if elapsed > 60:
+            # Refresh getting slow → device_metrics is outgrowing the
+            # view's scan budget. Time to think about retention.
+            logger.warning(
+                "lr_health matview refresh took %.1f s (> 60 s) — "
+                "device_metrics is large, plan retention.",
+                elapsed,
+            )
+    except Exception:
+        logger.exception(
+            "lr_health matview refresh failed — page will keep serving "
+            "the previous snapshot until next attempt",
+        )
+
+
 async def client_block_enforcement_job() -> None:
     """Re-assert every active client block so it survives an LR reboot.
 
@@ -1503,6 +1545,19 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         name="LR topology check (router vs bridge misconfig)",
         replace_existing=True,
         **safety,
+    )
+    scheduler.add_job(
+        lr_health_matview_refresh_job,
+        trigger="interval",
+        minutes=settings.lr_health_matview_refresh_interval_minutes,
+        id="lr_health_matview_refresh",
+        name="LR health matview refresh (30-day aggregate)",
+        replace_existing=True,
+        # Override misfire_grace_time: a missed refresh isn't urgent — readers
+        # just see slightly older data until the next cycle.
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=120,
     )
     if settings.client_block_enforcement_enabled:
         scheduler.add_job(

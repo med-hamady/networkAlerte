@@ -25,7 +25,7 @@ import logging
 import math
 from collections import defaultdict
 
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -55,7 +55,6 @@ def _rx_rate_floor(model_variant: str | None, settings) -> float:
     if _is_airmax_variant(model_variant):
         return settings.lr_rx_rate_warning_idx_airmax
     return settings.lr_rx_rate_critical_idx_ltu
-from app.models.device_metric import DeviceMetric
 from app.schemas.lr_health import (
     BadInstallationRow,
     BadInstallationsResponse,
@@ -167,22 +166,30 @@ async def _fetch_metric_stats(
     lr_ids: list[int],
     cutoff: datetime.datetime,
 ) -> dict[int, dict[str, dict[str, float]]]:
-    """Mean + sample count for each tracked metric over the window."""
-    q = (
-        select(
-            DeviceMetric.device_id,
-            DeviceMetric.metric_name,
-            func.avg(DeviceMetric.metric_value).label("mean"),
-            func.count(DeviceMetric.id).label("samples"),
-        )
-        .where(
-            DeviceMetric.device_id.in_(lr_ids),
-            DeviceMetric.metric_name.in_(_TRACKED_METRICS),
-            DeviceMetric.collected_at >= cutoff,
-        )
-        .group_by(DeviceMetric.device_id, DeviceMetric.metric_name)
+    """Mean + sample count for each tracked metric over the 30-day window.
+
+    Reads from the `lr_health_metric_stats_30d` materialized view (created in
+    migration o6a7b8c9d0e1, refreshed every 15 min by
+    lr_health_matview_refresh_job). The view pre-aggregates the same query
+    that used to run inline here — at prod scale (16 M+ rows) that inline
+    query did a 4 s Parallel Seq Scan on every page load. Now it's a 340-row
+    lookup on a small view, <50 ms.
+
+    The `cutoff` arg is accepted for API compatibility but ignored: the view
+    bakes in `now() - interval '30 days'` at REFRESH time, so the window
+    sliding is handled by the refresh job, not by the caller.
+    """
+    if not lr_ids:
+        return {}
+
+    sql = text(
+        """
+        SELECT device_id, metric_name, mean, samples
+        FROM lr_health_metric_stats_30d
+        WHERE device_id = ANY(CAST(:lr_ids AS integer[]))
+        """
     )
-    rows = (await db.execute(q)).all()
+    rows = (await db.execute(sql, {"lr_ids": lr_ids})).all()
     result: dict[int, dict[str, dict[str, float]]] = defaultdict(dict)
     for r in rows:
         result[r.device_id][r.metric_name] = {

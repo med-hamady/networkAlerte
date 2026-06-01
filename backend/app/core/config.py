@@ -293,6 +293,13 @@ class Settings(BaseSettings):
     # 60-min cadence is plenty and keeps SSH load low.
     lr_topology_check_interval_minutes: int = 60
 
+    # LR-health materialized view refresh interval (minutes). The view
+    # `lr_health_metric_stats_30d` pre-aggregates 30-day device_metrics so
+    # /lr-health/bad-installations serves <100 ms instead of ~4 s. 15 min
+    # is the sweet spot: a 30-day average barely moves in 15 min, and the
+    # refresh itself only costs ~5 s of background CPU/IO.
+    lr_health_matview_refresh_interval_minutes: int = 15
+
     @computed_field(repr=False)
     @property
     def database_url(self) -> str:

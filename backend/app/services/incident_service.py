@@ -62,6 +62,13 @@ async def open_incident(
         existing.last_triggered_at = datetime.datetime.now(datetime.UTC)
         if metric_value is not None:
             existing.metric_value = metric_value
+            # Refresh metric_name/threshold too so the diagnostic reflects the
+            # CURRENT worst offender (e.g. lr_link_substandard surfaces which
+            # specific floor is breached, not the generic label at first open).
+            if metric_name is not None:
+                existing.metric_name = metric_name
+            if threshold_value is not None:
+                existing.threshold_value = threshold_value
         if severity and _SEVERITY_RANK.get(severity, 0) > _SEVERITY_RANK.get(existing.severity or "", 0):
             existing.severity = severity
         return existing, False

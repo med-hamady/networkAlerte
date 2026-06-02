@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.core.alert_constants import (
+    AT_AIRMAX_DOWN,
     AT_BATTERY_LOW_CRIT,
     AT_BATTERY_LOW_WARN,
     AT_CAPACITY_LOW,
@@ -34,15 +35,18 @@ from app.core.alert_constants import (
     AT_DEVICE_UNREACHABLE,
     AT_ETH0_DOWN,
     AT_HIGH_RX_TX_ERRORS,
+    AT_LR_BRIDGE_MODE_MISCONFIG,
     AT_LR_DISCOVERED,
     AT_LR_IP_CHANGED,
     AT_LR_LATENCY_HIGH,
     AT_LR_LINK_SUBSTANDARD,
     AT_LR_NO_TRANSIT,
     AT_LR_REASSIGNED,
+    AT_PING_INSTABILITY,
     AT_RADIO_INTERFACE_DOWN,
     AT_RADIO_LINK_DEGRADED,
     AT_ROCKET_DOWN,
+    AT_SECURITY_ANOMALY,
     AT_SIGNAL_LOW,
     AT_SWITCH_DOWN,
     AT_SWITCH_PORT_DOWN,
@@ -102,6 +106,12 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     ),
     AT_DEVICE_UNREACHABLE: AlertPolicy(
         alert_type=AT_DEVICE_UNREACHABLE,
+        severity=Severity.CRITICAL,
+        notify_immediately=True,
+        channels=_CHANNELS_CRITICAL,
+    ),
+    AT_AIRMAX_DOWN: AlertPolicy(
+        alert_type=AT_AIRMAX_DOWN,
         severity=Severity.CRITICAL,
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
@@ -296,6 +306,39 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
         severity=Severity.WARNING,
         notify_immediately=True,
         channels=_CHANNELS_WARNING,
+        groupable=False,
+        recovery_notification=False,
+    ),
+
+    # --- Configuration misconfig (warning, deferred) -------------------------
+
+    AT_LR_BRIDGE_MODE_MISCONFIG: AlertPolicy(
+        alert_type=AT_LR_BRIDGE_MODE_MISCONFIG,
+        severity=Severity.WARNING,
+        notify_immediately=False,
+        channels=_CHANNELS_WARNING,
+        groupable=False,
+        recovery_notification=True,
+    ),
+
+    # --- Ping quality (informational, no recovery) ---------------------------
+
+    AT_PING_INSTABILITY: AlertPolicy(
+        alert_type=AT_PING_INSTABILITY,
+        severity=Severity.INFO,
+        notify_immediately=False,
+        channels=_CHANNELS_INFO,
+        groupable=True,
+        recovery_notification=False,
+    ),
+
+    # --- Security (critical, immediate, no recovery) -------------------------
+
+    AT_SECURITY_ANOMALY: AlertPolicy(
+        alert_type=AT_SECURITY_ANOMALY,
+        severity=Severity.CRITICAL,
+        notify_immediately=True,
+        channels=_CHANNELS_CRITICAL,
         groupable=False,
         recovery_notification=False,
     ),

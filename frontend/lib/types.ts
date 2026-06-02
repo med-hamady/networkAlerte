@@ -257,8 +257,13 @@ export const ALERT_TYPE_LABELS: Record<string, string> = {
   // Transit
   transit_unavailable:     'Transit Internet indisponible',
   lr_no_transit:           'Client (LR) sans accès Internet',
+  lr_latency_high:         'Latence élevée du LR vers Internet',
   // Ping
   ping_instability:        'Ping instable',
+  // Configuration
+  lr_bridge_mode_misconfig: 'LR en mode bridge (blocage client inopérant)',
+  // Sécurité
+  security_anomaly:        "Volume anormal d'écritures API détecté",
   // Auto-découverte
   lr_discovered:           'Nouveau client (LR) détecté',
   lr_ip_changed:           "Adresse IP d'un client modifiée",

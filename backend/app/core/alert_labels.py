@@ -26,6 +26,7 @@ from app.core.alert_constants import (
     AT_DEVICE_UNREACHABLE,
     AT_ETH0_DOWN,
     AT_HIGH_RX_TX_ERRORS,
+    AT_LR_BRIDGE_MODE_MISCONFIG,
     AT_LR_DISCOVERED,
     AT_LR_IP_CHANGED,
     AT_LR_LATENCY_HIGH,
@@ -97,6 +98,9 @@ ALERT_TYPE_LABELS: dict[str, str] = {
 
     # Ping quality
     AT_PING_INSTABILITY:     "Ping instable",
+
+    # Configuration
+    AT_LR_BRIDGE_MODE_MISCONFIG: "LR en mode bridge (blocage client inopérant)",
 
     # Sécurité
     AT_SECURITY_ANOMALY:     "Volume anormal d'écritures API détecté",

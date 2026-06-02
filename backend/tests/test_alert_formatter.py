@@ -5,7 +5,6 @@ Validates:
   - human-readable text contains all the operationally critical fields
   - email returns subject + plain body + html body, all non-empty
   - recovery format includes the duration
-  - opened format always exposes the recommended_action
 """
 
 from __future__ import annotations
@@ -21,10 +20,8 @@ from app.core.alert_constants import (
 )
 from app.core.alert_labels import alert_type_label, metric_label
 from app.services import alert_formatter
-from app.services.alert_policy import get_policy
 
-
-UTC = datetime.timezone.utc
+UTC = datetime.UTC
 
 
 def _device(**overrides) -> SimpleNamespace:
@@ -51,7 +48,6 @@ def _incident(**overrides) -> SimpleNamespace:
         metric_name=None,
         metric_value=None,
         threshold_value=None,
-        probable_cause="switch_down",
         detected_at=datetime.datetime(2026, 4, 22, 14, 5, 12, tzinfo=UTC),
         last_triggered_at=datetime.datetime(2026, 4, 22, 14, 6, 12, tzinfo=UTC),
         resolved_at=None,
@@ -72,8 +68,6 @@ def test_human_readable_opened_critical_contains_required_fields():
     assert alert_type_label(AT_ROCKET_DOWN) in out
     assert "LTU Rocket" in out
     assert "10.135.2.218" in out
-    assert "switch_down" in out  # probable_cause
-    assert get_policy(AT_ROCKET_DOWN).recommended_action.split(" · ")[0] in out
 
 
 def test_human_readable_warning_includes_metric_line():
@@ -83,7 +77,6 @@ def test_human_readable_warning_includes_metric_line():
         metric_name="ccq_pct",
         metric_value=40.0,
         threshold_value=75.0,
-        probable_cause="radio_quality_issue",
     )
     out = alert_formatter.format_human_readable(_device(), inc)
     assert "WARNING" in out
@@ -129,12 +122,6 @@ def test_email_opened_returns_subject_text_and_html():
     assert text
     assert html
     assert "<html>" in html
-    # Recommended action must appear in the HTML body
-    assert "Action recommandée" in html
-    first_action_token = (
-        get_policy(AT_ROCKET_DOWN).recommended_action.split(" · ")[0]
-    )
-    assert first_action_token in html
 
 
 def test_email_resolved_subject_and_duration_in_html():

@@ -23,7 +23,6 @@ from app.core.alert_constants import (
 from app.core.alert_labels import alert_type_label, metric_label
 from app.models.device import Device
 from app.models.incident import Incident
-from app.services.alert_policy import get_policy
 
 # ---------------------------------------------------------------------------
 # Visual identity per severity
@@ -100,7 +99,6 @@ def format_human_readable(
     event: str = NotificationEvent.OPENED,
 ) -> str:
     """Single block of text suitable for logs, terminal output, or chat."""
-    policy = get_policy(incident.alert_type)
     alert_label = alert_type_label(incident.alert_type)
 
     if event == NotificationEvent.RESOLVED:
@@ -124,10 +122,7 @@ def format_human_readable(
     metric = _metric_line(incident)
     if metric:
         lines.append(f"Métrique     : {metric}")
-    if incident.probable_cause:
-        lines.append(f"Cause probable: {incident.probable_cause}")
     lines.append(f"Début        : {_fmt_dt(incident.detected_at)}")
-    lines.append(f"Action       : {policy.recommended_action}")
     return "\n".join(lines)
 
 
@@ -144,7 +139,6 @@ def _email_subject(device: Device, incident: Incident, event: str) -> str:
 
 
 def _email_html_opened(device: Device, incident: Incident) -> str:
-    policy = get_policy(incident.alert_type)
     severity = incident.severity or Severity.WARNING
     color = _SEVERITY_COLOR.get(severity, "#95a5a6")
     label = _severity_label(severity)
@@ -155,11 +149,6 @@ def _email_html_opened(device: Device, incident: Incident) -> str:
         f"<tr><td style='padding:6px 0;color:#555;'>Métrique</td>"
         f"<td style='padding:6px 0;'>{metric}</td></tr>"
         if metric else ""
-    )
-    cause_row = (
-        f"<tr><td style='padding:6px 0;color:#555;'>Cause probable</td>"
-        f"<td style='padding:6px 0;'>{incident.probable_cause}</td></tr>"
-        if incident.probable_cause else ""
     )
     desc_row = (
         f"<tr><td style='padding:6px 0;color:#555;'>Description</td>"
@@ -190,16 +179,10 @@ def _email_html_opened(device: Device, incident: Incident) -> str:
                            border-radius:4px;font-size:12px;">{label}</span>
             </td></tr>
         {metric_row}
-        {cause_row}
         {desc_row}
         <tr><td style="padding:6px 0;color:#555;">Détecté le</td>
             <td style="padding:6px 0;">{_fmt_dt(incident.detected_at)}</td></tr>
       </table>
-
-      <div style="margin-top:20px;padding:15px;background:#fafafa;border-left:4px solid {color};">
-        <strong style="color:#333;">Action recommandée</strong><br>
-        <span style="color:#555;font-size:13px;">{policy.recommended_action}</span>
-      </div>
 
       <hr style="border:none;border-top:1px solid #eee;margin:20px 0;">
       <p style="color:#888;font-size:12px;margin:0;">

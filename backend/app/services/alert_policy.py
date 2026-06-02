@@ -3,7 +3,6 @@ Alert policy registry — single source of truth for operational metadata
 attached to each alert_type:
 
     severity            : default severity (or DYNAMIC if the rule decides)
-    recommended_action  : human-readable next steps for the on-call team
     notify_immediately  : if True the notification is sent on the spot
     channels            : tuple of channels eligible for this alert_type
     groupable           : warnings can be batched in a future digest
@@ -66,7 +65,6 @@ class AlertPolicy:
 
     alert_type: str
     severity: str                          # info | warning | critical | dynamic
-    recommended_action: str
     notify_immediately: bool
     channels: tuple[str, ...]
     groupable: bool = False
@@ -93,30 +91,18 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_ROCKET_DOWN: AlertPolicy(
         alert_type=AT_ROCKET_DOWN,
         severity=Severity.CRITICAL,
-        recommended_action=(
-            "Vérifier le switch · Vérifier le port du Rocket sur le switch · "
-            "Vérifier l'alimentation du Rocket · Vérifier l'accessibilité locale du Rocket"
-        ),
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
     ),
     AT_SWITCH_DOWN: AlertPolicy(
         alert_type=AT_SWITCH_DOWN,
         severity=Severity.CRITICAL,
-        recommended_action=(
-            "Vérifier alimentation du switch · Vérifier uplink · "
-            "Vérifier accessibilité locale · Vérifier si plusieurs équipements sont impactés"
-        ),
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
     ),
     AT_DEVICE_UNREACHABLE: AlertPolicy(
         alert_type=AT_DEVICE_UNREACHABLE,
         severity=Severity.CRITICAL,
-        recommended_action=(
-            "Vérifier alimentation et accessibilité réseau de l'équipement · "
-            "Vérifier le segment réseau · Vérifier les équipements en amont"
-        ),
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
     ),
@@ -126,30 +112,18 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_RADIO_INTERFACE_DOWN: AlertPolicy(
         alert_type=AT_RADIO_INTERFACE_DOWN,
         severity=Severity.CRITICAL,
-        recommended_action=(
-            "Vérifier ath0 du Rocket · Redémarrer la radio si accessible · "
-            "Vérifier configuration radio"
-        ),
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
     ),
     AT_ETH0_DOWN: AlertPolicy(
         alert_type=AT_ETH0_DOWN,
         severity=Severity.CRITICAL,
-        recommended_action=(
-            "Vérifier le câble Rocket↔switch · Vérifier le port du switch · "
-            "Vérifier le SFP/patch si applicable"
-        ),
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
     ),
     AT_CPE_DISCONNECTED: AlertPolicy(
         alert_type=AT_CPE_DISCONNECTED,
         severity=Severity.CRITICAL,
-        recommended_action=(
-            "Vérifier que le LTU LR est allumé · Vérifier la liaison radio · "
-            "Vérifier l'association CPE · Vérifier les dernières métriques radio"
-        ),
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
     ),
@@ -159,10 +133,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_SIGNAL_LOW: AlertPolicy(
         alert_type=AT_SIGNAL_LOW,
         severity=Severity.WARNING,
-        recommended_action=(
-            "Vérifier orientation antenne · Vérifier obstacles ou interférences · "
-            "Vérifier si l'impact est local ou global"
-        ),
         notify_immediately=False,
         channels=_CHANNELS_WARNING,
         groupable=True,
@@ -170,10 +140,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_CINR_LOW: AlertPolicy(
         alert_type=AT_CINR_LOW,
         severity=Severity.WARNING,
-        recommended_action=(
-            "Vérifier interférences · Vérifier qualité spectrale · "
-            "Corréler avec signal_low/ccq_low"
-        ),
         notify_immediately=False,
         channels=_CHANNELS_WARNING,
         groupable=True,
@@ -181,10 +147,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_CCQ_LOW: AlertPolicy(
         alert_type=AT_CCQ_LOW,
         severity=Severity.WARNING,
-        recommended_action=(
-            "Vérifier la qualité radio · Vérifier CINR · "
-            "Vérifier signal · Vérifier stabilité du lien"
-        ),
         notify_immediately=False,
         channels=_CHANNELS_WARNING,
         groupable=True,
@@ -192,10 +154,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_RADIO_LINK_DEGRADED: AlertPolicy(
         alert_type=AT_RADIO_LINK_DEGRADED,
         severity=Severity.DYNAMIC,    # rule chooses warning OR critical
-        recommended_action=(
-            "Vérifier signal, CINR et CCQ ensemble · "
-            "Identifier la métrique la plus dégradée · Vérifier interférences"
-        ),
         notify_immediately=False,     # overridden when severity == critical
         channels=_CHANNELS_WARNING,
         groupable=True,
@@ -206,10 +164,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_CAPACITY_LOW: AlertPolicy(
         alert_type=AT_CAPACITY_LOW,
         severity=Severity.WARNING,
-        recommended_action=(
-            "Vérifier débit théorique vs réel · Vérifier contention · "
-            "Vérifier qualité radio"
-        ),
         notify_immediately=False,
         channels=_CHANNELS_WARNING,
         groupable=True,
@@ -217,10 +171,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_HIGH_RX_TX_ERRORS: AlertPolicy(
         alert_type=AT_HIGH_RX_TX_ERRORS,
         severity=Severity.WARNING,
-        recommended_action=(
-            "Vérifier qualité du câble · Vérifier interférences radio · "
-            "Vérifier saturation interface"
-        ),
         notify_immediately=False,
         channels=_CHANNELS_WARNING,
         groupable=True,
@@ -228,10 +178,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_THROUGHPUT_ANOMALY: AlertPolicy(
         alert_type=AT_THROUGHPUT_ANOMALY,
         severity=Severity.WARNING,
-        recommended_action=(
-            "Vérifier si chute soudaine du trafic · Comparer à la baseline · "
-            "Vérifier les métriques radio"
-        ),
         notify_immediately=False,
         channels=_CHANNELS_WARNING,
         groupable=True,
@@ -239,11 +185,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_LR_LINK_SUBSTANDARD: AlertPolicy(
         alert_type=AT_LR_LINK_SUBSTANDARD,
         severity=Severity.CRITICAL,
-        recommended_action=(
-            "Lien client sous au moins un plancher (potentiel/capacité/débit RX) "
-            "sur ~5 min · Vérifier alignement antenne et ligne de visée · "
-            "Vérifier interférences et largeur de canal · Reprendre l'installation"
-        ),
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
         groupable=False,
@@ -254,10 +195,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_CCQ_UL_LOW: AlertPolicy(
         alert_type=AT_CCQ_UL_LOW,
         severity=Severity.WARNING,
-        recommended_action=(
-            "Vérifier la qualité radio UL · Vérifier CINR UL · "
-            "Vérifier signal côté CPE · Vérifier stabilité du lien montant"
-        ),
         notify_immediately=False,
         channels=_CHANNELS_WARNING,
         groupable=True,
@@ -265,10 +202,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_CINR_UL_LOW: AlertPolicy(
         alert_type=AT_CINR_UL_LOW,
         severity=Severity.WARNING,
-        recommended_action=(
-            "Vérifier interférences côté CPE · Vérifier qualité spectrale UL · "
-            "Corréler avec cinr_low/ccq_ul_low"
-        ),
         notify_immediately=False,
         channels=_CHANNELS_WARNING,
         groupable=True,
@@ -276,10 +209,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_CAPACITY_UL_LOW: AlertPolicy(
         alert_type=AT_CAPACITY_UL_LOW,
         severity=Severity.WARNING,
-        recommended_action=(
-            "Vérifier débit UL théorique vs réel · Vérifier contention montante · "
-            "Vérifier qualité radio UL"
-        ),
         notify_immediately=False,
         channels=_CHANNELS_WARNING,
         groupable=True,
@@ -290,20 +219,12 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_UISP_POWER_UNREACH: AlertPolicy(
         alert_type=AT_UISP_POWER_UNREACH,
         severity=Severity.CRITICAL,
-        recommended_action=(
-            "Vérifier alimentation UISP Power · Vérifier accessibilité réseau · "
-            "Vérifier API HTTPS"
-        ),
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
     ),
     AT_BATTERY_LOW_WARN: AlertPolicy(
         alert_type=AT_BATTERY_LOW_WARN,
         severity=Severity.WARNING,
-        recommended_action=(
-            "Vérifier état batterie UISP Power · Vérifier secteur · "
-            "Anticiper remplacement"
-        ),
         notify_immediately=False,
         channels=_CHANNELS_WARNING,
         groupable=True,
@@ -311,21 +232,12 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_BATTERY_LOW_CRIT: AlertPolicy(
         alert_type=AT_BATTERY_LOW_CRIT,
         severity=Severity.CRITICAL,
-        recommended_action=(
-            "Intervention immédiate sur l'UPS · Vérifier autonomie restante · "
-            "Préparer plan de bascule"
-        ),
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
     ),
     AT_VOLTAGE_ANOMALY: AlertPolicy(
         alert_type=AT_VOLTAGE_ANOMALY,
         severity=Severity.CRITICAL,
-        recommended_action=(
-            "Tension hors plage (< 20 V ou > 56 V) — risque matériel · "
-            "Vérifier alimentation secteur · Vérifier batterie UISP Power · "
-            "Vérifier câblage et disjoncteur"
-        ),
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
         groupable=False,
@@ -333,54 +245,30 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_TRANSIT_UNAVAILABLE: AlertPolicy(
         alert_type=AT_TRANSIT_UNAVAILABLE,
         severity=Severity.CRITICAL,
-        recommended_action=(
-            "Vérifier opérateur transit · Vérifier route par défaut · "
-            "Vérifier équipement de bordure"
-        ),
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
     ),
     AT_LR_NO_TRANSIT: AlertPolicy(
         alert_type=AT_LR_NO_TRANSIT,
         severity=Severity.CRITICAL,
-        recommended_action=(
-            "LTU LR joignable localement (SSH OK) mais sans internet via le lien radio · "
-            "Vérifier la liaison radio Rocket↔LR · Vérifier la route par défaut du LR · "
-            "Vérifier si le Rocket a une connectivité internet"
-        ),
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
     ),
     AT_LR_LATENCY_HIGH: AlertPolicy(
         alert_type=AT_LR_LATENCY_HIGH,
         severity=Severity.CRITICAL,
-        recommended_action=(
-            "Latence LR → Internet (Google) au-dessus du seuil · "
-            "Vérifier la qualité du lien radio Rocket↔LR (signal, CINR, interférences) · "
-            "Vérifier la saturation du transit en amont · "
-            "Comparer avec les autres LR pour isoler la cause (locale ou globale)"
-        ),
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
     ),
     AT_SWITCH_PORT_DOWN: AlertPolicy(
         alert_type=AT_SWITCH_PORT_DOWN,
         severity=Severity.CRITICAL,
-        recommended_action=(
-            "Vérifier câble du port concerné · Vérifier équipement en bout de lien · "
-            "Vérifier configuration du port"
-        ),
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
     ),
     AT_SWITCH_PORT_SPEED_LOW: AlertPolicy(
         alert_type=AT_SWITCH_PORT_SPEED_LOW,
         severity=Severity.CRITICAL,
-        recommended_action=(
-            "Port UP mais vitesse < 1000 Mbps (lien dégradé) · "
-            "Vérifier qualité du câble RJ45 · Vérifier auto-négociation des deux côtés · "
-            "Remplacer le câble ou le transceiver si nécessaire"
-        ),
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
     ),
@@ -390,10 +278,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_LR_DISCOVERED: AlertPolicy(
         alert_type=AT_LR_DISCOVERED,
         severity=Severity.INFO,
-        recommended_action=(
-            "Nouveau LTU LR détecté en peer d'un Rocket — vérifier les informations "
-            "(nom, localisation, MAC) et compléter si nécessaire dans le dashboard."
-        ),
         notify_immediately=False,
         channels=(AlertChannel.EMAIL,),
         groupable=False,
@@ -402,11 +286,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_LR_IP_CHANGED: AlertPolicy(
         alert_type=AT_LR_IP_CHANGED,
         severity=Severity.WARNING,
-        recommended_action=(
-            "L'adresse IP d'un LR a changé (MAC inchangée) — vérifier la cohérence "
-            "DHCP/configuration · Vérifier qu'aucune session SSH/API ne pointe vers "
-            "l'ancienne IP"
-        ),
         notify_immediately=False,
         channels=(AlertChannel.EMAIL,),
         groupable=False,
@@ -415,11 +294,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     AT_LR_REASSIGNED: AlertPolicy(
         alert_type=AT_LR_REASSIGNED,
         severity=Severity.WARNING,
-        recommended_action=(
-            "Un LR a basculé vers un autre Rocket — vérifier la couverture radio · "
-            "Vérifier si le bascule est volontaire ou symptôme d'une panne · "
-            "Vérifier la qualité du nouveau lien"
-        ),
         notify_immediately=True,
         channels=_CHANNELS_WARNING,
         groupable=False,
@@ -435,7 +309,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
 _FALLBACK_POLICY = AlertPolicy(
     alert_type="_unknown",
     severity=Severity.WARNING,
-    recommended_action="Investigation requise — type d'alerte non répertorié dans la policy.",
     notify_immediately=False,
     channels=(AlertChannel.EMAIL,),
     groupable=False,
@@ -455,8 +328,8 @@ def get_policy(alert_type: str | None) -> AlertPolicy:
 
 
 # Whitelist of fields a per-device override may touch.
-# Severity, alert_type and recommended_action are intentionally excluded:
-# overrides are about *how* an alert is delivered, not about reclassifying it.
+# Severity and alert_type are intentionally excluded: overrides are about
+# *how* an alert is delivered, not about reclassifying it.
 _OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
     "notify_immediately",
     "channels",

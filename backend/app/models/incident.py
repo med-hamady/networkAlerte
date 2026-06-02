@@ -27,7 +27,6 @@ class Incident(Base):
     metric_name: Mapped[str | None] = mapped_column(String(100))        # "signal_dbm"
     metric_value: Mapped[float | None] = mapped_column(Float)           # measured value
     threshold_value: Mapped[float | None] = mapped_column(Float)        # crossed threshold
-    probable_cause: Mapped[str | None] = mapped_column(String(100))     # correlation result
     last_triggered_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Digest batching: marker timestamp set when this incident has been

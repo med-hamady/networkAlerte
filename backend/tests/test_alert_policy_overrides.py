@@ -3,7 +3,7 @@ Tests for per-device policy overrides.
 
 Validates:
   - merge_overrides applies whitelisted fields and ignores the rest
-  - severity / alert_type / recommended_action cannot be overridden
+  - severity / alert_type cannot be overridden
   - invalid channels are filtered, base policy is preserved when patch is empty
   - get_policy_for_device returns a fresh policy reflecting the override
   - missing or malformed override input is handled gracefully
@@ -22,7 +22,6 @@ from app.services.alert_policy import (
     get_policy_for_device,
     merge_overrides,
 )
-
 
 # ---------------------------------------------------------------------------
 # merge_overrides
@@ -76,12 +75,6 @@ def test_merge_overrides_does_not_change_severity():
     base = get_policy(AT_SIGNAL_LOW)
     merged = merge_overrides(base, {"severity": "critical"})
     assert merged.severity == base.severity
-
-
-def test_merge_overrides_does_not_change_recommended_action():
-    base = get_policy(AT_SIGNAL_LOW)
-    merged = merge_overrides(base, {"recommended_action": "ignore"})
-    assert merged.recommended_action == base.recommended_action
 
 
 def test_merge_overrides_channels_must_be_list_or_tuple():

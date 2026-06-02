@@ -6,23 +6,23 @@ settings object and a metrics dict.
 """
 
 import types
+
 import pytest
 
 from app.services.alert_rules import (
-    RadioInterfaceDownRule,
-    Eth0DownRule,
-    CPEDisconnectedRule,
-    SignalLowRule,
-    CINRLowRule,
-    CCQLowRule,
-    RadioLinkDegradedRule,
     CapacityLowRule,
+    CCQLowRule,
+    CINRLowRule,
+    CPEDisconnectedRule,
+    Eth0DownRule,
     HighRxTxErrorsRule,
+    RadioInterfaceDownRule,
+    RadioLinkDegradedRule,
+    SignalLowRule,
     ThroughputAnomalyRule,
-    get_rules_for_device,
     get_failure_threshold,
+    get_rules_for_device,
 )
-
 
 # ---------------------------------------------------------------------------
 # Minimal settings stub

@@ -11,7 +11,6 @@ The engine:
   5. Opens incidents when the failure threshold is reached
   6. Resolves incidents when the condition clears
   7. Updates last_triggered_at on every active cycle
-  8. Calls the correlation engine to set probable_cause
 """
 
 from __future__ import annotations
@@ -231,71 +230,6 @@ async def _inject_open_alert_types(
 
 
 # ---------------------------------------------------------------------------
-# Correlation — update probable_cause on open incidents
-# ---------------------------------------------------------------------------
-
-async def _apply_correlation(
-    db: AsyncSession,
-    device: Device,
-    active_alert_types: set[str],
-) -> None:
-    """
-    Call the correlation engine (with temporal refinement) and update
-    probable_cause on all open incidents for this device.
-    """
-    from app.services.alert_correlation import determine_probable_cause
-
-    # Build device statuses map — LIMIT keeps memory bounded on large deployments
-    result = await db.execute(select(Device).limit(500))
-    all_devices = list(result.scalars().all())
-
-    device_statuses: dict[str, str] = {}
-    device_by_role: dict[str, Device] = {}
-    for d in all_devices:
-        if d.rule_category == "ltu_rocket":
-            device_statuses["rocket"] = d.status
-            device_by_role["rocket"] = d
-        elif d.rule_category == "lr":
-            device_statuses["lr"] = d.status
-        elif d.rule_category == "uisp_switch":
-            device_statuses["switch"] = d.status
-            device_by_role["switch"] = d
-
-    # Fetch detection timestamps for switch/rocket down incidents (temporal correlation)
-    incident_timestamps: dict[str, datetime.datetime] = {}
-    _device_down_alert_types = {
-        "switch_down", "rocket_down", "device_down",
-    }
-    for role, d in device_by_role.items():
-        ts_result = await db.execute(
-            select(Incident.detected_at).where(
-                Incident.device_id == d.id,
-                Incident.status == "open",
-                Incident.alert_type.in_(_device_down_alert_types),
-            ).order_by(Incident.detected_at.asc()).limit(1)
-        )
-        ts = ts_result.scalar_one_or_none()
-        if ts is not None:
-            incident_timestamps[f"{role}_down"] = ts
-
-    cause = determine_probable_cause(
-        device_statuses, active_alert_types, incident_timestamps or None
-    )
-    if cause is None:
-        return
-
-    open_incidents = await db.execute(
-        select(Incident).where(
-            Incident.device_id == device.id,
-            Incident.status == "open",
-        )
-    )
-    for inc in open_incidents.scalars().all():
-        if inc.probable_cause != cause:
-            inc.probable_cause = cause
-
-
-# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -331,8 +265,6 @@ async def evaluate_device_metrics(
         metrics = dict(metrics)
         metrics["model_variant"] = device.model_variant
 
-    active_alert_types: set[str] = set()
-
     for rule in rules:
         eval_result: AlertEvalResult = rule.evaluate(device.name, metrics, settings)
         if eval_result.skip:
@@ -350,7 +282,6 @@ async def evaluate_device_metrics(
                 # threshold=0 → opens on first bad cycle (count=1 > 0)
                 # threshold=2 → opens on third bad cycle (count=3 > 2)
                 await _open_alert(db, device, eval_result)
-                active_alert_types.add(alert_type)
             else:
                 logger.debug(
                     "ALERT pending %s/%s — %d/%d cycles",
@@ -362,36 +293,3 @@ async def evaluate_device_metrics(
             if state.failure_count > 0:
                 await _reset_failure(db, state)
             await _resolve_alert(db, device, alert_type, eval_result.message)
-
-    # Update probable_cause on open incidents based on currently active alerts
-    if active_alert_types:
-        await _apply_correlation(db, device, active_alert_types)
-
-
-# ---------------------------------------------------------------------------
-# Global correlation pass (called by jobs that bypass evaluate_device_metrics)
-# ---------------------------------------------------------------------------
-
-async def run_correlation_pass(db: AsyncSession) -> None:
-    """
-    Re-evaluate probable_cause for every device that has open incidents.
-
-    Called at the end of device_ping_job so that device-down incidents (which
-    bypass evaluate_device_metrics) also benefit from correlation logic, e.g.
-    rocket_down gets probable_cause="switch_down" when the switch is also down.
-    """
-    result = await db.execute(select(Device))
-    all_devices = list(result.scalars().all())
-
-    for device in all_devices:
-        open_result = await db.execute(
-            select(Incident.alert_type).where(
-                Incident.device_id == device.id,
-                Incident.status == "open",
-                Incident.alert_type.is_not(None),
-            )
-        )
-        active_alert_types = set(open_result.scalars().all())
-        if not active_alert_types:
-            continue
-        await _apply_correlation(db, device, active_alert_types)

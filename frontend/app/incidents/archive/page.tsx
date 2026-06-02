@@ -5,7 +5,7 @@ import { useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type { Incident } from '@/lib/types'
-import { alertTypeLabel, formatDate, probableCauseLabel } from '@/lib/types'
+import { alertTypeLabel, formatDate } from '@/lib/types'
 import SeverityBadge from '@/components/SeverityBadge'
 import IncidentDetailModal from '@/components/IncidentDetailModal'
 
@@ -79,7 +79,7 @@ export default function IncidentsArchivePage() {
                   <table className="w-full text-sm">
                     <thead className="bg-blue-50 border-b border-blue-100">
                       <tr>
-                        {['#', 'Détecté le', 'Résolu le', 'Durée', 'Équip.', 'Type', 'Cause probable', 'Sévérité'].map(h => (
+                        {['#', 'Détecté le', 'Résolu le', 'Durée', 'Équip.', 'Type', 'Sévérité'].map(h => (
                           <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
                             {h}
                           </th>
@@ -113,15 +113,6 @@ export default function IncidentsArchivePage() {
                               </span>
                             ) : (
                               <span className="text-blue-200 text-xs">—</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-xs whitespace-nowrap">
-                            {inc.probable_cause ? (
-                              <span className="bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded text-xs">
-                                {probableCauseLabel(inc.probable_cause)}
-                              </span>
-                            ) : (
-                              <span className="text-blue-200">—</span>
                             )}
                           </td>
                           <td className="px-4 py-3"><SeverityBadge severity={inc.severity} /></td>

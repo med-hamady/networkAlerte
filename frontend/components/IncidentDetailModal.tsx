@@ -1,7 +1,13 @@
 'use client'
 
 import type { Incident } from '@/lib/types'
-import { alertTypeLabel, formatDate, metricLabel, probableCauseLabel } from '@/lib/types'
+import {
+  LR_MODEL_VARIANT_LABELS,
+  alertTypeLabel,
+  formatDate,
+  lrFamilyLabel,
+  metricLabel,
+} from '@/lib/types'
 import SeverityBadge from './SeverityBadge'
 import IncidentStatusBadge from './IncidentStatusBadge'
 
@@ -16,8 +22,6 @@ export default function IncidentDetailModal({
   incident: Incident
   onClose: () => void
 }) {
-  const actions = (incident.recommended_action ?? '').split('·').map(s => s.trim()).filter(Boolean)
-
   return (
     <div
       className="fixed inset-0 z-50 bg-blue-900/40 backdrop-blur-sm flex items-center justify-center p-4"
@@ -64,50 +68,37 @@ export default function IncidentDetailModal({
             <div className="grid grid-cols-2 gap-2 text-xs">
               <Field label="Nom"        value={incident.device_name ?? `#${incident.device_id}`} />
               <Field label="Type"       value={incident.device_type ?? '—'} />
+              {incident.lr_model_variant && (
+                <Field
+                  label="Modèle LR"
+                  value={`${LR_MODEL_VARIANT_LABELS[incident.lr_model_variant] ?? incident.lr_model_variant} (${lrFamilyLabel(incident.lr_model_variant)})`}
+                />
+              )}
               <Field label="IP"         value={incident.device_ip ?? '—'} mono />
+              {incident.device_mac && (
+                <Field label="Adresse MAC" value={incident.device_mac} mono />
+              )}
               <Field label="Device ID"  value={`#${incident.device_id}`} />
             </div>
           </Section>
 
-          {/* Recommended action */}
-          {actions.length > 0 && (
-            <Section title="Action recommandée">
-              <ul className="space-y-1.5">
-                {actions.map((a, idx) => (
-                  <li key={idx} className="flex items-start gap-2 text-slate-700">
-                    <span className="text-blue-400 font-mono shrink-0">{idx + 1}.</span>
-                    <span>{a}</span>
-                  </li>
-                ))}
-              </ul>
-            </Section>
-          )}
-
           {/* Metric + cause */}
-          {(incident.metric_name || incident.probable_cause) && (
+          {incident.metric_name && (
             <Section title="Diagnostic">
               <div className="grid grid-cols-2 gap-2 text-xs">
-                {incident.metric_name && (
-                  <Field
-                    label="Métrique"
-                    value={
-                      incident.metric_value !== null
-                        ? `${metricLabel(incident.metric_name)} = ${incident.metric_value}`
-                        : metricLabel(incident.metric_name)
-                    }
-                  />
-                )}
+                <Field
+                  label="Métrique"
+                  value={
+                    incident.metric_value !== null
+                      ? `${metricLabel(incident.metric_name)} = ${incident.metric_value}`
+                      : metricLabel(incident.metric_name)
+                  }
+                />
                 {incident.threshold_value !== null && (
                   <Field
                     label="Seuil"
                     value={String(incident.threshold_value)}
                     mono
-                  />
-                )}
-                {incident.probable_cause && (
-                  <Field
-                    label="Cause probable"
-                    value={probableCauseLabel(incident.probable_cause)}
                   />
                 )}
               </div>

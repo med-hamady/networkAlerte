@@ -5,7 +5,7 @@ import { useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type { Incident } from '@/lib/types'
-import { alertTypeLabel, formatDate, metricLabel, probableCauseLabel } from '@/lib/types'
+import { alertTypeLabel, formatDate, metricLabel } from '@/lib/types'
 import IncidentDetailModal from '@/components/IncidentDetailModal'
 
 const SEVERITY_ORDER = ['critical', 'warning', 'info'] as const
@@ -83,7 +83,7 @@ export default function IncidentsPage() {
                   <table className="w-full text-sm">
                     <thead className="bg-blue-50 border-b border-blue-100">
                       <tr>
-                        {['#', 'Détecté le', 'Équip.', 'Type', 'Métrique', 'Cause probable', 'Action recommandée', 'Notif.'].map(h => (
+                        {['Détecté le', 'Équip.', 'Type', 'Métrique'].map(h => (
                           <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
                             {h}
                           </th>
@@ -97,7 +97,6 @@ export default function IncidentsPage() {
                           className="hover:bg-blue-50 transition-colors align-top cursor-pointer"
                           onClick={() => setDetail(inc)}
                         >
-                          <td className="px-4 py-3 text-blue-300 font-mono text-xs">{inc.id}</td>
                           <td className="px-4 py-3 text-blue-400 whitespace-nowrap text-xs">{formatDate(inc.detected_at)}</td>
                           <td className="px-4 py-3 text-xs">
                             <div className="text-slate-700 font-medium">{inc.device_name ?? `#${inc.device_id}`}</div>
@@ -127,34 +126,6 @@ export default function IncidentsPage() {
                                 {metricLabel(inc.metric_name)} = <strong>{inc.metric_value}</strong>
                               </span>
                             ) : '—'}
-                          </td>
-                          <td className="px-4 py-3 text-xs whitespace-nowrap">
-                            {inc.probable_cause ? (
-                              <span className="bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded text-xs">
-                                {probableCauseLabel(inc.probable_cause)}
-                              </span>
-                            ) : (
-                              <span className="text-blue-200">—</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3 max-w-[200px]">
-                            {inc.recommended_action ? (
-                              <span className="text-xs text-slate-600 line-clamp-2" title={inc.recommended_action}>
-                                {inc.recommended_action}
-                              </span>
-                            ) : (
-                              <span className="text-blue-200 text-xs">—</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3 whitespace-nowrap">
-                            {inc.notify_immediately ? (
-                              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-red-600" title="Notification immédiate">
-                                <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                                Imm.
-                              </span>
-                            ) : (
-                              <span className="text-[11px] text-blue-300" title="Différé / digest">Diff.</span>
-                            )}
                           </td>
                         </tr>
                       ))}

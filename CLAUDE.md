@@ -55,7 +55,7 @@ backend/app/
 ├── models/                  # SQLAlchemy ORM (Base avec id, created_at, updated_at)
 │   ├── device.py            # Équipements supervisés (+ parent_id hiérarchie, policy_overrides JSON)
 │   ├── device_metric.py     # Métriques time-series
-│   ├── incident.py          # Incidents (open/acknowledged/resolved + probable_cause)
+│   ├── incident.py          # Incidents (open/acknowledged/resolved)
 │   ├── alert.py             # Notifications envoyées (audit trail)
 │   ├── alert_state.py       # Compteurs d'anti-flapping persistés en DB (survit aux redémarrages)
 │   ├── power_status_log.py  # Relevés UISP Power (voltage, current, power)
@@ -79,7 +79,6 @@ backend/app/
 │   ├── client_block_service.py     # Blocage client 2 modes (full / whatsapp_only) + enforcement
 │   ├── alert_engine.py             # Orchestrateur : évalue règles, gère AlertState, ouvre/résout incidents
 │   ├── alert_rules.py              # Règles d'alerte pure Python (sans DB) — 10+ règles
-│   ├── alert_correlation.py        # Corrélation de causes (ex: rocket_down causé par switch_down)
 │   ├── alert_formatter.py          # Formatage messages Slack/email par type d'alerte
 │   ├── alert_policy.py             # Politiques : quel canal pour quel alert_type
 │   ├── digest_service.py           # Regroupement des warnings en digest 15 min
@@ -203,9 +202,8 @@ backend/app/
 - [x] **API HTTP LTU Rocket** — `ltu_api_service.py` (signal, CCQ, CINR, TX/RX rates, CPE peers, distance)
 - [x] **Sonde LR → Internet** — `ssh_service.py` + `lr_internet_probe_job` (un seul SSH/LR/cycle : ping vers Google, deux signaux en sortie — `lr_no_transit` binaire et `lr_latency_high` continue)
 - [x] **Moteur de règles d'alerte** — `alert_rules.py` (10+ règles : signal, CCQ, CINR, capacité, erreurs, interfaces, CPE, throughput anomaly EMA)
-- [x] **Alert engine** — `alert_engine.py` (évalue règles, gère AlertState DB, ouvre/résout incidents, appelle corrélation)
+- [x] **Alert engine** — `alert_engine.py` (évalue règles, gère AlertState DB, ouvre/résout incidents)
 - [x] **AlertState persisté en DB** — compteurs anti-flapping survivent aux redémarrages (sauf ping = in-memory)
-- [x] **Corrélation de causes** — `alert_correlation.py` (ex: rocket_down causé par switch_down, avec corrélation temporelle)
 - [x] **21 alert_types** centralisés — `core/alert_constants.py`
 - [x] **Détection anomalies radio** — signal dBm, CCQ, CINR, capacité lien, taux d'erreurs
 - [x] **Détection anomalies power** — batterie + voltage hors plage (20–56 V)
@@ -225,7 +223,7 @@ backend/app/
 | Job | Intervalle | Rôle |
 |---|---|---|
 | `heartbeat_job` | 60s | Sanity check scheduler |
-| `device_ping_job` | 30s | Ping ICMP tous les devices (anti-flap 3 cycles, corrélation après) |
+| `device_ping_job` | 30s | Ping ICMP tous les devices (anti-flap 3 cycles) |
 | `snmp_poll_job` | 60s | Métriques SNMP LTU radio (ath0/eth0) + Switch (ports) → alert engine |
 | `power_poll_job` | 30s | API REST UISP Power (voltage, batterie) |
 | `ltu_api_poll_job` | 60s | API HTTP LTU Rocket (signal, CCQ, CINR, CPE auto-discovery) → alert engine + check topologie via `peer.remote.netMode` (router/bridge) par LR, sans SSH |

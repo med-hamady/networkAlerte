@@ -25,8 +25,7 @@ from app.core.alert_labels import alert_type_label
 from app.services import alert_formatter, notification_service
 from app.services.notification_service import _ChannelTarget
 
-
-UTC = datetime.timezone.utc
+UTC = datetime.UTC
 
 
 def _device(name="LTU Rocket", ip="10.135.2.218", overrides=None):
@@ -41,7 +40,6 @@ def _incident(alert_type, severity=Severity.WARNING, **kwargs):
         id=42, device_id=1, title="t", description=None,
         severity=severity, status="open", alert_type=alert_type,
         metric_name=None, metric_value=None, threshold_value=None,
-        probable_cause=None,
         detected_at=datetime.datetime(2026, 4, 22, 14, 5, tzinfo=UTC),
         last_triggered_at=None, resolved_at=None,
     )

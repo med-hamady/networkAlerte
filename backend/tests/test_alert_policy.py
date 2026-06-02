@@ -30,7 +30,6 @@ from app.services.alert_policy import (
     should_notify,
 )
 
-
 # ---------------------------------------------------------------------------
 # Coverage and consistency
 # ---------------------------------------------------------------------------
@@ -43,15 +42,6 @@ def test_every_known_alert_type_has_a_policy():
 def test_every_policy_targets_a_known_alert_type():
     extra = ALERT_POLICIES.keys() - KNOWN_ALERT_TYPES
     assert not extra, f"alert_policy declares unknown alert_types: {extra}"
-
-
-def test_every_policy_has_a_recommended_action():
-    for at, policy in ALERT_POLICIES.items():
-        assert policy.recommended_action.strip(), \
-            f"{at} has empty recommended_action"
-        # Reasonable minimum length to catch placeholder values
-        assert len(policy.recommended_action) >= 20, \
-            f"{at} recommended_action is suspiciously short"
 
 
 def test_every_policy_severity_is_valid():
@@ -102,7 +92,6 @@ def test_get_policy_unknown_returns_fallback():
     p = get_policy("nonexistent_alert_xyz")
     assert p.alert_type == "_unknown"
     assert p.notify_immediately is False
-    assert p.recommended_action  # non-empty
 
 
 def test_get_policy_none_returns_fallback():

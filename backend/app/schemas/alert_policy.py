@@ -13,7 +13,6 @@ class AlertPolicyRead(BaseModel):
 
     alert_type: str
     severity: str                          # info | warning | critical | dynamic
-    recommended_action: str
     notify_immediately: bool
     channels: list[str]
     groupable: bool

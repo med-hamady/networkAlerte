@@ -17,7 +17,6 @@ def _to_schema(policy) -> AlertPolicyRead:
     return AlertPolicyRead(
         alert_type=policy.alert_type,
         severity=policy.severity,
-        recommended_action=policy.recommended_action,
         notify_immediately=policy.notify_immediately,
         channels=list(policy.channels),
         groupable=policy.groupable,

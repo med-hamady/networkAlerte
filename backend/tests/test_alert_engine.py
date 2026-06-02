@@ -7,12 +7,11 @@ when the condition clears.
 """
 
 import types
-import pytest
-import pytest_asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.services.alert_engine import evaluate_device_metrics
+import pytest
 
+from app.services.alert_engine import evaluate_device_metrics
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -158,7 +157,6 @@ async def test_signal_bad_third_cycle_opens_incident():
     opened_incident.id = 42
 
     with patch("app.services.alert_engine._get_or_create_state", side_effect=mock_get_or_create), \
-         patch("app.services.alert_engine._apply_correlation", new_callable=AsyncMock), \
          patch("app.services.alert_engine.incident_service") as mock_svc, \
          patch("app.services.alert_engine.notification_service") as mock_notif:
         mock_svc.open_incident = AsyncMock(return_value=(opened_incident, True))

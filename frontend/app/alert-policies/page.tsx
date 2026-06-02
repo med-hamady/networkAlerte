@@ -133,7 +133,7 @@ function PolicyTable({ policies }: { policies: AlertPolicy[] }) {
       <table className="w-full text-sm">
         <thead className="bg-blue-50 border-b border-blue-100">
           <tr>
-            {["Type d'alerte", 'Sévérité', 'Action recommandée', 'Notification immédiate', 'Canaux', 'Regroupable', 'Rétablissement'].map(h => (
+            {["Type d'alerte", 'Sévérité', 'Notification immédiate', 'Canaux', 'Regroupable', 'Rétablissement'].map(h => (
               <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
                 {h}
               </th>
@@ -149,9 +149,6 @@ function PolicyTable({ policies }: { policies: AlertPolicy[] }) {
                 </div>
               </td>
               <td className="px-4 py-3"><SeverityBadge severity={p.severity} /></td>
-              <td className="px-4 py-3 text-slate-700 max-w-md text-xs">
-                {p.recommended_action}
-              </td>
               <td className="px-4 py-3 whitespace-nowrap"><YesNo value={p.notify_immediately} /></td>
               <td className="px-4 py-3">
                 <div className="flex gap-1 flex-wrap">
@@ -192,7 +189,7 @@ export default function AlertPoliciesPage() {
         <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Politiques d&apos;alerte</h1>
         <p className="text-blue-400 text-sm mt-1">
           Référence des {policies?.length ?? '…'} alert_types regroupés par équipement :
-          sévérité, action recommandée, canaux et politique de notification.
+          sévérité, canaux et politique de notification.
         </p>
       </div>
 

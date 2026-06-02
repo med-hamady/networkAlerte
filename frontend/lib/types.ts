@@ -183,13 +183,13 @@ export interface Incident {
   metric_name: string | null
   metric_value: number | null
   threshold_value: number | null
-  probable_cause: string | null
   last_triggered_at: string | null
   device_name: string | null
   device_type: string | null
   device_ip: string | null
+  device_mac: string | null
+  lr_model_variant: LrModelVariant | null
   message: string | null
-  recommended_action: string
   notify_immediately: boolean
   notification_channel_policy: string[]
 }
@@ -198,7 +198,6 @@ export interface Incident {
 export interface AlertPolicy {
   alert_type: string
   severity: string                 // info | warning | critical | dynamic
-  recommended_action: string
   notify_immediately: boolean
   channels: string[]
   groupable: boolean
@@ -299,17 +298,6 @@ export function metricLabel(metricName: string | null): string {
   return METRIC_LABELS[metricName] ?? metricName
 }
 
-export const PROBABLE_CAUSE_LABELS: Record<string, string> = {
-  switch_down:        'Switch HS',
-  local_link_issue:   'Câble / port switch',
-  radio_link_issue:   'Lien radio (HW)',
-  radio_quality_issue:'Qualité RF',
-}
-
-export function probableCauseLabel(cause: string | null): string {
-  if (!cause) return '—'
-  return PROBABLE_CAUSE_LABELS[cause] ?? cause
-}
 
 export interface AlertRecord {
   id: number
@@ -385,6 +373,11 @@ export const LR_MODEL_VARIANT_LABELS: Record<LrModelVariant, string> = {
 
 export function deviceTypeLabel(type: string): string {
   return DEVICE_TYPE_LABELS[type] ?? type
+}
+
+/** Radio family of an LR from its model_variant: 'airMAX' for Litebeams, 'LTU' otherwise. */
+export function lrFamilyLabel(variant: LrModelVariant): 'airMAX' | 'LTU' {
+  return variant.startsWith('litebeam') ? 'airMAX' : 'LTU'
 }
 
 /** Parent rocket id, or null for non-LR devices. Replaces the old `parent_id` access. */

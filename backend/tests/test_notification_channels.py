@@ -26,7 +26,6 @@ from app.services.notification_service import (
     _ChannelTarget,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -50,8 +49,7 @@ def _incident(alert_type=AT_ROCKET_DOWN, severity=Severity.CRITICAL):
         metric_name=None,
         metric_value=None,
         threshold_value=None,
-        probable_cause=None,
-        detected_at=datetime.datetime(2026, 4, 22, 14, 5, 12, tzinfo=datetime.timezone.utc),
+        detected_at=datetime.datetime(2026, 4, 22, 14, 5, 12, tzinfo=datetime.UTC),
         last_triggered_at=None,
         resolved_at=None,
     )

@@ -515,11 +515,6 @@ async def device_ping_job() -> None:
 
             await session.commit()
 
-        # After all devices are processed, run a global correlation pass so that
-        # device-down incidents (which bypass alert_engine) get probable_cause set.
-        await alert_engine.run_correlation_pass(session)
-        await session.commit()
-
 
 async def snmp_poll_job() -> None:
     """
@@ -1335,6 +1330,7 @@ async def lr_health_matview_refresh_job() -> None:
     instead of ~4 s seq-scan on device_metrics (16 M+ rows in prod).
     """
     from sqlalchemy import text
+
     from app.db.session import engine
 
     started = datetime.datetime.now(datetime.UTC)
@@ -1373,6 +1369,7 @@ async def client_consumption_matview_refresh_job() -> None:
     '30 days'` — the sliding window moves forward by 15 min each refresh.
     """
     from sqlalchemy import text
+
     from app.db.session import engine
 
     started = datetime.datetime.now(datetime.UTC)
@@ -1406,6 +1403,7 @@ async def client_consumption_7d_refresh_job() -> None:
     narrower window. Cheap (~4 s of refresh) and unlocks the 7d tab.
     """
     from sqlalchemy import text
+
     from app.db.session import engine
 
     started = datetime.datetime.now(datetime.UTC)

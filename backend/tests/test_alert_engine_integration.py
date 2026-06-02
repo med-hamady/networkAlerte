@@ -7,15 +7,15 @@ is rolled back at the end, so no data persists between tests.
 Only notification_service is patched to avoid real HTTP/email calls.
 """
 
-import pytest
 from unittest.mock import AsyncMock, patch
+
+import pytest
 from sqlalchemy import select
 
 from app.models.alert_state import AlertState
 from app.models.device import Device, Rocket
 from app.models.incident import Incident
 from app.services.alert_engine import evaluate_device_metrics
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -179,7 +179,6 @@ async def test_no_duplicate_incidents(db, settings, patch_notif):
 
 async def test_last_triggered_at_updated_each_cycle(db, settings, patch_notif):
     """last_triggered_at mis à jour à chaque cycle même si incident déjà ouvert."""
-    import datetime
     device = await _make_rocket(db)
 
     # Ouvrir l'incident (cycles 1-3)

@@ -913,18 +913,18 @@ class LrLinkSubstandardRule(AlertRule):
         # airMAX = warning band 4-6 ; LTU = no warning, critical-only at <6
         rx_rate_warn = settings.lr_rx_rate_warning_idx_airmax if airmax else None
 
-        # (label, value, crit_floor, warn_floor or None, unit, fmt)
+        # (metric_name, label, value, crit_floor, warn_floor or None, unit, fmt)
         checks = [
-            ("Potentiel du lien", metrics.get("link_potential_pct"),
+            ("link_potential_pct", "Potentiel du lien", metrics.get("link_potential_pct"),
              link_pot_floor, None, "%", "{:.0f}"),
-            ("Capacité totale", metrics.get("total_capacity_mbps"),
+            ("total_capacity_mbps", "Capacité totale", metrics.get("total_capacity_mbps"),
              settings.lr_total_capacity_min_mbps, None, " Mbps", "{:.1f}"),
-            ("Débit RX local", metrics.get("local_rx_rate_idx"),
+            ("local_rx_rate_idx", "Rate local", metrics.get("local_rx_rate_idx"),
              rx_rate_crit, rx_rate_warn, "×", "{:.0f}"),
-            ("Débit RX distant", metrics.get("remote_rx_rate_idx"),
+            ("remote_rx_rate_idx", "Rate distant", metrics.get("remote_rx_rate_idx"),
              rx_rate_crit, rx_rate_warn, "×", "{:.0f}"),
         ]
-        present = [c for c in checks if c[1] is not None]
+        present = [c for c in checks if c[2] is not None]
         if not present:
             return AlertEvalResult(
                 alert_type=self.alert_type,
@@ -938,30 +938,31 @@ class LrLinkSubstandardRule(AlertRule):
 
         crit_parts: list[str] = []
         warn_parts: list[str] = []
+        worst_name: str | None = None
         worst_value: float | None = None
         worst_floor: float | None = None
-        for label, value, crit_fl, warn_fl, unit, fmt in present:
+        for name, label, value, crit_fl, warn_fl, unit, fmt in present:
             if value < crit_fl:
                 crit_parts.append(
                     f"{label} {fmt.format(value)}{unit} "
                     f"(plancher critique {fmt.format(crit_fl)}{unit})"
                 )
                 if worst_value is None:
-                    worst_value, worst_floor = float(value), float(crit_fl)
+                    worst_name, worst_value, worst_floor = name, float(value), float(crit_fl)
             elif warn_fl is not None and value < warn_fl:
                 warn_parts.append(
                     f"{label} {fmt.format(value)}{unit} "
                     f"(plancher warning {fmt.format(warn_fl)}{unit})"
                 )
                 if worst_value is None:
-                    worst_value, worst_floor = float(value), float(warn_fl)
+                    worst_name, worst_value, worst_floor = name, float(value), float(warn_fl)
 
         if crit_parts:
             parts = crit_parts + warn_parts
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity="critical",
-                metric_name="lr_link_floors",
+                metric_name=worst_name or "lr_link_floors",
                 metric_value=round(worst_value, 1) if worst_value is not None else None,
                 threshold_value=worst_floor,
                 message=(
@@ -973,7 +974,7 @@ class LrLinkSubstandardRule(AlertRule):
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity="warning",
-                metric_name="lr_link_floors",
+                metric_name=worst_name or "lr_link_floors",
                 metric_value=round(worst_value, 1) if worst_value is not None else None,
                 threshold_value=worst_floor,
                 message=(

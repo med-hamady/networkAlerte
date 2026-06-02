@@ -120,6 +120,11 @@ class ClientConsumptionResponse(BaseModel):
 # The CASE matches the Python semantics exactly: a negative delta (counter
 # reset) and a delta > _MAX_PLAUSIBLE_DELTA_BYTES (counter glitch) both
 # contribute 0 — never skip the sample, just don't add anything that cycle.
+#
+# device_id filter is mandatory: without it the planner can't use the
+# (device_id, metric_name, collected_at) index → seq scan on 16 M rows
+# even for a 24 h cutoff. Also excludes Rocket SNMP rows (which also have
+# radio_rx/tx_bytes but aren't customer data).
 _LIVE_AGGREGATE_SQL = text(
     """
     SELECT
@@ -136,7 +141,8 @@ _LIVE_AGGREGATE_SQL = text(
             collected_at,
             metric_value - LAG(metric_value) OVER w AS d
         FROM device_metrics
-        WHERE metric_name = ANY(CAST(:metric_names AS text[]))
+        WHERE device_id = ANY(CAST(:lr_ids AS integer[]))
+          AND metric_name = ANY(CAST(:metric_names AS text[]))
           AND collected_at >= :cutoff
         WINDOW w AS (
             PARTITION BY device_id, metric_name ORDER BY collected_at
@@ -191,10 +197,12 @@ async def get_clients_consumption(
     if period == "30d":
         agg_rows = (await db.execute(_MATVIEW_SQL)).all()
     else:
+        lr_ids = [lr.id for lr in lrs]
         agg_rows = (
             await db.execute(
                 _LIVE_AGGREGATE_SQL,
                 {
+                    "lr_ids": lr_ids,
                     "metric_names": list(_COUNTER_METRICS),
                     "cutoff": query_lower_bound,
                     "max_delta": _MAX_PLAUSIBLE_DELTA_BYTES,

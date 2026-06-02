@@ -494,6 +494,24 @@ export interface Recommendation {
   alert_type: string | null
 }
 
+export interface ClientLinkHealthItem {
+  device_id: number
+  device_name: string
+  severity: 'critical' | 'warning'
+  currently_open: boolean
+  cause: string
+  action: string
+  occurrence_count: number
+}
+
+export interface ClientLinkHealth {
+  total_clients: number
+  ok_count: number
+  warning_count: number
+  critical_count: number
+  items: ClientLinkHealthItem[]
+}
+
 // ─── Bad installations (Liaisons clients) ──────────────────────────────────
 
 export type BadInstallationVerdict = 'suspect' | 'critical'
@@ -588,6 +606,7 @@ export interface DowntimeLogResponse {
 export interface SupervisionReport {
   generated_at: string
   period: ReportPeriodSummary
+  client_link_health: ClientLinkHealth
   device_reliability: DeviceReliability[]
   alert_frequencies: AlertTypeFrequency[]
   radio_metrics: RadioMetrics[]

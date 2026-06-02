@@ -53,9 +53,38 @@ class Recommendation(BaseModel):
     alert_type: str | None
 
 
+class ClientLinkHealthItem(BaseModel):
+    """Verdict de santé d'un lien client LR sur la période (triage)."""
+
+    device_id: int
+    device_name: str
+    severity: str  # "critical" | "warning"
+    currently_open: bool
+    cause: str
+    action: str
+    occurrence_count: int
+
+
+class ClientLinkHealth(BaseModel):
+    """Synthèse décisionnelle des liens clients LR.
+
+    Classement basé sur l'incident consolidé `lr_link_substandard` (mêmes
+    seuils par famille LTU/airMAX que l'alert engine). Seuls les clients
+    dégradés (warning/critical) sont listés ; les clients sains sont résumés
+    par `ok_count`.
+    """
+
+    total_clients: int
+    ok_count: int
+    warning_count: int
+    critical_count: int
+    items: list[ClientLinkHealthItem]
+
+
 class SupervisionReport(BaseModel):
     generated_at: datetime.datetime
     period: ReportPeriodSummary
+    client_link_health: ClientLinkHealth
     device_reliability: list[DeviceReliability]
     alert_frequencies: list[AlertTypeFrequency]
     radio_metrics: list[RadioMetrics]

@@ -12,12 +12,15 @@ from collections import defaultdict
 from sqlalchemy import and_, desc, distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.alert_constants import AT_LR_LINK_SUBSTANDARD
 from app.core.alert_labels import alert_type_label
 from app.models.device import Device
 from app.models.device_metric import DeviceMetric
 from app.models.incident import Incident
 from app.schemas.report import (
     AlertTypeFrequency,
+    ClientLinkHealth,
+    ClientLinkHealthItem,
     DeviceReliability,
     RadioMetrics,
     Recommendation,
@@ -37,6 +40,33 @@ AVAILABILITY_TYPES: set[str] = {
 RADIO_METRIC_NAMES: set[str] = {"signal_dbm", "cinr_db", "ccq_pct"}
 
 PRIORITY_RANK: dict[str, int] = {"critique": 0, "élevé": 1, "moyen": 2}
+
+# Facteur limitant (metric_name de l'incident lr_link_substandard) → cause
+# lisible + action concrète. Permet de transformer le triage en rapport
+# exploitable sans que l'opérateur ait à interpréter des seuils bruts.
+_LINK_CAUSE_ACTION: dict[str, tuple[str, str]] = {
+    "link_potential_pct": (
+        "Potentiel du lien faible (alignement / ligne de vue)",
+        "Réaligner l'antenne et dégager la ligne de vue (obstacles, végétation).",
+    ),
+    "total_capacity_mbps": (
+        "Capacité totale du lien insuffisante",
+        "Vérifier l'alignement et l'environnement RF ; envisager une montée en "
+        "gamme si le lien est saturé.",
+    ),
+    "local_rx_rate_idx": (
+        "Modulation basse côté client (MCS local)",
+        "Réaligner l'antenne et réduire les interférences / vérifier la ligne de vue.",
+    ),
+    "remote_rx_rate_idx": (
+        "Modulation basse côté distant (MCS distant)",
+        "Réaligner l'antenne et réduire les interférences / vérifier la ligne de vue.",
+    ),
+}
+_LINK_CAUSE_ACTION_FALLBACK: tuple[str, str] = (
+    "Qualité du lien radio dégradée",
+    "Vérifier l'alignement, la ligne de vue et l'environnement RF du client.",
+)
 
 
 def _exclude_lr_availability():
@@ -547,6 +577,103 @@ async def _build_recommendations(
     return recommendations
 
 
+async def _build_client_link_health(
+    db: AsyncSession,
+    date_from_dt: datetime.datetime,
+    date_to_dt: datetime.datetime,
+) -> ClientLinkHealth:
+    """Triage décisionnel des liens clients LR sur la période.
+
+    Source : incident consolidé `lr_link_substandard` (seuils par famille
+    LTU/airMAX déjà appliqués par l'alert engine). On agrège par client :
+    pire sévérité, encore ouvert ?, nb d'occurrences ; et on dérive la cause /
+    l'action du facteur limitant (`metric_name`). Les clients sans incident
+    sur la période sont sains → résumés par `ok_count`.
+    """
+    total_clients = (
+        await db.scalar(
+            select(func.count(Device.id)).where(Device.device_type == "lr")
+        )
+        or 0
+    )
+
+    window = (
+        Incident.alert_type == AT_LR_LINK_SUBSTANDARD,
+        Device.device_type == "lr",
+        Incident.detected_at >= date_from_dt,
+        Incident.detected_at <= date_to_dt,
+    )
+
+    # Agrégat par client : pire sévérité, encore ouvert, nb d'occurrences.
+    agg_stmt = (
+        select(
+            Incident.device_id,
+            Device.name,
+            func.bool_or(Incident.severity == "critical").label("has_crit"),
+            func.bool_or(Incident.status == "open").label("is_open"),
+            func.count(Incident.id).label("cnt"),
+        )
+        .join(Device, Device.id == Incident.device_id)
+        .where(*window)
+        .group_by(Incident.device_id, Device.name)
+    )
+
+    # Facteur limitant par client : metric_name de l'incident le plus grave et
+    # le plus récent (DISTINCT ON sur device_id).
+    cause_stmt = (
+        select(Incident.device_id, Incident.metric_name)
+        .join(Device, Device.id == Incident.device_id)
+        .where(*window)
+        .distinct(Incident.device_id)
+        .order_by(
+            Incident.device_id,
+            (Incident.severity == "critical").desc(),
+            Incident.detected_at.desc(),
+        )
+    )
+
+    agg_rows = (await db.execute(agg_stmt)).all()
+    cause_by_device = {
+        row.device_id: row.metric_name for row in (await db.execute(cause_stmt)).all()
+    }
+
+    items: list[ClientLinkHealthItem] = []
+    warning_count = 0
+    critical_count = 0
+    for row in agg_rows:
+        severity = "critical" if row.has_crit else "warning"
+        if row.has_crit:
+            critical_count += 1
+        else:
+            warning_count += 1
+        cause, action = _LINK_CAUSE_ACTION.get(
+            cause_by_device.get(row.device_id) or "", _LINK_CAUSE_ACTION_FALLBACK
+        )
+        items.append(
+            ClientLinkHealthItem(
+                device_id=row.device_id,
+                device_name=row.name,
+                severity=severity,
+                currently_open=bool(row.is_open),
+                cause=cause,
+                action=action,
+                occurrence_count=row.cnt or 0,
+            )
+        )
+
+    # Tri : critiques d'abord, puis par nombre d'occurrences décroissant.
+    items.sort(key=lambda i: (0 if i.severity == "critical" else 1, -i.occurrence_count))
+
+    ok_count = max(total_clients - len(items), 0)
+    return ClientLinkHealth(
+        total_clients=total_clients,
+        ok_count=ok_count,
+        warning_count=warning_count,
+        critical_count=critical_count,
+        items=items,
+    )
+
+
 async def generate_report(
     db: AsyncSession,
     date_from: datetime.date,
@@ -568,6 +695,7 @@ async def generate_report(
 
     # Séquentiel : AsyncSession n'est pas thread-safe / concurrent-safe
     period = _build_period_summary(date_from_dt, date_to_dt)
+    client_link_health = await _build_client_link_health(db, date_from_dt, date_to_dt)
     reliability = await _build_device_reliability(db, date_from_dt, date_to_dt)
     frequencies = await _build_alert_frequencies(db, date_from_dt, date_to_dt)
     radio = await _build_radio_metrics(db, date_from_dt, date_to_dt)
@@ -577,6 +705,7 @@ async def generate_report(
     return SupervisionReport(
         generated_at=datetime.datetime.now(datetime.UTC),
         period=period,
+        client_link_health=client_link_health,
         device_reliability=reliability,
         alert_frequencies=frequencies,
         radio_metrics=radio,

@@ -174,7 +174,8 @@ class Lr(Device):
     block_mode: Mapped[str] = mapped_column(
         String(20), default="full", nullable=False, server_default="full",
     )
-    # Router vs bridge mode — detected by lr_topology_check_job over SSH.
+    # Router vs bridge mode — read from each LR's HTTP poll (airMAX: airOS
+    # status.cgi host.netrole; LTU: Rocket API peer.remote.netMode), no SSH.
     # The client-block feature only works in router mode (the LR must be in
     # the IP path of the client). In bridge mode (L2-transparent), iptables
     # FORWARD and the local dnsmasq are bypassed; the block endpoint refuses

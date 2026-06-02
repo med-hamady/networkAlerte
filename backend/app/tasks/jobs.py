@@ -915,6 +915,16 @@ async def ltu_api_poll_job() -> None:
                 session, dev, rocket_engine_metrics, settings,
             )
 
+            # netMode (router/bridge) per peer — the LTU equivalent of airOS
+            # netrole, free in the same API response. Keyed by MAC for the
+            # fan-out below so the client-block topology guard stays fresh
+            # every cycle without an SSH probe.
+            net_mode_by_mac = {
+                p["mac"]: p.get("net_mode")
+                for p in all_peers
+                if p.get("mac")
+            }
+
             # Fan-out per-peer metrics to each child LR (matched by MAC).
             # Each LR gets its own DeviceMetric rows AND its own alert engine
             # pass so signal_low / ccq_low / cinr_low / etc. fire per-link,
@@ -949,6 +959,11 @@ async def ltu_api_poll_job() -> None:
                 # against this LR's metrics, not the Rocket's peer[0].
                 await alert_engine.evaluate_device_metrics(
                     session, lr, dict(peer_metrics), settings,
+                )
+                # Router vs bridge from the same API response (no SSH).
+                await _apply_lr_topology(
+                    session, lr, net_mode_by_mac.get(peer_mac),
+                    "netMode via API LTU Rocket",
                 )
 
             await session.commit()
@@ -1060,8 +1075,9 @@ async def airos_api_poll_job() -> None:
             await alert_engine.evaluate_device_metrics(session, dev, dict(metrics), settings)
 
             # Router vs bridge — netrole comes free in status.cgi, so the
-            # client-block topology guard is kept fresh every cycle without the
-            # hourly SSH probe (lr_topology_check_job excludes airMAX LRs).
+            # client-block topology guard is kept fresh every cycle without any
+            # SSH probe (the former hourly lr_topology_check_job was removed:
+            # both families now read mode from their HTTP poll).
             await _apply_lr_topology(session, dev, netrole, "netrole via airOS status.cgi")
 
             await session.commit()
@@ -1301,76 +1317,6 @@ async def _apply_lr_topology(session, dev: Lr, mode: str | None, source_msg: str
             "LR topology — '%s' (id=%d) repassé en mode routeur",
             dev.name, dev.id,
         )
-
-
-async def lr_topology_check_job() -> None:
-    """Detect router vs bridge mode on every SSH-reachable LR.
-
-    The client-block feature (full + whatsapp_only) only works on a router-
-    mode LR. In bridge mode the LR is L2-transparent: iptables FORWARD and
-    the local dnsmasq are not in the client's path, so any block silently
-    fails to actually cut anything. We open a warning incident
-    (AT_LR_BRIDGE_MODE_MISCONFIG) so the operator reconfigures the LR back
-    to router mode, and surface a badge in the UI via Lr.topology_mode.
-
-    Runs hourly — bridge/router is a config decision that doesn't change at
-    high frequency, no need to thrash the SSH connection.
-
-    airMAX LRs (LiteBeam) are excluded: their netrole is read for free from
-    status.cgi every 60 s in airos_api_poll_job (no SSH needed). This job now
-    only covers LTU LRs.
-    """
-    settings = get_settings()
-    async with async_session_factory() as session:
-        result = await session.execute(
-            select(Lr).where(
-                Lr.ssh_username.is_not(None),
-                Lr.ssh_password.is_not(None),
-                Lr.model_variant.not_in(AIRMAX_LR_VARIANTS),
-            )
-        )
-        lrs = list(result.scalars().all())
-
-    if not lrs:
-        logger.debug("LR topology check: no LTU LR with SSH credentials")
-        return
-
-    logger.info("LR topology check — probing %d LR(s)", len(lrs))
-
-    async with async_session_factory() as session:
-        for lr in lrs:
-            dev = await session.get(Lr, lr.id)
-            if dev is None:
-                continue
-
-            primary_pw = dev.ssh_password
-            mode, msg, observed_fp, used_pw = await ssh_service.detect_lr_topology(
-                host=dev.ip_address,
-                port=dev.ssh_port or 22,
-                username=dev.ssh_username,
-                password=primary_pw,
-                expected_fingerprint=dev.ssh_host_fingerprint,
-                fallback_passwords=settings.lr_fallback_password_list,
-            )
-            if observed_fp and dev.ssh_host_fingerprint != observed_fp:
-                dev.ssh_host_fingerprint = observed_fp
-            if used_pw and used_pw != primary_pw:
-                logger.info(
-                    "lr_topology_check: LR '%s' (%s) — fallback password "
-                    "succeeded → promoting on LR.",
-                    dev.name, dev.ip_address,
-                )
-                dev.ssh_password = used_pw
-
-            if mode in ("router", "bridge"):
-                await _apply_lr_topology(session, dev, mode, msg)
-            else:  # "unknown" — probe failed, keep previous classification
-                logger.debug(
-                    "LR topology — '%s' (id=%d) probe failed : %s",
-                    dev.name, dev.id, msg,
-                )
-
-            await session.commit()
 
 
 async def lr_health_matview_refresh_job() -> None:
@@ -1654,14 +1600,6 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         warning_digest_job,
         trigger="interval", minutes=settings.warning_digest_minutes,
         id="warning_digest", name="Warning digest flush",
-        replace_existing=True,
-        **safety,
-    )
-    scheduler.add_job(
-        lr_topology_check_job,
-        trigger="interval", minutes=settings.lr_topology_check_interval_minutes,
-        id="lr_topology_check",
-        name="LR topology check (router vs bridge misconfig)",
         replace_existing=True,
         **safety,
     )

@@ -278,14 +278,6 @@ class Settings(BaseSettings):
     # Per-IP cooldown — a sustained attack must not fire one alert per check.
     audit_anomaly_alert_cooldown_minutes: int = 30
 
-    # LR topology check — router vs bridge detection. The client-block feature
-    # only works on router-mode LRs (in bridge the LR is L2-transparent and
-    # iptables/dnsmasq are bypassed). The job opens a warning incident
-    # (AT_LR_BRIDGE_MODE_MISCONFIG) on bridge-mode LRs so the operator
-    # reconfigures them. Bridge/router is a stable config decision so a
-    # 60-min cadence is plenty and keeps SSH load low.
-    lr_topology_check_interval_minutes: int = 60
-
     # LR-health materialized view refresh interval (minutes). The view
     # `lr_health_metric_stats_30d` pre-aggregates 30-day device_metrics so
     # /lr-health/bad-installations serves <100 ms instead of ~4 s. 15 min

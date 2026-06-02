@@ -108,7 +108,7 @@ AT_LR_REASSIGNED   = "lr_reassigned"   # LR vu sur un autre Rocket que son paren
 # Configuration misconfig — LR en mode bridge alors qu'on attend du routeur.
 # En bridge, le client-block (full / whatsapp_only) ne marche pas (le trafic
 # client ne passe ni par iptables FORWARD ni par le dnsmasq local du LR).
-# Levé par lr_topology_check_job, résolu automatiquement si le LR repasse en routeur.
+# Levé par le poll HTTP de chaque LR (airMAX netrole / LTU netMode), résolu automatiquement si le LR repasse en routeur.
 AT_LR_BRIDGE_MODE_MISCONFIG = "lr_bridge_mode_misconfig"
 
 # Ping quality — instabilité ponctuelle (pas d'incident, info email).

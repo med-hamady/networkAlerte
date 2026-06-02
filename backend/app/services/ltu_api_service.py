@@ -370,6 +370,11 @@ def _parse_peer_common(common: dict) -> dict[str, str | None]:
         "model":    None,
         "firmware": None,
         "mac":      None,
+        # Router vs bridge mode of the CPE (LR). Lives in peer.remote, not in
+        # common, so _parse_peer_common defaults it to None — parse_all_peers_info
+        # fills it from the full peer. Used to drive the client-block topology
+        # guard without an SSH probe.
+        "net_mode": None,
     }
     ident = common.get("identification")
     if isinstance(ident, dict):
@@ -405,10 +410,29 @@ def parse_ltu_peer_info(raw: dict) -> dict[str, str | None]:
     return _parse_peer_common(common)
 
 
+def _extract_peer_net_mode(peer: dict) -> str | None:
+    """Router vs bridge mode of a peer (the LR) from ``peer.remote[*].netMode``.
+
+    The LTU equivalent of airOS ``host.netrole``. Returns the normalized value
+    only when it is "router"/"bridge" (the topology guard acts on a confirmed
+    state), else None so an unexpected value never erases a known one.
+    """
+    remote = peer.get("remote")
+    if isinstance(remote, list) and remote:
+        remote = remote[0]
+    if isinstance(remote, dict):
+        nm = remote.get("netMode")
+        if isinstance(nm, str):
+            nm = nm.strip().lower()
+            if nm in ("router", "bridge"):
+                return nm
+    return None
+
+
 def parse_all_peers_info(raw: dict) -> list[dict[str, str | None]]:
     """
     Extract identification info for ALL connected CPEs (peers) reported by the Rocket.
-    Returns a list of {mgmt_ip, hostname, model, firmware, mac} dicts — one per peer.
+    Returns a list of {mgmt_ip, hostname, model, firmware, mac, net_mode} dicts — one per peer.
     """
     wireless = raw.get("wireless") if isinstance(raw, dict) else None
     if not isinstance(wireless, dict):
@@ -420,7 +444,9 @@ def parse_all_peers_info(raw: dict) -> list[dict[str, str | None]]:
     for peer in peers:
         common = peer.get("common")
         if isinstance(common, dict):
-            result.append(_parse_peer_common(common))
+            info = _parse_peer_common(common)
+            info["net_mode"] = _extract_peer_net_mode(peer)
+            result.append(info)
     return result
 
 

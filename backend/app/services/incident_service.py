@@ -11,6 +11,19 @@ logger = logging.getLogger(__name__)
 
 _SEVERITY_RANK: dict[str, int] = {"info": 0, "warning": 1, "critical": 2}
 
+# incidents.title is VARCHAR(255). Rule messages that concatenate several
+# offending metrics (e.g. lr_link_substandard listing 4 floors) plus a long
+# device name can exceed that. The full text always lives in `description`
+# (TEXT), so the title is safely truncated. Postgres varchar(n) counts
+# characters, so Python len() is the right measure here.
+_TITLE_MAX_LEN = 255
+
+
+def _truncate_title(title: str) -> str:
+    if len(title) <= _TITLE_MAX_LEN:
+        return title
+    return title[: _TITLE_MAX_LEN - 1] + "…"
+
 
 async def get_open_incident(
     db: AsyncSession,
@@ -57,6 +70,9 @@ async def open_incident(
     Returns (incident, is_new) — is_new is False when an existing incident was found.
     When not new, last_triggered_at is updated to now.
     """
+    # Truncate before both the dedup lookup and the insert so the title used
+    # for matching is identical to the one stored (avoids dedup misses).
+    title = _truncate_title(title)
     existing = await get_open_incident(db, device.id, title, alert_type=alert_type)
     if existing:
         existing.last_triggered_at = datetime.datetime.now(datetime.UTC)

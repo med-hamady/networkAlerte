@@ -47,7 +47,8 @@ logger = logging.getLogger(__name__)
 
 
 # Every alert_type that indicates a network device is fully unreachable.
-# AT_LR_DOWN is intentionally excluded — it belongs to the /lr-health view.
+# LRs are intentionally excluded: a down LR is a client-side outage (power cut /
+# unplugged), not our infra, and no longer raises any incident.
 _DOWN_ALERT_TYPES: frozenset[str] = frozenset(
     {
         AT_ROCKET_DOWN,

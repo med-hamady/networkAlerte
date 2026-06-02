@@ -226,7 +226,6 @@ export interface NotificationChannelInput {
 export const ALERT_TYPE_LABELS: Record<string, string> = {
   // Disponibilité
   rocket_down:             'Station de base (Rocket) hors ligne',
-  lr_down:                 'Client (LR) hors ligne',
   switch_down:             'Switch hors ligne',
   device_unreachable:      'Équipement injoignable',
   airmax_down:             'Station de base airMAX hors ligne',

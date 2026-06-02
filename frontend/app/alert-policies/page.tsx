@@ -48,7 +48,6 @@ const EQUIPMENT_GROUPS: EquipmentGroup[] = [
     label: 'LR',
     description: 'Ping, SNMP IF-MIB et sonde transit SSH (ping internet depuis le LR)',
     alertTypes: [
-      'lr_down',
       'radio_interface_down',
       'signal_low',
       'cinr_low',

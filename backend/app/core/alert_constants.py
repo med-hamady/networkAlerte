@@ -48,8 +48,9 @@ CHANNEL_VALUES: frozenset[str] = frozenset({AlertChannel.EMAIL})
 # ---------------------------------------------------------------------------
 
 # Device availability (ping-based, jobs.device_ping_job)
+# NB: pas d'alerte pour un LR down — un LR injoignable est une panne côté client
+# (courant coupé / LR débranché), pas notre infra. Voir device_ping_job.
 AT_ROCKET_DOWN          = "rocket_down"
-AT_LR_DOWN              = "lr_down"
 AT_SWITCH_DOWN          = "switch_down"
 AT_DEVICE_UNREACHABLE   = "device_unreachable"
 
@@ -125,7 +126,7 @@ AT_SECURITY_ANOMALY = "security_anomaly"
 
 
 KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
-    AT_ROCKET_DOWN, AT_LR_DOWN, AT_SWITCH_DOWN, AT_DEVICE_UNREACHABLE,
+    AT_ROCKET_DOWN, AT_SWITCH_DOWN, AT_DEVICE_UNREACHABLE,
     AT_RADIO_INTERFACE_DOWN, AT_ETH0_DOWN, AT_CPE_DISCONNECTED,
     AT_SIGNAL_LOW, AT_CINR_LOW, AT_CCQ_LOW, AT_RADIO_LINK_DEGRADED,
     AT_CAPACITY_LOW, AT_HIGH_RX_TX_ERRORS, AT_THROUGHPUT_ANOMALY,

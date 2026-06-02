@@ -40,7 +40,7 @@ backend/app/
 │   ├── config.py            # Settings via pydantic-settings + computed fields
 │   ├── logging.py           # Logging structuré vers stdout
 │   ├── exceptions.py        # AppException + handlers globaux
-│   └── alert_constants.py   # Source unique de vérité : Severity, AlertChannel, alert_type keys (22 types)
+│   └── alert_constants.py   # Source unique de vérité : Severity, AlertChannel, alert_type keys (21 types)
 ├── api/
 │   ├── router.py            # Montage des routers avec prefix /api/v1 + auth API key
 │   ├── deps.py              # verify_api_key — authentification par header X-API-Key
@@ -206,7 +206,7 @@ backend/app/
 - [x] **Alert engine** — `alert_engine.py` (évalue règles, gère AlertState DB, ouvre/résout incidents, appelle corrélation)
 - [x] **AlertState persisté en DB** — compteurs anti-flapping survivent aux redémarrages (sauf ping = in-memory)
 - [x] **Corrélation de causes** — `alert_correlation.py` (ex: rocket_down causé par switch_down, avec corrélation temporelle)
-- [x] **23 alert_types** centralisés — `core/alert_constants.py`
+- [x] **22 alert_types** centralisés — `core/alert_constants.py`
 - [x] **Détection anomalies radio** — signal dBm, CCQ, CINR, capacité lien, taux d'erreurs
 - [x] **Détection anomalies power** — batterie + voltage hors plage (20–56 V)
 - [x] **Détection port switch** — port DOWN ou vitesse < 1000 Mbps
@@ -245,11 +245,10 @@ backend/app/
 | `uisp_switch` | Ping + SNMP standard (ports, vitesse, erreurs) |
 | `uisp_power` | Ping + API REST (voltage, current, power, batterie) |
 
-### 25 Alert types
+### 24 Alert types
 | Catégorie | alert_type | Déclencheur |
 |---|---|---|
 | Disponibilité | `rocket_down` | Ping LTU Rocket échoue ×3 |
-| Disponibilité | `lr_down` | Ping LTU LR échoue ×3 |
 | Disponibilité | `switch_down` | Ping Switch échoue ×3 |
 | Disponibilité | `device_unreachable` | Ping device générique échoue ×3 |
 | Interface | `radio_interface_down` | SNMP : ath0 OperStatus=DOWN |

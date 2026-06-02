@@ -264,7 +264,7 @@ async def _apply_correlation(
     # Fetch detection timestamps for switch/rocket down incidents (temporal correlation)
     incident_timestamps: dict[str, datetime.datetime] = {}
     _device_down_alert_types = {
-        "switch_down", "rocket_down", "lr_down", "device_down",
+        "switch_down", "rocket_down", "device_down",
     }
     for role, d in device_by_role.items():
         ts_result = await db.execute(

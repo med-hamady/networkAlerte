@@ -21,7 +21,6 @@ from app.core.alert_constants import (
     AT_AIRMAX_DOWN,
     AT_LR_BRIDGE_MODE_MISCONFIG,
     AT_LR_DISAPPEARED,
-    AT_LR_DOWN,
     AT_LR_LATENCY_HIGH,
     AT_LR_NO_TRANSIT,
     AT_ROCKET_DOWN,
@@ -196,7 +195,6 @@ def _alert_type_for_device(device: Device) -> str:
     """Return the appropriate device-down alert_type for a given device type."""
     mapping = {
         "ltu_rocket":    AT_ROCKET_DOWN,
-        "lr":            AT_LR_DOWN,
         "uisp_switch":   AT_SWITCH_DOWN,
         "airmax_rocket": AT_AIRMAX_DOWN,
     }
@@ -206,7 +204,6 @@ def _alert_type_for_device(device: Device) -> str:
 def _down_title_for_device(device: Device) -> str:
     mapping = {
         "ltu_rocket":    "ALERTE CRITIQUE : LTU Rocket indisponible",
-        "lr":            "ALERTE CRITIQUE : LTU LR indisponible",
         "uisp_switch":   "ALERTE CRITIQUE : UISP Switch indisponible",
         "airmax_rocket": "ALERTE CRITIQUE : Rocket airMAX indisponible",
     }
@@ -393,7 +390,9 @@ async def device_ping_job() -> None:
 
     Anti-flapping: an incident is only opened after ping_down_threshold consecutive
     failures (default 3 = 90 s). A single successful ping resolves the incident.
-    alert_type is device-specific (rocket_down / lr_down / switch_down).
+    alert_type is device-specific (rocket_down / switch_down). LRs are the
+    exception: a down LR is a subscriber-side outage (client power cut / LR
+    unplugged), so it never raises an incident — only its status flips to down.
     """
     base_settings = get_settings()
     async with async_session_factory() as _ts_session:
@@ -477,6 +476,21 @@ async def device_ping_job() -> None:
                 await _set_ping_failure_count(session, dev.id, failures)
 
                 if failures >= settings.ping_down_threshold:
+                    # Un LR qui ne répond plus = panne côté client (courant coupé
+                    # chez l'abonné, LR débranché), pas une panne de notre infra.
+                    # On ne lève donc AUCUN incident pour un LR down. Son
+                    # indisponibilité reste visible via `status=down` dans
+                    # /devices, mais ne génère ni incident ni notification.
+                    # Une vraie panne de notre côté (Rocket/Switch) reste signalée
+                    # par ses propres incidents rocket_down / switch_down.
+                    if dev.rule_category == "lr":
+                        logger.info(
+                            "LR DOWN (côté client) %s (%s) — %d échecs, aucun incident",
+                            dev.name, dev.ip_address, failures,
+                        )
+                        await session.commit()
+                        continue
+
                     context = await _build_switch_context(session, dev)
                     down_title = _down_title_for_device(dev)
                     await _open_and_notify(
@@ -1064,8 +1078,9 @@ async def lr_internet_probe_job() -> None:
 
     async with async_session_factory() as session:
         # Skip LRs already known DOWN by device_ping_job — sinon chaque cycle
-        # gaspille un timeout SSH (~10–30 s) par LR mort, en série. Le LR down
-        # est déjà couvert par lr_down ; on reprend la sonde dès qu'il remonte.
+        # gaspille un timeout SSH (~10–30 s) par LR mort, en série. Un LR down
+        # ne lève aucun incident (panne côté client) ; on reprend la sonde dès
+        # qu'il remonte (status repassé à up).
         result = await session.execute(
             select(Lr).where(
                 Lr.ssh_username.is_not(None),
@@ -1188,7 +1203,7 @@ async def stale_lr_detection_job() -> None:
                     f"IP={lr.ip_address}) n'apparaît plus dans la liste des peers d'aucun "
                     f"Rocket depuis {age_minutes} minutes (seuil : {settings.stale_lr_minutes} min). "
                     f"Vérifier alimentation et lien radio. Comparer avec les incidents "
-                    f"lr_down / cpe_disconnected sur ce device et son parent."
+                    f"cpe_disconnected sur ce device et son parent."
                 )
                 await _open_and_notify(
                     session, lr, title, "warning", description,

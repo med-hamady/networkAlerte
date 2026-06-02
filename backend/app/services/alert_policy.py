@@ -37,7 +37,6 @@ from app.core.alert_constants import (
     AT_HIGH_RX_TX_ERRORS,
     AT_LR_DISAPPEARED,
     AT_LR_DISCOVERED,
-    AT_LR_DOWN,
     AT_LR_IP_CHANGED,
     AT_LR_LATENCY_HIGH,
     AT_LR_LINK_SUBSTANDARD,
@@ -98,16 +97,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
         recommended_action=(
             "Vérifier le switch · Vérifier le port du Rocket sur le switch · "
             "Vérifier l'alimentation du Rocket · Vérifier l'accessibilité locale du Rocket"
-        ),
-        notify_immediately=True,
-        channels=_CHANNELS_CRITICAL,
-    ),
-    AT_LR_DOWN: AlertPolicy(
-        alert_type=AT_LR_DOWN,
-        severity=Severity.CRITICAL,
-        recommended_action=(
-            "Vérifier alimentation du LR · Vérifier la liaison radio Rocket↔LR · "
-            "Vérifier signal/CINR récents"
         ),
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
@@ -443,7 +432,7 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
         recommended_action=(
             "Un LR auto-découvert n'apparaît plus dans la liste des peers du Rocket · "
             "Vérifier alimentation et liaison radio du LR · "
-            "Comparer avec les incidents lr_down/cpe_disconnected"
+            "Comparer avec les incidents cpe_disconnected"
         ),
         notify_immediately=True,
         channels=_CHANNELS_WARNING,

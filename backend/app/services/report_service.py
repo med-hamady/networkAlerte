@@ -30,7 +30,6 @@ logger = logging.getLogger(__name__)
 
 AVAILABILITY_TYPES: set[str] = {
     "rocket_down",
-    "lr_down",
     "switch_down",
     "device_unreachable",
 }

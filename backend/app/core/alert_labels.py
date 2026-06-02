@@ -28,7 +28,6 @@ from app.core.alert_constants import (
     AT_HIGH_RX_TX_ERRORS,
     AT_LR_DISAPPEARED,
     AT_LR_DISCOVERED,
-    AT_LR_DOWN,
     AT_LR_IP_CHANGED,
     AT_LR_LATENCY_HIGH,
     AT_LR_LINK_SUBSTANDARD,
@@ -56,7 +55,6 @@ from app.core.alert_constants import (
 ALERT_TYPE_LABELS: dict[str, str] = {
     # Availability
     AT_ROCKET_DOWN:          "Station de base (Rocket) hors ligne",
-    AT_LR_DOWN:              "Client (LR) hors ligne",
     AT_SWITCH_DOWN:          "Switch hors ligne",
     AT_DEVICE_UNREACHABLE:   "Équipement injoignable",
     AT_AIRMAX_DOWN:          "Station de base airMAX hors ligne",

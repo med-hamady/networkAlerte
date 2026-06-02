@@ -6,14 +6,6 @@ from pydantic import BaseModel
 class ReportPeriodSummary(BaseModel):
     date_from: str
     date_to: str
-    total_incidents: int
-    critical_count: int
-    warning_count: int
-    info_count: int
-    open_count: int
-    resolved_count: int
-    acknowledged_count: int
-    devices_supervised: int
 
 
 class DeviceReliability(BaseModel):

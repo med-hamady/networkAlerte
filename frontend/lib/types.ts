@@ -447,14 +447,6 @@ export function timeAgo(iso: string | null): string {
 export interface ReportPeriodSummary {
   date_from: string
   date_to: string
-  total_incidents: number
-  critical_count: number
-  warning_count: number
-  info_count: number
-  open_count: number
-  resolved_count: number
-  acknowledged_count: number
-  devices_supervised: number
 }
 
 export interface DeviceReliability {

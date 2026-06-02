@@ -4,7 +4,6 @@ import { useState } from 'react'
 import { generateReport } from '@/lib/api'
 import type { SupervisionReport } from '@/lib/types'
 import { formatDate } from '@/lib/types'
-import PeriodSummaryCard from '@/components/report/PeriodSummaryCard'
 import DeviceReliabilityCard from '@/components/report/DeviceReliabilityCard'
 import AlertFrequencyCard from '@/components/report/AlertFrequencyCard'
 import RadioMetricsCard from '@/components/report/RadioMetricsCard'
@@ -121,8 +120,6 @@ export default function ReportsPage() {
             </p>
           </div>
 
-          <PeriodSummaryCard period={report.period} />
-
           {(() => {
             const typeById = new Map<number, string>(
               report.device_reliability.map((d) => [d.device_id, d.device_type]),
@@ -152,7 +149,7 @@ export default function ReportsPage() {
                 />
                 {hasClient ? (
                   <>
-                    <DeviceReliabilityCard data={clientReliability} />
+                    <DeviceReliabilityCard data={clientReliability} hideStatus />
                     <RadioMetricsCard data={clientRadio} />
                     <WeakPointsCard data={clientWeak} />
                   </>

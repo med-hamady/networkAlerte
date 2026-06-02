@@ -38,43 +38,35 @@ RADIO_METRIC_NAMES: set[str] = {"signal_dbm", "cinr_db", "ccq_pct"}
 
 PRIORITY_RANK: dict[str, int] = {"critique": 0, "élevé": 1, "moyen": 2}
 
+
+def _exclude_lr_availability():
+    """Clause SQL : exclut les incidents de disponibilité (DOWN) des LR clients.
+
+    Un LR injoignable = panne côté abonné (courant coupé, LR débranché), pas une
+    panne de notre infra. On ne veut donc pas la compter dans le rapport côté
+    clients. Défensif : couvre d'éventuels `device_unreachable` historiques même
+    si le ping job ne lève plus d'incident pour un LR down. Requiert que `Device`
+    soit joint à la requête.
+    """
+    return ~and_(Device.device_type == "lr", Incident.alert_type.in_(AVAILABILITY_TYPES))
+
+
 def _label_for(alert_type: str) -> str:
     return alert_type_label(alert_type)
 
 
-async def _build_period_summary(
-    db: AsyncSession,
+def _build_period_summary(
     date_from_dt: datetime.datetime,
     date_to_dt: datetime.datetime,
 ) -> ReportPeriodSummary:
-    stmt = select(
-        func.count(Incident.id).label("total"),
-        func.count(Incident.id).filter(Incident.severity == "critical").label("critical"),
-        func.count(Incident.id).filter(Incident.severity == "warning").label("warning"),
-        func.count(Incident.id).filter(Incident.severity == "info").label("info"),
-        func.count(Incident.id).filter(Incident.status == "open").label("open_cnt"),
-        func.count(Incident.id).filter(Incident.status == "resolved").label("resolved"),
-        func.count(Incident.id).filter(Incident.status == "acknowledged").label("ack"),
-    ).where(
-        Incident.detected_at >= date_from_dt,
-        Incident.detected_at <= date_to_dt,
-    )
-    result = await db.execute(stmt)
-    row = result.one()
+    """Bornes de la période analysée (utilisées par le bandeau d'en-tête).
 
-    device_count = await db.scalar(select(func.count(Device.id))) or 0
-
+    Le décompte d'incidents a été retiré : il n'apportait pas d'information
+    décisionnelle utile côté supervision.
+    """
     return ReportPeriodSummary(
         date_from=date_from_dt.date().isoformat(),
         date_to=date_to_dt.date().isoformat(),
-        total_incidents=row.total or 0,
-        critical_count=row.critical or 0,
-        warning_count=row.warning or 0,
-        info_count=row.info or 0,
-        open_count=row.open_cnt or 0,
-        resolved_count=row.resolved or 0,
-        acknowledged_count=row.ack or 0,
-        devices_supervised=device_count,
     )
 
 
@@ -106,6 +98,7 @@ async def _build_device_reliability(
                 Incident.device_id == Device.id,
                 Incident.detected_at >= date_from_dt,
                 Incident.detected_at <= date_to_dt,
+                _exclude_lr_availability(),
             ),
             isouter=True,
         )
@@ -240,6 +233,7 @@ async def _build_weak_points(
             Incident.detected_at >= date_from_dt,
             Incident.detected_at <= date_to_dt,
             Incident.alert_type.isnot(None),
+            _exclude_lr_availability(),
         )
         .group_by(Incident.device_id, Device.name, Incident.alert_type)
         .having(func.count(Incident.id) >= 3)
@@ -272,6 +266,7 @@ async def _build_weak_points(
             Incident.detected_at >= date_from_dt,
             Incident.detected_at <= date_to_dt,
             Incident.alert_type.in_(AVAILABILITY_TYPES),
+            Device.device_type != "lr",
         )
         .group_by(Incident.device_id, Device.name)
         .having(func.count(distinct(func.date(Incident.detected_at))) >= 2)
@@ -310,6 +305,7 @@ async def _build_recommendations(
             Incident.detected_at >= date_from_dt,
             Incident.detected_at <= date_to_dt,
             Incident.alert_type.isnot(None),
+            _exclude_lr_availability(),
         )
         .group_by(Incident.device_id, Device.name, Incident.alert_type)
     )
@@ -571,7 +567,7 @@ async def generate_report(
     )
 
     # Séquentiel : AsyncSession n'est pas thread-safe / concurrent-safe
-    period = await _build_period_summary(db, date_from_dt, date_to_dt)
+    period = _build_period_summary(date_from_dt, date_to_dt)
     reliability = await _build_device_reliability(db, date_from_dt, date_to_dt)
     frequencies = await _build_alert_frequencies(db, date_from_dt, date_to_dt)
     radio = await _build_radio_metrics(db, date_from_dt, date_to_dt)

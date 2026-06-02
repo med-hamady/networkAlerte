@@ -1,7 +1,7 @@
 import datetime
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.device import Device
@@ -151,6 +151,33 @@ async def resolve_incidents(
         len(incidents),
     )
     return incidents
+
+
+async def delete_open_incidents(
+    db: AsyncSession,
+    device_id: int,
+) -> int:
+    """
+    Hard-delete all OPEN incidents for a device. Returns the number deleted.
+
+    Used when a client-side LR goes down: a down LR is a subscriber-side outage
+    (client power cut / LR unplugged), never our infra problem, so its open
+    incidents (radio quality, link substandard, no transit…) are stale noise.
+    We purge them outright rather than leaving them dangling in /incidents —
+    consistent with the "LR-side problems are never incidents" policy.
+
+    The alerts FK (alerts.incident_id) is ON DELETE CASCADE, so the matching
+    notification audit rows are removed by Postgres in the same statement.
+    """
+    result = await db.execute(
+        delete(Incident)
+        .where(
+            Incident.device_id == device_id,
+            Incident.status == "open",
+        )
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount or 0
 
 
 async def get_incidents(

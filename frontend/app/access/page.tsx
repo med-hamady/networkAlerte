@@ -39,7 +39,7 @@ export default function AccessPage() {
   const [modalAction, setModalAction] = React.useState<'block' | 'unblock'>('block')
 
   const lrs = React.useMemo(
-    () => (devices ?? []).filter((d): d is Lr => d.device_type === 'lr'),
+    () => (devices ?? []).filter((d): d is Lr => d.device_type === 'lr' && d.status === 'up'),
     [devices],
   )
 

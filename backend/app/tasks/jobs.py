@@ -477,9 +477,16 @@ async def device_ping_job() -> None:
                     # Une vraie panne de notre côté (Rocket/Switch) reste signalée
                     # par ses propres incidents rocket_down / switch_down.
                     if dev.rule_category == "lr":
+                        # Un LR down = panne côté abonné. On purge en plus ses
+                        # incidents ouverts (qualité radio, lien, transit…) :
+                        # ils sont devenus du bruit obsolète puisque le LR ne
+                        # répond plus. Aucun poller ne les recréera tant que le
+                        # LR est down (les autres jobs ne ciblent que status=up).
+                        purged = await incident_service.delete_open_incidents(session, dev.id)
                         logger.info(
-                            "LR DOWN (côté client) %s (%s) — %d échecs, aucun incident",
-                            dev.name, dev.ip_address, failures,
+                            "LR DOWN (côté client) %s (%s) — %d échecs, "
+                            "%d incident(s) ouvert(s) purgé(s)",
+                            dev.name, dev.ip_address, failures, purged,
                         )
                         await session.commit()
                         continue

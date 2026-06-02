@@ -6,13 +6,13 @@ Scheduled supervision jobs.
 - snmp_poll_job     : SNMP metrics for LTU/airMAX devices every 60s → alert engine
 - power_poll_job    : UISP Power API polling every 30s → power anomaly detection
 - ltu_api_poll_job  : LTU HTTP API polling every 60s → alert engine (radio quality)
+- airos_api_poll_job: airMAX LR (LiteBeam) airOS HTTP API polling every 60s → alert engine
 - transit_probe_job : Transit connectivity probe every 60s
 """
 
 import asyncio
 import datetime
 import logging
-import re
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import func, select
@@ -41,6 +41,7 @@ from app.models.device import Device, Lr, Rocket, UispPower
 from app.models.device_metric import DeviceMetric
 from app.models.power_status_log import PowerStatusLog
 from app.services import (
+    airos_api_service,
     alert_engine,
     client_block_service,
     digest_service,
@@ -137,19 +138,12 @@ RADIO_RULE_CATEGORIES = {"ltu_rocket"}
 # airMAX Rockets → UBNT Enterprise MIB + IF-MIB.
 AIRMAX_RULE_CATEGORIES = {"airmax_rocket"}
 
-# airMAX LRs (LiteBeam family) → polled directly via SNMP. Their parent
-# Rocket airMAX exposes peer identification only (ubntStaTable), not the
-# per-peer signal/CCQ/rates that LTU Rockets fan out via HTTP — so each
-# LiteBeam must be SNMP'd on its own management IP.
+# airMAX LRs (LiteBeam family) → polled directly via their own airOS HTTP API
+# (airos_api_poll_job) on their management IP. Their parent Rocket airMAX
+# exposes peer identification only (ubntStaTable), not the per-peer link
+# metrics; the airOS status.cgi gives the full dashboard set (Link Potential,
+# Total Capacity, rate index, signal/CINR) the SNMP MIB lacks.
 AIRMAX_LR_VARIANTS = {"litebeam_5ac", "litebeam_m5"}
-
-# Matches the auto-generated LR names from discovery_service._generate_device_name
-# ("LR B44279" / "LR 10.135.7.237" / "LR auto #3"). Used to decide whether the
-# SNMP sysName from a LiteBeam can safely overwrite the device's name — a
-# manually edited name (anything not matching) is always preserved.
-_AUTO_LR_NAME = re.compile(
-    r"^LR ([0-9A-F]{6}|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|auto #\d+)$"
-)
 
 # Switches → standard SNMP (uptime only).
 SWITCH_RULE_CATEGORIES = {"uisp_switch"}
@@ -544,20 +538,10 @@ async def snmp_poll_job() -> None:
         )
         devices = list(result.scalars().all())
 
-        # airMAX LRs (LiteBeam 5AC/M5) — SNMP'd directly. Their parent
-        # Rocket airMAX exposes only peer identification via SNMP, not the
-        # per-peer radio metrics LTU Rockets fan out via HTTP.
-        # snmp_community must be set explicitly — auto-discovered LRs come in
-        # with NULL community and are not polled until an operator opts them
-        # in (UI or SQL: UPDATE devices SET snmp_community='public' WHERE …).
-        result = await session.execute(
-            select(Lr).where(
-                Lr.status == "up",
-                Lr.snmp_community.is_not(None),
-                Lr.model_variant.in_(AIRMAX_LR_VARIANTS),
-            )
-        )
-        devices.extend(result.scalars().all())
+    # airMAX LRs (LiteBeam 5AC/M5) are NOT polled here anymore: they are
+    # polled via their own airOS HTTP API in airos_api_poll_job, which yields
+    # the composite Link Potential / Total Capacity / rate-index metrics the
+    # SNMP MIB can't. The airMAX Rocket SNMP poll below still discovers them.
 
     if not devices:
         logger.debug("No SNMP-eligible devices — skipping SNMP poll")
@@ -569,8 +553,7 @@ async def snmp_poll_job() -> None:
         community = device.snmp_community or settings.snmp_default_community
         category = device.rule_category
 
-        is_airmax_lr = isinstance(device, Lr) and device.model_variant in AIRMAX_LR_VARIANTS
-        if is_airmax_lr or category in AIRMAX_RULE_CATEGORIES:
+        if category in AIRMAX_RULE_CATEGORIES:
             metrics = await snmp_service.collect_airmax_metrics(
                 host=device.ip_address,
                 community=community,
@@ -645,28 +628,6 @@ async def snmp_poll_job() -> None:
 
             # Delegate anomaly detection to alert engine
             await alert_engine.evaluate_device_metrics(session, dev, metrics, settings)
-
-            # airMAX LRs — pull sysName so the UI shows the friendly device
-            # name configured in airOS instead of the auto-generated MAC-suffix
-            # name (e.g. "LR B44279" → "44910449- Habib Khoumein"). Only
-            # overwrites `name` when it still matches the auto-generated
-            # pattern, so a manually edited name is always preserved.
-            if is_airmax_lr:
-                sysname = await snmp_service.get_sysname(
-                    host=device.ip_address,
-                    community=community,
-                    port=settings.snmp_port,
-                    timeout=settings.snmp_timeout,
-                )
-                if sysname:
-                    if dev.hostname != sysname:
-                        dev.hostname = sysname
-                    if _AUTO_LR_NAME.match(dev.name) and dev.name != sysname:
-                        logger.info(
-                            "airMAX LR auto-rename — '%s' (%s) → '%s'",
-                            dev.name, device.ip_address, sysname,
-                        )
-                        dev.name = sysname
 
             # Auto-discovery for airMAX Rockets — walks the UBNT station table
             # via SNMP and feeds the same reconcile_peers() pipeline as LTU API.
@@ -986,6 +947,119 @@ async def ltu_api_poll_job() -> None:
             await session.commit()
 
 
+async def airos_api_poll_job() -> None:
+    """
+    Poll airMAX LR (LiteBeam) devices via their own airOS HTTP API (status.cgi).
+    Replaces SNMP for these LRs: the UBNT MIB lacks Link Potential / Total
+    Capacity / rate index, which the airOS dashboard (and status.cgi) expose.
+    Each LiteBeam is queried directly at its own IP; metrics use the same keys
+    as the LTU API so the alert engine / modal work unchanged.
+    """
+    base_settings = get_settings()
+    async with async_session_factory() as _ts_session:
+        settings = await threshold_service.get_effective_settings(_ts_session, base_settings)
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Lr).where(
+                Lr.status == "up",
+                Lr.model_variant.in_(AIRMAX_LR_VARIANTS),
+            )
+        )
+        devices = list(result.scalars().all())
+
+    if not devices:
+        logger.debug("airOS API poll — no eligible devices")
+        return
+
+    logger.info("airOS API poll — checking %d device(s)", len(devices))
+
+    # airOS HTTP metric keys reuse the LTU units; add the few SNMP-style keys
+    # this poll also fills (byte counters, uptime).
+    unit_map = {
+        **ltu_api_service.METRIC_UNITS,
+        "radio_rx_bytes": "B",
+        "radio_tx_bytes": "B",
+        "uptime_seconds": "s",
+    }
+
+    for device in devices:
+        if not device.ssh_username or not device.ssh_password:
+            logger.warning(
+                "airOS API skip — %s (%s) : credentials manquants en base "
+                "(ssh_username/ssh_password). Configure-les via PUT /api/v1/devices/%d.",
+                device.name, device.ip_address, device.id,
+            )
+            continue
+
+        collected = await airos_api_service.collect_airos_link_metrics(
+            host=device.ip_address,
+            username=device.ssh_username,
+            password=device.ssh_password,
+            port=443,  # airOS HTTP API requires HTTPS
+        )
+        if collected is None:
+            logger.debug("airOS API no response — %s (%s)", device.name, device.ip_address)
+            continue
+        metrics, hostname, netrole = collected
+
+        if not any(v is not None for v in metrics.values()):
+            logger.warning("airOS API no data — %s (%s)", device.name, device.ip_address)
+            continue
+
+        logger.info(
+            "airOS %s (%s) — %s",
+            device.name,
+            device.ip_address,
+            " | ".join(f"{k}={v}" for k, v in metrics.items() if v is not None),
+        )
+
+        async with async_session_factory() as session:
+            dev = await session.get(Device, device.id)
+            if dev is None:
+                continue
+
+            # Sync the stable distance_m column for quick UI display.
+            distance = metrics.get("distance_m")
+            if distance is not None:
+                dev.distance_m = distance
+
+            # Name always tracks the airOS-configured hostname for airMAX LRs:
+            # airOS is the source of truth, so a rename on the device propagates
+            # here every cycle. Manual renames in our UI are intentionally
+            # overwritten — change the hostname in airOS instead.
+            if hostname:
+                if dev.hostname != hostname:
+                    dev.hostname = hostname
+                if dev.name != hostname:
+                    logger.info(
+                        "airMAX LR name ← airOS hostname — '%s' (%s) → '%s'",
+                        dev.name, device.ip_address, hostname,
+                    )
+                    dev.name = hostname
+
+            for metric_name, value in metrics.items():
+                if value is not None:
+                    session.add(DeviceMetric(
+                        device_id=dev.id,
+                        metric_name=metric_name,
+                        metric_value=value,
+                        unit=unit_map.get(metric_name),
+                    ))
+
+            # Per-LR alert engine pass — radio-quality + link_substandard rules
+            # evaluate against this LR's metrics (engine injects model_variant
+            # so airMAX-family thresholds apply).
+            await alert_engine.evaluate_device_metrics(session, dev, dict(metrics), settings)
+
+            # Router vs bridge — netrole comes free in status.cgi, so the
+            # client-block topology guard is kept fresh every cycle without the
+            # hourly SSH probe (lr_topology_check_job excludes airMAX LRs).
+            await _apply_lr_topology(session, dev, netrole, "netrole via airOS status.cgi")
+
+            await session.commit()
+
+
 async def _evaluate_lr_transit(
     session, lr: Device, ping_ok: bool, settings,
 ) -> None:
@@ -1175,6 +1249,53 @@ async def warning_digest_job() -> None:
             raise
 
 
+async def _apply_lr_topology(session, dev: Lr, mode: str | None, source_msg: str) -> None:
+    """Persist Lr.topology_mode and open/resolve AT_LR_BRIDGE_MODE_MISCONFIG.
+
+    `mode` is "router", "bridge", or None/anything else (probe failed → no-op,
+    keep the previously-known classification). Shared by the SSH topology check
+    (LTU LRs) and the airOS HTTP poll (airMAX LRs, where netrole is free in
+    status.cgi). `source_msg` describes how the mode was observed and is shown
+    in the incident description.
+    """
+    if mode not in ("router", "bridge"):
+        return
+
+    previous = dev.topology_mode
+    dev.topology_mode = mode
+
+    if mode == "bridge":
+        title = f"Mauvaise config : LR '{dev.name}' en mode bridge"
+        description = (
+            f"Le LR {dev.name} ({dev.ip_address}) est détecté en mode "
+            f"bridge ({source_msg}). Le blocage client (Coupure totale / "
+            f"WhatsApp autorisé) ne peut PAS fonctionner sur ce LR "
+            f"tant qu'il reste en bridge — le trafic du client ne "
+            f"traverse ni iptables FORWARD ni le dnsmasq local. "
+            f"Reconfigurer le LR en mode routeur via son interface "
+            f"web (airOS) pour que la feature soit opérationnelle."
+        )
+        await _open_and_notify(
+            session, dev, title, "warning", description,
+            alert_type=AT_LR_BRIDGE_MODE_MISCONFIG,
+        )
+        logger.warning(
+            "LR topology — '%s' (id=%d) en mode bridge : %s",
+            dev.name, dev.id, source_msg,
+        )
+    elif mode == "router" and previous == "bridge":
+        # Topology fixed by the operator → resolve the incident
+        await _resolve_and_notify(
+            session, dev,
+            title=f"RECOVERY : LR '{dev.name}' repassé en mode routeur",
+            alert_type=AT_LR_BRIDGE_MODE_MISCONFIG,
+        )
+        logger.info(
+            "LR topology — '%s' (id=%d) repassé en mode routeur",
+            dev.name, dev.id,
+        )
+
+
 async def lr_topology_check_job() -> None:
     """Detect router vs bridge mode on every SSH-reachable LR.
 
@@ -1187,6 +1308,10 @@ async def lr_topology_check_job() -> None:
 
     Runs hourly — bridge/router is a config decision that doesn't change at
     high frequency, no need to thrash the SSH connection.
+
+    airMAX LRs (LiteBeam) are excluded: their netrole is read for free from
+    status.cgi every 60 s in airos_api_poll_job (no SSH needed). This job now
+    only covers LTU LRs.
     """
     settings = get_settings()
     async with async_session_factory() as session:
@@ -1194,12 +1319,13 @@ async def lr_topology_check_job() -> None:
             select(Lr).where(
                 Lr.ssh_username.is_not(None),
                 Lr.ssh_password.is_not(None),
+                Lr.model_variant.not_in(AIRMAX_LR_VARIANTS),
             )
         )
         lrs = list(result.scalars().all())
 
     if not lrs:
-        logger.debug("LR topology check: no LR with SSH credentials")
+        logger.debug("LR topology check: no LTU LR with SSH credentials")
         return
 
     logger.info("LR topology check — probing %d LR(s)", len(lrs))
@@ -1229,43 +1355,9 @@ async def lr_topology_check_job() -> None:
                 )
                 dev.ssh_password = used_pw
 
-            previous = dev.topology_mode
-            # Only persist confirmed states — "unknown" (probe failed) must
-            # not erase a previously-known router/bridge classification.
             if mode in ("router", "bridge"):
-                dev.topology_mode = mode
-
-            if mode == "bridge":
-                title = f"Mauvaise config : LR '{dev.name}' en mode bridge"
-                description = (
-                    f"Le LR {dev.name} ({dev.ip_address}) est détecté en mode "
-                    f"bridge ({msg}). Le blocage client (Coupure totale / "
-                    f"WhatsApp autorisé) ne peut PAS fonctionner sur ce LR "
-                    f"tant qu'il reste en bridge — le trafic du client ne "
-                    f"traverse ni iptables FORWARD ni le dnsmasq local. "
-                    f"Reconfigurer le LR en mode routeur via son interface "
-                    f"web (airOS) pour que la feature soit opérationnelle."
-                )
-                await _open_and_notify(
-                    session, dev, title, "warning", description,
-                    alert_type=AT_LR_BRIDGE_MODE_MISCONFIG,
-                )
-                logger.warning(
-                    "LR topology — '%s' (id=%d) en mode bridge : %s",
-                    dev.name, dev.id, msg,
-                )
-            elif mode == "router" and previous == "bridge":
-                # Topology fixed by the operator → resolve the incident
-                await _resolve_and_notify(
-                    session, dev,
-                    title=f"RECOVERY : LR '{dev.name}' repassé en mode routeur",
-                    alert_type=AT_LR_BRIDGE_MODE_MISCONFIG,
-                )
-                logger.info(
-                    "LR topology — '%s' (id=%d) repassé en mode routeur",
-                    dev.name, dev.id,
-                )
-            elif mode == "unknown":
+                await _apply_lr_topology(session, dev, mode, msg)
+            else:  # "unknown" — probe failed, keep previous classification
                 logger.debug(
                     "LR topology — '%s' (id=%d) probe failed : %s",
                     dev.name, dev.id, msg,
@@ -1541,6 +1633,13 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         ltu_api_poll_job,
         trigger="interval", seconds=settings.snmp_interval_seconds,
         id="ltu_api_poll", name="LTU HTTP API poll",
+        replace_existing=True,
+        **safety,
+    )
+    scheduler.add_job(
+        airos_api_poll_job,
+        trigger="interval", seconds=settings.snmp_interval_seconds,
+        id="airos_api_poll", name="airOS HTTP API poll (airMAX LR)",
         replace_existing=True,
         **safety,
     )

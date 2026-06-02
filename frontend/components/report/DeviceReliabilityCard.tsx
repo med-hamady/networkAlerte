@@ -3,12 +3,6 @@ import { deviceTypeLabel } from '@/lib/types'
 
 interface Props {
   data: DeviceReliability[]
-  /**
-   * Masque la colonne Statut (UP/DOWN). Utilisé pour les clients LR : un LR
-   * down = panne côté abonné (courant coupé, équipement débranché), pas notre
-   * problème — on ne le présente donc pas comme un défaut de fiabilité.
-   */
-  hideStatus?: boolean
 }
 
 function formatMinutes(minutes: number | null): string {
@@ -40,7 +34,7 @@ function statusBadge(status: string) {
   )
 }
 
-export default function DeviceReliabilityCard({ data, hideStatus = false }: Props) {
+export default function DeviceReliabilityCard({ data }: Props) {
   if (data.length === 0) {
     return (
       <section className="print-card bg-white border border-blue-100 rounded-xl p-6 shadow-sm">
@@ -64,7 +58,7 @@ export default function DeviceReliabilityCard({ data, hideStatus = false }: Prop
               <th className="px-3 py-2 font-medium">Équipement</th>
               <th className="px-3 py-2 font-medium">Type</th>
               <th className="px-3 py-2 font-medium">Localisation</th>
-              {!hideStatus && <th className="px-3 py-2 font-medium text-center">Statut</th>}
+              <th className="px-3 py-2 font-medium text-center">Statut</th>
               <th className="px-3 py-2 font-medium text-right">Incidents</th>
               <th className="px-3 py-2 font-medium text-right">Pannes</th>
               <th className="px-3 py-2 font-medium text-right">Temps résolution moy.</th>
@@ -79,9 +73,7 @@ export default function DeviceReliabilityCard({ data, hideStatus = false }: Prop
                 <td className="px-3 py-2 font-medium text-blue-900">{d.device_name}</td>
                 <td className="px-3 py-2 text-gray-600">{deviceTypeLabel(d.device_type)}</td>
                 <td className="px-3 py-2 text-gray-600">{d.location ?? '—'}</td>
-                {!hideStatus && (
-                  <td className="px-3 py-2 text-center">{statusBadge(d.current_status)}</td>
-                )}
+                <td className="px-3 py-2 text-center">{statusBadge(d.current_status)}</td>
                 <td className="px-3 py-2 text-right font-semibold">{d.total_incidents}</td>
                 <td className="px-3 py-2 text-right">
                   <span

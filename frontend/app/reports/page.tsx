@@ -126,7 +126,9 @@ export default function ReportsPage() {
             )
             const isClient = (deviceType: string | undefined) => deviceType === 'lr'
 
-            const clientReliability = report.device_reliability.filter((d) => isClient(d.device_type))
+            // Côté clients : pas de tableau de fiabilité (classement par nombre
+            // d'incidents) — le comptage d'incidents d'un LR n'a pas de valeur
+            // décisionnelle pour nous. On ne garde que la qualité radio réelle.
             const networkReliability = report.device_reliability.filter((d) => !isClient(d.device_type))
 
             const clientRadio = report.radio_metrics.filter((m) => isClient(typeById.get(m.device_id)))
@@ -135,8 +137,7 @@ export default function ReportsPage() {
             const clientWeak = report.weak_points.filter((w) => isClient(typeById.get(w.device_id)))
             const networkWeak = report.weak_points.filter((w) => !isClient(typeById.get(w.device_id)))
 
-            const hasClient =
-              clientReliability.length + clientRadio.length + clientWeak.length > 0
+            const hasClient = clientRadio.length + clientWeak.length > 0
             const hasNetwork =
               networkReliability.length + networkRadio.length + networkWeak.length > 0
 
@@ -149,7 +150,6 @@ export default function ReportsPage() {
                 />
                 {hasClient ? (
                   <>
-                    <DeviceReliabilityCard data={clientReliability} hideStatus />
                     <RadioMetricsCard data={clientRadio} />
                     <WeakPointsCard data={clientWeak} />
                   </>

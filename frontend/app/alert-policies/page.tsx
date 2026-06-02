@@ -17,24 +17,19 @@ type EquipmentGroup = {
   alertTypes: string[]
 }
 
+// Groupes = device_type réellement supervisé. Les alertTypes de chaque groupe
+// reflètent RULES_BY_DEVICE_TYPE (backend/app/services/alert_rules.py) + les
+// alertes hors moteur (ping, transit SSH, power, sécurité). Garder aligné.
 const EQUIPMENT_GROUPS: EquipmentGroup[] = [
   {
     key: 'rocket',
     label: 'LTU Rocket — station de base',
-    description: 'Ping, SNMP IF-MIB, API HTTP LTU et auto-découverte des CPE peers',
+    description: "Ping, SNMP IF-MIB et API HTTP LTU. Les métriques radio (signal, CCQ, CINR, capacité) sont évaluées par-LR, pas sur le Rocket lui-même.",
     alertTypes: [
       'rocket_down',
       'radio_interface_down',
       'eth0_down',
       'cpe_disconnected',
-      'signal_low',
-      'cinr_low',
-      'ccq_low',
-      'cinr_ul_low',
-      'ccq_ul_low',
-      'radio_link_degraded',
-      'capacity_low',
-      'capacity_ul_low',
       'high_rx_tx_errors',
       'throughput_anomaly',
       'lr_discovered',
@@ -45,7 +40,7 @@ const EQUIPMENT_GROUPS: EquipmentGroup[] = [
   {
     key: 'airmax_base',
     label: 'airMAX Rocket — station de base',
-    description: 'Ping, SNMP UBNT Enterprise MIB + IF-MIB et auto-découverte des peers (Rocket M / NanoStation M)',
+    description: 'Ping + poll HTTP airOS. Contrairement au Rocket LTU, la station airMAX est évaluée sur sa propre qualité radio (signal/CINR/CCQ).',
     alertTypes: [
       'airmax_down',
       'radio_interface_down',
@@ -56,21 +51,22 @@ const EQUIPMENT_GROUPS: EquipmentGroup[] = [
       'radio_link_degraded',
       'high_rx_tx_errors',
       'throughput_anomaly',
-      'lr_discovered',
-      'lr_ip_changed',
-      'lr_reassigned',
     ],
   },
   {
     key: 'lr_ltu',
     label: 'Client LR — famille LTU',
-    description: 'LR LTU : SNMP + API LTU + sonde transit SSH. Seuils de lien propres au LTU (potentiel ≥ 50 %, débit RX plus strict) — incident lr_link_substandard critique.',
+    description: "Métriques per-LR via fan-out du Rocket parent (SNMP + API LTU) + sonde transit SSH. Seuils du lien lr_link_substandard propres au LTU : potentiel ≥ 50 %, débit RX < ×6 → critique (pas de palier warning).",
     alertTypes: [
-      'lr_link_substandard',
       'signal_low',
       'cinr_low',
       'ccq_low',
-      'throughput_anomaly',
+      'cinr_ul_low',
+      'ccq_ul_low',
+      'capacity_low',
+      'capacity_ul_low',
+      'radio_link_degraded',
+      'lr_link_substandard',
       'lr_no_transit',
       'lr_latency_high',
       'lr_bridge_mode_misconfig',
@@ -79,12 +75,17 @@ const EQUIPMENT_GROUPS: EquipmentGroup[] = [
   {
     key: 'lr_airmax',
     label: 'Client LR — famille airMAX (LiteBeam)',
-    description: 'LR airMAX/LiteBeam : poll HTTP airOS (login.cgi → status.cgi) + sonde transit SSH. Seuils de lien airMAX (potentiel ≥ 40 %, débit RX moins strict, palier warning) — incident lr_link_substandard.',
+    description: "Mêmes scénarios que la famille LTU, mais métriques de lien via poll HTTP airOS (login.cgi → status.cgi). Seuils lr_link_substandard airMAX : potentiel ≥ 40 %, débit RX < ×4 → critique, palier warning entre ×4 et ×6.",
     alertTypes: [
-      'lr_link_substandard',
       'signal_low',
       'cinr_low',
-      'throughput_anomaly',
+      'ccq_low',
+      'cinr_ul_low',
+      'ccq_ul_low',
+      'capacity_low',
+      'capacity_ul_low',
+      'radio_link_degraded',
+      'lr_link_substandard',
       'lr_no_transit',
       'lr_latency_high',
       'lr_bridge_mode_misconfig',

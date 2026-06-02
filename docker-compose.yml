@@ -40,7 +40,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 20s
+      # 90 s absorbe les migrations lourdes (création de matviews, indexes,
+      # vacuum), sinon le scheduler dépendant de backend:service_healthy se
+      # retrouve en "Created" et il faut le démarrer à la main. Une fois la
+      # première migration passée, le healthcheck répond en < 1 s, donc le
+      # délai ne se voit pas au déploiement courant.
+      start_period: 90s
     logging:
       driver: json-file
       options:

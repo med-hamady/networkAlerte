@@ -155,7 +155,7 @@ THRESHOLD_SCHEMA: dict[str, dict[str, Any]] = {
         "step": 5,
     },
     "lr_rx_rate_critical_idx_ltu": {
-        "label": "Débit RX — plancher critique LTU (×)",
+        "label": "Rate — plancher critique LTU (×)",
         "category": "lr_link",
         "unit": "×",
         "type": float,
@@ -164,7 +164,7 @@ THRESHOLD_SCHEMA: dict[str, dict[str, Any]] = {
         "step": 1,
     },
     "lr_rx_rate_warning_idx_airmax": {
-        "label": "Débit RX — plancher warning airMAX (×)",
+        "label": "Rate — plancher warning airMAX (×)",
         "category": "lr_link",
         "unit": "×",
         "type": float,
@@ -173,7 +173,7 @@ THRESHOLD_SCHEMA: dict[str, dict[str, Any]] = {
         "step": 1,
     },
     "lr_rx_rate_critical_idx_airmax": {
-        "label": "Débit RX — plancher critique airMAX (×)",
+        "label": "Rate — plancher critique airMAX (×)",
         "category": "lr_link",
         "unit": "×",
         "type": float,

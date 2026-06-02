@@ -9,6 +9,7 @@ const CATEGORY_ORDER = [
   'radio_cinr',
   'radio_ccq',
   'capacity',
+  'lr_link',
   'errors',
   'battery',
   'ping_latency',

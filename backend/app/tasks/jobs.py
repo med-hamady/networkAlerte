@@ -1164,8 +1164,15 @@ async def lr_internet_probe_job() -> None:
     Remplace l'ancien `lr_transit_probe_job` (qui n'évaluait qu'un seul LR
     pour des raisons historiques de maquette). Tous les LR sont désormais
     couverts, avec une seule session SSH par cycle.
+
+    Les seuils (transit_probe_threshold, lr_latency_critical_ms,
+    lr_latency_failure_threshold, lr_latency_ping_count) sont lus via
+    get_effective_settings → une surcharge faite dans la page Seuils prend
+    effet au cycle suivant sans redémarrage, comme pour les autres jobs.
     """
-    settings = get_settings()
+    base_settings = get_settings()
+    async with async_session_factory() as _ts_session:
+        settings = await threshold_service.get_effective_settings(_ts_session, base_settings)
 
     async with async_session_factory() as session:
         # Skip LRs already known DOWN by device_ping_job — sinon chaque cycle

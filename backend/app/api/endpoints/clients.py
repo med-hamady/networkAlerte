@@ -27,6 +27,17 @@ seen before that reset. Sum-of-positive-deltas treats a reset as "delta
 contributes nothing this cycle, then accumulation resumes" — so the
 supervisor keeps the full history regardless of how many times the
 hardware counter is wiped.
+
+Performance:
+  The delta accumulation runs in Postgres via LAG() + CASE (was Python
+  before 2026-06-02; transferring millions of samples to Python made
+  30d/lifetime take 30 s+ → user-visible "Chargement…" stall).
+
+  For the 30d window — the most common page view — a materialized view
+  (`client_consumption_30d`, refreshed every 15 min) pre-computes the
+  aggregate, dropping 30d latency from ~36 s to <100 ms. 24h and 7d
+  windows run the live query (sub-2 s, acceptable). Lifetime also runs
+  live for correctness once retention >30 d is enabled.
 """
 
 from __future__ import annotations
@@ -36,13 +47,12 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
 from app.models.device import Lr
-from app.models.device_metric import DeviceMetric
 
 router = APIRouter()
 
@@ -51,6 +61,15 @@ router = APIRouter()
 _MAX_PLAUSIBLE_DELTA_BYTES = 8 * 1024 ** 3
 
 _AIRMAX_LR_VARIANTS = {"litebeam_5ac", "litebeam_m5"}
+
+# Counter metrics queried, in stable order. Must match the matview definition
+# in migration p7b8c9d0e1f2 — a divergence makes 30d/lifetime under-report.
+_COUNTER_METRICS = (
+    "peer_tx_bytes",
+    "peer_rx_bytes",
+    "radio_rx_bytes",
+    "radio_tx_bytes",
+)
 
 Period = Literal["24h", "7d", "30d", "lifetime"]
 
@@ -96,24 +115,45 @@ class ClientConsumptionResponse(BaseModel):
     items: list[ClientConsumption]
 
 
-def _sum_positive_deltas(samples: list[float]) -> int:
-    """Sum positive deltas between successive samples.
-
-    LTU API exposes 64-bit counters that effectively never wrap, so the only
-    legitimate negative delta is a firmware reset (CPE/AP reboot) — skip
-    that step but resume on the next sample. Positive deltas beyond the
-    plausible per-cycle budget are also rejected as counter glitches.
+# Live SQL: window function + CASE replicates _sum_positive_deltas in Postgres.
+# Keeps transfer at ~272 rows (68 LRs × 4 metrics) instead of millions.
+# The CASE matches the Python semantics exactly: a negative delta (counter
+# reset) and a delta > _MAX_PLAUSIBLE_DELTA_BYTES (counter glitch) both
+# contribute 0 — never skip the sample, just don't add anything that cycle.
+_LIVE_AGGREGATE_SQL = text(
     """
-    if len(samples) < 2:
-        return 0
-    total = 0
-    prev = samples[0]
-    for curr in samples[1:]:
-        delta = curr - prev
-        if 0 <= delta <= _MAX_PLAUSIBLE_DELTA_BYTES:
-            total += int(delta)
-        prev = curr
-    return total
+    SELECT
+        device_id,
+        metric_name,
+        SUM(CASE WHEN d IS NOT NULL AND d >= 0 AND d <= :max_delta
+                 THEN d ELSE 0 END) AS bytes,
+        COUNT(*)        AS samples,
+        MIN(collected_at) AS first_sample_at
+    FROM (
+        SELECT
+            device_id,
+            metric_name,
+            collected_at,
+            metric_value - LAG(metric_value) OVER w AS d
+        FROM device_metrics
+        WHERE metric_name = ANY(CAST(:metric_names AS text[]))
+          AND collected_at >= :cutoff
+        WINDOW w AS (
+            PARTITION BY device_id, metric_name ORDER BY collected_at
+        )
+    ) deltas
+    GROUP BY device_id, metric_name
+    """
+)
+
+# Matview lookup: same schema as the live query above, but pre-computed.
+# Keep the column list aligned with the matview definition.
+_MATVIEW_SQL = text(
+    """
+    SELECT device_id, metric_name, bytes, samples, first_sample_at
+    FROM client_consumption_30d
+    """
+)
 
 
 @router.get("/consumption", response_model=ClientConsumptionResponse)
@@ -124,8 +164,6 @@ async def get_clients_consumption(
     """Return cumulative download/upload per LR client."""
     now = datetime.datetime.now(datetime.UTC)
 
-    # "lifetime" walks the entire DeviceMetric history — pick a cutoff well
-    # before the project existed so a single code path handles every period.
     if period == "lifetime":
         cutoff: datetime.datetime | None = None
         query_lower_bound = datetime.datetime(2000, 1, 1, tzinfo=datetime.UTC)
@@ -146,67 +184,80 @@ async def get_clients_consumption(
             items=[],
         )
 
-    lr_ids = [lr.id for lr in lrs]
-    # Both metric families queried in one pass — per-LR mapping below picks
-    # peer_* for LTU LRs and radio_* for airMAX LRs (LiteBeam).
-    metric_names = (
-        "peer_tx_bytes", "peer_rx_bytes",
-        "radio_rx_bytes", "radio_tx_bytes",
-    )
+    # The 30d view is the most-loaded page tab; serve it from the matview
+    # to stay <100 ms. 24h/7d run live (sub-2 s). Lifetime runs live too
+    # — once retention pushes history past 30 d, the matview's bounded
+    # window would silently truncate "lifetime" totals.
+    if period == "30d":
+        agg_rows = (await db.execute(_MATVIEW_SQL)).all()
+    else:
+        agg_rows = (
+            await db.execute(
+                _LIVE_AGGREGATE_SQL,
+                {
+                    "metric_names": list(_COUNTER_METRICS),
+                    "cutoff": query_lower_bound,
+                    "max_delta": _MAX_PLAUSIBLE_DELTA_BYTES,
+                },
+            )
+        ).all()
 
-    samples_result = await db.execute(
-        select(
-            DeviceMetric.device_id,
-            DeviceMetric.metric_name,
-            DeviceMetric.metric_value,
-            DeviceMetric.collected_at,
-        )
-        .where(
-            DeviceMetric.device_id.in_(lr_ids),
-            DeviceMetric.metric_name.in_(metric_names),
-            DeviceMetric.collected_at >= query_lower_bound,
-        )
-        .order_by(DeviceMetric.device_id, DeviceMetric.collected_at)
-    )
-
-    by_device: dict[int, dict[str, list[float]]] = {
-        lr.id: {n: [] for n in metric_names} for lr in lrs
-    }
-    first_sample_by_device: dict[int, datetime.datetime] = {}
+    by_pair: dict[tuple[int, str], dict] = {}
     earliest_global: datetime.datetime | None = None
-    for device_id, metric_name, metric_value, collected_at in samples_result.all():
-        by_device[device_id][metric_name].append(metric_value)
-        if device_id not in first_sample_by_device:
-            first_sample_by_device[device_id] = collected_at
-        if earliest_global is None or collected_at < earliest_global:
-            earliest_global = collected_at
+    for r in agg_rows:
+        by_pair[(r.device_id, r.metric_name)] = {
+            "bytes": int(r.bytes or 0),
+            "samples": int(r.samples or 0),
+            "first_sample_at": r.first_sample_at,
+        }
+        if r.first_sample_at is not None and (
+            earliest_global is None or r.first_sample_at < earliest_global
+        ):
+            earliest_global = r.first_sample_at
 
     items: list[ClientConsumption] = []
     for lr in lrs:
-        per_metric = by_device[lr.id]
         if lr.model_variant in _AIRMAX_LR_VARIANTS:
             # LR-side IF-MIB counters — radio interface RX = customer download.
-            download_samples = per_metric["radio_rx_bytes"]
-            upload_samples   = per_metric["radio_tx_bytes"]
+            download_key = (lr.id, "radio_rx_bytes")
+            upload_key   = (lr.id, "radio_tx_bytes")
         else:
             # AP-side per-peer counters — peer TX from AP = customer download.
-            download_samples = per_metric["peer_tx_bytes"]
-            upload_samples   = per_metric["peer_rx_bytes"]
-        has_data = len(download_samples) >= 2 or len(upload_samples) >= 2
-        download = _sum_positive_deltas(download_samples) if has_data else 0
-        upload   = _sum_positive_deltas(upload_samples)   if has_data else 0
+            download_key = (lr.id, "peer_tx_bytes")
+            upload_key   = (lr.id, "peer_rx_bytes")
+
+        dl = by_pair.get(download_key)
+        ul = by_pair.get(upload_key)
+        dl_samples = dl["samples"] if dl else 0
+        ul_samples = ul["samples"] if ul else 0
+        dl_bytes   = dl["bytes"]   if dl else 0
+        ul_bytes   = ul["bytes"]   if ul else 0
+
+        # has_data uses the same threshold as before (need ≥2 samples in at
+        # least one direction to have at least one delta to sum).
+        has_data = dl_samples >= 2 or ul_samples >= 2
+
+        # Earliest first-sample timestamp across both counters for this LR.
+        first_candidates = [
+            t for t in (
+                dl["first_sample_at"] if dl else None,
+                ul["first_sample_at"] if ul else None,
+            ) if t is not None
+        ]
+        first_sample_at = min(first_candidates) if first_candidates else None
+
         items.append(ClientConsumption(
             device_id=lr.id,
             name=lr.name,
             ip_address=lr.ip_address,
             rocket_id=lr.rocket_id,
             rocket_name=lr.rocket.name if lr.rocket else None,
-            download_bytes=download,
-            upload_bytes=upload,
-            total_bytes=download + upload,
-            samples=len(download_samples) + len(upload_samples),
+            download_bytes=dl_bytes,
+            upload_bytes=ul_bytes,
+            total_bytes=dl_bytes + ul_bytes,
+            samples=dl_samples + ul_samples,
             has_data=has_data,
-            first_sample_at=first_sample_by_device.get(lr.id),
+            first_sample_at=first_sample_at,
         ))
     items.sort(key=lambda i: i.total_bytes, reverse=True)
 

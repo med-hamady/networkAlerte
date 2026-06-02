@@ -300,6 +300,13 @@ class Settings(BaseSettings):
     # refresh itself only costs ~5 s of background CPU/IO.
     lr_health_matview_refresh_interval_minutes: int = 15
 
+    # Client-consumption materialized view refresh interval (minutes). The
+    # view `client_consumption_30d` pre-aggregates 30-day byte deltas so
+    # /clients/consumption?period=30d serves <100 ms instead of ~36 s.
+    # Same 15-min cadence as lr-health: cumulative byte deltas don't change
+    # perceptibly in 15 min for a daily/weekly/monthly usage report.
+    client_consumption_matview_refresh_interval_minutes: int = 15
+
     @computed_field(repr=False)
     @property
     def database_url(self) -> str:

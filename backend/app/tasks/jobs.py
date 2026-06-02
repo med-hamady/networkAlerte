@@ -1365,6 +1365,42 @@ async def lr_health_matview_refresh_job() -> None:
         )
 
 
+async def client_consumption_matview_refresh_job() -> None:
+    """Refresh the `client_consumption_30d` materialized view.
+
+    Same pattern as `lr_health_matview_refresh_job` — see that docstring
+    for the AUTOCOMMIT rationale. Pre-computes the 30-day byte-delta
+    aggregate used by /clients/consumption?period=30d (was ~36 s of seq
+    scan + Python delta loop in prod 2026-06-02, target <100 ms after).
+
+    The view is bounded to 30 days at REFRESH time via `now() - interval
+    '30 days'` — the sliding window moves forward by 15 min each refresh.
+    """
+    from sqlalchemy import text
+    from app.db.session import engine
+
+    started = datetime.datetime.now(datetime.UTC)
+    try:
+        async with engine.connect() as conn:
+            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            await conn.execute(
+                text("REFRESH MATERIALIZED VIEW CONCURRENTLY client_consumption_30d")
+            )
+        elapsed = (datetime.datetime.now(datetime.UTC) - started).total_seconds()
+        logger.info("client_consumption matview refresh — done in %.2f s", elapsed)
+        if elapsed > 60:
+            logger.warning(
+                "client_consumption matview refresh took %.1f s (> 60 s) — "
+                "device_metrics is large, plan retention.",
+                elapsed,
+            )
+    except Exception:
+        logger.exception(
+            "client_consumption matview refresh failed — page will keep "
+            "serving the previous snapshot until next attempt",
+        )
+
+
 async def client_block_enforcement_job() -> None:
     """Re-assert every active client block so it survives an LR reboot.
 
@@ -1555,6 +1591,17 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         replace_existing=True,
         # Override misfire_grace_time: a missed refresh isn't urgent — readers
         # just see slightly older data until the next cycle.
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=120,
+    )
+    scheduler.add_job(
+        client_consumption_matview_refresh_job,
+        trigger="interval",
+        minutes=settings.client_consumption_matview_refresh_interval_minutes,
+        id="client_consumption_matview_refresh",
+        name="Client consumption matview refresh (30-day byte deltas)",
+        replace_existing=True,
         max_instances=1,
         coalesce=True,
         misfire_grace_time=120,

@@ -497,17 +497,17 @@ export interface Recommendation {
 export interface ClientLinkHealthItem {
   device_id: number
   device_name: string
-  severity: 'critical' | 'warning'
-  currently_open: boolean
-  cause: string
+  verdict: 'critical' | 'suspect'
+  active_signals_count: number
+  causes: string[]
   action: string
-  occurrence_count: number
 }
 
 export interface ClientLinkHealth {
+  window_days: number
   total_clients: number
   ok_count: number
-  warning_count: number
+  suspect_count: number
   critical_count: number
   items: ClientLinkHealthItem[]
 }

@@ -54,29 +54,31 @@ class Recommendation(BaseModel):
 
 
 class ClientLinkHealthItem(BaseModel):
-    """Verdict de santé d'un lien client LR sur la période (triage)."""
+    """Verdict de santé d'un lien client LR (triage)."""
 
     device_id: int
     device_name: str
-    severity: str  # "critical" | "warning"
-    currently_open: bool
-    cause: str
+    verdict: str  # "critical" | "suspect"
+    active_signals_count: int
+    causes: list[str]
     action: str
-    occurrence_count: int
 
 
 class ClientLinkHealth(BaseModel):
     """Synthèse décisionnelle des liens clients LR.
 
-    Classement basé sur l'incident consolidé `lr_link_substandard` (mêmes
-    seuils par famille LTU/airMAX que l'alert engine). Seuls les clients
-    dégradés (warning/critical) sont listés ; les clients sains sont résumés
-    par `ok_count`.
+    Réutilise exactement la classification de la page « Liaisons clients »
+    (`lr_health_service.get_bad_installations`) : 5 indicateurs en moyenne
+    glissante 30 j ; verdict suspect (≥3/5) ou critique (≥4/5). Les liens sains
+    (<3 indicateurs) ne sont pas listés, juste résumés par `ok_count`.
+
+    Fenêtre fixe 30 j (matview), indépendante de la plage de dates du rapport.
     """
 
+    window_days: int
     total_clients: int
     ok_count: int
-    warning_count: int
+    suspect_count: int
     critical_count: int
     items: list[ClientLinkHealthItem]
 

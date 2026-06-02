@@ -26,7 +26,6 @@ from app.core.alert_constants import (
     AT_DEVICE_UNREACHABLE,
     AT_ETH0_DOWN,
     AT_HIGH_RX_TX_ERRORS,
-    AT_LR_DISAPPEARED,
     AT_LR_DISCOVERED,
     AT_LR_IP_CHANGED,
     AT_LR_LATENCY_HIGH,
@@ -106,7 +105,6 @@ ALERT_TYPE_LABELS: dict[str, str] = {
     AT_LR_DISCOVERED:        "Nouveau client (LR) détecté",
     AT_LR_IP_CHANGED:        "Adresse IP d'un client modifiée",
     AT_LR_REASSIGNED:        "Client (LR) reconnecté à une autre station",
-    AT_LR_DISAPPEARED:       "Client (LR) disparu",
 }
 
 

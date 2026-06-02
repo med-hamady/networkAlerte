@@ -40,7 +40,6 @@ const EQUIPMENT_GROUPS: EquipmentGroup[] = [
       'lr_discovered',
       'lr_ip_changed',
       'lr_reassigned',
-      'lr_disappeared',
     ],
   },
   {
@@ -95,7 +94,6 @@ const EQUIPMENT_GROUPS: EquipmentGroup[] = [
       'lr_discovered',
       'lr_ip_changed',
       'lr_reassigned',
-      'lr_disappeared',
     ],
   },
   {

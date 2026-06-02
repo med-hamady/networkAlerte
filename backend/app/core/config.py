@@ -278,13 +278,6 @@ class Settings(BaseSettings):
     # Per-IP cooldown — a sustained attack must not fire one alert per check.
     audit_anomaly_alert_cooldown_minutes: int = 30
 
-    # Auto-discovery — stale LR detection
-    # An auto-discovered LR is considered "disappeared" if it has not been
-    # rapported as a peer of any Rocket for more than `stale_lr_minutes` minutes.
-    # The detection job runs every `stale_lr_check_interval_minutes` minutes.
-    stale_lr_check_interval_minutes: int = 5
-    stale_lr_minutes: int = 10
-
     # LR topology check — router vs bridge detection. The client-block feature
     # only works on router-mode LRs (in bridge the LR is L2-transparent and
     # iptables/dnsmasq are bypassed). The job opens a warning incident

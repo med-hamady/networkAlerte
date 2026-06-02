@@ -40,7 +40,7 @@ backend/app/
 │   ├── config.py            # Settings via pydantic-settings + computed fields
 │   ├── logging.py           # Logging structuré vers stdout
 │   ├── exceptions.py        # AppException + handlers globaux
-│   └── alert_constants.py   # Source unique de vérité : Severity, AlertChannel, alert_type keys (21 types)
+│   └── alert_constants.py   # Source unique de vérité : Severity, AlertChannel, alert_type keys (20 types)
 ├── api/
 │   ├── router.py            # Montage des routers avec prefix /api/v1 + auth API key
 │   ├── deps.py              # verify_api_key — authentification par header X-API-Key
@@ -206,7 +206,7 @@ backend/app/
 - [x] **Alert engine** — `alert_engine.py` (évalue règles, gère AlertState DB, ouvre/résout incidents, appelle corrélation)
 - [x] **AlertState persisté en DB** — compteurs anti-flapping survivent aux redémarrages (sauf ping = in-memory)
 - [x] **Corrélation de causes** — `alert_correlation.py` (ex: rocket_down causé par switch_down, avec corrélation temporelle)
-- [x] **22 alert_types** centralisés — `core/alert_constants.py`
+- [x] **21 alert_types** centralisés — `core/alert_constants.py`
 - [x] **Détection anomalies radio** — signal dBm, CCQ, CINR, capacité lien, taux d'erreurs
 - [x] **Détection anomalies power** — batterie + voltage hors plage (20–56 V)
 - [x] **Détection port switch** — port DOWN ou vitesse < 1000 Mbps

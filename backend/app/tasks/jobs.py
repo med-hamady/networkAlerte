@@ -20,7 +20,6 @@ from sqlalchemy import func, select
 from app.core.alert_constants import (
     AT_AIRMAX_DOWN,
     AT_LR_BRIDGE_MODE_MISCONFIG,
-    AT_LR_DISAPPEARED,
     AT_LR_LATENCY_HIGH,
     AT_LR_NO_TRANSIT,
     AT_ROCKET_DOWN,
@@ -1157,69 +1156,6 @@ async def lr_internet_probe_job() -> None:
             await session.commit()
 
 
-async def stale_lr_detection_job() -> None:
-    """
-    Detect auto-discovered LRs that have stopped appearing in Rocket peer-lists.
-
-    An auto-discovered LR is reconciled (last_discovered_at refreshed) every
-    time its parent Rocket's API poll succeeds and reports it as a peer. If
-    `last_discovered_at` is older than `stale_lr_minutes`, the LR is either:
-      - powered off / disconnected from the radio, or
-      - rebooted with a different MAC, or
-      - genuinely retired from the network.
-
-    We open AT_LR_DISAPPEARED so the operator investigates. The incident is
-    automatically resolved on the next cycle if the LR reappears in any peer
-    list (last_discovered_at gets refreshed by reconcile_peers, the threshold
-    no longer fires).
-    """
-    settings = get_settings()
-    threshold = datetime.timedelta(minutes=settings.stale_lr_minutes)
-    now = datetime.datetime.now(datetime.UTC)
-    cutoff = now - threshold
-
-    async with async_session_factory() as session:
-        result = await session.execute(
-            select(Lr).where(Lr.auto_discovered.is_(True))
-        )
-        lrs = list(result.scalars().all())
-
-        if not lrs:
-            logger.debug("Stale-LR job: no auto-discovered LRs registered")
-            return
-
-        for lr in lrs:
-            # An LR that never appeared in a peer list (last_discovered_at NULL)
-            # is treated as fresh — we wait until it has been discovered at least
-            # once before tracking staleness.
-            if lr.last_discovered_at is None:
-                continue
-
-            if lr.last_discovered_at < cutoff:
-                age_minutes = int((now - lr.last_discovered_at).total_seconds() // 60)
-                title = f"LR disparu de la liste des peers : {lr.name}"
-                description = (
-                    f"Le LR auto-découvert '{lr.name}' (MAC={lr.mac_address or 'inconnue'}, "
-                    f"IP={lr.ip_address}) n'apparaît plus dans la liste des peers d'aucun "
-                    f"Rocket depuis {age_minutes} minutes (seuil : {settings.stale_lr_minutes} min). "
-                    f"Vérifier alimentation et lien radio. Comparer avec les incidents "
-                    f"cpe_disconnected sur ce device et son parent."
-                )
-                await _open_and_notify(
-                    session, lr, title, "warning", description,
-                    alert_type=AT_LR_DISAPPEARED,
-                )
-            else:
-                # Recently seen — clear any stale incident
-                await _resolve_and_notify(
-                    session, lr,
-                    f"RECOVERY : {lr.name} de nouveau rapporté par un Rocket",
-                    alert_type=AT_LR_DISAPPEARED,
-                )
-
-        await session.commit()
-
-
 async def warning_digest_job() -> None:
     """
     Flush the pending warning digest: collect all open undigested warnings
@@ -1612,13 +1548,6 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         warning_digest_job,
         trigger="interval", minutes=settings.warning_digest_minutes,
         id="warning_digest", name="Warning digest flush",
-        replace_existing=True,
-        **safety,
-    )
-    scheduler.add_job(
-        stale_lr_detection_job,
-        trigger="interval", minutes=settings.stale_lr_check_interval_minutes,
-        id="stale_lr_detection", name="Stale LR detection",
         replace_existing=True,
         **safety,
     )

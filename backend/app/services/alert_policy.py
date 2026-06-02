@@ -35,7 +35,6 @@ from app.core.alert_constants import (
     AT_DEVICE_UNREACHABLE,
     AT_ETH0_DOWN,
     AT_HIGH_RX_TX_ERRORS,
-    AT_LR_DISAPPEARED,
     AT_LR_DISCOVERED,
     AT_LR_IP_CHANGED,
     AT_LR_LATENCY_HIGH,
@@ -425,19 +424,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
         channels=_CHANNELS_WARNING,
         groupable=False,
         recovery_notification=False,
-    ),
-    AT_LR_DISAPPEARED: AlertPolicy(
-        alert_type=AT_LR_DISAPPEARED,
-        severity=Severity.WARNING,
-        recommended_action=(
-            "Un LR auto-découvert n'apparaît plus dans la liste des peers du Rocket · "
-            "Vérifier alimentation et liaison radio du LR · "
-            "Comparer avec les incidents cpe_disconnected"
-        ),
-        notify_immediately=True,
-        channels=_CHANNELS_WARNING,
-        groupable=False,
-        recovery_notification=True,
     ),
 }
 

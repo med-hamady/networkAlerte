@@ -264,7 +264,6 @@ export const ALERT_TYPE_LABELS: Record<string, string> = {
   lr_discovered:           'Nouveau client (LR) détecté',
   lr_ip_changed:           "Adresse IP d'un client modifiée",
   lr_reassigned:           'Client (LR) reconnecté à une autre station',
-  lr_disappeared:          'Client (LR) disparu',
 }
 
 export function alertTypeLabel(alertType: string | null): string {

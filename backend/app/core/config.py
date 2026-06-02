@@ -307,6 +307,12 @@ class Settings(BaseSettings):
     # perceptibly in 15 min for a daily/weekly/monthly usage report.
     client_consumption_matview_refresh_interval_minutes: int = 15
 
+    # Same idea for the 7-day window (`client_consumption_7d`). The 7d
+    # period was the second-slowest tab (~13 s of seq scan + external sort
+    # on the live SQL path) — separate matview because the 30d aggregate
+    # can't be subtracted down to 7d.
+    client_consumption_7d_refresh_interval_minutes: int = 15
+
     @computed_field(repr=False)
     @property
     def database_url(self) -> str:

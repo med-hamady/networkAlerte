@@ -153,11 +153,19 @@ _LIVE_AGGREGATE_SQL = text(
 )
 
 # Matview lookup: same schema as the live query above, but pre-computed.
-# Keep the column list aligned with the matview definition.
-_MATVIEW_SQL = text(
+# Keep the column list aligned with the matview definition. One matview per
+# pre-computed window — the SUM in each can't be subtracted to a narrower
+# range, so 7d and 30d need separate objects.
+_MATVIEW_30D_SQL = text(
     """
     SELECT device_id, metric_name, bytes, samples, first_sample_at
     FROM client_consumption_30d
+    """
+)
+_MATVIEW_7D_SQL = text(
+    """
+    SELECT device_id, metric_name, bytes, samples, first_sample_at
+    FROM client_consumption_7d
     """
 )
 
@@ -190,12 +198,14 @@ async def get_clients_consumption(
             items=[],
         )
 
-    # The 30d view is the most-loaded page tab; serve it from the matview
-    # to stay <100 ms. 24h/7d run live (sub-2 s). Lifetime runs live too
-    # — once retention pushes history past 30 d, the matview's bounded
-    # window would silently truncate "lifetime" totals.
+    # 7d and 30d are served from per-window matviews (<100 ms). 24h runs
+    # live SQL (~2 s — acceptable for the default tab, and gives a true
+    # rolling 24 h window). Lifetime also runs live so it stays correct
+    # once retention pushes data past 30 d.
     if period == "30d":
-        agg_rows = (await db.execute(_MATVIEW_SQL)).all()
+        agg_rows = (await db.execute(_MATVIEW_30D_SQL)).all()
+    elif period == "7d":
+        agg_rows = (await db.execute(_MATVIEW_7D_SQL)).all()
     else:
         lr_ids = [lr.id for lr in lrs]
         agg_rows = (

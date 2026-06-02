@@ -1401,6 +1401,39 @@ async def client_consumption_matview_refresh_job() -> None:
         )
 
 
+async def client_consumption_7d_refresh_job() -> None:
+    """Refresh the `client_consumption_7d` materialized view.
+
+    Same pattern as `client_consumption_matview_refresh_job` but for the
+    7-day window. Separate matview rather than slicing the 30d one because
+    the 30d aggregate is a single SUM that cannot be subtracted down to a
+    narrower window. Cheap (~4 s of refresh) and unlocks the 7d tab.
+    """
+    from sqlalchemy import text
+    from app.db.session import engine
+
+    started = datetime.datetime.now(datetime.UTC)
+    try:
+        async with engine.connect() as conn:
+            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            await conn.execute(
+                text("REFRESH MATERIALIZED VIEW CONCURRENTLY client_consumption_7d")
+            )
+        elapsed = (datetime.datetime.now(datetime.UTC) - started).total_seconds()
+        logger.info("client_consumption_7d matview refresh — done in %.2f s", elapsed)
+        if elapsed > 60:
+            logger.warning(
+                "client_consumption_7d matview refresh took %.1f s (> 60 s) — "
+                "device_metrics is large, plan retention.",
+                elapsed,
+            )
+    except Exception:
+        logger.exception(
+            "client_consumption_7d matview refresh failed — page will keep "
+            "serving the previous snapshot until next attempt",
+        )
+
+
 async def client_block_enforcement_job() -> None:
     """Re-assert every active client block so it survives an LR reboot.
 
@@ -1601,6 +1634,17 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         minutes=settings.client_consumption_matview_refresh_interval_minutes,
         id="client_consumption_matview_refresh",
         name="Client consumption matview refresh (30-day byte deltas)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=120,
+    )
+    scheduler.add_job(
+        client_consumption_7d_refresh_job,
+        trigger="interval",
+        minutes=settings.client_consumption_7d_refresh_interval_minutes,
+        id="client_consumption_7d_refresh",
+        name="Client consumption matview refresh (7-day byte deltas)",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

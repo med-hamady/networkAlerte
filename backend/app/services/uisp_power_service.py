@@ -85,25 +85,45 @@ class UISPPowerClient:
         return None
 
 
-def parse_power_readings(device: dict) -> dict[str, float | None]:
+def battery_type_slug(battery_type: str | None) -> str:
+    """Normalise a battery type string into a metric-name-safe slug.
+
+    "li-ion" → "li_ion", "lead-acid" → "lead_acid". Unknown/missing → "unknown".
+    Used to build per-battery metric names (battery_<slug>_pct).
+    """
+    if not battery_type:
+        return "unknown"
+    return battery_type.strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def parse_power_readings(device: dict) -> dict:
     """
     Extract a normalized metrics dict from the `device` block returned by
-    /api/v1.0/statistics. All values are floats, or None if absent.
+    /api/v1.0/statistics.
 
     Mapping:
       voltage / current / power → outputPower.{voltage, current, power}
         (these describe the load the UISP Power is currently driving — the
         "is the device delivering" signal we want to monitor)
-      battery_percentage / battery_voltage → first power[] entry whose
-        battery.type == "li-ion" (the UPS battery, as opposed to lead-acid
-        external packs that the device may also report)
+      batteries → one entry per power[] slot that carries a battery, e.g. the
+        internal Li-Ion UPS *and* an external lead-acid bank. Each entry:
+        {type, type_slug, percentage, voltage, capacity_ah, connected}.
+      battery_percentage / battery_voltage / battery_type → the *canonical*
+        battery used for alerting: the connected battery with the LOWEST charge
+        (the one closest to failing). A device with a 4.6 Ah Li-Ion UPS at 100 %
+        and a 120 Ah lead-acid bank at 35 % must alert on the 35 % bank — that's
+        the one that determines how long the site survives an AC outage.
+        Reporting the Li-Ion 100 % (the old "prefer li-ion" rule) masked the
+        real backup state.
     """
-    result: dict[str, float | None] = {
+    result: dict = {
         "voltage": None,
         "current": None,
         "power": None,
         "battery_voltage": None,
         "battery_percentage": None,
+        "battery_type": None,
+        "batteries": [],
     }
 
     output = device.get("outputPower") or {}
@@ -114,29 +134,35 @@ def parse_power_readings(device: dict) -> dict[str, float | None]:
     if "power" in output:
         result["power"] = float(output["power"])
 
-    # Find the Li-Ion UPS battery entry. The device may also expose lead-acid
-    # external packs — we prefer Li-Ion (internal UPS) since it's the one that
-    # drives the device when AC fails. Fallback to first battery found.
-    li_ion: dict | None = None
-    any_batt: dict | None = None
+    # Collect every battery the device reports (Li-Ion UPS, lead-acid bank…).
+    batteries: list[dict] = []
     for entry in device.get("power") or []:
         battery = entry.get("battery") or {}
         if not battery:
             continue
-        any_batt = any_batt or entry
-        if battery.get("type") == "li-ion":
-            li_ion = entry
-            break
+        charge = battery.get("chargeLevel")
+        capacity = (battery.get("capacity") or {}).get("configured")
+        btype = battery.get("type")
+        batteries.append({
+            "type": btype,
+            "type_slug": battery_type_slug(btype),
+            "percentage": float(charge) if charge is not None else None,
+            "voltage": float(entry["voltage"]) if entry.get("voltage") is not None else None,
+            "capacity_ah": float(capacity) if capacity is not None else None,
+            "connected": bool(entry.get("connected")),
+        })
+    result["batteries"] = batteries
 
-    chosen = li_ion or any_batt
-    if chosen:
-        battery = chosen.get("battery") or {}
-        charge_level = battery.get("chargeLevel")
-        if charge_level is not None:
-            result["battery_percentage"] = float(charge_level)
-        # The voltage on the same entry is the battery terminal voltage
-        if chosen.get("voltage") is not None:
-            result["battery_voltage"] = float(chosen["voltage"])
+    # Canonical battery for alerting = lowest-charge battery, preferring the
+    # connected ones (a disconnected slot reporting 0 % must not raise a false
+    # alarm). Falls back to any battery carrying a charge level.
+    with_charge = [b for b in batteries if b["percentage"] is not None]
+    connected = [b for b in with_charge if b["connected"]] or with_charge
+    if connected:
+        worst = min(connected, key=lambda b: b["percentage"])
+        result["battery_percentage"] = worst["percentage"]
+        result["battery_voltage"] = worst["voltage"]
+        result["battery_type"] = worst["type"]
 
     return result
 
@@ -146,7 +172,7 @@ async def poll_uisp_power(
     username: str = "ubnt",
     password: str = "ubnt",
     port: int = 443,
-) -> dict[str, float | None] | None:
+) -> dict | None:
     """
     Poll a UISP Power device and return normalized power metrics.
     Returns None if the device is unreachable or authentication fails.

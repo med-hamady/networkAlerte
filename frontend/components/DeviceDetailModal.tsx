@@ -14,6 +14,17 @@ const RADIO_TYPES = new Set(['rocket', 'lr'])
 const REFRESH      = 15_000
 const LIVE_REFRESH = 10_000
 
+// Friendly labels + display order for the per-battery readings a UISP Power
+// reports (metric slugs from uisp_power_service.battery_type_slug).
+const BATTERY_LABELS: Record<string, string> = {
+  lead_acid: 'Banc plomb (externe)',
+  li_ion:    'Li-Ion (UPS interne)',
+}
+const BATTERY_ORDER: Record<string, number> = {
+  lead_acid: 0,  // main backup bank first — it drives site survival
+  li_ion:    1,
+}
+
 interface Props {
   device: Device | null
   devices?: Device[]
@@ -319,13 +330,52 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
         {/* UISP Power metrics */}
         {isPower && metrics && (
           (() => {
-            const v        = metrics.voltage_v?.value
-            const a        = metrics.current_a?.value
-            const w        = metrics.power_w?.value
-            const battPct  = metrics.battery_pct?.value
-            const battVolt = metrics.battery_voltage_v?.value
-            const hasAny   = [v, a, w, battPct, battVolt].some(x => x != null)
+            const v = metrics.voltage_v?.value
+            const a = metrics.current_a?.value
+            const w = metrics.power_w?.value
+
+            // Per-battery readings: every metric_name like `battery_<slug>_pct`,
+            // paired with its `battery_<slug>_voltage_v` counterpart. Falls back
+            // to the legacy single battery_pct/battery_voltage_v keys for
+            // devices polled before the per-battery split shipped.
+            const batteries = Object.keys(metrics)
+              .map(k => /^battery_(.+)_pct$/.exec(k))
+              .filter((m): m is RegExpExecArray => m != null)
+              .map(m => ({
+                slug: m[1],
+                pct: metrics[m[0]]?.value,
+                volt: metrics[`battery_${m[1]}_voltage_v`]?.value,
+              }))
+              .sort((x, y) => (BATTERY_ORDER[x.slug] ?? 99) - (BATTERY_ORDER[y.slug] ?? 99))
+
+            const legacyPct  = metrics.battery_pct?.value
+            const legacyVolt = metrics.battery_voltage_v?.value
+            const showLegacy = batteries.length === 0 && (legacyPct != null || legacyVolt != null)
+
+            const hasAny = [v, a, w].some(x => x != null) || batteries.length > 0 || showLegacy
             if (!hasAny) return null
+
+            const renderBattery = (label: string, pct?: number | null, volt?: number | null) => (
+              <div key={label} className="mt-1">
+                <p className="text-blue-300 text-xs uppercase tracking-wider">{label}</p>
+                {pct != null && (
+                  <MetricRow
+                    label="Charge"
+                    value={
+                      <BatteryValue
+                        pct={pct}
+                        warn={thresholds.battery_warning_pct}
+                        crit={thresholds.battery_critical_pct}
+                      />
+                    }
+                  />
+                )}
+                {volt != null && (
+                  <MetricRow label="Tension" value={`${volt.toFixed(1)} V`} />
+                )}
+              </div>
+            )
+
             return (
               <Section title="Alimentation">
                 {v != null && (
@@ -337,27 +387,13 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
                 {w != null && (
                   <MetricRow label="Puissance" value={`${w.toFixed(1)} W`} />
                 )}
-                {(battPct != null || battVolt != null) && (
-                  <>
-                    <div className="border-t border-blue-100 my-1" />
-                    <p className="text-blue-300 text-xs uppercase tracking-wider">Batterie</p>
-                    {battPct != null && (
-                      <MetricRow
-                        label="Charge"
-                        value={
-                          <BatteryValue
-                            pct={battPct}
-                            warn={thresholds.battery_warning_pct}
-                            crit={thresholds.battery_critical_pct}
-                          />
-                        }
-                      />
-                    )}
-                    {battVolt != null && (
-                      <MetricRow label="Tension batterie" value={`${battVolt.toFixed(1)} V`} />
-                    )}
-                  </>
+                {(batteries.length > 0 || showLegacy) && (
+                  <div className="border-t border-blue-100 my-1" />
                 )}
+                {batteries.map(b =>
+                  renderBattery(BATTERY_LABELS[b.slug] ?? `Batterie ${b.slug}`, b.pct, b.volt),
+                )}
+                {showLegacy && renderBattery('Batterie', legacyPct, legacyVolt)}
               </Section>
             )
           })()

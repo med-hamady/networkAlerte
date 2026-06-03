@@ -142,6 +142,13 @@ METRIC_LABELS: dict[str, str] = {
 
     # Ping — la seule métrique de latence exploitée est LR → Internet.
     "lr_latency_ms":      "Latence LR → Internet (ms)",
+
+    # UISP Power — une paire charge/tension par batterie (UPS interne Li-Ion,
+    # banc plomb externe…).
+    "battery_li_ion_pct":         "Charge batterie Li-Ion (UPS interne) (%)",
+    "battery_li_ion_voltage_v":   "Tension batterie Li-Ion (V)",
+    "battery_lead_acid_pct":      "Charge banc plomb (externe) (%)",
+    "battery_lead_acid_voltage_v": "Tension banc plomb (V)",
 }
 
 

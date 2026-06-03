@@ -810,6 +810,26 @@ async def power_poll_job() -> None:
                         unit=unit,
                     ))
 
+                # Per-battery metrics — one charge/voltage pair per battery the
+                # device reports (internal Li-Ion UPS, external lead-acid bank…),
+                # keyed by type slug so the UI can show each one in clear.
+                for batt_entry in readings.get("batteries") or []:
+                    slug = batt_entry.get("type_slug") or "unknown"
+                    if batt_entry.get("percentage") is not None:
+                        session.add(DeviceMetric(
+                            device_id=dev.id,
+                            metric_name=f"battery_{slug}_pct",
+                            metric_value=float(batt_entry["percentage"]),
+                            unit="%",
+                        ))
+                    if batt_entry.get("voltage") is not None:
+                        session.add(DeviceMetric(
+                            device_id=dev.id,
+                            metric_name=f"battery_{slug}_voltage_v",
+                            metric_value=float(batt_entry["voltage"]),
+                            unit="V",
+                        ))
+
                 logger.info(
                     "UISP Power %s — voltage=%.1fV current=%.2fA power=%.1fW",
                     dev.name,
@@ -818,13 +838,18 @@ async def power_poll_job() -> None:
                     readings.get("power") or 0,
                 )
 
-                # Battery anomaly detection
+                # Battery anomaly detection — runs on the canonical battery
+                # (lowest-charge connected battery, see parse_power_readings).
+                # The type is named in the message so the operator knows whether
+                # it's the internal Li-Ion UPS or the external lead-acid bank.
                 batt = readings.get("battery_percentage")
+                batt_label = readings.get("battery_type") or "battery"
                 if batt is not None:
                     if batt < settings.battery_critical_pct:
                         await _open_and_notify(
                             session, dev, INC_BATT_CRIT, "critical",
-                            f"Battery critical: {batt}% (threshold {settings.battery_critical_pct}%).",
+                            f"Battery critical ({batt_label}): {batt}% "
+                            f"(threshold {settings.battery_critical_pct}%).",
                             alert_type=AT_BATT_CRIT,
                         )
                         await _resolve_and_notify(
@@ -833,7 +858,8 @@ async def power_poll_job() -> None:
                     elif batt < settings.battery_warning_pct:
                         await _open_and_notify(
                             session, dev, INC_BATT_WARN, "warning",
-                            f"Battery low: {batt}% (threshold {settings.battery_warning_pct}%).",
+                            f"Battery low ({batt_label}): {batt}% "
+                            f"(threshold {settings.battery_warning_pct}%).",
                             alert_type=AT_BATT_WARN,
                         )
                         await _resolve_and_notify(

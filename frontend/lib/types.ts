@@ -296,6 +296,10 @@ export const METRIC_LABELS: Record<string, string> = {
   eth_if_up:       'État interface Ethernet',
   peer_count:      'Nombre de clients connectés',
   lr_latency_ms:   'Latence LR → Internet (ms)',
+  battery_li_ion_pct:        'Charge batterie Li-Ion (UPS interne) (%)',
+  battery_li_ion_voltage_v:  'Tension batterie Li-Ion (V)',
+  battery_lead_acid_pct:       'Charge banc plomb (externe) (%)',
+  battery_lead_acid_voltage_v: 'Tension banc plomb (V)',
 }
 
 export function metricLabel(metricName: string | null): string {

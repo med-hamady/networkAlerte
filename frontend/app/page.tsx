@@ -9,6 +9,7 @@ import StatsBar from '@/components/StatsBar'
 import DeviceCard from '@/components/DeviceCard'
 import SiteCard from '@/components/SiteCard'
 import DeviceDetailModal from '@/components/DeviceDetailModal'
+import PanneDetailsModal from '@/components/PanneDetailsModal'
 
 const REFRESH = 15_000
 const SITE_FALLBACK = 'Sans site'
@@ -20,6 +21,7 @@ const INFRA_TYPES = new Set(['rocket', 'uisp_switch', 'uisp_power'])
 export default function DashboardPage() {
   const [selected, setSelected] = useState<Device | null>(null)
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
+  const [pannesSite, setPannesSite] = useState<string | null>(null)
 
   const { data: devices, isLoading: loadingDevices } = useSWR<Device[]>(
     endpoints.devices, fetcher, { refreshInterval: REFRESH },
@@ -61,6 +63,7 @@ export default function DashboardPage() {
           pannes: downInfra.length,
           clients: list.filter(d => d.device_type === 'lr').length,
           downSince,
+          downDevices: downInfra,
         }
       })
       .sort((a, b) => a.name.localeCompare(b.name, 'fr'))
@@ -68,6 +71,10 @@ export default function DashboardPage() {
 
   const totalPannes  = sites.reduce((s, x) => s + x.pannes, 0)
   const totalClients = sites.reduce((s, x) => s + x.clients, 0)
+
+  const pannesDevices = pannesSite != null
+    ? (sites.find(s => s.name === pannesSite)?.downDevices ?? [])
+    : []
 
   const siteDevices = selectedSite != null
     ? (devices?.filter(d => siteOf(d) === selectedSite) ?? [])
@@ -145,7 +152,7 @@ export default function DashboardPage() {
           ) : selectedSite == null ? (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
               {sites.map(s => (
-                <SiteCard key={s.name} site={s} onClick={setSelectedSite} />
+                <SiteCard key={s.name} site={s} onClick={setSelectedSite} onShowPannes={setPannesSite} />
               ))}
             </div>
           ) : (
@@ -162,6 +169,13 @@ export default function DashboardPage() {
           )}
         </section>
       </div>
+
+      <PanneDetailsModal
+        site={pannesSite}
+        devices={pannesDevices}
+        onClose={() => setPannesSite(null)}
+        onSelect={d => { setPannesSite(null); setSelected(d) }}
+      />
 
       <DeviceDetailModal
         device={selected}

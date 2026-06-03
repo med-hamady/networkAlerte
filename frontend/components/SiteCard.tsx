@@ -12,17 +12,21 @@ interface SiteSummary {
 interface Props {
   site: SiteSummary
   onClick: (name: string) => void
+  onShowPannes?: (name: string) => void
 }
 
-export default function SiteCard({ site, onClick }: Props) {
+export default function SiteCard({ site, onClick, onShowPannes }: Props) {
   const hasPannes = site.pannes > 0
   const downFor = site.downSince
     ? formatUptime(Math.max(0, Math.floor((Date.now() - new Date(site.downSince).getTime()) / 1000)))
     : null
 
   return (
-    <button
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onClick(site.name)}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(site.name) } }}
       className={`
         w-full text-left rounded-xl border transition-all duration-200
         hover:shadow-md hover:-translate-y-0.5 active:translate-y-0 cursor-pointer group
@@ -57,10 +61,17 @@ export default function SiteCard({ site, onClick }: Props) {
           <Stat value={site.clients} label="Clients" tone="blue" />
         </div>
 
-        {hasPannes && downFor && (
-          <p className="text-center text-xs text-red-500">
-            En panne depuis {downFor}
-          </p>
+        {hasPannes && (
+          <button
+            onClick={e => { e.stopPropagation(); onShowPannes?.(site.name) }}
+            className="w-full rounded-lg bg-red-50 hover:bg-red-100 border border-red-200 text-red-600 text-xs font-medium py-2 px-3 flex items-center justify-center gap-1.5 transition-colors"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+            </svg>
+            Voir le détail des pannes{downFor ? ` · depuis ${downFor}` : ''}
+          </button>
         )}
 
         <div className="pt-2 border-t border-blue-50 flex items-center justify-between">
@@ -68,7 +79,7 @@ export default function SiteCard({ site, onClick }: Props) {
           <span className="text-blue-300 group-hover:text-blue-500 transition-colors text-sm">→</span>
         </div>
       </div>
-    </button>
+    </div>
   )
 }
 

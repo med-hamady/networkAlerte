@@ -153,7 +153,12 @@ function SitesPage() {
         ) : selectedSite == null ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {sites.map(s => (
-              <SiteOverviewCard key={s.name} site={s} onShowPannes={setPannesSite} />
+              <SiteOverviewCard
+                key={s.name}
+                site={s}
+                onShowPannes={setPannesSite}
+                onShowEquipment={setSelectedSite}
+              />
             ))}
           </div>
         ) : (

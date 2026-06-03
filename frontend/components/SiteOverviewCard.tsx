@@ -14,9 +14,10 @@ export interface SiteOverview {
 interface Props {
   site: SiteOverview
   onShowPannes: (name: string) => void
+  onShowEquipment: (name: string) => void
 }
 
-export default function SiteOverviewCard({ site, onShowPannes }: Props) {
+export default function SiteOverviewCard({ site, onShowPannes, onShowEquipment }: Props) {
   const hasPannes = site.pannes > 0
   const downFor = site.downSince
     ? formatUptime(Math.max(0, Math.floor((Date.now() - new Date(site.downSince).getTime()) / 1000)))
@@ -67,6 +68,14 @@ export default function SiteOverviewCard({ site, onShowPannes }: Props) {
             Voir le détail des pannes{downFor ? ` · depuis ${downFor}` : ''}
           </button>
         )}
+
+        <button
+          onClick={() => onShowEquipment(site.name)}
+          className="w-full pt-2 border-t border-blue-50 flex items-center justify-between text-blue-300 hover:text-blue-600 transition-colors group"
+        >
+          <span className="text-xs">Voir les équipements</span>
+          <span className="text-sm group-hover:translate-x-0.5 transition-transform">→</span>
+        </button>
       </div>
     </div>
   )

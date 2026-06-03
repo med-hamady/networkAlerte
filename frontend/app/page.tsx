@@ -4,7 +4,7 @@ import React, { useMemo, useState } from 'react'
 import Link from 'next/link'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
-import type { Device } from '@/lib/types'
+import type { Device, Incident } from '@/lib/types'
 import StatsBar from '@/components/StatsBar'
 import DeviceCard from '@/components/DeviceCard'
 import SiteCard from '@/components/SiteCard'
@@ -26,6 +26,14 @@ export default function DashboardPage() {
   const { data: devices, isLoading: loadingDevices } = useSWR<Device[]>(
     endpoints.devices, fetcher, { refreshInterval: REFRESH },
   )
+  const { data: incidents } = useSWR<Incident[]>(
+    `${endpoints.incidents}?status=open&limit=500`, fetcher, { refreshInterval: REFRESH },
+  )
+
+  const total   = devices?.length ?? 0
+  const up      = devices?.filter(d => d.status === 'up').length   ?? 0
+  const down    = devices?.filter(d => d.status === 'down').length ?? 0
+  const openInc = incidents?.length ?? 0
 
   // Rocket lookup — used to attach an LR client to the site of its parent rocket.
   const rocketById = useMemo(
@@ -107,7 +115,15 @@ export default function DashboardPage() {
         </div>
 
         {/* KPI bar */}
-        <StatsBar sites={sites.length} pannes={totalPannes} clients={totalClients} />
+        <StatsBar
+          sites={sites.length}
+          pannes={totalPannes}
+          clients={totalClients}
+          total={total}
+          up={up}
+          down={down}
+          openIncidents={openInc}
+        />
 
         {/* Sites / Equipment grid */}
         <section>

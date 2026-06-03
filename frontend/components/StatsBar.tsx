@@ -25,30 +25,90 @@ interface StatsBarProps {
   sites: number
   pannes: number
   clients: number
+  total: number
+  up: number
+  down: number
+  openIncidents: number
 }
 
-export default function StatsBar({ sites, pannes, clients }: StatsBarProps) {
+export default function StatsBar({ sites, pannes, clients, total, up, down, openIncidents }: StatsBarProps) {
   return (
-    <div className="grid grid-cols-3 gap-4">
-      <StatCard
-        label="Sites"
-        value={sites}
-        accent="text-blue-900"
-        icon={<SiteIcon />}
-      />
-      <StatCard
-        label="Pannes"
-        value={pannes}
-        accent={pannes > 0 ? 'text-red-500' : 'text-blue-900'}
-        icon={<WarningIcon />}
-      />
-      <StatCard
-        label="Clients"
-        value={clients}
-        accent="text-blue-900"
-        icon={<UsersIcon />}
-      />
+    <div className="space-y-4">
+      {/* Équipements / disponibilité / incidents */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard
+          label="Total équipements"
+          value={total}
+          accent="text-blue-900"
+          icon={<GridIcon />}
+        />
+        <StatCard
+          label="En ligne"
+          value={up}
+          accent="text-green-600"
+          icon={<CheckIcon />}
+        />
+        <StatCard
+          label="Hors ligne"
+          value={down}
+          accent={down > 0 ? 'text-red-500' : 'text-blue-900'}
+          icon={<XIcon />}
+        />
+        <StatCard
+          label="Incidents ouverts"
+          value={openIncidents}
+          accent={openIncidents > 0 ? 'text-orange-500' : 'text-blue-900'}
+          icon={<WarningIcon />}
+        />
+      </div>
+
+      {/* Vue par site */}
+      <div className="grid grid-cols-3 gap-4">
+        <StatCard
+          label="Sites"
+          value={sites}
+          accent="text-blue-900"
+          icon={<SiteIcon />}
+        />
+        <StatCard
+          label="Pannes"
+          value={pannes}
+          accent={pannes > 0 ? 'text-red-500' : 'text-blue-900'}
+          icon={<WarningIcon />}
+        />
+        <StatCard
+          label="Clients"
+          value={clients}
+          accent="text-blue-900"
+          icon={<UsersIcon />}
+        />
+      </div>
     </div>
+  )
+}
+
+function GridIcon() {
+  return (
+    <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round"
+        d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+    </svg>
+  )
+}
+
+function CheckIcon() {
+  return (
+    <svg className="w-5 h-5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+  )
+}
+
+function XIcon() {
+  return (
+    <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
   )
 }
 

@@ -20,8 +20,15 @@ function SitesPage() {
   const searchParams = useSearchParams()
   // Deep-link from the dashboard: /sites?site=AT2 opens that site's equipment.
   const [selectedSite, setSelectedSite] = useState<string | null>(() => searchParams.get('site'))
+  const [drillFilter, setDrillFilter]   = useState<'all' | 'infra'>('all')
   const [pannesSite, setPannesSite]     = useState<string | null>(null)
   const [selected, setSelected]         = useState<Device | null>(null)
+
+  // Open a site's equipment, optionally filtered to infra only.
+  const openEquipment = (name: string, filter: 'all' | 'infra' = 'all') => {
+    setDrillFilter(filter)
+    setSelectedSite(name)
+  }
 
   const { data: devices, isLoading, mutate } = useSWR<Device[]>(
     endpoints.devices,
@@ -81,9 +88,12 @@ function SitesPage() {
 
   const totalPannes = sites.reduce((s, x) => s + x.pannes, 0)
 
-  // Drill-down: equipment of the selected site.
+  // Drill-down: equipment of the selected site (optionally infra-only).
   const siteDevices = selectedSite != null
-    ? (devices?.filter(d => siteOf(d) === selectedSite) ?? [])
+    ? (devices?.filter(d =>
+        siteOf(d) === selectedSite &&
+        (drillFilter === 'all' || INFRA_TYPES.has(d.device_type)),
+      ) ?? [])
     : []
 
   const childrenMap: Record<number, number> = {}
@@ -126,6 +136,7 @@ function SitesPage() {
                 {selectedSite}
                 <span className="text-blue-400 font-normal text-sm ml-2">
                   {siteDevices.length} équipement{siteDevices.length > 1 ? 's' : ''}
+                  {drillFilter === 'infra' ? ' infra' : ''}
                 </span>
               </h1>
             </div>
@@ -157,7 +168,7 @@ function SitesPage() {
                 key={s.name}
                 site={s}
                 onShowPannes={setPannesSite}
-                onShowEquipment={setSelectedSite}
+                onShowEquipment={openEquipment}
               />
             ))}
           </div>

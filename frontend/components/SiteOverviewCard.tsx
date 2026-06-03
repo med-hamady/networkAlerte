@@ -14,7 +14,7 @@ export interface SiteOverview {
 interface Props {
   site: SiteOverview
   onShowPannes: (name: string) => void
-  onShowEquipment: (name: string) => void
+  onShowEquipment: (name: string, filter?: 'all' | 'infra') => void
 }
 
 export default function SiteOverviewCard({ site, onShowPannes, onShowEquipment }: Props) {
@@ -50,7 +50,12 @@ export default function SiteOverviewCard({ site, onShowPannes, onShowEquipment }
       {/* Stats */}
       <div className="p-4 space-y-3">
         <div className="grid grid-cols-2 gap-x-2 gap-y-3 text-center">
-          <Stat value={site.infra}          label="Équipements infra" tone="blue" />
+          <Stat
+            value={site.infra}
+            label="Équipements infra"
+            tone="blue"
+            onClick={site.infra > 0 ? () => onShowEquipment(site.name, 'infra') : undefined}
+          />
           <Stat value={site.clientsOnline}   label="Clients en ligne"  tone="green" />
           <Stat value={site.clientsBlocked}  label="Clients bloqués"   tone={site.clientsBlocked > 0 ? 'amber' : 'slate'} />
           <Stat value={site.pannes}          label="Pannes"            tone={hasPannes ? 'red' : 'slate'} />
@@ -81,7 +86,12 @@ export default function SiteOverviewCard({ site, onShowPannes, onShowEquipment }
   )
 }
 
-function Stat({ value, label, tone }: { value: number; label: string; tone: 'blue' | 'green' | 'amber' | 'red' | 'slate' }) {
+function Stat({ value, label, tone, onClick }: {
+  value: number
+  label: string
+  tone: 'blue' | 'green' | 'amber' | 'red' | 'slate'
+  onClick?: () => void
+}) {
   const colors = {
     blue:  'text-blue-700',
     green: 'text-green-600',
@@ -89,10 +99,22 @@ function Stat({ value, label, tone }: { value: number; label: string; tone: 'blu
     red:   'text-red-500',
     slate: 'text-slate-300',
   }[tone]
-  return (
-    <div>
+  const body = (
+    <>
       <p className={`text-2xl font-bold ${colors}`}>{value}</p>
       <p className="text-[11px] text-blue-400 mt-0.5">{label}</p>
-    </div>
+    </>
   )
+  if (onClick) {
+    return (
+      <button
+        onClick={onClick}
+        className="rounded-lg px-1 py-1 hover:bg-blue-50 transition-colors cursor-pointer"
+        title={`Voir les ${label.toLowerCase()}`}
+      >
+        {body}
+      </button>
+    )
+  }
+  return <div>{body}</div>
 }

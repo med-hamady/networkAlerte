@@ -11,11 +11,10 @@ interface SiteSummary {
 
 interface Props {
   site: SiteSummary
-  onClick: (name: string) => void
   onShowPannes?: (name: string) => void
 }
 
-export default function SiteCard({ site, onClick, onShowPannes }: Props) {
+export default function SiteCard({ site, onShowPannes }: Props) {
   const hasPannes = site.pannes > 0
   const downFor = site.downSince
     ? formatUptime(Math.max(0, Math.floor((Date.now() - new Date(site.downSince).getTime()) / 1000)))
@@ -23,15 +22,9 @@ export default function SiteCard({ site, onClick, onShowPannes }: Props) {
 
   return (
     <div
-      role="button"
-      tabIndex={0}
-      onClick={() => onClick(site.name)}
-      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(site.name) } }}
       className={`
-        w-full text-left rounded-xl border transition-all duration-200
-        hover:shadow-md hover:-translate-y-0.5 active:translate-y-0 cursor-pointer group
-        bg-white
-        ${hasPannes ? 'border-red-300' : 'border-blue-100 hover:border-blue-300'}
+        w-full text-left rounded-xl border bg-white
+        ${hasPannes ? 'border-red-300' : 'border-blue-100'}
       `}
     >
       {/* Header band */}
@@ -63,7 +56,7 @@ export default function SiteCard({ site, onClick, onShowPannes }: Props) {
 
         {hasPannes && (
           <button
-            onClick={e => { e.stopPropagation(); onShowPannes?.(site.name) }}
+            onClick={() => onShowPannes?.(site.name)}
             className="w-full rounded-lg bg-red-50 hover:bg-red-100 border border-red-200 text-red-600 text-xs font-medium py-2 px-3 flex items-center justify-center gap-1.5 transition-colors"
           >
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -73,11 +66,6 @@ export default function SiteCard({ site, onClick, onShowPannes }: Props) {
             Voir le détail des pannes{downFor ? ` · depuis ${downFor}` : ''}
           </button>
         )}
-
-        <div className="pt-2 border-t border-blue-50 flex items-center justify-between">
-          <span className="text-xs text-blue-300">Voir les équipements</span>
-          <span className="text-blue-300 group-hover:text-blue-500 transition-colors text-sm">→</span>
-        </div>
       </div>
     </div>
   )

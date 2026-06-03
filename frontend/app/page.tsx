@@ -2,7 +2,6 @@
 
 import React, { useMemo, useState } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type { Device, Incident } from '@/lib/types'
@@ -19,7 +18,6 @@ const SITE_FALLBACK = 'Sans site'
 const INFRA_TYPES = new Set(['rocket', 'uisp_switch', 'uisp_power'])
 
 export default function DashboardPage() {
-  const router = useRouter()
   const [selected, setSelected] = useState<Device | null>(null)
   const [pannesSite, setPannesSite] = useState<string | null>(null)
 
@@ -84,10 +82,6 @@ export default function DashboardPage() {
     ? (sites.find(s => s.name === pannesSite)?.downDevices ?? [])
     : []
 
-  // Site card → open that site's equipment on the Sites page.
-  const openSiteEquipment = (name: string) =>
-    router.push(`/sites?site=${encodeURIComponent(name)}`)
-
   return (
     <>
       <div className="space-y-7">
@@ -143,7 +137,7 @@ export default function DashboardPage() {
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
               {sites.map(s => (
-                <SiteCard key={s.name} site={s} onClick={openSiteEquipment} onShowPannes={setPannesSite} />
+                <SiteCard key={s.name} site={s} onShowPannes={setPannesSite} />
               ))}
             </div>
           )}

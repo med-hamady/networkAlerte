@@ -1,12 +1,14 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { Suspense, useMemo, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type { Device } from '@/lib/types'
 import SiteOverviewCard, { type SiteOverview } from '@/components/SiteOverviewCard'
 import PanneDetailsModal from '@/components/PanneDetailsModal'
 import DeviceDetailModal from '@/components/DeviceDetailModal'
+import DeviceCard from '@/components/DeviceCard'
 
 const SITE_FALLBACK = 'Sans site'
 
@@ -14,9 +16,12 @@ const SITE_FALLBACK = 'Sans site'
 // are excluded (an unreachable client is never treated as an incident).
 const INFRA_TYPES = new Set(['rocket', 'uisp_switch', 'uisp_power'])
 
-export default function SitesPage() {
-  const [pannesSite, setPannesSite] = useState<string | null>(null)
-  const [selected, setSelected]     = useState<Device | null>(null)
+function SitesPage() {
+  const searchParams = useSearchParams()
+  // Deep-link from the dashboard: /devices?site=AT2 opens that site's equipment.
+  const [selectedSite, setSelectedSite] = useState<string | null>(() => searchParams.get('site'))
+  const [pannesSite, setPannesSite]     = useState<string | null>(null)
+  const [selected, setSelected]         = useState<Device | null>(null)
 
   const { data: devices, isLoading, mutate } = useSWR<Device[]>(
     endpoints.devices,
@@ -76,34 +81,64 @@ export default function SitesPage() {
 
   const totalPannes = sites.reduce((s, x) => s + x.pannes, 0)
 
+  // Drill-down: equipment of the selected site.
+  const siteDevices = selectedSite != null
+    ? (devices?.filter(d => siteOf(d) === selectedSite) ?? [])
+    : []
+
+  const childrenMap: Record<number, number> = {}
+  devices?.forEach(d => {
+    if (d.device_type === 'lr' && d.rocket_id != null) {
+      childrenMap[d.rocket_id] = (childrenMap[d.rocket_id] ?? 0) + 1
+    }
+  })
+
   return (
     <>
       <div className="space-y-6">
 
         {/* Header */}
-        <div className="flex items-start justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Sites</h1>
-            <p className="text-blue-400 text-sm mt-1">
-              {devices ? (
-                <span>
-                  {sites.length} site{sites.length > 1 ? 's' : ''}
-                  {totalPannes > 0 && (
-                    <span className="text-red-500 font-medium"> · {totalPannes} panne{totalPannes > 1 ? 's' : ''}</span>
-                  )}
+        <div className="flex items-start justify-between gap-3">
+          {selectedSite == null ? (
+            <div>
+              <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Sites</h1>
+              <p className="text-blue-400 text-sm mt-1">
+                {devices ? (
+                  <span>
+                    {sites.length} site{sites.length > 1 ? 's' : ''}
+                    {totalPannes > 0 && (
+                      <span className="text-red-500 font-medium"> · {totalPannes} panne{totalPannes > 1 ? 's' : ''}</span>
+                    )}
+                  </span>
+                ) : 'Chargement…'}
+              </p>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3 min-w-0">
+              <button
+                onClick={() => setSelectedSite(null)}
+                className="text-sm text-blue-500 hover:text-blue-700 transition-colors flex items-center gap-1 shrink-0"
+              >
+                ← Sites
+              </button>
+              <span className="text-blue-200">/</span>
+              <h1 className="text-2xl font-bold text-blue-900 tracking-tight truncate">
+                {selectedSite}
+                <span className="text-blue-400 font-normal text-sm ml-2">
+                  {siteDevices.length} équipement{siteDevices.length > 1 ? 's' : ''}
                 </span>
-              ) : 'Chargement…'}
-            </p>
-          </div>
+              </h1>
+            </div>
+          )}
           <button
             onClick={() => mutate()}
-            className="text-sm text-blue-600 hover:text-blue-800 font-medium bg-white border border-blue-200 px-3 py-1.5 rounded-lg transition-colors shadow-sm"
+            className="text-sm text-blue-600 hover:text-blue-800 font-medium bg-white border border-blue-200 px-3 py-1.5 rounded-lg transition-colors shadow-sm shrink-0"
           >
             ↻ Rafraîchir
           </button>
         </div>
 
-        {/* Sites grid */}
+        {/* Sites grid OR equipment grid */}
         {isLoading ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {Array.from({ length: 3 }, (_, i) => (
@@ -115,10 +150,21 @@ export default function SitesPage() {
             <p className="text-blue-700 font-medium">Aucun équipement enregistré</p>
             <p className="text-blue-400 text-sm">Les sites apparaîtront ici dès que des équipements seront supervisés.</p>
           </div>
-        ) : (
+        ) : selectedSite == null ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {sites.map(s => (
               <SiteOverviewCard key={s.name} site={s} onShowPannes={setPannesSite} />
+            ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+            {siteDevices.map(d => (
+              <DeviceCard
+                key={d.id}
+                device={d}
+                onClick={setSelected}
+                linkedLRCount={childrenMap[d.id] ?? 0}
+              />
             ))}
           </div>
         )}
@@ -138,5 +184,14 @@ export default function SitesPage() {
         onNavigate={setSelected}
       />
     </>
+  )
+}
+
+export default function SitesPageWrapper() {
+  // useSearchParams requires a Suspense boundary in the app router.
+  return (
+    <Suspense fallback={<div className="px-6 py-12 text-center text-blue-300">Chargement…</div>}>
+      <SitesPage />
+    </Suspense>
   )
 }

@@ -2,11 +2,11 @@
 
 import React, { useMemo, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type { Device, Incident } from '@/lib/types'
 import StatsBar from '@/components/StatsBar'
-import DeviceCard from '@/components/DeviceCard'
 import SiteCard from '@/components/SiteCard'
 import DeviceDetailModal from '@/components/DeviceDetailModal'
 import PanneDetailsModal from '@/components/PanneDetailsModal'
@@ -19,8 +19,8 @@ const SITE_FALLBACK = 'Sans site'
 const INFRA_TYPES = new Set(['rocket', 'uisp_switch', 'uisp_power'])
 
 export default function DashboardPage() {
+  const router = useRouter()
   const [selected, setSelected] = useState<Device | null>(null)
-  const [selectedSite, setSelectedSite] = useState<string | null>(null)
   const [pannesSite, setPannesSite] = useState<string | null>(null)
 
   const { data: devices, isLoading: loadingDevices } = useSWR<Device[]>(
@@ -84,16 +84,9 @@ export default function DashboardPage() {
     ? (sites.find(s => s.name === pannesSite)?.downDevices ?? [])
     : []
 
-  const siteDevices = selectedSite != null
-    ? (devices?.filter(d => siteOf(d) === selectedSite) ?? [])
-    : []
-
-  const childrenMap: Record<number, number> = {}
-  devices?.forEach(d => {
-    if (d.device_type === 'lr' && d.rocket_id != null) {
-      childrenMap[d.rocket_id] = (childrenMap[d.rocket_id] ?? 0) + 1
-    }
-  })
+  // Site card → open that site's equipment on the Sites page.
+  const openSiteEquipment = (name: string) =>
+    router.push(`/devices?site=${encodeURIComponent(name)}`)
 
   return (
     <>
@@ -125,28 +118,10 @@ export default function DashboardPage() {
           openIncidents={openInc}
         />
 
-        {/* Sites / Equipment grid */}
+        {/* Sites grid */}
         <section>
           <div className="flex items-center justify-between mb-4">
-            {selectedSite == null ? (
-              <h2 className="font-semibold text-blue-900 text-lg">Sites</h2>
-            ) : (
-              <div className="flex items-center gap-3 min-w-0">
-                <button
-                  onClick={() => setSelectedSite(null)}
-                  className="text-sm text-blue-500 hover:text-blue-700 transition-colors flex items-center gap-1 shrink-0"
-                >
-                  ← Sites
-                </button>
-                <span className="text-blue-200">/</span>
-                <h2 className="font-semibold text-blue-900 text-lg truncate">
-                  {selectedSite}
-                  <span className="text-blue-400 font-normal text-sm ml-2">
-                    {siteDevices.length} équipement{siteDevices.length > 1 ? 's' : ''}
-                  </span>
-                </h2>
-              </div>
-            )}
+            <h2 className="font-semibold text-blue-900 text-lg">Sites</h2>
             <Link href="/devices" className="text-sm text-blue-500 hover:text-blue-700 transition-colors shrink-0">
               Détails par site →
             </Link>
@@ -165,21 +140,10 @@ export default function DashboardPage() {
                 <code className="bg-blue-50 px-2 py-0.5 rounded text-xs">POST /api/v1/devices</code>
               </p>
             </div>
-          ) : selectedSite == null ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-              {sites.map(s => (
-                <SiteCard key={s.name} site={s} onClick={setSelectedSite} onShowPannes={setPannesSite} />
-              ))}
-            </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-              {siteDevices.map(d => (
-                <DeviceCard
-                  key={d.id}
-                  device={d}
-                  onClick={setSelected}
-                  linkedLRCount={childrenMap[d.id] ?? 0}
-                />
+              {sites.map(s => (
+                <SiteCard key={s.name} site={s} onClick={openSiteEquipment} onShowPannes={setPannesSite} />
               ))}
             </div>
           )}

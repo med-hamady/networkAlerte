@@ -5,7 +5,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -108,6 +108,52 @@ async def update_device(
     return _to_read(device)
 
 
+# Latest-metric lookup as a loose index scan (recursive enumeration of the
+# distinct metric_names) + a LATERAL "latest row per name" probe. Both halves
+# are served by ix_device_metrics_lookup (device_id, metric_name, collected_at),
+# so the cost is O(#distinct metrics × log n) and independent of how many rows
+# the device has accumulated.
+#
+# Replaces a GROUP BY metric_name + MAX(collected_at) subquery that the planner
+# resolved with a parallel SEQ SCAN of device_metrics (16 M+ rows). On a
+# high-cardinality device — the UISP Switch emits ~130 metrics/cycle → 1.6 M
+# rows → the query took ~11 s and timed out, so its modal showed no metrics.
+# See migration c1f2a3b4d5e6 for the backing index.
+_LATEST_METRICS_SQL = text("""
+    WITH RECURSIVE names AS (
+        (
+            SELECT metric_name
+            FROM device_metrics
+            WHERE device_id = :device_id
+            ORDER BY metric_name
+            LIMIT 1
+        )
+        UNION ALL
+        SELECT (
+            SELECT dm.metric_name
+            FROM device_metrics dm
+            WHERE dm.device_id = :device_id
+              AND dm.metric_name > names.metric_name
+            ORDER BY dm.metric_name
+            LIMIT 1
+        )
+        FROM names
+        WHERE names.metric_name IS NOT NULL
+    )
+    SELECT names.metric_name, latest.metric_value, latest.unit, latest.collected_at
+    FROM names
+    CROSS JOIN LATERAL (
+        SELECT dm.metric_value, dm.unit, dm.collected_at
+        FROM device_metrics dm
+        WHERE dm.device_id = :device_id
+          AND dm.metric_name = names.metric_name
+        ORDER BY dm.collected_at DESC
+        LIMIT 1
+    ) AS latest
+    WHERE names.metric_name IS NOT NULL
+""")
+
+
 @router.get("/{device_id}/metrics/latest", response_model=dict[str, MetricPoint])
 async def get_device_metrics_latest(
     device_id: int,
@@ -118,32 +164,14 @@ async def get_device_metrics_latest(
     if device is None:
         raise HTTPException(status_code=404, detail="Device not found")
 
-    # Subquery: latest collected_at per metric_name
-    sub = (
-        select(
-            DeviceMetric.metric_name,
-            func.max(DeviceMetric.collected_at).label("max_ts"),
-        )
-        .where(DeviceMetric.device_id == device_id)
-        .group_by(DeviceMetric.metric_name)
-        .subquery()
-    )
-    result = await db.execute(
-        select(DeviceMetric).join(
-            sub,
-            (DeviceMetric.metric_name == sub.c.metric_name)
-            & (DeviceMetric.collected_at == sub.c.max_ts)
-            & (DeviceMetric.device_id == device_id),
-        )
-    )
-    rows = result.scalars().all()
+    result = await db.execute(_LATEST_METRICS_SQL, {"device_id": device_id})
     return {
         row.metric_name: MetricPoint(
             value=row.metric_value,
             unit=row.unit,
             collected_at=row.collected_at,
         )
-        for row in rows
+        for row in result
     }
 
 

@@ -18,7 +18,7 @@ const INFRA_TYPES = new Set(['rocket', 'uisp_switch', 'uisp_power'])
 
 function SitesPage() {
   const searchParams = useSearchParams()
-  // Deep-link from the dashboard: /devices?site=AT2 opens that site's equipment.
+  // Deep-link from the dashboard: /sites?site=AT2 opens that site's equipment.
   const [selectedSite, setSelectedSite] = useState<string | null>(() => searchParams.get('site'))
   const [pannesSite, setPannesSite]     = useState<string | null>(null)
   const [selected, setSelected]         = useState<Device | null>(null)

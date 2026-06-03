@@ -86,7 +86,7 @@ export default function DashboardPage() {
 
   // Site card → open that site's equipment on the Sites page.
   const openSiteEquipment = (name: string) =>
-    router.push(`/devices?site=${encodeURIComponent(name)}`)
+    router.push(`/sites?site=${encodeURIComponent(name)}`)
 
   return (
     <>
@@ -122,7 +122,7 @@ export default function DashboardPage() {
         <section>
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold text-blue-900 text-lg">Sites</h2>
-            <Link href="/devices" className="text-sm text-blue-500 hover:text-blue-700 transition-colors shrink-0">
+            <Link href="/sites" className="text-sm text-blue-500 hover:text-blue-700 transition-colors shrink-0">
               Détails par site →
             </Link>
           </div>

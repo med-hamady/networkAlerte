@@ -255,7 +255,7 @@ export default function LrHealthPage() {
 
                         <td className="px-4 py-3 whitespace-nowrap">
                           <Link
-                            href="/devices"
+                            href="/sites"
                             className="text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline"
                           >
                             Voir l'équipement →

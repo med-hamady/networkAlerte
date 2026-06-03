@@ -4,17 +4,18 @@ import React, { useMemo, useState } from 'react'
 import Link from 'next/link'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
-import type { Device, Incident } from '@/lib/types'
-import { alertTypeLabel, formatDate } from '@/lib/types'
+import type { Device } from '@/lib/types'
 import StatsBar from '@/components/StatsBar'
-import SeverityBadge from '@/components/SeverityBadge'
-import IncidentStatusBadge from '@/components/IncidentStatusBadge'
 import DeviceCard from '@/components/DeviceCard'
 import SiteCard from '@/components/SiteCard'
 import DeviceDetailModal from '@/components/DeviceDetailModal'
 
 const REFRESH = 15_000
 const SITE_FALLBACK = 'Sans site'
+
+// Equipment that counts as a site outage when down. LR clients are excluded —
+// an unreachable LR is never treated as an incident (client-side problem).
+const INFRA_TYPES = new Set(['rocket', 'uisp_switch', 'uisp_power'])
 
 export default function DashboardPage() {
   const [selected, setSelected] = useState<Device | null>(null)
@@ -23,33 +24,23 @@ export default function DashboardPage() {
   const { data: devices, isLoading: loadingDevices } = useSWR<Device[]>(
     endpoints.devices, fetcher, { refreshInterval: REFRESH },
   )
-  const { data: incidents, isLoading: loadingIncidents } = useSWR<Incident[]>(
-    `${endpoints.incidents}?status=open&limit=500`, fetcher, { refreshInterval: REFRESH },
+
+  // Rocket lookup — used to attach an LR client to the site of its parent rocket.
+  const rocketById = useMemo(
+    () => new Map(devices?.filter(d => d.device_type === 'rocket').map(d => [d.id, d]) ?? []),
+    [devices],
   )
 
-  const total   = devices?.length  ?? 0
-  const up      = devices?.filter(d => d.status === 'up').length   ?? 0
-  const down    = devices?.filter(d => d.status === 'down').length ?? 0
-  const openInc = incidents?.length ?? 0
+  // Site of a device: infra by its own location; an LR by its parent rocket's site.
+  const siteOf = (d: Device): string => {
+    if (d.device_type === 'lr') {
+      const rk = d.rocket_id != null ? rocketById.get(d.rocket_id) : undefined
+      return rk?.location?.trim() || SITE_FALLBACK
+    }
+    return d.location?.trim() || SITE_FALLBACK
+  }
 
-  const deviceNames = Object.fromEntries(devices?.map(d => [d.id, d.name]) ?? [])
-
-  const siteOf = (d: Device) => d.location?.trim() || SITE_FALLBACK
-
-  // Open-incident count per site (device_id → site via location)
-  const incidentsBySite = useMemo(() => {
-    const byId = new Map(devices?.map(d => [d.id, d]) ?? [])
-    const counts: Record<string, number> = {}
-    incidents?.forEach(inc => {
-      const dev = byId.get(inc.device_id)
-      if (!dev) return
-      const key = siteOf(dev)
-      counts[key] = (counts[key] ?? 0) + 1
-    })
-    return counts
-  }, [devices, incidents])
-
-  // Group devices into site summaries, sorted by name
+  // Group devices into site summaries: outage count (+ oldest downtime) and client count.
   const sites = useMemo(() => {
     const map = new Map<string, Device[]>()
     devices?.forEach(d => {
@@ -58,15 +49,25 @@ export default function DashboardPage() {
       map.get(key)!.push(d)
     })
     return [...map.entries()]
-      .map(([name, list]) => ({
-        name,
-        total: list.length,
-        up: list.filter(d => d.status === 'up').length,
-        down: list.filter(d => d.status === 'down').length,
-        openIncidents: incidentsBySite[name] ?? 0,
-      }))
+      .map(([name, list]) => {
+        const downInfra = list.filter(d => INFRA_TYPES.has(d.device_type) && d.status === 'down')
+        const downSince = downInfra.reduce<string | null>((oldest, d) => {
+          if (!d.last_seen) return oldest
+          if (!oldest) return d.last_seen
+          return new Date(d.last_seen) < new Date(oldest) ? d.last_seen : oldest
+        }, null)
+        return {
+          name,
+          pannes: downInfra.length,
+          clients: list.filter(d => d.device_type === 'lr').length,
+          downSince,
+        }
+      })
       .sort((a, b) => a.name.localeCompare(b.name, 'fr'))
-  }, [devices, incidentsBySite])
+  }, [devices, rocketById])
+
+  const totalPannes  = sites.reduce((s, x) => s + x.pannes, 0)
+  const totalClients = sites.reduce((s, x) => s + x.clients, 0)
 
   const siteDevices = selectedSite != null
     ? (devices?.filter(d => siteOf(d) === selectedSite) ?? [])
@@ -99,7 +100,7 @@ export default function DashboardPage() {
         </div>
 
         {/* KPI bar */}
-        <StatsBar total={total} up={up} down={down} openIncidents={openInc} />
+        <StatsBar sites={sites.length} pannes={totalPannes} clients={totalClients} />
 
         {/* Sites / Equipment grid */}
         <section>
@@ -159,77 +160,6 @@ export default function DashboardPage() {
               ))}
             </div>
           )}
-        </section>
-
-        {/* Open incidents */}
-        <section>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="font-semibold text-blue-900 text-lg flex items-center gap-2">
-              Incidents ouverts
-              {openInc > 0 && (
-                <span className="bg-red-100 text-red-600 text-xs font-bold px-2 py-0.5 rounded-full border border-red-200">
-                  {openInc}
-                </span>
-              )}
-            </h2>
-            <Link href="/incidents" className="text-sm text-blue-500 hover:text-blue-700 transition-colors">
-              Voir tout →
-            </Link>
-          </div>
-
-          <div className="bg-white border border-blue-100 rounded-xl overflow-hidden shadow-sm">
-            {loadingIncidents ? (
-              <div className="px-6 py-10 text-center text-blue-300 text-sm">Chargement…</div>
-            ) : !incidents?.length ? (
-              <div className="px-6 py-10 text-center">
-                <p className="text-green-600 font-semibold text-sm">✓ Aucun incident ouvert</p>
-                <p className="text-blue-400 text-xs mt-1">Tous les équipements fonctionnent normalement</p>
-              </div>
-            ) : (
-              <table className="w-full text-sm">
-                <thead className="bg-blue-50 border-b border-blue-100">
-                  <tr>
-                    {['Détecté le', 'Équipement', 'Type', 'Incident', 'Sévérité', 'Statut'].map(h => (
-                      <th key={h} className="px-5 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-blue-50">
-                  {incidents.map(inc => (
-                    <tr key={inc.id} className="hover:bg-blue-50/50 transition-colors">
-                      <td className="px-5 py-3 text-blue-400 whitespace-nowrap text-xs">{formatDate(inc.detected_at)}</td>
-                      <td className="px-5 py-3 font-medium text-slate-800 whitespace-nowrap">
-                        {inc.device_name ?? deviceNames[inc.device_id] ?? `#${inc.device_id}`}
-                      </td>
-                      <td className="px-5 py-3 whitespace-nowrap">
-                        {inc.alert_type ? (
-                          <span
-                            title={inc.alert_type}
-                            className={`text-xs font-medium px-2 py-0.5 rounded-full border ${
-                              inc.alert_type === 'lr_no_transit'
-                                ? 'bg-orange-50 text-orange-700 border-orange-200'
-                                : inc.severity === 'critical'
-                                ? 'bg-red-50 text-red-700 border-red-200'
-                                : 'bg-blue-50 text-blue-600 border-blue-200'
-                            }`}
-                          >
-                            {alertTypeLabel(inc.alert_type)}
-                          </span>
-                        ) : (
-                          <span className="text-blue-200 text-xs">—</span>
-                        )}
-                      </td>
-                      <td className="px-5 py-3 text-slate-600 max-w-xs truncate" title={inc.title}>{inc.title}</td>
-                      <td className="px-5 py-3"><SeverityBadge severity={inc.severity} /></td>
-                      <td className="px-5 py-3"><IncidentStatusBadge status={inc.status} /></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
         </section>
       </div>
 

@@ -22,64 +22,49 @@ function StatCard({ label, value, accent = 'text-blue-900', icon }: StatCardProp
 }
 
 interface StatsBarProps {
-  total: number
-  up: number
-  down: number
-  openIncidents: number
+  sites: number
+  pannes: number
+  clients: number
 }
 
-export default function StatsBar({ total, up, down, openIncidents }: StatsBarProps) {
+export default function StatsBar({ sites, pannes, clients }: StatsBarProps) {
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+    <div className="grid grid-cols-3 gap-4">
       <StatCard
-        label="Total équipements"
-        value={total}
+        label="Sites"
+        value={sites}
         accent="text-blue-900"
-        icon={<GridIcon />}
+        icon={<SiteIcon />}
       />
       <StatCard
-        label="En ligne"
-        value={up}
-        accent="text-green-600"
-        icon={<CheckIcon />}
-      />
-      <StatCard
-        label="Hors ligne"
-        value={down}
-        accent={down > 0 ? 'text-red-500' : 'text-blue-900'}
-        icon={<XIcon />}
-      />
-      <StatCard
-        label="Incidents ouverts"
-        value={openIncidents}
-        accent={openIncidents > 0 ? 'text-orange-500' : 'text-blue-900'}
+        label="Pannes"
+        value={pannes}
+        accent={pannes > 0 ? 'text-red-500' : 'text-blue-900'}
         icon={<WarningIcon />}
+      />
+      <StatCard
+        label="Clients"
+        value={clients}
+        accent="text-blue-900"
+        icon={<UsersIcon />}
       />
     </div>
   )
 }
 
-function GridIcon() {
+function SiteIcon() {
   return (
     <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round"
-        d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a2 2 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
     </svg>
   )
 }
 
-function CheckIcon() {
+function UsersIcon() {
   return (
-    <svg className="w-5 h-5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-    </svg>
-  )
-}
-
-function XIcon() {
-  return (
-    <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+    <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m6-1.13a4 4 0 10-4-4 4 4 0 004 4zm6 0a3 3 0 10-2.83-4" />
     </svg>
   )
 }

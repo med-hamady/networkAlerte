@@ -15,7 +15,7 @@ import datetime
 import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.core.alert_constants import (
     AT_AIRMAX_DOWN,
@@ -622,38 +622,35 @@ async def snmp_poll_job() -> None:
             if category in SWITCH_RULE_CATEGORIES:
                 # Switch metrics are display-only (the modal reads the latest
                 # value per port; no matview/report consumes switch history),
-                # so we keep a SINGLE row per (device_id, metric_name) and
-                # overwrite it in place each cycle. A switch emits ~130
-                # metrics/cycle — appending would add ~190k rows/day that
-                # nothing reads beyond "latest", bloating device_metrics and
-                # its index. After the one-time collapse migration
-                # (u2a3b4c5d6e7), each metric has exactly one row, so this
-                # stays at ~73 rows total for the switch forever.
+                # so we keep a SINGLE row per (device_id, metric_name): delete
+                # any existing row(s) for the metric, then write the latest.
+                # A switch emits ~130 metrics/cycle — appending would add ~190k
+                # rows/day that nothing reads beyond "latest" (it had bloated
+                # one switch to 1.6 M rows → /metrics/latest timed out).
+                #
+                # Each per-metric DELETE is indexed on (device_id, metric_name),
+                # so in steady state it removes exactly one row before the
+                # insert. On the FIRST cycle after this ships it also absorbs
+                # the historical backlog, one metric_name at a time, entirely
+                # inside the scheduler — never on the backend startup path, so
+                # it can't stall the healthcheck the way a bulk migration did.
                 now = datetime.datetime.now(datetime.UTC)
-                existing = {
-                    row.metric_name: row
-                    for row in (
-                        await session.execute(
-                            select(DeviceMetric).where(DeviceMetric.device_id == dev.id)
-                        )
-                    ).scalars().all()
-                }
                 for metric_name, value in metrics.items():
                     if value is None:
                         continue
-                    row = existing.get(metric_name)
-                    if row is None:
-                        session.add(DeviceMetric(
-                            device_id=dev.id,
-                            metric_name=metric_name,
-                            metric_value=value,
-                            unit=unit_map.get(metric_name),
-                            collected_at=now,
-                        ))
-                    else:
-                        row.metric_value = value
-                        row.unit = unit_map.get(metric_name)
-                        row.collected_at = now
+                    await session.execute(
+                        delete(DeviceMetric).where(
+                            DeviceMetric.device_id == dev.id,
+                            DeviceMetric.metric_name == metric_name,
+                        )
+                    )
+                    session.add(DeviceMetric(
+                        device_id=dev.id,
+                        metric_name=metric_name,
+                        metric_value=value,
+                        unit=unit_map.get(metric_name),
+                        collected_at=now,
+                    ))
             else:
                 # Radio devices keep full history (consumed by consumption /
                 # lr-health matviews and reports) → append a new row per cycle.

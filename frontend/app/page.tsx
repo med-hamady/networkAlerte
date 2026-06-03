@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useMemo, useState } from 'react'
 import Link from 'next/link'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
@@ -10,18 +10,21 @@ import StatsBar from '@/components/StatsBar'
 import SeverityBadge from '@/components/SeverityBadge'
 import IncidentStatusBadge from '@/components/IncidentStatusBadge'
 import DeviceCard from '@/components/DeviceCard'
+import SiteCard from '@/components/SiteCard'
 import DeviceDetailModal from '@/components/DeviceDetailModal'
 
 const REFRESH = 15_000
+const SITE_FALLBACK = 'Sans site'
 
 export default function DashboardPage() {
   const [selected, setSelected] = useState<Device | null>(null)
+  const [selectedSite, setSelectedSite] = useState<string | null>(null)
 
   const { data: devices, isLoading: loadingDevices } = useSWR<Device[]>(
     endpoints.devices, fetcher, { refreshInterval: REFRESH },
   )
   const { data: incidents, isLoading: loadingIncidents } = useSWR<Incident[]>(
-    `${endpoints.incidents}?status=open&limit=10`, fetcher, { refreshInterval: REFRESH },
+    `${endpoints.incidents}?status=open&limit=500`, fetcher, { refreshInterval: REFRESH },
   )
 
   const total   = devices?.length  ?? 0
@@ -30,6 +33,44 @@ export default function DashboardPage() {
   const openInc = incidents?.length ?? 0
 
   const deviceNames = Object.fromEntries(devices?.map(d => [d.id, d.name]) ?? [])
+
+  const siteOf = (d: Device) => d.location?.trim() || SITE_FALLBACK
+
+  // Open-incident count per site (device_id → site via location)
+  const incidentsBySite = useMemo(() => {
+    const byId = new Map(devices?.map(d => [d.id, d]) ?? [])
+    const counts: Record<string, number> = {}
+    incidents?.forEach(inc => {
+      const dev = byId.get(inc.device_id)
+      if (!dev) return
+      const key = siteOf(dev)
+      counts[key] = (counts[key] ?? 0) + 1
+    })
+    return counts
+  }, [devices, incidents])
+
+  // Group devices into site summaries, sorted by name
+  const sites = useMemo(() => {
+    const map = new Map<string, Device[]>()
+    devices?.forEach(d => {
+      const key = siteOf(d)
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)!.push(d)
+    })
+    return [...map.entries()]
+      .map(([name, list]) => ({
+        name,
+        total: list.length,
+        up: list.filter(d => d.status === 'up').length,
+        down: list.filter(d => d.status === 'down').length,
+        openIncidents: incidentsBySite[name] ?? 0,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'fr'))
+  }, [devices, incidentsBySite])
+
+  const siteDevices = selectedSite != null
+    ? (devices?.filter(d => siteOf(d) === selectedSite) ?? [])
+    : []
 
   const childrenMap: Record<number, number> = {}
   devices?.forEach(d => {
@@ -60,11 +101,29 @@ export default function DashboardPage() {
         {/* KPI bar */}
         <StatsBar total={total} up={up} down={down} openIncidents={openInc} />
 
-        {/* Equipment grid */}
+        {/* Sites / Equipment grid */}
         <section>
           <div className="flex items-center justify-between mb-4">
-            <h2 className="font-semibold text-blue-900 text-lg">État des équipements</h2>
-            <Link href="/devices" className="text-sm text-blue-500 hover:text-blue-700 transition-colors">
+            {selectedSite == null ? (
+              <h2 className="font-semibold text-blue-900 text-lg">Sites</h2>
+            ) : (
+              <div className="flex items-center gap-3 min-w-0">
+                <button
+                  onClick={() => setSelectedSite(null)}
+                  className="text-sm text-blue-500 hover:text-blue-700 transition-colors flex items-center gap-1 shrink-0"
+                >
+                  ← Sites
+                </button>
+                <span className="text-blue-200">/</span>
+                <h2 className="font-semibold text-blue-900 text-lg truncate">
+                  {selectedSite}
+                  <span className="text-blue-400 font-normal text-sm ml-2">
+                    {siteDevices.length} équipement{siteDevices.length > 1 ? 's' : ''}
+                  </span>
+                </h2>
+              </div>
+            )}
+            <Link href="/devices" className="text-sm text-blue-500 hover:text-blue-700 transition-colors shrink-0">
               Vue tableau →
             </Link>
           </div>
@@ -82,9 +141,15 @@ export default function DashboardPage() {
                 <code className="bg-blue-50 px-2 py-0.5 rounded text-xs">POST /api/v1/devices</code>
               </p>
             </div>
+          ) : selectedSite == null ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+              {sites.map(s => (
+                <SiteCard key={s.name} site={s} onClick={setSelectedSite} />
+              ))}
+            </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-              {devices.map(d => (
+              {siteDevices.map(d => (
                 <DeviceCard
                   key={d.id}
                   device={d}

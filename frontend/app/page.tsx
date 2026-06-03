@@ -148,7 +148,7 @@ export default function DashboardPage() {
               </div>
             )}
             <Link href="/devices" className="text-sm text-blue-500 hover:text-blue-700 transition-colors shrink-0">
-              Vue tableau →
+              Détails par site →
             </Link>
           </div>
 

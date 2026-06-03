@@ -25,7 +25,7 @@ const sections: NavSection[] = [
     title: 'Supervision',
     links: [
       { href: '/',           label: 'Dashboard',           icon: DashboardIcon },
-      { href: '/devices',    label: 'Équipements',         icon: ServerIcon    },
+      { href: '/devices',    label: 'Sites',               icon: ServerIcon    },
       { href: '/lr-health',  label: 'Liaisons clients',    icon: LinkIcon      },
       { href: '/clients',    label: 'Consommation clients', icon: TrafficIcon  },
       { href: '/access',     label: 'Accès clients',       icon: ShieldIcon   },

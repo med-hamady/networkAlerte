@@ -224,7 +224,7 @@ backend/app/
 |---|---|---|
 | `heartbeat_job` | 60s | Sanity check scheduler |
 | `device_ping_job` | 30s | Ping ICMP tous les devices (anti-flap 3 cycles) |
-| `snmp_poll_job` | 60s | Métriques SNMP LTU radio (ath0/eth0) + Switch (ports) → alert engine |
+| `snmp_poll_job` | 60s | Métriques SNMP LTU radio (ath0/eth0) + Switch (ports) → alert engine. **Switch = écrasement en place** : les ~130 métriques/cycle d'un UISP Switch (display-only) sont stockées en **une seule ligne par (device_id, metric_name)** (UPDATE-or-INSERT), pas d'historique empilé — sinon ~190k lignes/jour que rien ne lit au-delà du « dernier point » (faisait timeout `/metrics/latest`). Les radios (Rocket/LR) gardent l'historique (consommé par les matviews conso/lr-health). Collapse initial du backlog : migration `u2a3b4c5d6e7`. |
 | `power_poll_job` | 30s | API REST UISP Power (voltage, batterie) |
 | `ltu_api_poll_job` | 60s | API HTTP LTU Rocket (signal, CCQ, CINR, CPE auto-discovery) → alert engine + check topologie via `peer.remote.netMode` (router/bridge) par LR, sans SSH |
 | `airos_api_poll_job` | 60s | API HTTP airOS (`login.cgi`+`status.cgi`) sur **chaque LR airMAX** (LiteBeam) à son IP → métriques de lien (link_potential, total_capacity, rate idx, signal, CINR…), auto-rename via `host.hostname`, + check topologie via `host.netrole` (router/bridge). Remplace le SNMP pour ces LR. Requiert `ssh_username`/`ssh_password` (creds airOS) |

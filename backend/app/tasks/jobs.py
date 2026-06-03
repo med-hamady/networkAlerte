@@ -619,14 +619,52 @@ async def snmp_poll_job() -> None:
                         unit_map[key] = "Mbps"
                     else:
                         unit_map[key] = ""
-            for metric_name, value in metrics.items():
-                if value is not None:
-                    session.add(DeviceMetric(
-                        device_id=dev.id,
-                        metric_name=metric_name,
-                        metric_value=value,
-                        unit=unit_map.get(metric_name),
-                    ))
+            if category in SWITCH_RULE_CATEGORIES:
+                # Switch metrics are display-only (the modal reads the latest
+                # value per port; no matview/report consumes switch history),
+                # so we keep a SINGLE row per (device_id, metric_name) and
+                # overwrite it in place each cycle. A switch emits ~130
+                # metrics/cycle — appending would add ~190k rows/day that
+                # nothing reads beyond "latest", bloating device_metrics and
+                # its index. After the one-time collapse migration
+                # (u2a3b4c5d6e7), each metric has exactly one row, so this
+                # stays at ~73 rows total for the switch forever.
+                now = datetime.datetime.now(datetime.UTC)
+                existing = {
+                    row.metric_name: row
+                    for row in (
+                        await session.execute(
+                            select(DeviceMetric).where(DeviceMetric.device_id == dev.id)
+                        )
+                    ).scalars().all()
+                }
+                for metric_name, value in metrics.items():
+                    if value is None:
+                        continue
+                    row = existing.get(metric_name)
+                    if row is None:
+                        session.add(DeviceMetric(
+                            device_id=dev.id,
+                            metric_name=metric_name,
+                            metric_value=value,
+                            unit=unit_map.get(metric_name),
+                            collected_at=now,
+                        ))
+                    else:
+                        row.metric_value = value
+                        row.unit = unit_map.get(metric_name)
+                        row.collected_at = now
+            else:
+                # Radio devices keep full history (consumed by consumption /
+                # lr-health matviews and reports) → append a new row per cycle.
+                for metric_name, value in metrics.items():
+                    if value is not None:
+                        session.add(DeviceMetric(
+                            device_id=dev.id,
+                            metric_name=metric_name,
+                            metric_value=value,
+                            unit=unit_map.get(metric_name),
+                        ))
 
             # Delegate anomaly detection to alert engine
             await alert_engine.evaluate_device_metrics(session, dev, metrics, settings)

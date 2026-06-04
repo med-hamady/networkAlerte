@@ -345,13 +345,17 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
               .map(k => /^battery_(.+)_pct$/.exec(k))
               .filter((m): m is RegExpExecArray => m != null)
               .map(m => ({
-                slug:    m[1],
-                pct:     metrics[m[0]]?.value,
-                volt:    metrics[`battery_${m[1]}_voltage_v`]?.value,
-                capAh:   metrics[`battery_${m[1]}_capacity_ah`]?.value,
-                runtime: metrics[`battery_${m[1]}_runtime_s`]?.value,
+                slug:        m[1],
+                pct:         metrics[m[0]]?.value,
+                volt:        metrics[`battery_${m[1]}_voltage_v`]?.value,
+                capAh:       metrics[`battery_${m[1]}_capacity_ah`]?.value,
+                runtime:     metrics[`battery_${m[1]}_runtime_s`]?.value,
+                discharging: metrics[`battery_${m[1]}_discharging`]?.value,
               }))
               .sort((x, y) => (BATTERY_ORDER[x.slug] ?? 99) - (BATTERY_ORDER[y.slug] ?? 99))
+
+            // Battery currently in use (discharging) — named on the source row.
+            const activeBattery = batteries.find(b => b.discharging != null && b.discharging >= 1)
 
             // DC output ports: every `dc_output_<id>_power_w`.
             const dcOutputs = Object.keys(metrics)
@@ -377,10 +381,15 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
 
             const renderBattery = (
               label: string,
-              b: { pct?: number | null; volt?: number | null; capAh?: number | null; runtime?: number | null },
+              b: { pct?: number | null; volt?: number | null; capAh?: number | null; runtime?: number | null; discharging?: number | null },
             ) => (
               <div key={label} className="mt-1">
-                <p className="text-blue-300 text-xs uppercase tracking-wider">{label}</p>
+                <p className="text-blue-300 text-xs uppercase tracking-wider">
+                  {label}
+                  {b.discharging != null && b.discharging >= 1 && (
+                    <span className="ml-2 text-orange-500 font-semibold normal-case">● en service</span>
+                  )}
+                </p>
                 {b.pct != null && (
                   <MetricRow
                     label="Charge"
@@ -414,7 +423,9 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
                       ac >= 1 ? (
                         <span className="text-green-600 font-semibold">⚡ Secteur (SOMELEC)</span>
                       ) : (
-                        <span className="text-orange-500 font-semibold">🔋 Batterie (secteur absent)</span>
+                        <span className="text-orange-500 font-semibold">
+                          🔋 Batterie{activeBattery ? ` — ${BATTERY_LABELS[activeBattery.slug] ?? activeBattery.slug}` : ' (secteur absent)'}
+                        </span>
                       )
                     }
                   />

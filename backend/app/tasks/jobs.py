@@ -164,6 +164,11 @@ INC_MAINS_LOST    = "Coupure secteur (sur batterie)"
 # poll, 2 cycles ≈ 1 min : filtre les micro-coupures / flickers sans retarder
 # l'alerte d'une vraie coupure. Résolution dès le 1er cycle où le secteur revient.
 MAINS_LOSS_THRESHOLD = 2
+# Libellé humain par type de batterie pour les messages d'alerte.
+_BATTERY_HUMAN = {
+    "li-ion": "batterie interne (Li-Ion)",
+    "lead-acid": "banc externe (plomb)",
+}
 INC_TRANSIT       = "Transit réseau indisponible"
 INC_SWITCH_PORT       = "Switch port critique down"
 INC_SWITCH_PORT_SPEED = "Port switch vitesse insuffisante"
@@ -737,12 +742,28 @@ async def snmp_poll_job() -> None:
             await session.commit()
 
 
-async def _evaluate_mains_power(session, dev: Device, ac_connected: bool | None) -> None:
+def _active_battery_label(batteries: list[dict]) -> str:
+    """Name the battery/batteries currently discharging (in use on outage).
+
+    Falls back to a generic label if the device doesn't flag any as
+    discharging (e.g. load momentarily null right at the cutover).
+    """
+    active = [b for b in batteries if b.get("discharging")]
+    if not active:
+        return "ses batteries"
+    return " + ".join(_BATTERY_HUMAN.get(b.get("type"), b.get("type") or "batterie") for b in active)
+
+
+async def _evaluate_mains_power(
+    session, dev: Device, ac_connected: bool | None, batteries: list[dict],
+) -> None:
     """
     Mains (SOMELEC) outage detection for a UISP Power.
 
     `ac_connected` comes straight from the device API (any AC input slot
     connected). None = firmware didn't report AC slots → unknown, skip.
+    `batteries` lets the alert name which battery is actually discharging
+    (internal Li-Ion vs external lead-acid bank).
 
     Anti-flap: open `mains_power_lost` only after MAINS_LOSS_THRESHOLD
     consecutive cycles on battery (filters brief flickers the battery rides
@@ -781,11 +802,13 @@ async def _evaluate_mains_power(session, dev: Device, ac_connected: bool | None)
         )
         return
 
+    source = _active_battery_label(batteries)
     await _open_and_notify(
         session, dev, INC_MAINS_LOST, "warning",
         f"Coupure secteur détectée : {dev.name} ({dev.ip_address}) est passé sur "
         f"batterie (aucune entrée AC connectée, {state.failure_count} cycles). "
-        f"Le site tient sur ses batteries — surveiller le niveau de charge.",
+        f"Batterie en service : {source}. "
+        f"Le site tient sur batterie — surveiller le niveau de charge.",
         alert_type=AT_MAINS_POWER_LOST,
     )
 
@@ -883,6 +906,8 @@ async def power_poll_job() -> None:
                         f"battery_{slug}_voltage_v":   ("voltage",         "V"),
                         f"battery_{slug}_capacity_ah": ("capacity_ah",     "Ah"),
                         f"battery_{slug}_runtime_s":   ("runtime_seconds", "s"),
+                        # 1 = cette batterie débite (en service sur coupure secteur).
+                        f"battery_{slug}_discharging": ("discharging",     "bool"),
                     }
                     for metric_name, (key, unit) in batt_metrics.items():
                         val = batt_entry.get(key)
@@ -975,8 +1000,12 @@ async def power_poll_job() -> None:
                         session, dev, INC_VOLT_ANOMALY, alert_type=AT_VOLT_ANOMALY
                     )
 
-                # Mains (SOMELEC) presence — open mains_power_lost when on battery.
-                await _evaluate_mains_power(session, dev, readings.get("ac_connected"))
+                # Mains (SOMELEC) presence — open mains_power_lost when on
+                # battery, naming which battery is actually discharging.
+                await _evaluate_mains_power(
+                    session, dev, readings.get("ac_connected"),
+                    readings.get("batteries") or [],
+                )
 
             await session.commit()
 

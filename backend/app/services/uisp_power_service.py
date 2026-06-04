@@ -183,15 +183,30 @@ def parse_power_readings(device: dict) -> dict:
         capacity = (battery.get("capacity") or {}).get("configured")
         running_time = battery.get("runningTime")
         btype = battery.get("type")
+        # Power sign on the battery slot hints at charge vs discharge: the
+        # firmware reports NEGATIVE power while charging and POSITIVE while the
+        # battery supplies the load. BUT a full battery on mains trickles a few
+        # tenths of a watt POSITIVE (noise), so a positive reading alone is not
+        # "discharging". A battery is only really in use when mains is gone —
+        # hence the discharging flag is gated on ac_connected being False below.
+        batt_power = float(entry["power"]) if entry.get("power") is not None else None
         batteries.append({
             "type": btype,
             "type_slug": battery_type_slug(btype),
             "percentage": float(charge) if charge is not None else None,
             "voltage": float(entry["voltage"]) if entry.get("voltage") is not None else None,
+            "current": float(entry["current"]) if entry.get("current") is not None else None,
+            "power": batt_power,
             "capacity_ah": float(capacity) if capacity is not None else None,
             # Estimated remaining autonomy at the current load (seconds).
             "runtime_seconds": float(running_time) if running_time is not None else None,
             "connected": bool(entry.get("connected")),
+            # In use = mains absent AND this slot is delivering energy (>0.1 W).
+            "discharging": (
+                result["ac_connected"] is False
+                and batt_power is not None
+                and batt_power > 0.1
+            ),
         })
     result["batteries"] = batteries
 

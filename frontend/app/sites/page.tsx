@@ -52,7 +52,7 @@ function SitesPage() {
   }
 
   // Group devices into per-site summaries.
-  const sites = useMemo<(SiteOverview & { downDevices: Device[] })[]>(() => {
+  const sites = useMemo<(SiteOverview & { downDevices: Device[]; powerDevices: Device[] })[]>(() => {
     const map = new Map<string, Device[]>()
     devices?.forEach(d => {
       const key = siteOf(d)
@@ -77,6 +77,7 @@ function SitesPage() {
           pannes: downInfra.length,
           downSince,
           downDevices: downInfra,
+          powerDevices: list.filter(d => d.device_type === 'uisp_power'),
         }
       })
       .sort((a, b) => a.name.localeCompare(b.name, 'fr'))
@@ -167,6 +168,7 @@ function SitesPage() {
               <SiteOverviewCard
                 key={s.name}
                 site={s}
+                powerDevices={s.powerDevices}
                 onShowPannes={setPannesSite}
                 onShowEquipment={openEquipment}
               />

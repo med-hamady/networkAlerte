@@ -1,6 +1,9 @@
 'use client'
 
+import useSWR from 'swr'
+import { endpoints, fetcher } from '@/lib/api'
 import { formatUptime } from '@/lib/types'
+import type { Device, DeviceMetrics } from '@/lib/types'
 
 export interface SiteOverview {
   name: string
@@ -13,11 +16,12 @@ export interface SiteOverview {
 
 interface Props {
   site: SiteOverview
+  powerDevices?: Device[]  // UISP Power devices of this site (energy + battery)
   onShowPannes: (name: string) => void
   onShowEquipment: (name: string, filter?: 'all' | 'infra') => void
 }
 
-export default function SiteOverviewCard({ site, onShowPannes, onShowEquipment }: Props) {
+export default function SiteOverviewCard({ site, powerDevices = [], onShowPannes, onShowEquipment }: Props) {
   const hasPannes = site.pannes > 0
   const downFor = site.downSince
     ? formatUptime(Math.max(0, Math.floor((Date.now() - new Date(site.downSince).getTime()) / 1000)))
@@ -61,6 +65,14 @@ export default function SiteOverviewCard({ site, onShowPannes, onShowEquipment }
           <Stat value={site.pannes}          label="Pannes"            tone={hasPannes ? 'red' : 'slate'} />
         </div>
 
+        {powerDevices.length > 0 && (
+          <div className="space-y-1.5 pt-1 border-t border-blue-50">
+            {powerDevices.map(d => (
+              <SitePowerStats key={d.id} device={d} showName={powerDevices.length > 1} />
+            ))}
+          </div>
+        )}
+
         {hasPannes && (
           <button
             onClick={() => onShowPannes(site.name)}
@@ -82,6 +94,54 @@ export default function SiteOverviewCard({ site, onShowPannes, onShowEquipment }
           <span className="text-sm group-hover:translate-x-0.5 transition-transform">→</span>
         </button>
       </div>
+    </div>
+  )
+}
+
+// Compact power-source + battery readout for one UISP Power of the site.
+// Fetches the device's latest metrics directly so the site card shows the live
+// power SOURCE (⚡ secteur SOMELEC / 🔋 batterie, from ac_connected) and the
+// battery charge (battery_pct = canonical = lowest battery).
+function SitePowerStats({ device, showName }: { device: Device; showName: boolean }) {
+  const isUp = device.status === 'up'
+  const { data: metrics } = useSWR<DeviceMetrics>(
+    isUp ? endpoints.deviceMetrics(device.id) : null,
+    fetcher,
+    { refreshInterval: 30_000 },
+  )
+
+  const batt = metrics?.battery_pct?.value
+  const ac   = metrics?.ac_connected?.value
+
+  const battColor =
+    batt == null ? 'text-blue-300'
+    : batt < 10 ? 'text-red-500'
+    : batt < 25 ? 'text-amber-500'
+    : 'text-green-600'
+
+  return (
+    <div className="flex items-center justify-between gap-2 text-xs">
+      <span className="text-blue-400 truncate">
+        {showName ? device.name : 'Alimentation'}
+        {!isUp && <span className="text-red-400 ml-1">· hors ligne</span>}
+      </span>
+      {isUp && (
+        <span className="flex items-center gap-2.5 shrink-0">
+          <span
+            className={
+              ac == null ? 'text-blue-300'
+              : ac >= 1 ? 'text-green-600 font-medium'
+              : 'text-orange-500 font-medium'
+            }
+            title="Source d'alimentation actuelle"
+          >
+            {ac == null ? '—' : ac >= 1 ? '⚡ Secteur' : '🔋 Batterie'}
+          </span>
+          <span className={`font-semibold tabular-nums ${battColor}`} title="Charge batterie (banc le plus bas)">
+            🔋 {batt != null ? `${Math.round(batt)} %` : '—'}
+          </span>
+        </span>
+      )}
     </div>
   )
 }

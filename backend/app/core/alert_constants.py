@@ -75,6 +75,10 @@ AT_UISP_POWER_UNREACH   = "uisp_power_unreachable"
 AT_BATTERY_LOW_WARN     = "battery_low_warning"
 AT_BATTERY_LOW_CRIT     = "battery_low_critical"
 AT_VOLTAGE_ANOMALY      = "voltage_anomaly"
+# Coupure secteur (SOMELEC) : le UISP Power n'a plus d'entrée AC connectée et
+# bascule sur batterie. Lu directement depuis l'API (power[].psuType=="AC" /
+# connected). Anti-flap pour ignorer les micro-coupures.
+AT_MAINS_POWER_LOST     = "mains_power_lost"
 AT_TRANSIT_UNAVAILABLE  = "transit_unavailable"
 AT_SWITCH_PORT_DOWN     = "switch_port_down"
 
@@ -133,7 +137,8 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_SIGNAL_LOW, AT_CINR_LOW, AT_CCQ_LOW, AT_RADIO_LINK_DEGRADED,
     AT_CAPACITY_LOW, AT_HIGH_RX_TX_ERRORS, AT_THROUGHPUT_ANOMALY,
     AT_UISP_POWER_UNREACH, AT_BATTERY_LOW_WARN, AT_BATTERY_LOW_CRIT,
-    AT_VOLTAGE_ANOMALY, AT_TRANSIT_UNAVAILABLE, AT_SWITCH_PORT_DOWN,
+    AT_VOLTAGE_ANOMALY, AT_MAINS_POWER_LOST,
+    AT_TRANSIT_UNAVAILABLE, AT_SWITCH_PORT_DOWN,
     AT_LR_NO_TRANSIT, AT_SWITCH_PORT_SPEED_LOW, AT_LR_LINK_SUBSTANDARD,
     AT_CCQ_UL_LOW, AT_CINR_UL_LOW, AT_CAPACITY_UL_LOW,
     AT_AIRMAX_DOWN,

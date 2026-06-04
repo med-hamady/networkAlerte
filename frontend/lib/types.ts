@@ -251,6 +251,7 @@ export const ALERT_TYPE_LABELS: Record<string, string> = {
   battery_low_warning:     'Batterie faible',
   battery_low_critical:    'Batterie critique',
   voltage_anomaly:         "Tension d'alimentation anormale",
+  mains_power_lost:        'Coupure secteur (sur batterie)',
   // Switch
   switch_port_down:        'Port du switch coupé',
   switch_port_speed_low:   'Vitesse du port switch dégradée',
@@ -303,6 +304,7 @@ export const METRIC_LABELS: Record<string, string> = {
   output_max_power_w:  'Puissance max de sortie (W)',
   output_energy_wh:    'Énergie cumulée de sortie (Wh)',
   uptime_seconds:      'Uptime (s)',
+  ac_connected:        'Secteur (AC) présent',
 }
 
 export function metricLabel(metricName: string | null): string {

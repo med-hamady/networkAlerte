@@ -33,6 +33,7 @@ from app.core.alert_constants import (
     AT_LR_LINK_SUBSTANDARD,
     AT_LR_NO_TRANSIT,
     AT_LR_REASSIGNED,
+    AT_MAINS_POWER_LOST,
     AT_PING_INSTABILITY,
     AT_RADIO_INTERFACE_DOWN,
     AT_RADIO_LINK_DEGRADED,
@@ -86,6 +87,7 @@ ALERT_TYPE_LABELS: dict[str, str] = {
     AT_BATTERY_LOW_WARN:     "Batterie faible",
     AT_BATTERY_LOW_CRIT:     "Batterie critique",
     AT_VOLTAGE_ANOMALY:      "Tension d'alimentation anormale",
+    AT_MAINS_POWER_LOST:     "Coupure secteur (sur batterie)",
 
     # Switch
     AT_SWITCH_PORT_DOWN:     "Port du switch coupé",
@@ -152,6 +154,7 @@ METRIC_LABELS: dict[str, str] = {
     "output_max_power_w":  "Puissance max de sortie (W)",
     "output_energy_wh":    "Énergie cumulée de sortie (Wh)",
     "uptime_seconds":      "Uptime (s)",
+    "ac_connected":        "Secteur (AC) présent",
 }
 
 

@@ -42,6 +42,7 @@ from app.core.alert_constants import (
     AT_LR_LINK_SUBSTANDARD,
     AT_LR_NO_TRANSIT,
     AT_LR_REASSIGNED,
+    AT_MAINS_POWER_LOST,
     AT_PING_INSTABILITY,
     AT_RADIO_INTERFACE_DOWN,
     AT_RADIO_LINK_DEGRADED,
@@ -251,6 +252,18 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
         groupable=False,
+    ),
+    # Coupure secteur SOMELEC : le site bascule sur batterie. Notif immédiate
+    # (groupable=False → pas de mise en digest) + message de rétablissement au
+    # retour du secteur. WARNING : la batterie fait son travail ; le vrai
+    # danger (batterie qui se vide) est couvert par battery_low_*.
+    AT_MAINS_POWER_LOST: AlertPolicy(
+        alert_type=AT_MAINS_POWER_LOST,
+        severity=Severity.WARNING,
+        notify_immediately=True,
+        channels=_CHANNELS_WARNING,
+        groupable=False,
+        recovery_notification=True,
     ),
     AT_TRANSIT_UNAVAILABLE: AlertPolicy(
         alert_type=AT_TRANSIT_UNAVAILABLE,

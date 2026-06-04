@@ -335,6 +335,7 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
             const w       = metrics.power_w?.value
             const maxW    = metrics.output_max_power_w?.value
             const energy  = metrics.output_energy_wh?.value
+            const ac      = metrics.ac_connected?.value   // 1 = secteur présent, 0 = sur batterie
 
             // Per-battery readings: every metric_name like `battery_<slug>_pct`,
             // plus its voltage/capacity/runtime counterparts. Falls back to the
@@ -370,7 +371,7 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
             const showLegacy = batteries.length === 0 && (legacyPct != null || legacyVolt != null)
 
             const hasAny =
-              [v, a, w, maxW, energy].some(x => x != null) ||
+              [v, a, w, maxW, energy, ac].some(x => x != null) ||
               batteries.length > 0 || dcOutputs.length > 0 || showLegacy
             if (!hasAny) return null
 
@@ -406,6 +407,18 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
 
             return (
               <Section title="Alimentation">
+                {ac != null && (
+                  <MetricRow
+                    label="Source d'alimentation"
+                    value={
+                      ac >= 1 ? (
+                        <span className="text-green-600 font-semibold">⚡ Secteur (SOMELEC)</span>
+                      ) : (
+                        <span className="text-orange-500 font-semibold">🔋 Batterie (secteur absent)</span>
+                      )
+                    }
+                  />
+                )}
                 {v != null && (
                   <MetricRow label="Tension" value={<VoltageValue volts={v} />} />
                 )}

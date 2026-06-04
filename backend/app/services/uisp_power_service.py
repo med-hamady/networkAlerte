@@ -128,7 +128,18 @@ def parse_power_readings(device: dict) -> dict:
         "output_max_power_w": None,
         "output_energy": None,
         "dc_outputs": [],
+        "ac_connected": None,
+        "state": None,
     }
+
+    # Mains (AC) presence — True if any AC input slot is connected. None when
+    # the device reports no AC slot at all (older firmware), so the caller can
+    # tell "unknown" apart from "on battery". `state` is the firmware's own
+    # power state label (e.g. "battery_charging_fast", "on_battery").
+    result["state"] = device.get("state")
+    ac_slots = [e for e in (device.get("power") or []) if e.get("psuType") == "AC"]
+    if ac_slots:
+        result["ac_connected"] = any(e.get("connected") for e in ac_slots)
 
     output = device.get("outputPower") or {}
     if "voltage" in output:

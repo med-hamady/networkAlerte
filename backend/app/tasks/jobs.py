@@ -22,6 +22,7 @@ from app.core.alert_constants import (
     AT_LR_BRIDGE_MODE_MISCONFIG,
     AT_LR_LATENCY_HIGH,
     AT_LR_NO_TRANSIT,
+    AT_MAINS_POWER_LOST,
     AT_ROCKET_DOWN,
     AT_SWITCH_DOWN,
 )
@@ -158,6 +159,11 @@ INC_POWER_UNREACH = "UISP Power unreachable"
 INC_BATT_WARN     = "Low battery level"
 INC_BATT_CRIT     = "Critical battery level"
 INC_VOLT_ANOMALY  = "Voltage anomaly"
+INC_MAINS_LOST    = "Coupure secteur (sur batterie)"
+# Cycles consécutifs sans secteur AC avant d'ouvrir mains_power_lost. À 30 s de
+# poll, 2 cycles ≈ 1 min : filtre les micro-coupures / flickers sans retarder
+# l'alerte d'une vraie coupure. Résolution dès le 1er cycle où le secteur revient.
+MAINS_LOSS_THRESHOLD = 2
 INC_TRANSIT       = "Transit réseau indisponible"
 INC_SWITCH_PORT       = "Switch port critique down"
 INC_SWITCH_PORT_SPEED = "Port switch vitesse insuffisante"
@@ -731,6 +737,59 @@ async def snmp_poll_job() -> None:
             await session.commit()
 
 
+async def _evaluate_mains_power(session, dev: Device, ac_connected: bool | None) -> None:
+    """
+    Mains (SOMELEC) outage detection for a UISP Power.
+
+    `ac_connected` comes straight from the device API (any AC input slot
+    connected). None = firmware didn't report AC slots → unknown, skip.
+
+    Anti-flap: open `mains_power_lost` only after MAINS_LOSS_THRESHOLD
+    consecutive cycles on battery (filters brief flickers the battery rides
+    through); resolve as soon as the mains is back. The consecutive count is
+    persisted in AlertState (keyed by AT_MAINS_POWER_LOST) so it survives a
+    scheduler restart.
+    """
+    if ac_connected is None:
+        return  # device doesn't expose AC presence — nothing to evaluate
+
+    state_res = await session.execute(
+        select(AlertState).where(
+            AlertState.device_id == dev.id,
+            AlertState.alert_type == AT_MAINS_POWER_LOST,
+        )
+    )
+    state = state_res.scalar_one_or_none()
+    if state is None:
+        state = AlertState(device_id=dev.id, alert_type=AT_MAINS_POWER_LOST, failure_count=0)
+        session.add(state)
+        await session.flush()
+    state.last_evaluated_at = datetime.datetime.now(datetime.UTC)
+
+    if ac_connected:
+        # Mains present — reset and resolve any open outage.
+        if state.failure_count > 0:
+            state.failure_count = 0
+        await _resolve_and_notify(session, dev, INC_MAINS_LOST, alert_type=AT_MAINS_POWER_LOST)
+        return
+
+    state.failure_count += 1
+    if state.failure_count < MAINS_LOSS_THRESHOLD:
+        logger.warning(
+            "mains: %s (%s) sur batterie (%d/%d cycles, seuil non atteint)",
+            dev.name, dev.ip_address, state.failure_count, MAINS_LOSS_THRESHOLD,
+        )
+        return
+
+    await _open_and_notify(
+        session, dev, INC_MAINS_LOST, "warning",
+        f"Coupure secteur détectée : {dev.name} ({dev.ip_address}) est passé sur "
+        f"batterie (aucune entrée AC connectée, {state.failure_count} cycles). "
+        f"Le site tient sur ses batteries — surveiller le niveau de charge.",
+        alert_type=AT_MAINS_POWER_LOST,
+    )
+
+
 async def power_poll_job() -> None:
     """
     Poll UISP Power devices via their local REST API.
@@ -801,6 +860,7 @@ async def power_poll_job() -> None:
                     "uptime_seconds":     ("uptime_seconds",     "s"),
                     "output_max_power_w": ("output_max_power_w", "W"),
                     "output_energy_wh":   ("output_energy",      "Wh"),
+                    "ac_connected":       ("ac_connected",       "bool"),
                 }
                 for metric_name, (key, unit) in metric_units.items():
                     val = readings.get(key)
@@ -914,6 +974,9 @@ async def power_poll_job() -> None:
                     await _resolve_and_notify(
                         session, dev, INC_VOLT_ANOMALY, alert_type=AT_VOLT_ANOMALY
                     )
+
+                # Mains (SOMELEC) presence — open mains_power_lost when on battery.
+                await _evaluate_mains_power(session, dev, readings.get("ac_connected"))
 
             await session.commit()
 

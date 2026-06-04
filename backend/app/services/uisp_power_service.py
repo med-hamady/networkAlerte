@@ -124,6 +124,10 @@ def parse_power_readings(device: dict) -> dict:
         "battery_percentage": None,
         "battery_type": None,
         "batteries": [],
+        "uptime_seconds": None,
+        "output_max_power_w": None,
+        "output_energy": None,
+        "dc_outputs": [],
     }
 
     output = device.get("outputPower") or {}
@@ -133,6 +137,30 @@ def parse_power_readings(device: dict) -> dict:
         result["current"] = float(output["current"])
     if "power" in output:
         result["power"] = float(output["power"])
+    # maximalPower = rated output ceiling; powerMetter = lifetime energy counter.
+    if output.get("maximalPower") is not None:
+        result["output_max_power_w"] = float(output["maximalPower"])
+    if output.get("powerMetter") is not None:
+        result["output_energy"] = float(output["powerMetter"])
+
+    # Device uptime (seconds).
+    if device.get("uptime") is not None:
+        result["uptime_seconds"] = float(device["uptime"])
+
+    # Individual DC output ports (id, electrical readings, connection state).
+    dc_outputs: list[dict] = []
+    for out in output.get("dcOutput") or []:
+        state = out.get("state")
+        dc_outputs.append({
+            "id": out.get("id"),
+            "voltage": float(out["voltage"]) if out.get("voltage") is not None else None,
+            "current": float(out["current"]) if out.get("current") is not None else None,
+            "power": float(out["power"]) if out.get("power") is not None else None,
+            "max_power_w": float(out["maximalPower"]) if out.get("maximalPower") is not None else None,
+            # "disconnected" → not connected; anything else (active…) → connected.
+            "connected": state is not None and state != "disconnected",
+        })
+    result["dc_outputs"] = dc_outputs
 
     # Collect every battery the device reports (Li-Ion UPS, lead-acid bank…).
     batteries: list[dict] = []
@@ -142,6 +170,7 @@ def parse_power_readings(device: dict) -> dict:
             continue
         charge = battery.get("chargeLevel")
         capacity = (battery.get("capacity") or {}).get("configured")
+        running_time = battery.get("runningTime")
         btype = battery.get("type")
         batteries.append({
             "type": btype,
@@ -149,6 +178,8 @@ def parse_power_readings(device: dict) -> dict:
             "percentage": float(charge) if charge is not None else None,
             "voltage": float(entry["voltage"]) if entry.get("voltage") is not None else None,
             "capacity_ah": float(capacity) if capacity is not None else None,
+            # Estimated remaining autonomy at the current load (seconds).
+            "runtime_seconds": float(running_time) if running_time is not None else None,
             "connected": bool(entry.get("connected")),
         })
     result["batteries"] = batteries

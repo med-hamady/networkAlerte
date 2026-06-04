@@ -798,6 +798,9 @@ async def power_poll_job() -> None:
                     "power_w":   ("power",   "W"),
                     "battery_pct":       ("battery_percentage", "%"),
                     "battery_voltage_v": ("battery_voltage",    "V"),
+                    "uptime_seconds":     ("uptime_seconds",     "s"),
+                    "output_max_power_w": ("output_max_power_w", "W"),
+                    "output_energy_wh":   ("output_energy",      "Wh"),
                 }
                 for metric_name, (key, unit) in metric_units.items():
                     val = readings.get(key)
@@ -810,24 +813,50 @@ async def power_poll_job() -> None:
                         unit=unit,
                     ))
 
-                # Per-battery metrics — one charge/voltage pair per battery the
-                # device reports (internal Li-Ion UPS, external lead-acid bank…),
-                # keyed by type slug so the UI can show each one in clear.
+                # Per-battery metrics — charge/voltage/capacity/autonomy per
+                # battery the device reports (internal Li-Ion UPS, external
+                # lead-acid bank…), keyed by type slug so the UI shows each one.
                 for batt_entry in readings.get("batteries") or []:
                     slug = batt_entry.get("type_slug") or "unknown"
-                    if batt_entry.get("percentage") is not None:
+                    batt_metrics = {
+                        f"battery_{slug}_pct":         ("percentage",      "%"),
+                        f"battery_{slug}_voltage_v":   ("voltage",         "V"),
+                        f"battery_{slug}_capacity_ah": ("capacity_ah",     "Ah"),
+                        f"battery_{slug}_runtime_s":   ("runtime_seconds", "s"),
+                    }
+                    for metric_name, (key, unit) in batt_metrics.items():
+                        val = batt_entry.get(key)
+                        if val is None:
+                            continue
                         session.add(DeviceMetric(
                             device_id=dev.id,
-                            metric_name=f"battery_{slug}_pct",
-                            metric_value=float(batt_entry["percentage"]),
-                            unit="%",
+                            metric_name=metric_name,
+                            metric_value=float(val),
+                            unit=unit,
                         ))
-                    if batt_entry.get("voltage") is not None:
+
+                # Per-DC-output metrics — electrical readings + connection state
+                # (1/0) for each output port the device exposes.
+                for out in readings.get("dc_outputs") or []:
+                    oid = out.get("id")
+                    if oid is None:
+                        continue
+                    out_metrics = {
+                        f"dc_output_{oid}_voltage_v": (out.get("voltage"), "V"),
+                        f"dc_output_{oid}_current_a": (out.get("current"), "A"),
+                        f"dc_output_{oid}_power_w":   (out.get("power"),   "W"),
+                        f"dc_output_{oid}_connected": (
+                            1.0 if out.get("connected") else 0.0, "bool",
+                        ),
+                    }
+                    for metric_name, (val, unit) in out_metrics.items():
+                        if val is None:
+                            continue
                         session.add(DeviceMetric(
                             device_id=dev.id,
-                            metric_name=f"battery_{slug}_voltage_v",
-                            metric_value=float(batt_entry["voltage"]),
-                            unit="V",
+                            metric_name=metric_name,
+                            metric_value=float(val),
+                            unit=unit,
                         ))
 
                 logger.info(

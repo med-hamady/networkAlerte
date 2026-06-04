@@ -300,6 +300,9 @@ export const METRIC_LABELS: Record<string, string> = {
   battery_li_ion_voltage_v:  'Tension batterie Li-Ion (V)',
   battery_lead_acid_pct:       'Charge banc plomb (externe) (%)',
   battery_lead_acid_voltage_v: 'Tension banc plomb (V)',
+  output_max_power_w:  'Puissance max de sortie (W)',
+  output_energy_wh:    'Énergie cumulée de sortie (Wh)',
+  uptime_seconds:      'Uptime (s)',
 }
 
 export function metricLabel(metricName: string | null): string {

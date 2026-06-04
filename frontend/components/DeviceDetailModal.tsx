@@ -330,48 +330,76 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
         {/* UISP Power metrics */}
         {isPower && metrics && (
           (() => {
-            const v = metrics.voltage_v?.value
-            const a = metrics.current_a?.value
-            const w = metrics.power_w?.value
+            const v       = metrics.voltage_v?.value
+            const a       = metrics.current_a?.value
+            const w       = metrics.power_w?.value
+            const maxW    = metrics.output_max_power_w?.value
+            const energy  = metrics.output_energy_wh?.value
 
             // Per-battery readings: every metric_name like `battery_<slug>_pct`,
-            // paired with its `battery_<slug>_voltage_v` counterpart. Falls back
-            // to the legacy single battery_pct/battery_voltage_v keys for
-            // devices polled before the per-battery split shipped.
+            // plus its voltage/capacity/runtime counterparts. Falls back to the
+            // legacy single battery_pct/battery_voltage_v keys for devices polled
+            // before the per-battery split shipped.
             const batteries = Object.keys(metrics)
               .map(k => /^battery_(.+)_pct$/.exec(k))
               .filter((m): m is RegExpExecArray => m != null)
               .map(m => ({
-                slug: m[1],
-                pct: metrics[m[0]]?.value,
-                volt: metrics[`battery_${m[1]}_voltage_v`]?.value,
+                slug:    m[1],
+                pct:     metrics[m[0]]?.value,
+                volt:    metrics[`battery_${m[1]}_voltage_v`]?.value,
+                capAh:   metrics[`battery_${m[1]}_capacity_ah`]?.value,
+                runtime: metrics[`battery_${m[1]}_runtime_s`]?.value,
               }))
               .sort((x, y) => (BATTERY_ORDER[x.slug] ?? 99) - (BATTERY_ORDER[y.slug] ?? 99))
+
+            // DC output ports: every `dc_output_<id>_power_w`.
+            const dcOutputs = Object.keys(metrics)
+              .map(k => /^dc_output_(.+)_power_w$/.exec(k))
+              .filter((m): m is RegExpExecArray => m != null)
+              .map(m => ({
+                id:        m[1],
+                w:         metrics[m[0]]?.value,
+                volt:      metrics[`dc_output_${m[1]}_voltage_v`]?.value,
+                amp:       metrics[`dc_output_${m[1]}_current_a`]?.value,
+                connected: metrics[`dc_output_${m[1]}_connected`]?.value,
+              }))
+              .sort((x, y) => x.id.localeCompare(y.id))
 
             const legacyPct  = metrics.battery_pct?.value
             const legacyVolt = metrics.battery_voltage_v?.value
             const showLegacy = batteries.length === 0 && (legacyPct != null || legacyVolt != null)
 
-            const hasAny = [v, a, w].some(x => x != null) || batteries.length > 0 || showLegacy
+            const hasAny =
+              [v, a, w, maxW, energy].some(x => x != null) ||
+              batteries.length > 0 || dcOutputs.length > 0 || showLegacy
             if (!hasAny) return null
 
-            const renderBattery = (label: string, pct?: number | null, volt?: number | null) => (
+            const renderBattery = (
+              label: string,
+              b: { pct?: number | null; volt?: number | null; capAh?: number | null; runtime?: number | null },
+            ) => (
               <div key={label} className="mt-1">
                 <p className="text-blue-300 text-xs uppercase tracking-wider">{label}</p>
-                {pct != null && (
+                {b.pct != null && (
                   <MetricRow
                     label="Charge"
                     value={
                       <BatteryValue
-                        pct={pct}
+                        pct={b.pct}
                         warn={thresholds.battery_warning_pct}
                         crit={thresholds.battery_critical_pct}
                       />
                     }
                   />
                 )}
-                {volt != null && (
-                  <MetricRow label="Tension" value={`${volt.toFixed(1)} V`} />
+                {b.volt != null && (
+                  <MetricRow label="Tension" value={`${b.volt.toFixed(1)} V`} />
+                )}
+                {b.capAh != null && (
+                  <MetricRow label="Capacité" value={`${b.capAh.toFixed(1)} Ah`} />
+                )}
+                {b.runtime != null && b.runtime > 0 && (
+                  <MetricRow label="Autonomie estimée" value={formatUptime(b.runtime)} />
                 )}
               </div>
             )
@@ -385,15 +413,44 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
                   <MetricRow label="Courant" value={`${a.toFixed(2)} A`} />
                 )}
                 {w != null && (
-                  <MetricRow label="Puissance" value={`${w.toFixed(1)} W`} />
+                  <MetricRow
+                    label="Puissance"
+                    value={`${w.toFixed(1)} W${maxW != null ? ` / ${maxW.toFixed(0)} W` : ''}`}
+                  />
                 )}
+                {energy != null && (
+                  <MetricRow label="Énergie cumulée" value={`${(energy / 1000).toFixed(1)} kWh`} />
+                )}
+
                 {(batteries.length > 0 || showLegacy) && (
                   <div className="border-t border-blue-100 my-1" />
                 )}
                 {batteries.map(b =>
-                  renderBattery(BATTERY_LABELS[b.slug] ?? `Batterie ${b.slug}`, b.pct, b.volt),
+                  renderBattery(BATTERY_LABELS[b.slug] ?? `Batterie ${b.slug}`, b),
                 )}
-                {showLegacy && renderBattery('Batterie', legacyPct, legacyVolt)}
+                {showLegacy && renderBattery('Batterie', { pct: legacyPct, volt: legacyVolt })}
+
+                {dcOutputs.length > 0 && (
+                  <>
+                    <div className="border-t border-blue-100 my-1" />
+                    <p className="text-blue-300 text-xs uppercase tracking-wider">Sorties DC</p>
+                    {dcOutputs.map(o => (
+                      <MetricRow
+                        key={o.id}
+                        label={`Sortie ${o.id}`}
+                        value={
+                          <span className="text-slate-600">
+                            <span className={o.connected ? 'text-green-600 font-semibold' : 'text-blue-300'}>
+                              {o.connected ? 'connectée' : 'déconnectée'}
+                            </span>
+                            {o.w != null && ` · ${o.w.toFixed(1)} W`}
+                            {o.volt != null && ` · ${o.volt.toFixed(1)} V`}
+                          </span>
+                        }
+                      />
+                    ))}
+                  </>
+                )}
               </Section>
             )
           })()

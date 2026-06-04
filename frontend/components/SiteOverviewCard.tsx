@@ -98,10 +98,23 @@ export default function SiteOverviewCard({ site, powerDevices = [], onShowPannes
   )
 }
 
-// Compact power-source + battery readout for one UISP Power of the site.
-// Fetches the device's latest metrics directly so the site card shows the live
-// power SOURCE (⚡ secteur SOMELEC / 🔋 batterie, from ac_connected) and the
-// battery charge (battery_pct = canonical = lowest battery).
+// Friendly labels + order for each battery a UISP Power reports.
+const BATTERY_LABELS: Record<string, string> = {
+  li_ion:    'Batterie interne (Li-Ion)',
+  lead_acid: 'Batterie externe (plomb)',
+}
+const BATTERY_ORDER: Record<string, number> = { li_ion: 0, lead_acid: 1 }
+
+function battColor(pct: number | null | undefined): string {
+  if (pct == null) return 'text-blue-300'
+  if (pct < 10) return 'text-red-500'
+  if (pct < 25) return 'text-amber-500'
+  return 'text-green-600'
+}
+
+// Explicit power-source + per-battery readout for one UISP Power of the site.
+// Shows the live source in clear (Secteur SOMELEC / Batterie) and the charge of
+// EACH battery (internal Li-Ion + external lead-acid), from per-battery metrics.
 function SitePowerStats({ device, showName }: { device: Device; showName: boolean }) {
   const isUp = device.status === 'up'
   const { data: metrics } = useSWR<DeviceMetrics>(
@@ -110,37 +123,48 @@ function SitePowerStats({ device, showName }: { device: Device; showName: boolea
     { refreshInterval: 30_000 },
   )
 
-  const batt = metrics?.battery_pct?.value
-  const ac   = metrics?.ac_connected?.value
+  const ac = metrics?.ac_connected?.value
 
-  const battColor =
-    batt == null ? 'text-blue-300'
-    : batt < 10 ? 'text-red-500'
-    : batt < 25 ? 'text-amber-500'
-    : 'text-green-600'
+  const batteries = Object.keys(metrics ?? {})
+    .map(k => /^battery_(.+)_pct$/.exec(k))
+    .filter((m): m is RegExpExecArray => m != null)
+    .map(m => ({ slug: m[1], pct: metrics?.[m[0]]?.value }))
+    .sort((a, b) => (BATTERY_ORDER[a.slug] ?? 99) - (BATTERY_ORDER[b.slug] ?? 99))
 
   return (
-    <div className="flex items-center justify-between gap-2 text-xs">
-      <span className="text-blue-400 truncate">
-        {showName ? device.name : 'Alimentation'}
-        {!isUp && <span className="text-red-400 ml-1">· hors ligne</span>}
-      </span>
+    <div className="space-y-1 text-xs">
+      {showName && (
+        <p className="text-blue-500 font-medium truncate">
+          {device.name}
+          {!isUp && <span className="text-red-400 font-normal ml-1">· hors ligne</span>}
+        </p>
+      )}
+      {!showName && !isUp && (
+        <p className="text-red-400">Alimentation · hors ligne</p>
+      )}
       {isUp && (
-        <span className="flex items-center gap-2.5 shrink-0">
-          <span
-            className={
-              ac == null ? 'text-blue-300'
-              : ac >= 1 ? 'text-green-600 font-medium'
-              : 'text-orange-500 font-medium'
-            }
-            title="Source d'alimentation actuelle"
-          >
-            {ac == null ? '—' : ac >= 1 ? '⚡ Secteur' : '🔋 Batterie'}
-          </span>
-          <span className={`font-semibold tabular-nums ${battColor}`} title="Charge batterie (banc le plus bas)">
-            🔋 {batt != null ? `${Math.round(batt)} %` : '—'}
-          </span>
-        </span>
+        <>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-blue-400">Source d'alimentation</span>
+            <span
+              className={
+                ac == null ? 'text-blue-300'
+                : ac >= 1 ? 'text-green-600 font-semibold'
+                : 'text-orange-500 font-semibold'
+              }
+            >
+              {ac == null ? '—' : ac >= 1 ? '⚡ Secteur (SOMELEC)' : '🔋 Batterie'}
+            </span>
+          </div>
+          {batteries.map(b => (
+            <div key={b.slug} className="flex items-center justify-between gap-2">
+              <span className="text-blue-400">{BATTERY_LABELS[b.slug] ?? `Batterie ${b.slug}`}</span>
+              <span className={`font-semibold tabular-nums ${battColor(b.pct)}`}>
+                {b.pct != null ? `${Math.round(b.pct)} %` : '—'}
+              </span>
+            </div>
+          ))}
+        </>
       )}
     </div>
   )

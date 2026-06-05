@@ -56,6 +56,14 @@ function rateClass(v: number | null, floor: number): string {
   if (v < floor + 2) return 'text-amber-600 font-medium'
   return 'text-slate-700'
 }
+// Latence LR → Internet (ms). Le seuil critique miroite LR_LATENCY_CRITICAL_MS
+// (défaut 100 ms) ; warning au-delà de la moitié. Affichage seul, hors verdict.
+function latencyClass(ms: number | null): string {
+  if (ms === null) return 'text-blue-300'
+  if (ms >= 100) return 'text-red-600 font-semibold'
+  if (ms >= 50) return 'text-amber-600 font-medium'
+  return 'text-slate-700'
+}
 
 export default function LrHealthPage() {
   const { data, isLoading } = useSWR<LiveLinkHealthResponse>(
@@ -259,6 +267,10 @@ export default function LrHealthPage() {
                           <div className={rateClass(row.latest_remote_rx_rate_idx, row.rx_rate_floor_idx)}
                                title={`Plancher : ×${row.rx_rate_floor_idx.toFixed(0)}`}>
                             RX distant {row.latest_remote_rx_rate_idx !== null ? `×${row.latest_remote_rx_rate_idx.toFixed(0)}` : '—'}
+                          </div>
+                          <div className={latencyClass(row.latency_ms)}
+                               title="RTT LR → Internet (8.8.8.8), dernier relevé de la sonde SSH (≤ 60 s)">
+                            Latence {row.latency_ms !== null ? `${row.latency_ms.toFixed(0)} ms` : '—'}
                           </div>
                         </td>
 

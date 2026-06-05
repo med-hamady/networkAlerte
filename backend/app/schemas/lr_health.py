@@ -44,6 +44,11 @@ class BadInstallationRow(BaseModel):
     latest_local_rx_rate_idx: float | None
     latest_remote_rx_rate_idx: float | None
 
+    # LR → Internet RTT (ms) — dernier relevé de lr_internet_probe_job (sonde
+    # SSH 60 s). Affichage seulement, n'entre pas dans le verdict. None si le LR
+    # n'a pas de mesure récente (pas de transit, sonde KO) ou côté rapport 30 j.
+    latency_ms: float | None = None
+
     # Per-LR floors actually applied (distance-banding removed 2026-05-21;
     # link_potential and rx_rate floors are family-banded LTU vs airMAX).
     signal_warning_threshold: float       # flat — settings.signal_warning_dbm

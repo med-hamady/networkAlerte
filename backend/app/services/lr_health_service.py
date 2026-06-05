@@ -89,6 +89,11 @@ _TRACKED_METRICS: tuple[str, ...] = (
     _M_REMOTE_RATE,
 )
 
+# LR → Internet RTT, maintenu par lr_internet_probe_job (sonde SSH 60 s). Affiché
+# sur la page mais HORS scoring (pas dans _TRACKED_METRICS) : c'est une info de
+# transit, pas un indicateur de qualité du lien radio.
+_M_LATENCY = "lr_latency_ms"
+
 # Floors live in Settings (single source shared with the lr_link_substandard
 # alert rule). Read at request time so a config change applies to both the
 # page and the alerting without code edits. Family-banded (LTU vs airMAX)
@@ -269,10 +274,53 @@ async def get_live_link_health(db: AsyncSession) -> LiveLinkHealthResponse:
             r.lr_name,
         )
     )
+
+    # Latence LR → Internet : dernier relevé en base (sonde SSH 60 s), uniquement
+    # pour les LR surfacés. Affichage seul, ne change pas le verdict. On ne sonde
+    # PAS en live (un ping SSH par LR doublerait le temps de page) — la valeur ≤60 s
+    # est déjà une mesure réelle fraîche, cohérente avec « état actuel ».
+    if items:
+        latency = await _fetch_latest_latency(db, [it.lr_id for it in items])
+        for it in items:
+            it.latency_ms = latency.get(it.lr_id)
+
     unreachable = sum(1 for lr in lrs if lr.id not in live_metrics)
     return LiveLinkHealthResponse(
         generated_at=now, unreachable_count=unreachable, items=items
     )
+
+
+async def _fetch_latest_latency(
+    db: AsyncSession,
+    lr_ids: list[int],
+) -> dict[int, float]:
+    """Dernier ``lr_latency_ms`` (RTT LR → Internet) par LR, via LATERAL.
+
+    Même pattern indexé que :func:`_fetch_latest_metrics` mais pour une seule
+    métrique : un ``ORDER BY collected_at DESC LIMIT 1`` par LR sur
+    ``ix_device_metrics_lookup`` plutôt qu'un scan. Absent du dict si le LR n'a
+    aucun relevé de latence (jamais de transit mesuré)."""
+    if not lr_ids:
+        return {}
+
+    sql = text(
+        """
+        SELECT did.device_id, m.metric_value
+        FROM unnest(CAST(:lr_ids AS integer[])) AS did(device_id)
+        JOIN LATERAL (
+            SELECT metric_value
+            FROM device_metrics dm
+            WHERE dm.device_id = did.device_id
+              AND dm.metric_name = :metric_name
+            ORDER BY dm.collected_at DESC
+            LIMIT 1
+        ) m ON true
+        """
+    )
+    rows = (
+        await db.execute(sql, {"lr_ids": lr_ids, "metric_name": _M_LATENCY})
+    ).all()
+    return {r.device_id: float(r.metric_value) for r in rows}
 
 
 async def _fetch_live_metrics(

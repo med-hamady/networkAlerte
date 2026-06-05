@@ -559,6 +559,9 @@ export interface BadInstallationRow {
   latest_local_rx_rate_idx: number | null
   latest_remote_rx_rate_idx: number | null
 
+  // RTT LR → Internet (ms), dernier relevé de la sonde SSH 60 s. Affichage seul.
+  latency_ms: number | null
+
   signal_warning_threshold: number
   link_potential_floor_pct: number
   total_capacity_floor_mbps: number

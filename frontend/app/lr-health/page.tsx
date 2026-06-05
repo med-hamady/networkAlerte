@@ -6,7 +6,7 @@ import { endpoints, fetcher } from '@/lib/api'
 import type {
   BadInstallationRow,
   BadInstallationVerdict,
-  BadInstallationsResponse,
+  LiveLinkHealthResponse,
   SignalEvidence,
 } from '@/lib/types'
 import { LR_MODEL_VARIANT_LABELS, VERDICT_LABELS } from '@/lib/types'
@@ -58,13 +58,14 @@ function rateClass(v: number | null, floor: number): string {
 }
 
 export default function LrHealthPage() {
-  const { data, isLoading } = useSWR<BadInstallationsResponse>(
-    endpoints.badInstallations(30),
+  const { data, isLoading } = useSWR<LiveLinkHealthResponse>(
+    endpoints.badInstallations,
     fetcher,
     { refreshInterval: 60_000 },
   )
 
   const items: BadInstallationRow[] = data?.items ?? []
+  const unreachable = data?.unreachable_count ?? 0
   const groups = VERDICT_GROUPS
     .map(v => ({ verdict: v, items: items.filter(i => i.verdict === v) }))
     .filter(g => g.items.length > 0)
@@ -76,9 +77,16 @@ export default function LrHealthPage() {
         <div>
           <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Liaisons clients</h1>
           <p className="text-blue-400 text-sm mt-1">
-            Classification des LR clients sur 30 jours par 5 indicateurs de niveau indépendants —
-            seuls les LR avec ≥ 3 indicateurs actifs sont surfacés.
+            État <strong>actuel</strong> des LR clients — interrogés en direct à l'ouverture —
+            classés par 5 indicateurs de niveau indépendants. Seuls les LR avec ≥ 3 indicateurs
+            actifs sont surfacés.
           </p>
+          {unreachable > 0 && (
+            <p className="text-amber-500 text-xs mt-1">
+              {unreachable} LR injoignable{unreachable > 1 ? 's' : ''} au moment de la lecture —
+              exclu{unreachable > 1 ? 's' : ''} de la liste.
+            </p>
+          )}
         </div>
       </div>
 
@@ -88,19 +96,20 @@ export default function LrHealthPage() {
         </summary>
         <div className="px-4 pb-4 text-xs text-slate-600 space-y-3">
           <p>
-            On évalue chaque LR client sur les <strong>30 derniers jours</strong> avec
-            <strong> 5 indicateurs de niveau indépendants</strong>. Chaque indicateur compare la
-            <strong> moyenne 30 j</strong> de la métrique à un plancher : sous le plancher = <em>actif</em>.
-            Un indicateur sans aucune mesure sur la période reste <em>inactif</em> (une donnée
-            manquante ne pénalise jamais le LR).
+            On interroge chaque LR client <strong>en direct</strong> à l'ouverture de la page
+            (LTU via le Rocket parent, airMAX via airOS) et on l'évalue sur son
+            <strong> état actuel</strong> avec <strong>5 indicateurs de niveau indépendants</strong>.
+            Chaque indicateur compare la <strong>valeur actuelle</strong> de la métrique à un
+            plancher : sous le plancher = <em>actif</em>. Un LR <strong>injoignable</strong> au
+            moment de la lecture est <em>exclu</em> de la liste (aucun repli sur d'anciennes mesures).
           </p>
 
           <table className="w-full text-[11px] border-collapse mt-2">
             <thead>
               <tr className="bg-blue-50">
                 <th className="text-left px-2 py-1 border-b">Indicateur</th>
-                <th className="text-left px-2 py-1 border-b">LTU — actif si moyenne 30 j…</th>
-                <th className="text-left px-2 py-1 border-b">airMAX — actif si moyenne 30 j…</th>
+                <th className="text-left px-2 py-1 border-b">LTU — actif si valeur actuelle…</th>
+                <th className="text-left px-2 py-1 border-b">airMAX — actif si valeur actuelle…</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-blue-50">
@@ -173,8 +182,8 @@ export default function LrHealthPage() {
         </div>
       ) : items.length === 0 ? (
         <div className="bg-white border border-blue-100 rounded-xl px-6 py-12 text-center shadow-sm">
-          <p className="text-green-600 font-semibold text-sm">✓ Toutes les installations sont stables sur 30 jours</p>
-          <p className="text-blue-400 text-xs mt-1">Aucun LR n'a d'indicateur actif</p>
+          <p className="text-green-600 font-semibold text-sm">✓ Toutes les liaisons clients sont actuellement stables</p>
+          <p className="text-blue-400 text-xs mt-1">Aucun LR joignable n'a ≥ 3 indicateurs actifs en ce moment</p>
         </div>
       ) : (
         <div className="space-y-4">

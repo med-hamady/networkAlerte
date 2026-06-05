@@ -576,6 +576,14 @@ export interface BadInstallationsResponse {
   items: BadInstallationRow[]
 }
 
+// Page « Liaisons clients » en mode live (état actuel) — pas de fenêtre 30 j.
+// unreachable_count = LR exclus faute d'avoir pu être joints en direct.
+export interface LiveLinkHealthResponse {
+  generated_at: string
+  unreachable_count: number
+  items: BadInstallationRow[]
+}
+
 // ─── Network uptime — Journal des coupures ─────────────────────────────────
 
 export interface FlapSubEpisode {

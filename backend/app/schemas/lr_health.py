@@ -56,3 +56,16 @@ class BadInstallationsResponse(BaseModel):
     period_days: int
     generated_at: datetime.datetime
     items: list[BadInstallationRow]
+
+
+class LiveLinkHealthResponse(BaseModel):
+    """Réponse de la page « Liaisons clients » en mode **live** (état actuel).
+
+    Pas de ``period_days`` : les indicateurs sont évalués sur les valeurs
+    interrogées en direct à l'ouverture de la page, pas sur une fenêtre.
+    ``unreachable_count`` = nombre de LR exclus faute d'avoir pu être joints
+    en live (lien down, auth, timeout, creds manquants)."""
+
+    generated_at: datetime.datetime
+    unreachable_count: int
+    items: list[BadInstallationRow]

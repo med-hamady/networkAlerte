@@ -135,6 +135,25 @@ function PowerSvg() {
   )
 }
 
+/* ─── airFiber 60 (AF60-LR) — radome backhaul 60 GHz ─────────────────────────── */
+function AirFiberSvg() {
+  return (
+    <svg viewBox="0 0 100 80" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full h-full drop-shadow-sm">
+      {/* Mât */}
+      <rect x="46" y="40" width="8" height="34" rx="2" fill="#ede9fe" stroke="#7c3aed" strokeWidth="1.5"/>
+      {/* Radome circulaire (antenne 60 GHz) */}
+      <circle cx="50" cy="30" r="24" fill="#f5f3ff" stroke="#7c3aed" strokeWidth="2"/>
+      <circle cx="50" cy="30" r="16" fill="white" stroke="#a78bfa" strokeWidth="1.2"/>
+      <circle cx="50" cy="30" r="4" fill="#7c3aed"/>
+      {/* Faisceau radio (ondes) */}
+      <path d="M70 18 q10 12 0 24" stroke="#a78bfa" strokeWidth="1.6" fill="none" strokeLinecap="round"/>
+      <path d="M76 12 q16 18 0 36" stroke="#c4b5fd" strokeWidth="1.4" fill="none" strokeLinecap="round"/>
+      {/* LED état */}
+      <circle cx="50" cy="68" r="3.5" fill="#22c55e" opacity="0.9"/>
+    </svg>
+  )
+}
+
 /* ─── Default fallback ────────────────────────────────────────────────────── */
 function DefaultSvg() {
   return (
@@ -156,4 +175,5 @@ const svgMap: Record<string, () => JSX.Element> = {
   lr:          LRSvg,
   uisp_switch: SwitchSvg,
   uisp_power:  PowerSvg,
+  airfiber:    AirFiberSvg,
 }

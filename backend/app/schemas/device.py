@@ -15,7 +15,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, field_validator
 
 # Discriminator values used by SQLAlchemy polymorphic identity and by the API.
-DeviceType = Literal["rocket", "lr", "uisp_power", "uisp_switch", "client_modem"]
+DeviceType = Literal["rocket", "lr", "uisp_power", "uisp_switch", "client_modem", "airfiber"]
 
 ManagementProtocol = Literal["ssh", "telnet"]
 
@@ -209,6 +209,24 @@ class UispSwitchUpdate(_DeviceBaseUpdate):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# airFiber 60 (AF60-LR) — lien backhaul 60 GHz. Mêmes creds API que Rocket.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class AirFiberCreate(_DeviceBaseCreate):
+    device_type: Literal["airfiber"] = "airfiber"
+    ssh_username: str | None = None
+    ssh_password: str | None = None
+    ssh_port: int = 443
+
+
+class AirFiberUpdate(_DeviceBaseUpdate):
+    ssh_username: str | None = None
+    ssh_password: str | None = None
+    ssh_port: int | None = None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Client modem — TP-Link / Huawei / ZTE behind an LR (NAT)
 # Inventoried only; reachability is probed from the parent LR (ping-from-LR).
 # ─────────────────────────────────────────────────────────────────────────────
@@ -235,9 +253,16 @@ class ClientModemUpdate(_DeviceBaseUpdate):
 # LrCreate is INTENTIONALLY excluded: LRs are only ever created by the
 # auto-discovery pipeline (see services/discovery_service.reconcile_peers).
 # A POST /devices with device_type="lr" therefore fails validation (422).
-DeviceCreate = RocketCreate | UispPowerCreate | UispSwitchCreate | ClientModemCreate
+DeviceCreate = (
+    RocketCreate | UispPowerCreate | UispSwitchCreate | ClientModemCreate | AirFiberCreate
+)
 DeviceUpdate = (
-    RocketUpdate | LrUpdate | UispPowerUpdate | UispSwitchUpdate | ClientModemUpdate
+    RocketUpdate
+    | LrUpdate
+    | UispPowerUpdate
+    | UispSwitchUpdate
+    | ClientModemUpdate
+    | AirFiberUpdate
 )
 
 
@@ -333,6 +358,22 @@ class UispSwitchRead(_DeviceBaseRead):
     port_min_speed_mbps: float = 1000.0
 
 
+class AirFiberRead(_DeviceBaseRead):
+    device_type: Literal["airfiber"] = "airfiber"
+    ssh_username: str | None = None
+    ssh_port: int = 443
+    ssh_host_fingerprint: str | None = None
+    has_ssh_password: bool = False
+    distance_m: float | None = None
+
+    @classmethod
+    def model_validate(cls, obj: Any, **kwargs: Any) -> "AirFiberRead":
+        instance = super().model_validate(obj, **kwargs)
+        if hasattr(obj, "ssh_password"):
+            instance.has_ssh_password = bool(obj.ssh_password)
+        return instance
+
+
 class ClientModemRead(_DeviceBaseRead):
     device_type: Literal["client_modem"] = "client_modem"
     lr_id: int | None = None
@@ -351,4 +392,6 @@ class ClientModemRead(_DeviceBaseRead):
 
 
 # Discriminated union for responses — FastAPI emits the type matching device_type.
-DeviceRead = RocketRead | LrRead | UispPowerRead | UispSwitchRead | ClientModemRead
+DeviceRead = (
+    RocketRead | LrRead | UispPowerRead | UispSwitchRead | ClientModemRead | AirFiberRead
+)

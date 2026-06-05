@@ -14,7 +14,7 @@ const SITE_FALLBACK = 'Sans site'
 
 // Network infrastructure — these count as a site outage when down. LR clients
 // are excluded (an unreachable client is never treated as an incident).
-const INFRA_TYPES = new Set(['rocket', 'uisp_switch', 'uisp_power'])
+const INFRA_TYPES = new Set(['rocket', 'uisp_switch', 'uisp_power', 'airfiber'])
 
 function SitesPage() {
   const searchParams = useSearchParams()

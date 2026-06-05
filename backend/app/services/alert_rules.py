@@ -996,6 +996,160 @@ class LrLinkSubstandardRule(AlertRule):
 
 
 # ---------------------------------------------------------------------------
+# Famille F — airFiber 60 (AF60-LR), lien backhaul 60 GHz point-à-point
+# ---------------------------------------------------------------------------
+
+
+class Af60LinkDownRule(AlertRule):
+    """Lien radio AF60 coupé — ``wireless.radios[0].linkState`` != "connected".
+
+    La métrique ``af60_link_up`` (1.0/0.0) est toujours présente quand le device
+    répond. 0.0 = radio déconnectée → critique."""
+
+    alert_type = "af60_link_down"
+
+    def evaluate(self, device_name: str, metrics: dict, settings) -> AlertEvalResult:
+        up = metrics.get("af60_link_up")
+        if up is None:
+            return AlertEvalResult(self.alert_type, None, "af60_link_up", None, None, "", skip=True)
+        if up < 1.0:
+            return AlertEvalResult(
+                alert_type=self.alert_type,
+                severity="critical",
+                metric_name="af60_link_up",
+                metric_value=up,
+                threshold_value=1.0,
+                message=(
+                    f"ALERTE CRITIQUE : lien radio AF60 coupé sur {device_name} "
+                    f"(radio 60 GHz déconnectée)"
+                ),
+            )
+        return AlertEvalResult(
+            alert_type=self.alert_type,
+            severity=None,
+            metric_name="af60_link_up",
+            metric_value=up,
+            threshold_value=None,
+            message=f"RECOVERY : lien radio AF60 de {device_name} reconnecté",
+        )
+
+
+class Af60SignalLowRule(AlertRule):
+    """Signal AF60 faible (dBm) — seuils 60 GHz dédiés (af60_signal_*)."""
+
+    alert_type = "af60_signal_low"
+
+    def evaluate(self, device_name: str, metrics: dict, settings) -> AlertEvalResult:
+        signal = metrics.get("signal_dbm")
+        if signal is None:
+            return AlertEvalResult(self.alert_type, None, "signal_dbm", None, None, "", skip=True)
+        warn_dbm = float(settings.af60_signal_warning_dbm)
+        crit_dbm = float(settings.af60_signal_critical_dbm)
+        margin = float(settings.af60_signal_tolerance_dbm)
+        is_open = self.alert_type in (metrics.get("_open_alert_types") or ())
+        crit_line = crit_dbm if is_open else crit_dbm - margin
+        warn_line = warn_dbm if is_open else warn_dbm - margin
+
+        if signal < crit_line:
+            return AlertEvalResult(
+                self.alert_type, "critical", "signal_dbm", signal, float(crit_line),
+                f"ALERTE CRITIQUE : signal AF60 faible sur {device_name} : "
+                f"{signal:.1f} dBm (seuil critique {crit_dbm:.0f} dBm)",
+            )
+        if signal < warn_line:
+            return AlertEvalResult(
+                self.alert_type, "warning", "signal_dbm", signal, float(warn_line),
+                f"ALERTE WARNING : signal AF60 dégradé sur {device_name} : "
+                f"{signal:.1f} dBm (seuil warning {warn_dbm:.0f} dBm)",
+            )
+        return AlertEvalResult(
+            self.alert_type, None, "signal_dbm", signal, None,
+            f"RECOVERY : signal AF60 de {device_name} de nouveau nominal ({signal:.1f} dBm)",
+        )
+
+
+class Af60SnrLowRule(AlertRule):
+    """SNR AF60 faible (dB) — le 60 GHz expose un SNR (et pas de CINR)."""
+
+    alert_type = "af60_snr_low"
+
+    def evaluate(self, device_name: str, metrics: dict, settings) -> AlertEvalResult:
+        snr = metrics.get("snr_db")
+        if snr is None:
+            return AlertEvalResult(self.alert_type, None, "snr_db", None, None, "", skip=True)
+        warn = float(settings.af60_snr_warning_db)
+        crit = float(settings.af60_snr_critical_db)
+        margin = float(settings.af60_snr_tolerance_db)
+        is_open = self.alert_type in (metrics.get("_open_alert_types") or ())
+        crit_line = crit if is_open else crit - margin
+        warn_line = warn if is_open else warn - margin
+
+        if snr < crit_line:
+            return AlertEvalResult(
+                self.alert_type, "critical", "snr_db", snr, float(crit_line),
+                f"ALERTE CRITIQUE : SNR AF60 faible sur {device_name} : "
+                f"{snr:.1f} dB (seuil critique {crit:.0f} dB)",
+            )
+        if snr < warn_line:
+            return AlertEvalResult(
+                self.alert_type, "warning", "snr_db", snr, float(warn_line),
+                f"ALERTE WARNING : SNR AF60 dégradé sur {device_name} : "
+                f"{snr:.1f} dB (seuil warning {warn:.0f} dB)",
+            )
+        return AlertEvalResult(
+            self.alert_type, None, "snr_db", snr, None,
+            f"RECOVERY : SNR AF60 de {device_name} de nouveau nominal ({snr:.1f} dB)",
+        )
+
+
+class Af60LinkSubstandardRule(AlertRule):
+    """Lien AF60 dégradé — incident CONSOLIDÉ.
+
+    Critique si le potentiel du lien OU la capacité totale (dl+ul) passe sous
+    son plancher (``af60_link_potential_min_pct`` / ``af60_total_capacity_min_mbps``).
+    Seules les métriques présentes sont évaluées ; aucune présente → skip.
+    Anti-flap ``af60_link_substandard_failure_threshold`` cycles (métriques volatiles)."""
+
+    alert_type = "af60_link_substandard"
+
+    def evaluate(self, device_name: str, metrics: dict, settings) -> AlertEvalResult:
+        checks = [
+            ("link_potential_pct", "Potentiel du lien", metrics.get("link_potential_pct"),
+             float(settings.af60_link_potential_min_pct), "%", "{:.0f}"),
+            ("total_capacity_mbps", "Capacité totale", metrics.get("total_capacity_mbps"),
+             float(settings.af60_total_capacity_min_mbps), " Mbps", "{:.0f}"),
+        ]
+        present = [c for c in checks if c[2] is not None]
+        if not present:
+            return AlertEvalResult(
+                self.alert_type, None, "af60_link_floors", None, None, "", skip=True
+            )
+        bad: list[str] = []
+        worst_name = worst_value = worst_floor = None
+        for name, label, value, floor, unit, fmt in present:
+            if value < floor:
+                bad.append(f"{label} {fmt.format(value)}{unit} (plancher {fmt.format(floor)}{unit})")
+                if worst_value is None:
+                    worst_name, worst_value, worst_floor = name, float(value), float(floor)
+        if bad:
+            return AlertEvalResult(
+                alert_type=self.alert_type,
+                severity="critical",
+                metric_name=worst_name or "af60_link_floors",
+                metric_value=round(worst_value, 1) if worst_value is not None else None,
+                threshold_value=worst_floor,
+                message=(
+                    f"ALERTE CRITIQUE : lien AF60 dégradé sur {device_name} — "
+                    + " ; ".join(bad)
+                ),
+            )
+        return AlertEvalResult(
+            self.alert_type, None, "af60_link_floors", None, None,
+            f"RECOVERY : lien AF60 de {device_name} repassé au-dessus de tous les seuils",
+        )
+
+
+# ---------------------------------------------------------------------------
 # Mapping device_type → règles applicables
 # ---------------------------------------------------------------------------
 
@@ -1043,12 +1197,20 @@ _AIRMAX_ROCKET_RULES: list[AlertRule] = [
     ThroughputAnomalyRule(),
 ]
 
+_AF60_RULES: list[AlertRule] = [
+    Af60LinkDownRule(),
+    Af60SignalLowRule(),
+    Af60SnrLowRule(),
+    Af60LinkSubstandardRule(),
+]
+
 RULES_BY_DEVICE_TYPE: dict[str, list[AlertRule]] = {
     "ltu_rocket": _ROCKET_RULES,
     "lr": _LR_RULES,
     "uisp_switch": _SWITCH_RULES,
     "uisp_power": [],
     "airmax_rocket": _AIRMAX_ROCKET_RULES,
+    "airfiber": _AF60_RULES,
 }
 
 # Failure threshold per alert_type — resolved from settings in the engine
@@ -1064,6 +1226,10 @@ FAILURE_THRESHOLDS: dict[str, str] = {
     "radio_link_degraded": "radio_degraded_failure_threshold",
     "throughput_anomaly": "throughput_anomaly_failure_threshold",
     "lr_link_substandard": "lr_link_substandard_failure_threshold",
+    "af60_signal_low": "af60_signal_failure_threshold",
+    "af60_snr_low": "af60_snr_failure_threshold",
+    "af60_link_down": "af60_link_down_failure_threshold",
+    "af60_link_substandard": "af60_link_substandard_failure_threshold",
     # Immediate rules (threshold = 0) are not listed here
 }
 

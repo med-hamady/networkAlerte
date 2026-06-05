@@ -13,6 +13,10 @@ render `ccq_ul_low` or `ul_ccq_pct` to a human goes through these helpers.
 from __future__ import annotations
 
 from app.core.alert_constants import (
+    AT_AF60_LINK_DOWN,
+    AT_AF60_LINK_SUBSTANDARD,
+    AT_AF60_SIGNAL_LOW,
+    AT_AF60_SNR_LOW,
     AT_AIRMAX_DOWN,
     AT_BATTERY_LOW_CRIT,
     AT_BATTERY_LOW_WARN,
@@ -93,6 +97,12 @@ ALERT_TYPE_LABELS: dict[str, str] = {
     AT_SWITCH_PORT_DOWN:     "Port du switch coupé",
     AT_SWITCH_PORT_SPEED_LOW: "Vitesse du port switch dégradée",
 
+    # airFiber 60 (backhaul 60 GHz)
+    AT_AF60_LINK_DOWN:        "Lien backhaul AF60 coupé",
+    AT_AF60_SIGNAL_LOW:       "Signal AF60 faible",
+    AT_AF60_SNR_LOW:          "SNR AF60 faible",
+    AT_AF60_LINK_SUBSTANDARD: "Lien backhaul AF60 dégradé",
+
     # Transit
     AT_TRANSIT_UNAVAILABLE:  "Transit Internet indisponible",
     AT_LR_NO_TRANSIT:        "Client (LR) sans accès Internet",
@@ -136,6 +146,13 @@ METRIC_LABELS: dict[str, str] = {
     "total_capacity_mbps": "Capacité totale du lien (Mbps)",
     "local_rx_rate_idx":   "Rate local (×)",
     "remote_rx_rate_idx":  "Rate distant (×)",
+
+    # airFiber 60
+    "snr_db":              "Rapport signal/bruit SNR (dB)",
+    "remote_signal_dbm":   "Signal extrémité distante (dBm)",
+    "remote_snr_db":       "SNR extrémité distante (dB)",
+    "af60_link_up":        "État du lien AF60 (1=connecté)",
+    "af60_link_floors":    "Plancher lien AF60 (potentiel/capacité)",
 
     # Interfaces / counts
     "radio_if_up":     "État interface radio",

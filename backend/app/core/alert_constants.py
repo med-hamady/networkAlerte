@@ -124,6 +124,12 @@ AT_PING_INSTABILITY = "ping_instability"
 # système — la latence superviseur → device n'est pas exploitée.
 AT_LR_LATENCY_HIGH = "lr_latency_high"
 
+# airFiber 60 (AF60-LR) — lien backhaul 60 GHz point-à-point (alert_rules).
+AT_AF60_LINK_DOWN        = "af60_link_down"        # radios[0].linkState != "connected"
+AT_AF60_SIGNAL_LOW       = "af60_signal_low"       # signal local sous seuil 60 GHz
+AT_AF60_SNR_LOW          = "af60_snr_low"          # SNR local sous seuil (pas de CINR en 60 GHz)
+AT_AF60_LINK_SUBSTANDARD = "af60_link_substandard" # consolidé : potentiel / capacité sous plancher
+
 # Sécurité — volume anormal d'écritures API détecté par
 # security_anomaly_detection_job sur la base de la table audit_log. N'est PAS
 # attaché à un device (événement système) — envoyé directement par email via
@@ -145,6 +151,7 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_LR_DISCOVERED, AT_LR_IP_CHANGED, AT_LR_REASSIGNED,
     AT_LR_BRIDGE_MODE_MISCONFIG,
     AT_PING_INSTABILITY, AT_LR_LATENCY_HIGH,
+    AT_AF60_LINK_DOWN, AT_AF60_SIGNAL_LOW, AT_AF60_SNR_LOW, AT_AF60_LINK_SUBSTANDARD,
     AT_SECURITY_ANOMALY,
 })
 

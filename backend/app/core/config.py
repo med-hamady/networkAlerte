@@ -241,6 +241,23 @@ class Settings(BaseSettings):
     lr_rx_rate_warning_idx_airmax: float = 6.0  # airMAX : 4 ≤ rx < 6 → warning
     lr_rx_rate_critical_idx_airmax: float = 4.0 # airMAX < 4 → critical
 
+    # Anomaly thresholds — airFiber 60 (AF60-LR) backhaul, lien 60 GHz.
+    # Le 60 GHz a des plages très différentes du sub-6 GHz : le signal idéal
+    # tourne ~-43 dBm, un linkScore de ~40 % reste exploitable, et un lien sain
+    # fait > 1 Gbps. Défauts volontairement conservateurs (validés terrain le
+    # 2026-06-05 contre un lien réel à -67 dBm / SNR 12 / 41 % / 3,3 Gbps : reste
+    # vert). Surchargables via la page Seuils.
+    af60_signal_warning_dbm: int = -70    # below → warning
+    af60_signal_critical_dbm: int = -75   # below → critical
+    af60_signal_tolerance_dbm: float = 0.0
+    af60_snr_warning_db: float = 10.0     # below → warning
+    af60_snr_critical_db: float = 6.0     # below → critical
+    af60_snr_tolerance_db: float = 0.0
+    # Lien dégradé (consolidé) : potentiel sous ce plancher OU capacité totale
+    # (dl+ul) sous ce plancher → critique.
+    af60_link_potential_min_pct: float = 30.0
+    af60_total_capacity_min_mbps: float = 500.0
+
     # Anomaly thresholds — RX/TX error rate (errors / total bytes, %)
     rx_tx_error_warning_pct: float = 1.0    # above → warning
     rx_tx_error_critical_pct: float = 5.0   # above → critical
@@ -257,6 +274,11 @@ class Settings(BaseSettings):
     # link_potential/capacity/RX-rate are very volatile → debounce hard:
     # opens on the 5th consecutive bad cycle (count > 4), ~5 min sustained.
     lr_link_substandard_failure_threshold: int = 4
+    # airFiber 60 anti-flap.
+    af60_signal_failure_threshold: int = 2
+    af60_snr_failure_threshold: int = 2
+    af60_link_down_failure_threshold: int = 2
+    af60_link_substandard_failure_threshold: int = 3
 
     # Throughput anomaly — detect sudden drops vs exponential moving average
     throughput_anomaly_drop_pct: float = 50.0   # alert if rate < EMA * (1 - drop_pct/100)

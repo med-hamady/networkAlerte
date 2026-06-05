@@ -10,9 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.db.session import get_db
-from app.models.device import ClientModem, Device, Lr, Rocket
-from app.models.device_metric import DeviceMetric
+from app.models.device import AirFiber, ClientModem, Device, Lr, Rocket
 from app.schemas.device import (
+    AirFiberRead,
     ClientModemRead,
     DeviceCreate,
     DeviceRead,
@@ -24,6 +24,7 @@ from app.schemas.device import (
     normalize_mac,
 )
 from app.services import (
+    af60_api_service,
     client_block_service,
     device_service,
     lan_discovery,
@@ -52,6 +53,7 @@ _READ_BY_TYPE: dict[str, type] = {
     "uisp_power": UispPowerRead,
     "uisp_switch": UispSwitchRead,
     "client_modem": ClientModemRead,
+    "airfiber": AirFiberRead,
 }
 
 
@@ -218,6 +220,30 @@ async def _live_metrics_airmax_snmp(device: Lr) -> dict[str, MetricPoint]:
     }
 
 
+async def _live_metrics_af60(device: AirFiber) -> dict[str, MetricPoint]:
+    """Live fetch on an airFiber 60 (UDAPI, identique aux LTU)."""
+    if not device.ssh_username or not device.ssh_password:
+        raise HTTPException(status_code=503, detail="Identifiants API de l'AF60 manquants en base.")
+    metrics = await af60_api_service.collect_af60_metrics(
+        host=device.ip_address,
+        username=device.ssh_username,
+        password=device.ssh_password,
+        port=device.ssh_port or 443,
+    )
+    if metrics is None:
+        raise HTTPException(status_code=502, detail="AF60 injoignable (API HTTP).")
+    now = datetime.datetime.now(datetime.UTC)
+    return {
+        name: MetricPoint(
+            value=value,
+            unit=af60_api_service.METRIC_UNITS.get(name),
+            collected_at=now,
+        )
+        for name, value in metrics.items()
+        if value is not None
+    }
+
+
 @router.get("/{device_id}/metrics/live", response_model=dict[str, MetricPoint])
 async def get_device_metrics_live(
     device_id: int,
@@ -251,8 +277,11 @@ async def get_device_metrics_live(
         if rocket is None:
             raise HTTPException(status_code=409, detail="Rocket parent introuvable.")
         lr_mac = device.mac_address
+    elif device.device_type == "airfiber":
+        # AF60 backhaul — même UDAPI que LTU, interrogé directement à son IP.
+        return await _live_metrics_af60(device)
     else:
-        raise HTTPException(status_code=400, detail="Métriques live : LR ou Rocket uniquement.")
+        raise HTTPException(status_code=400, detail="Métriques live : AF60, LR ou Rocket.")
 
     if rocket.radio_tech != "ltu":
         raise HTTPException(status_code=409, detail="Live indisponible : Rocket airMAX (SNMP only).")

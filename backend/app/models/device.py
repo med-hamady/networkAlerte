@@ -75,13 +75,14 @@ class Device(Base):
         """Coarse-grained category used to pick alert rules and alert types.
 
         Returns one of: 'ltu_rocket', 'airmax_rocket', 'lr', 'uisp_power',
-        'uisp_switch'. Both LTU and Litebeam subscribers share 'lr' for now
-        — split later if variant-specific thresholds are needed.
+        'uisp_switch', 'airfiber'. Both LTU and Litebeam subscribers share 'lr'
+        for now — split later if variant-specific thresholds are needed.
         """
         if isinstance(self, Rocket):
             return "airmax_rocket" if self.radio_tech == "airmax" else "ltu_rocket"
         if isinstance(self, Lr):
             return "lr"
+        # AirFiber + UispSwitch + UispPower : device_type == rule_category.
         return self.device_type
 
 
@@ -216,6 +217,33 @@ class UispSwitch(Device):
     port_min_speed_mbps: Mapped[float] = mapped_column(Float, default=1000.0, nullable=False)
 
     __mapper_args__ = {"polymorphic_identity": "uisp_switch", "polymorphic_load": "selectin"}
+
+
+class AirFiber(Device):
+    """airFiber 60 (AF60-LR) — lien backhaul point-à-point 60 GHz.
+
+    Équipement d'infrastructure ajouté manuellement (comme UispSwitch / UispPower).
+    Parle la MÊME UDAPI que les LTU (POST /api/auth → utoken, GET /api/v1.0/statistics
+    avec header x-auth-token) — d'où la réutilisation des creds `ssh_*` comme
+    identifiants d'API HTTP, exactement comme Rocket. Lien point-à-point : un seul
+    peer (l'autre extrémité), pas d'auto-découverte de CPE.
+    """
+
+    __tablename__ = "airfibers"
+
+    id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True)
+
+    # Identifiants de l'API HTTP locale (consommés par af60_api_service via le
+    # client LTU partagé). Même convention de nommage que Rocket.
+    ssh_username: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    ssh_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ssh_port: Mapped[int] = mapped_column(default=443)
+    ssh_host_fingerprint: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # Distance du lien (m), synchronisée depuis l'API pour l'affichage UI.
+    distance_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    __mapper_args__ = {"polymorphic_identity": "airfiber", "polymorphic_load": "selectin"}
 
 
 class ClientModem(Device):

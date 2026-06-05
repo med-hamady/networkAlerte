@@ -82,8 +82,18 @@ export interface ClientModem extends DeviceBase {
   has_management_password: boolean
 }
 
+// airFiber 60 (AF60-LR) — lien backhaul 60 GHz. Mêmes creds API que Rocket.
+export interface AirFiber extends DeviceBase {
+  device_type: 'airfiber'
+  ssh_username: string | null
+  ssh_port: number
+  ssh_host_fingerprint: string | null
+  has_ssh_password: boolean
+  distance_m: number | null
+}
+
 // Discriminated union — narrow by `device_type`.
-export type Device = Rocket | Lr | UispPower | UispSwitch | ClientModem
+export type Device = Rocket | Lr | UispPower | UispSwitch | ClientModem | AirFiber
 
 // ──────────────────────────────────────────────────────────────────────────
 // Form payloads — one DeviceFormData per type. The form switches its
@@ -138,12 +148,20 @@ export type ClientModemFormData = DeviceFormBase & {
   management_password: string   // write-only — empty = keep existing
 }
 
+export type AirFiberFormData = DeviceFormBase & {
+  device_type: 'airfiber'
+  ssh_username: string
+  ssh_password: string   // write-only — empty = keep existing
+  ssh_port: number
+}
+
 export type DeviceFormData =
   | RocketFormData
   | LrFormData
   | UispPowerFormData
   | UispSwitchFormData
   | ClientModemFormData
+  | AirFiberFormData
 
 export interface Threshold {
   key: string
@@ -375,6 +393,7 @@ export const DEVICE_TYPE_LABELS: Record<string, string> = {
   uisp_switch:  'UISP Switch',
   uisp_power:   'UISP Power',
   client_modem: 'Modem client',
+  airfiber:     'airFiber 60',
 }
 
 export const LR_MODEL_VARIANT_LABELS: Record<LrModelVariant, string> = {

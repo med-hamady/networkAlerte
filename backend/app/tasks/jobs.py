@@ -38,10 +38,11 @@ from app.db.session import async_session_factory
 from app.models.alert import Alert
 from app.models.alert_state import AlertState
 from app.models.audit_log import AuditLog
-from app.models.device import Device, Lr, Rocket, UispPower
+from app.models.device import AirFiber, Device, Lr, Rocket, UispPower
 from app.models.device_metric import DeviceMetric
 from app.models.power_status_log import PowerStatusLog
 from app.services import (
+    af60_api_service,
     airos_api_service,
     alert_engine,
     client_block_service,
@@ -1260,6 +1261,78 @@ async def airos_api_poll_job() -> None:
             await session.commit()
 
 
+async def af60_api_poll_job() -> None:
+    """Poll airFiber 60 (AF60-LR) — liens backhaul 60 GHz via leur UDAPI locale.
+
+    Même mécanique que airos_api_poll_job, mais pour les AF60 : chaque lien est
+    interrogé à son IP (POST /api/auth + GET /api/v1.0/statistics, identique aux
+    LTU), les métriques de lien sont persistées et l'alert engine évalue les
+    règles AF60 (lien coupé, signal, SNR, lien dégradé consolidé). Lien
+    point-à-point → pas d'auto-découverte de peers. Le device doit être `up`
+    (joignable en mgmt) : un AF60 injoignable est géré par device_ping_job.
+    """
+    base_settings = get_settings()
+    async with async_session_factory() as _ts_session:
+        settings = await threshold_service.get_effective_settings(_ts_session, base_settings)
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(AirFiber).where(
+                AirFiber.status == "up",
+                AirFiber.ssh_username.is_not(None),
+                AirFiber.ssh_password.is_not(None),
+            )
+        )
+        devices = list(result.scalars().all())
+
+    if not devices:
+        logger.debug("AF60 API poll — no eligible devices")
+        return
+
+    logger.info("AF60 API poll — checking %d device(s)", len(devices))
+    unit_map = af60_api_service.METRIC_UNITS
+
+    for device in devices:
+        metrics = await af60_api_service.collect_af60_metrics(
+            host=device.ip_address,
+            username=device.ssh_username,
+            password=device.ssh_password,
+            port=device.ssh_port or 443,
+        )
+        if metrics is None:
+            logger.debug("AF60 API no response — %s (%s)", device.name, device.ip_address)
+            continue
+
+        logger.info(
+            "AF60 %s (%s) — %s",
+            device.name,
+            device.ip_address,
+            " | ".join(f"{k}={v}" for k, v in metrics.items() if v is not None),
+        )
+
+        async with async_session_factory() as session:
+            dev = await session.get(AirFiber, device.id)
+            if dev is None:
+                continue
+
+            distance = metrics.get("distance_m")
+            if distance is not None:
+                dev.distance_m = distance
+
+            for metric_name, value in metrics.items():
+                if value is not None:
+                    session.add(DeviceMetric(
+                        device_id=dev.id,
+                        metric_name=metric_name,
+                        metric_value=value,
+                        unit=unit_map.get(metric_name),
+                    ))
+
+            # Évaluation per-device : règles AF60 (rule_category == "airfiber").
+            await alert_engine.evaluate_device_metrics(session, dev, dict(metrics), settings)
+            await session.commit()
+
+
 async def _evaluate_lr_transit(
     session, lr: Device, ping_ok: bool, settings,
 ) -> None:
@@ -1780,6 +1853,13 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         airos_api_poll_job,
         trigger="interval", seconds=settings.snmp_interval_seconds,
         id="airos_api_poll", name="airOS HTTP API poll (airMAX LR)",
+        replace_existing=True,
+        **safety,
+    )
+    scheduler.add_job(
+        af60_api_poll_job,
+        trigger="interval", seconds=settings.snmp_interval_seconds,
+        id="af60_api_poll", name="airFiber 60 HTTP API poll (AF60 backhaul)",
         replace_existing=True,
         **safety,
     )

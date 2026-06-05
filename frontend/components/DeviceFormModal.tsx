@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import useSWR from 'swr'
 import type {
+  AirFiberFormData,
   ClientModemFormData,
   Device,
   DeviceFormData,
@@ -46,6 +47,7 @@ interface Props {
 // via HTTP API, and discovery_service inserts/updates LR rows).
 const CREATABLE_DEVICE_TYPES: Array<{ value: Exclude<DeviceFormData['device_type'], 'lr'>; label: string }> = [
   { value: 'rocket',        label: 'Rocket (LTU ou airMAX)' },
+  { value: 'airfiber',      label: 'airFiber 60 (AF60 backhaul)' },
   { value: 'uisp_switch',   label: 'UISP Switch' },
   { value: 'uisp_power',    label: 'UISP Power' },
   { value: 'client_modem',  label: 'Modem client (TP-Link, Huawei, ZTE…)' },
@@ -57,6 +59,7 @@ const TYPE_LABEL: Record<DeviceFormData['device_type'], string> = {
   uisp_switch:  'UISP Switch',
   uisp_power:   'UISP Power',
   client_modem: 'Modem client',
+  airfiber:     'airFiber 60',
 }
 
 const ROCKET_RADIO_TECHS: Array<{ value: 'ltu' | 'airmax'; label: string }> = [
@@ -91,6 +94,8 @@ function emptyForm(type: DeviceFormData['device_type']): DeviceFormData {
       return { ...base, device_type: 'uisp_switch', max_ports: 16, rocket_port_index: null, port_min_speed_mbps: 1000 }
     case 'client_modem':
       return { ...base, device_type: 'client_modem', lr_id: null, management_protocol: 'ssh', management_port: 22, management_username: '', management_password: '' }
+    case 'airfiber':
+      return { ...base, device_type: 'airfiber', ssh_username: '', ssh_password: '', ssh_port: 443 }
   }
 }
 
@@ -147,6 +152,14 @@ function deviceToForm(device: Device): DeviceFormData {
         management_port: device.management_port,
         management_username: device.management_username ?? '',
         management_password: '',
+      }
+    case 'airfiber':
+      return {
+        ...base,
+        device_type: 'airfiber',
+        ssh_username: device.ssh_username ?? '',
+        ssh_password: '',
+        ssh_port: device.ssh_port,
       }
   }
 }
@@ -329,6 +342,7 @@ export default function DeviceFormModal({ open, device, prefill, onClose, onSave
 
           {/* Type-specific blocks */}
           {form.device_type === 'rocket'        && <RocketFields form={form} update={update} isEdit={isEdit} />}
+          {form.device_type === 'airfiber'      && <AirFiberFields form={form} update={update} isEdit={isEdit} />}
           {form.device_type === 'lr'            && <LrFields form={form} update={update} isEdit={isEdit} />}
           {form.device_type === 'uisp_power'    && <PowerFields form={form} update={update} isEdit={isEdit} hasPwd={device?.device_type === 'uisp_power' && device.has_api_password} />}
           {form.device_type === 'uisp_switch'   && <SwitchFields form={form} update={update} />}
@@ -397,6 +411,36 @@ function RocketFields({
           {ROCKET_RADIO_TECHS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
         </select>
       </Field>
+      <div className="grid grid-cols-3 gap-3">
+        <div className="col-span-2">
+          <Field label="Utilisateur API">
+            <input type="text" value={form.ssh_username} onChange={e => update('ssh_username', e.target.value)} placeholder="ubnt" className={input} />
+          </Field>
+        </div>
+        <Field label="Port HTTPS">
+          <input type="number" value={form.ssh_port} onChange={e => update('ssh_port', Number(e.target.value))} min={1} max={65535} className={input} />
+        </Field>
+      </div>
+      <Field label="Mot de passe API" hint={isEdit ? "Laisser vide pour conserver le mot de passe existant" : ""}>
+        <input type="password" value={form.ssh_password} onChange={e => update('ssh_password', e.target.value)} placeholder={isEdit ? "••••••••" : "Mot de passe API"} autoComplete="new-password" className={input} />
+      </Field>
+    </div>
+  )
+}
+
+function AirFiberFields({
+  form, update, isEdit,
+}: {
+  form: AirFiberFormData
+  update: (field: string, value: unknown) => void
+  isEdit: boolean
+}) {
+  return (
+    <div className="bg-violet-50 rounded-xl p-4 space-y-3">
+      <p className="text-xs font-semibold text-violet-700 uppercase tracking-wide">Configuration airFiber 60</p>
+      <p className="text-xs text-violet-500">
+        Lien backhaul 60 GHz — supervisé via son API locale (mêmes identifiants que l&apos;interface web airOS).
+      </p>
       <div className="grid grid-cols-3 gap-3">
         <div className="col-span-2">
           <Field label="Utilisateur API">

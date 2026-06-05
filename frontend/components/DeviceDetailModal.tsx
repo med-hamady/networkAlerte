@@ -10,7 +10,7 @@ import { useThresholds } from '@/lib/useThresholds'
 import DeviceImage from './DeviceImage'
 import DevicePolicyOverridesEditor from './DevicePolicyOverridesEditor'
 
-const RADIO_TYPES = new Set(['rocket', 'lr'])
+const RADIO_TYPES = new Set(['rocket', 'lr', 'airfiber'])
 const REFRESH      = 15_000
 const LIVE_REFRESH = 10_000
 
@@ -213,8 +213,15 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
             {metrics.radio_if_up?.value != null && (
               <MetricRow label="Interface radio" value={<LinkStatus up={metrics.radio_if_up.value === 1} />} />
             )}
+            {/* AF60 — état du lien 60 GHz (radios[0].linkState) */}
+            {metrics.af60_link_up?.value != null && (
+              <MetricRow label="Lien radio (60 GHz)" value={<LinkStatus up={metrics.af60_link_up.value === 1} />} />
+            )}
             {metrics.distance_m?.value    != null && <MetricRow label="Distance"  value={`${metrics.distance_m.value.toFixed(0)} m`} />}
             {metrics.signal_dbm?.value    != null && <MetricRow label="Signal UL (AP)"  value={<SignalValue dBm={metrics.signal_dbm.value} warn={thresholds.signal_warning_dbm} crit={thresholds.signal_critical_dbm} />} />}
+            {/* AF60 — SNR (le 60 GHz expose un SNR, pas de CINR) */}
+            {metrics.snr_db?.value        != null && <MetricRow label="SNR (local)"     value={`${metrics.snr_db.value.toFixed(0)} dB`} />}
+            {metrics.remote_snr_db?.value != null && <MetricRow label="SNR (distant)"   value={`${metrics.remote_snr_db.value.toFixed(0)} dB`} />}
             {metrics.noise_dbm?.value     != null && <MetricRow label="Bruit (AP)"      value={`${metrics.noise_dbm.value} dBm`} />}
             {metrics.cinr_db?.value       != null && <MetricRow label="CINR DL"         value={`${metrics.cinr_db.value} dB`} />}
             {metrics.ul_cinr_db?.value    != null && <MetricRow label="CINR UL"         value={`${metrics.ul_cinr_db.value} dB`} />}

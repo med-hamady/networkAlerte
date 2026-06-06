@@ -34,7 +34,13 @@ export const endpoints = {
   authMe:               `${API_BASE}/auth/me`,
   authChangePassword:   `${API_BASE}/auth/change-password`,
   health:               `${API_BASE}/health`,
-  devices:              `${API_BASE}/devices`,
+  // limit=1000 : le endpoint liste plafonne à 100 par défaut. Au-delà de 100
+  // devices (le parc a dépassé ce seuil), la liste était tronquée → des LR
+  // pointaient vers un Rocket parent absent de la réponse → rangés "Sans site"
+  // sur la page /sites (siteOf cherche le parent dans la liste). 1000 = max
+  // autorisé par l'API ; à dépasser ce seuil il faudra paginer pour de vrai.
+  // (POST createDevice réutilise cette URL : le query param est ignoré.)
+  devices:              `${API_BASE}/devices?limit=1000`,
   device:               (id: number) => `${API_BASE}/devices/${id}`,
   incidents:            `${API_BASE}/incidents`,
   incident:             (id: number) => `${API_BASE}/incidents/${id}`,

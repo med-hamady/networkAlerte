@@ -481,8 +481,19 @@ async def device_ping_job() -> None:
 
     logger.info("Ping poll — checking %d device(s)", len(devices))
 
+    # Bound concurrency: at 600+ devices, gathering one ping_host per device
+    # spawned 600 simultaneous `ping` subprocesses that starved each other —
+    # reachable devices failed in bulk (false "down") and the sweep blew past
+    # the 30 s interval. A semaphore keeps only `ping_concurrency` pings in
+    # flight; ceil(parc/concurrency) batches × ~2 s/ping fits under the interval.
+    _ping_sem = asyncio.Semaphore(settings.ping_concurrency)
+
+    async def _bounded_ping(ip: str):
+        async with _ping_sem:
+            return await poller.ping_host(ip)
+
     ping_results = await asyncio.gather(
-        *[poller.ping_host(d.ip_address) for d in devices],
+        *[_bounded_ping(d.ip_address) for d in devices],
         return_exceptions=True,
     )
 

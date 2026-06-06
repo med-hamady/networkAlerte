@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     # Anti-flapping — nombre de pings ratés consécutifs avant d'ouvrir un incident
     ping_down_threshold: int = 3
 
+    # Concurrence max du device_ping_job. Le job lançait TOUS les pings d'un coup
+    # (asyncio.gather sur tout le parc) — à 600+ devices ça spawn 600 sous-process
+    # `ping` simultanés qui se starvent mutuellement → des devices joignables
+    # échouent en masse (faux "down") et le cycle déborde son intervalle de 30 s.
+    # On borne le nombre de pings en vol via un sémaphore. ceil(parc/concurrence)
+    # batchs × ~2 s/ping doit tenir sous ping_interval_seconds (ex. 600/100 ≈ 12 s).
+    ping_concurrency: int = 100
+
     # Instabilité ping — N échecs suivis d'un succès (sans atteindre ping_down_threshold)
     # déclenche un email INFO. 0 = désactivé.
     ping_instability_threshold: int = 2

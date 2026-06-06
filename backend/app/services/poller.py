@@ -9,7 +9,7 @@ _RTT_RE = re.compile(r"time[=<]([\d.]+)\s*ms", re.IGNORECASE)
 
 
 async def ping_host(
-    ip_address: str, timeout: int = 2, count: int = 3
+    ip_address: str, timeout: int = 2, count: int = 2
 ) -> tuple[bool, float | None]:
     """
     Ping a host via ICMP using the system ping command.

@@ -300,13 +300,6 @@ class Settings(BaseSettings):
     # Per-IP cooldown — a sustained attack must not fire one alert per check.
     audit_anomaly_alert_cooldown_minutes: int = 30
 
-    # LR-health materialized view refresh interval (minutes). The view
-    # `lr_health_metric_stats_30d` pre-aggregates 30-day device_metrics so
-    # /lr-health/bad-installations serves <100 ms instead of ~4 s. 15 min
-    # is the sweet spot: a 30-day average barely moves in 15 min, and the
-    # refresh itself only costs ~5 s of background CPU/IO.
-    lr_health_matview_refresh_interval_minutes: int = 15
-
     # Client-consumption materialized view refresh interval (minutes). The
     # view `client_consumption_30d` pre-aggregates 30-day byte deltas so
     # /clients/consumption?period=30d serves <100 ms instead of ~36 s.

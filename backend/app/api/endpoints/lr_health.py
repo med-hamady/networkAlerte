@@ -18,8 +18,7 @@ async def list_bad_installations(
     airOS) et classe sur les valeurs courantes : 5 indicateurs de niveau, verdict
     suspect (≥3/5) ou critique (≥4/5). Les LR injoignables en live sont exclus.
 
-    NB : le rapport `/reports` reste sur la moyenne glissante 30 j via
-    `lr_health_service.get_bad_installations` (matview) — deux lectures
-    volontairement distinctes : la page = maintenant, le rapport = étude 30 j.
+    Seule source du scoring liens clients : le rapport `/reports` ne fait plus de
+    moyenne 30 j (métriques radio non historisées depuis le collapse latest-only).
     """
     return await lr_health_service.get_live_link_health(db)

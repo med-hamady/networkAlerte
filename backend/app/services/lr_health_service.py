@@ -1,17 +1,16 @@
 """Behavior-based classification of client LR installations.
 
 Each LR is evaluated against **5 level indicators** and gets a verdict
-(stable / suspect / critical). Two entry points share the same indicators,
-floors and verdict thresholds — they differ only in the data compared to each
-floor:
+(stable / suspect / critical) from its **état actuel** (live values):
 
-  • :func:`get_bad_installations` — **moyenne glissante 30 j** servie par la
-    matview ``lr_health_metric_stats_30d``. Utilisée par le rapport `/reports`
-    (étude périodique). Un indicateur ne se déclenche que s'il y a ≥1 mesure
-    sur la fenêtre (une donnée manquante ne pénalise jamais le LR).
-  • :func:`get_live_link_health` — **état actuel** : chaque équipement est
-    interrogé en direct à l'ouverture de la page « Liaisons clients » (LTU via
-    le Rocket parent, airMAX via airOS). Un LR injoignable en live est exclu.
+  • :func:`get_live_link_health` — chaque équipement est interrogé en direct à
+    l'ouverture de la page « Liaisons clients » (LTU via le Rocket parent,
+    airMAX via airOS). Un LR injoignable en live est exclu.
+
+Note : l'ancienne entrée ``get_bad_installations`` (moyenne glissante 30 j via
+la matview ``lr_health_metric_stats_30d``) a été retirée — les métriques radio
+ne sont plus historisées (collapse latest-only), donc le scoring 30 j n'a plus
+de données. Seul le live subsiste.
 
 The 5 indicators (each is a "État" — value vs a floor; no trend):
   1. Signal dBm       — value ≤ settings.signal_warning_dbm (flat, default -75)
@@ -41,7 +40,6 @@ from app.models.device import Lr, Rocket
 from app.schemas.device import normalize_mac
 from app.schemas.lr_health import (
     BadInstallationRow,
-    BadInstallationsResponse,
     LiveLinkHealthResponse,
     SignalEvidence,
 )
@@ -107,73 +105,6 @@ _VERDICT_CRITICAL_AT = 4
 _VERDICT_ORDER = {"critical": 0, "suspect": 1}
 
 
-async def get_bad_installations(
-    db: AsyncSession,
-    days: int = 30,
-) -> BadInstallationsResponse:
-    """Return LRs whose behavior over the window suggests poor installation."""
-    now = datetime.datetime.now(datetime.UTC)
-    cutoff = now - datetime.timedelta(days=days)
-
-    lrs = (await db.execute(select(Lr).options(selectinload(Lr.rocket)))).scalars().all()
-    if not lrs:
-        return BadInstallationsResponse(period_days=days, generated_at=now, items=[])
-
-    lr_ids = [lr.id for lr in lrs]
-
-    metric_stats = await _fetch_metric_stats(db, lr_ids, cutoff)
-    latest_metrics = await _fetch_latest_metrics(db, lr_ids)
-    settings = get_settings()
-
-    items: list[BadInstallationRow] = []
-    for lr in lrs:
-        signals = _build_signals(
-            lr=lr, metric_stats=metric_stats.get(lr.id, {}), settings=settings
-        )
-        active = sum(1 for s in signals if s.active)
-        verdict = _verdict(active)
-        # On ne surface que les LR à ≥3/5 indicateurs actifs.
-        # 3 → suspect (à inspecter), 4-5 → critical. <3 → non affiché.
-        if active < _VERDICT_SUSPECT_AT:
-            continue
-
-        radio = latest_metrics.get(lr.id, {})
-        items.append(
-            BadInstallationRow(
-                lr_id=lr.id,
-                lr_name=lr.name,
-                lr_ip=lr.ip_address,
-                lr_mac=lr.mac_address,
-                model_variant=lr.model_variant,
-                distance_m=lr.distance_m,
-                first_discovered_at=lr.first_discovered_at,
-                rocket_id=lr.rocket.id if lr.rocket else None,
-                rocket_name=lr.rocket.name if lr.rocket else None,
-                verdict=verdict,
-                active_signals_count=active,
-                signals=signals,
-                latest_signal_dbm=radio.get(_M_SIGNAL),
-                latest_link_potential_pct=radio.get(_M_LINK_POT),
-                latest_total_capacity_mbps=radio.get(_M_TOTAL_CAP),
-                latest_local_rx_rate_idx=radio.get(_M_LOCAL_RATE),
-                latest_remote_rx_rate_idx=radio.get(_M_REMOTE_RATE),
-                signal_warning_threshold=float(settings.signal_warning_dbm),
-                link_potential_floor_pct=_link_potential_floor(lr.model_variant, settings),
-                total_capacity_floor_mbps=settings.lr_total_capacity_min_mbps,
-                rx_rate_floor_idx=_rx_rate_floor(lr.model_variant, settings),
-            )
-        )
-
-    items.sort(
-        key=lambda r: (
-            _VERDICT_ORDER[r.verdict],
-            -r.active_signals_count,
-            r.lr_name,
-        )
-    )
-    return BadInstallationsResponse(period_days=days, generated_at=now, items=items)
-
-
 # ---------------------------------------------------------------------------
 # Live evaluation — état actuel (page « Liaisons clients »)
 # ---------------------------------------------------------------------------
@@ -196,13 +127,10 @@ _LIVE_FETCH_DEADLINE_S = 12.0
 async def get_live_link_health(db: AsyncSession) -> LiveLinkHealthResponse:
     """Classer les LR clients sur leur **état actuel** (valeurs live).
 
-    Contrairement à :func:`get_bad_installations` (moyenne glissante 30 j servie
-    par la matview, utilisée par le rapport), cette fonction interroge chaque
-    équipement **en direct** à l'ouverture de la page : LTU via l'API HTTP du
-    Rocket parent (un appel par Rocket, peers mappés par MAC), airMAX via
-    l'API airOS de chaque LiteBeam. Les 5 indicateurs et le verdict (≥3/5)
-    sont identiques — seule la donnée comparée au plancher change (valeur
-    actuelle au lieu de la moyenne 30 j).
+    Interroge chaque équipement **en direct** à l'ouverture de la page : LTU via
+    l'API HTTP du Rocket parent (un appel par Rocket, peers mappés par MAC),
+    airMAX via l'API airOS de chaque LiteBeam. Les 5 indicateurs et le verdict
+    (≥3/5) sont évalués sur la valeur actuelle comparée à chaque plancher.
 
     Un LR **injoignable en live** (lien radio down, auth KO, timeout, creds
     manquants) est **exclu** : pas de repli sur la dernière valeur en base.
@@ -296,8 +224,7 @@ async def _fetch_latest_latency(
 ) -> dict[int, float]:
     """Dernier ``lr_latency_ms`` (RTT LR → Internet) par LR, via LATERAL.
 
-    Même pattern indexé que :func:`_fetch_latest_metrics` mais pour une seule
-    métrique : un ``ORDER BY collected_at DESC LIMIT 1`` par LR sur
+    Un ``ORDER BY collected_at DESC LIMIT 1`` par LR sur
     ``ix_device_metrics_lookup`` plutôt qu'un scan. Absent du dict si le LR n'a
     aucun relevé de latence (jamais de transit mesuré)."""
     if not lr_ids:
@@ -423,97 +350,6 @@ async def _fetch_live_metrics(
             len(tasks),
         )
     return result
-
-
-# ---------------------------------------------------------------------------
-# Data gathering
-# ---------------------------------------------------------------------------
-
-
-async def _fetch_metric_stats(
-    db: AsyncSession,
-    lr_ids: list[int],
-    cutoff: datetime.datetime,
-) -> dict[int, dict[str, dict[str, float]]]:
-    """Mean + sample count for each tracked metric over the 30-day window.
-
-    Reads from the `lr_health_metric_stats_30d` materialized view (created in
-    migration o6a7b8c9d0e1, refreshed every 15 min by
-    lr_health_matview_refresh_job). The view pre-aggregates the same query
-    that used to run inline here — at prod scale (16 M+ rows) that inline
-    query did a 4 s Parallel Seq Scan on every page load. Now it's a 340-row
-    lookup on a small view, <50 ms.
-
-    The `cutoff` arg is accepted for API compatibility but ignored: the view
-    bakes in `now() - interval '30 days'` at REFRESH time, so the window
-    sliding is handled by the refresh job, not by the caller.
-    """
-    if not lr_ids:
-        return {}
-
-    sql = text(
-        """
-        SELECT device_id, metric_name, mean, samples
-        FROM lr_health_metric_stats_30d
-        WHERE device_id = ANY(CAST(:lr_ids AS integer[]))
-        """
-    )
-    rows = (await db.execute(sql, {"lr_ids": lr_ids})).all()
-    result: dict[int, dict[str, dict[str, float]]] = defaultdict(dict)
-    for r in rows:
-        result[r.device_id][r.metric_name] = {
-            "mean": float(r.mean) if r.mean is not None else math.nan,
-            "samples": int(r.samples),
-        }
-    return result
-
-
-async def _fetch_latest_metrics(
-    db: AsyncSession,
-    lr_ids: list[int],
-) -> dict[int, dict[str, float]]:
-    """Latest value of each tracked metric per LR (for display).
-
-    Uses a LATERAL join so Postgres performs one indexed `ORDER BY DESC LIMIT 1`
-    per (device_id, metric_name) pair instead of a self-join against a
-    GROUP BY subquery. The GROUP BY variant scans the entire `device_metrics`
-    table (~16M rows in prod 2026-06-01) because the planner picks a Parallel
-    Seq Scan once the filter is broad enough; the LATERAL variant performs
-    340 O(log n) lookups via `ix_device_metrics_lookup`.
-
-    Measured on prod 2026-06-01: 3.3 s → 16 ms (200× faster).
-    """
-    if not lr_ids:
-        return {}
-
-    sql = text(
-        """
-        SELECT pairs.device_id, pairs.metric_name, m.metric_value
-        FROM (
-            SELECT did.device_id, mn.metric_name
-            FROM unnest(CAST(:lr_ids AS integer[])) AS did(device_id)
-            CROSS JOIN unnest(CAST(:metric_names AS text[])) AS mn(metric_name)
-        ) pairs
-        JOIN LATERAL (
-            SELECT metric_value
-            FROM device_metrics dm
-            WHERE dm.device_id = pairs.device_id
-              AND dm.metric_name = pairs.metric_name
-            ORDER BY dm.collected_at DESC
-            LIMIT 1
-        ) m ON true
-        """
-    )
-    rows = (
-        await db.execute(
-            sql,
-            {"lr_ids": lr_ids, "metric_names": list(_TRACKED_METRICS)},
-        )
-    ).all()
-    out: dict[int, dict[str, float]] = defaultdict(dict)
-    for r in rows:
-        out[r.device_id][r.metric_name] = float(r.metric_value)
-    return out
 
 
 # ---------------------------------------------------------------------------

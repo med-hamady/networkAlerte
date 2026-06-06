@@ -4,10 +4,8 @@ import { useState } from 'react'
 import { generateReport } from '@/lib/api'
 import type { SupervisionReport } from '@/lib/types'
 import { formatDate } from '@/lib/types'
-import ClientLinkHealthCard from '@/components/report/ClientLinkHealthCard'
 import DeviceReliabilityCard from '@/components/report/DeviceReliabilityCard'
 import AlertFrequencyCard from '@/components/report/AlertFrequencyCard'
-import RadioMetricsCard from '@/components/report/RadioMetricsCard'
 import WeakPointsCard from '@/components/report/WeakPointsCard'
 import RecommendationsCard from '@/components/report/RecommendationsCard'
 
@@ -127,25 +125,17 @@ export default function ReportsPage() {
             )
             const isClient = (deviceType: string | undefined) => deviceType === 'lr'
 
-            // Côté clients : synthèse décisionnelle (KPI parc + triage des liens
-            // dégradés). Pas de tableau exhaustif de moyennes radio ni de
-            // comptage d'incidents — sans valeur décisionnelle pour un LR.
+            // Côté réseau uniquement : fiabilité + points de faiblesse de
+            // l'infrastructure. La santé des liens clients (LTU LR) vit sur la
+            // page « Liaisons clients » (état live), plus dans le rapport.
             const networkReliability = report.device_reliability.filter((d) => !isClient(d.device_type))
-            const networkRadio = report.radio_metrics.filter((m) => !isClient(typeById.get(m.device_id)))
             const networkWeak = report.weak_points.filter((w) => !isClient(typeById.get(w.device_id)))
 
             const hasNetwork =
-              networkReliability.length + networkRadio.length + networkWeak.length > 0
+              networkReliability.length + networkWeak.length > 0
 
             return (
               <>
-                <SectionHeader
-                  title="Côté clients — LTU LR"
-                  subtitle="Équipements installés chez les clients : santé des liens radio et actions à mener."
-                  accent="amber"
-                />
-                <ClientLinkHealthCard data={report.client_link_health} />
-
                 <SectionHeader
                   title="Côté réseau — Rockets, Switches, UISP Power"
                   subtitle="Équipements d'infrastructure : problèmes liés au cœur de réseau et à l'alimentation."
@@ -154,7 +144,6 @@ export default function ReportsPage() {
                 {hasNetwork ? (
                   <>
                     <DeviceReliabilityCard data={networkReliability} />
-                    <RadioMetricsCard data={networkRadio} />
                     <WeakPointsCard data={networkWeak} />
                   </>
                 ) : (

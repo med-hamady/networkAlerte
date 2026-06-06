@@ -501,15 +501,6 @@ export interface AlertTypeFrequency {
   avg_resolution_minutes: number | null
 }
 
-export interface RadioMetrics {
-  device_id: number
-  device_name: string
-  avg_signal_dbm: number | null
-  min_signal_dbm: number | null
-  avg_cinr_db: number | null
-  avg_ccq_pct: number | null
-}
-
 export interface WeakPoint {
   device_id: number
   device_name: string
@@ -525,24 +516,6 @@ export interface Recommendation {
   description: string
   affected_devices: string[]
   alert_type: string | null
-}
-
-export interface ClientLinkHealthItem {
-  device_id: number
-  device_name: string
-  verdict: 'critical' | 'suspect'
-  active_signals_count: number
-  causes: string[]
-  action: string
-}
-
-export interface ClientLinkHealth {
-  window_days: number
-  total_clients: number
-  ok_count: number
-  suspect_count: number
-  critical_count: number
-  items: ClientLinkHealthItem[]
 }
 
 // ─── Bad installations (Liaisons clients) ──────────────────────────────────
@@ -650,10 +623,8 @@ export interface DowntimeLogResponse {
 export interface SupervisionReport {
   generated_at: string
   period: ReportPeriodSummary
-  client_link_health: ClientLinkHealth
   device_reliability: DeviceReliability[]
   alert_frequencies: AlertTypeFrequency[]
-  radio_metrics: RadioMetrics[]
   weak_points: WeakPoint[]
   recommendations: Recommendation[]
 }

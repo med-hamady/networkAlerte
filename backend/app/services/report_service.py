@@ -9,25 +9,20 @@ import datetime
 import logging
 from collections import defaultdict
 
-from sqlalchemy import and_, desc, distinct, func, or_, select
+from sqlalchemy import and_, desc, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.alert_labels import alert_type_label
 from app.models.device import Device
-from app.models.device_metric import DeviceMetric
 from app.models.incident import Incident
 from app.schemas.report import (
     AlertTypeFrequency,
-    ClientLinkHealth,
-    ClientLinkHealthItem,
     DeviceReliability,
-    RadioMetrics,
     Recommendation,
     ReportPeriodSummary,
     SupervisionReport,
     WeakPoint,
 )
-from app.services import lr_health_service
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +31,6 @@ AVAILABILITY_TYPES: set[str] = {
     "switch_down",
     "device_unreachable",
 }
-
-RADIO_METRIC_NAMES: set[str] = {"signal_dbm", "cinr_db", "ccq_pct"}
 
 PRIORITY_RANK: dict[str, int] = {"critique": 0, "élevé": 1, "moyen": 2}
 
@@ -162,57 +155,6 @@ async def _build_alert_frequencies(
             occurrence_count=row.cnt or 0,
             affected_device_count=row.devices or 0,
             avg_resolution_minutes=float(row.avg_res) if row.avg_res is not None else None,
-        )
-        for row in result.all()
-    ]
-
-
-async def _build_radio_metrics(
-    db: AsyncSession,
-    date_from_dt: datetime.datetime,
-    date_to_dt: datetime.datetime,
-) -> list[RadioMetrics]:
-    avg_sig = func.avg(DeviceMetric.metric_value).filter(
-        DeviceMetric.metric_name == "signal_dbm"
-    )
-    min_sig = func.min(DeviceMetric.metric_value).filter(
-        DeviceMetric.metric_name == "signal_dbm"
-    )
-    avg_cinr = func.avg(DeviceMetric.metric_value).filter(
-        DeviceMetric.metric_name == "cinr_db"
-    )
-    avg_ccq = func.avg(DeviceMetric.metric_value).filter(
-        DeviceMetric.metric_name == "ccq_pct"
-    )
-
-    stmt = (
-        select(
-            DeviceMetric.device_id,
-            Device.name,
-            avg_sig.label("avg_sig"),
-            min_sig.label("min_sig"),
-            avg_cinr.label("avg_cinr"),
-            avg_ccq.label("avg_ccq"),
-        )
-        .join(Device, Device.id == DeviceMetric.device_id)
-        .where(
-            DeviceMetric.collected_at >= date_from_dt,
-            DeviceMetric.collected_at <= date_to_dt,
-            DeviceMetric.metric_name.in_(RADIO_METRIC_NAMES),
-        )
-        .group_by(DeviceMetric.device_id, Device.name)
-        .having(or_(avg_sig.isnot(None), avg_cinr.isnot(None), avg_ccq.isnot(None)))
-        .order_by(Device.name)
-    )
-    result = await db.execute(stmt)
-    return [
-        RadioMetrics(
-            device_id=row.device_id,
-            device_name=row.name,
-            avg_signal_dbm=float(row.avg_sig) if row.avg_sig is not None else None,
-            min_signal_dbm=float(row.min_sig) if row.min_sig is not None else None,
-            avg_cinr_db=float(row.avg_cinr) if row.avg_cinr is not None else None,
-            avg_ccq_pct=float(row.avg_ccq) if row.avg_ccq is not None else None,
         )
         for row in result.all()
     ]
@@ -550,70 +492,6 @@ async def _build_recommendations(
     return recommendations
 
 
-_CLIENT_HEALTH_WINDOW_DAYS = 30
-
-_VERDICT_ACTION: dict[str, str] = {
-    "critical": (
-        "Reprendre l'installation : réaligner l'antenne, vérifier la ligne de "
-        "vue et la fixation."
-    ),
-    "suspect": (
-        "Inspecter : contrôler l'alignement et l'environnement RF du client."
-    ),
-}
-
-
-async def _build_client_link_health(db: AsyncSession) -> ClientLinkHealth:
-    """Triage décisionnel des liens clients LR.
-
-    Réutilise telle quelle la classification de la page « Liaisons clients »
-    (`lr_health_service.get_bad_installations`) : 5 indicateurs en moyenne
-    glissante 30 j, verdict suspect (≥3/5) ou critique (≥4/5). Garantit que le
-    rapport et la page racontent la même histoire pour un même client. Fenêtre
-    fixe 30 j (matview), indépendante de la plage de dates du rapport.
-    """
-    total_clients = (
-        await db.scalar(
-            select(func.count(Device.id)).where(Device.device_type == "lr")
-        )
-        or 0
-    )
-
-    bad = await lr_health_service.get_bad_installations(
-        db, days=_CLIENT_HEALTH_WINDOW_DAYS
-    )
-
-    items: list[ClientLinkHealthItem] = []
-    suspect_count = 0
-    critical_count = 0
-    for row in bad.items:
-        if row.verdict == "critical":
-            critical_count += 1
-        else:
-            suspect_count += 1
-        items.append(
-            ClientLinkHealthItem(
-                device_id=row.lr_id,
-                device_name=row.lr_name,
-                verdict=row.verdict,
-                active_signals_count=row.active_signals_count,
-                causes=[s.label for s in row.signals if s.active],
-                action=_VERDICT_ACTION.get(row.verdict, _VERDICT_ACTION["suspect"]),
-            )
-        )
-
-    # get_bad_installations trie déjà : critiques d'abord, puis nb d'indicateurs.
-    ok_count = max(total_clients - len(items), 0)
-    return ClientLinkHealth(
-        window_days=_CLIENT_HEALTH_WINDOW_DAYS,
-        total_clients=total_clients,
-        ok_count=ok_count,
-        suspect_count=suspect_count,
-        critical_count=critical_count,
-        items=items,
-    )
-
-
 async def generate_report(
     db: AsyncSession,
     date_from: datetime.date,
@@ -635,20 +513,16 @@ async def generate_report(
 
     # Séquentiel : AsyncSession n'est pas thread-safe / concurrent-safe
     period = _build_period_summary(date_from_dt, date_to_dt)
-    client_link_health = await _build_client_link_health(db)
     reliability = await _build_device_reliability(db, date_from_dt, date_to_dt)
     frequencies = await _build_alert_frequencies(db, date_from_dt, date_to_dt)
-    radio = await _build_radio_metrics(db, date_from_dt, date_to_dt)
     weak = await _build_weak_points(db, date_from_dt, date_to_dt)
     recs = await _build_recommendations(db, date_from_dt, date_to_dt)
 
     return SupervisionReport(
         generated_at=datetime.datetime.now(datetime.UTC),
         period=period,
-        client_link_health=client_link_health,
         device_reliability=reliability,
         alert_frequencies=frequencies,
-        radio_metrics=radio,
         weak_points=weak,
         recommendations=recs,
     )

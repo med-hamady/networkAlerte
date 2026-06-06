@@ -68,28 +68,21 @@ _PING_FAILURE_STATE_KEY = "_ping_failures"
 
 
 # ── device_metrics persistence policy ───────────────────────────────────────
-# Only these metric names are ever read as a TIME SERIES (history) by a real
-# consumer:
-#   - byte counters → consumption_service LAG() deltas (24h/7d/30d)
-#   - signal/link_potential/capacity/rate idx → lr_health_metric_stats_30d
-#     matview (30-day avg, keep this set in sync with that view's metric list)
-#   - signal/cinr/ccq → report_service avg/min over the report window
-# Everything else we poll is read ONLY as "latest" (the /metrics/latest LATERAL
-# probe). The alert engine reads its baselines (EMA throughput, error deltas)
-# from AlertState, never from device_metrics — so collapsing a non-history
-# metric to a single row breaks no alert. We therefore APPEND history metrics
-# (one row per cycle) and COLLAPSE all others to a single row per
-# (device_id, metric_name) via DELETE+INSERT — the same strategy already proven
-# on UISP Switch metrics. Without this a single UISP Power device appends ~25
-# metrics every 30 s (~70k rows/day) that nothing reads past the last point.
+# The ONLY metrics still read as a TIME SERIES (history) are the cumulative byte
+# counters, consumed by consumption_service via LAG() deltas (24h/7d/30d). Every
+# other polled metric — including all radio quality metrics (signal/ccq/cinr/
+# link_potential/capacity/rate idx) since the 30-day report sections were
+# removed — is read ONLY as "latest" (the /metrics/latest LATERAL probe). The
+# alert engine reads its baselines (EMA throughput, error deltas) from
+# AlertState, never from device_metrics, so collapsing a non-history metric to a
+# single row breaks no alert. We therefore APPEND the byte counters (one row per
+# cycle) and COLLAPSE everything else to a single row per (device_id,
+# metric_name) via DELETE+INSERT — the strategy first proven on UISP Switch
+# metrics. Without this a single UISP Power device appends ~25 metrics every
+# 30 s (~70k rows/day) that nothing reads past the last point.
 HISTORY_METRICS: frozenset[str] = frozenset({
     # consumption_service — cumulative byte counters → only meaningful as deltas
     "peer_tx_bytes", "peer_rx_bytes", "radio_rx_bytes", "radio_tx_bytes",
-    # lr_health_metric_stats_30d matview (mirror of _TRACKED_METRICS)
-    "signal_dbm", "link_potential_pct", "total_capacity_mbps",
-    "local_rx_rate_idx", "remote_rx_rate_idx",
-    # report_service RADIO_METRIC_NAMES (signal_dbm already above)
-    "cinr_db", "ccq_pct",
 })
 
 
@@ -1554,56 +1547,14 @@ async def _apply_lr_topology(session, dev: Lr, mode: str | None, source_msg: str
         )
 
 
-async def lr_health_matview_refresh_job() -> None:
-    """Refresh the `lr_health_metric_stats_30d` materialized view.
-
-    Uses REFRESH MATERIALIZED VIEW CONCURRENTLY so readers of /lr-health are
-    never blocked — Postgres computes the new state into a staging table
-    then swaps atomically. Requires the UNIQUE index on (device_id,
-    metric_name) created by migration o6a7b8c9d0e1.
-
-    REFRESH CONCURRENTLY must run outside an explicit transaction → we use
-    AUTOCOMMIT on the engine connection.
-
-    Cost: ~5 s of background CPU/IO every 15 min (≈ 0.5 % of one CPU).
-    Side effect: keeps the /lr-health/bad-installations endpoint <100 ms
-    instead of ~4 s seq-scan on device_metrics (16 M+ rows in prod).
-    """
-    from sqlalchemy import text
-
-    from app.db.session import engine
-
-    started = datetime.datetime.now(datetime.UTC)
-    try:
-        async with engine.connect() as conn:
-            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
-            await conn.execute(
-                text("REFRESH MATERIALIZED VIEW CONCURRENTLY lr_health_metric_stats_30d")
-            )
-        elapsed = (datetime.datetime.now(datetime.UTC) - started).total_seconds()
-        logger.info("lr_health matview refresh — done in %.2f s", elapsed)
-        if elapsed > 60:
-            # Refresh getting slow → device_metrics is outgrowing the
-            # view's scan budget. Time to think about retention.
-            logger.warning(
-                "lr_health matview refresh took %.1f s (> 60 s) — "
-                "device_metrics is large, plan retention.",
-                elapsed,
-            )
-    except Exception:
-        logger.exception(
-            "lr_health matview refresh failed — page will keep serving "
-            "the previous snapshot until next attempt",
-        )
-
-
 async def client_consumption_matview_refresh_job() -> None:
     """Refresh the `client_consumption_30d` materialized view.
 
-    Same pattern as `lr_health_matview_refresh_job` — see that docstring
-    for the AUTOCOMMIT rationale. Pre-computes the 30-day byte-delta
-    aggregate used by /clients/consumption?period=30d (was ~36 s of seq
-    scan + Python delta loop in prod 2026-06-02, target <100 ms after).
+    REFRESH MATERIALIZED VIEW CONCURRENTLY so readers are never blocked;
+    it must run outside an explicit transaction → AUTOCOMMIT on the engine
+    connection. Pre-computes the 30-day byte-delta aggregate used by
+    /clients/consumption?period=30d (was ~36 s of seq scan + Python delta
+    loop in prod 2026-06-02, target <100 ms after).
 
     The view is bounded to 30 days at REFRESH time via `now() - interval
     '30 days'` — the sliding window moves forward by 15 min each refresh.
@@ -1927,19 +1878,6 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         id="warning_digest", name="Warning digest flush",
         replace_existing=True,
         **safety,
-    )
-    scheduler.add_job(
-        lr_health_matview_refresh_job,
-        trigger="interval",
-        minutes=settings.lr_health_matview_refresh_interval_minutes,
-        id="lr_health_matview_refresh",
-        name="LR health matview refresh (30-day aggregate)",
-        replace_existing=True,
-        # Override misfire_grace_time: a missed refresh isn't urgent — readers
-        # just see slightly older data until the next cycle.
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=120,
     )
     scheduler.add_job(
         client_consumption_matview_refresh_job,

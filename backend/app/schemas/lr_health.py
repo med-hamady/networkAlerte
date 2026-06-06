@@ -57,12 +57,6 @@ class BadInstallationRow(BaseModel):
     rx_rate_floor_idx: float              # family floor
 
 
-class BadInstallationsResponse(BaseModel):
-    period_days: int
-    generated_at: datetime.datetime
-    items: list[BadInstallationRow]
-
-
 class LiveLinkHealthResponse(BaseModel):
     """Réponse de la page « Liaisons clients » en mode **live** (état actuel).
 

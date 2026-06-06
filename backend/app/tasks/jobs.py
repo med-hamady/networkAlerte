@@ -1011,10 +1011,26 @@ async def power_poll_job() -> None:
             await session.commit()
 
 
+# Concurrency controls for the LTU API poll. The job used to be serial (one
+# login + statistics at a time); with a growing fleet a full pass exceeded the
+# 60 s interval → APScheduler skipped cycles ("maximum number of running
+# instances reached") and discovery/metrics lagged by minutes. We now fetch all
+# Rockets concurrently (bounded by a semaphore) under a global deadline, then
+# process the results sequentially in DB. Same proven pattern as
+# lr_health_service._fetch_live_metrics.
+_LTU_POLL_CONCURRENCY = 10
+_LTU_POLL_DEADLINE_S = 40.0
+
+
 async def ltu_api_poll_job() -> None:
     """
-    Poll LTU Rocket via HTTP API (signal, CCQ, CINR, rates, CPE info).
-    Delegates radio quality anomaly detection to the alert engine.
+    Poll LTU Rockets via HTTP API (signal, CCQ, CINR, rates, CPE info).
+
+    Phase 1 fetches every Rocket's ``/statistics`` CONCURRENTLY (I/O-bound,
+    bounded by a semaphore + a global deadline so slow/unreachable Rockets never
+    stall the others). Phase 2 persists metrics + runs discovery/alerting
+    sequentially in DB. Radio quality anomaly detection is delegated to the
+    alert engine.
     """
     base_settings = get_settings()
     async with async_session_factory() as _ts_session:
@@ -1028,38 +1044,61 @@ async def ltu_api_poll_job() -> None:
                 Rocket.radio_tech == "ltu",
             )
         )
-        devices = list(result.scalars().all())
+        # Snapshot the plain columns we need (id/name/ip/creds) while the session
+        # is open — Phase 1 runs the network fetch outside any session.
+        targets = [
+            (d.id, d.name, d.ip_address, d.ssh_username, d.ssh_password)
+            for d in result.scalars().all()
+        ]
 
-    if not devices:
+    if not targets:
         logger.debug("LTU API poll — no eligible devices")
         return
 
-    logger.info("LTU API poll — checking %d device(s)", len(devices))
-
+    logger.info("LTU API poll — checking %d device(s)", len(targets))
     unit_map = ltu_api_service.METRIC_UNITS
 
-    for device in devices:
-        if not device.ssh_username or not device.ssh_password:
+    # ── Phase 1 : fetch every Rocket's HTTP API concurrently (bounded) ──
+    sem = asyncio.Semaphore(_LTU_POLL_CONCURRENCY)
+    # dev_id -> (rocket_ap_metrics, all_peers, per_peer_metrics)
+    fetched: dict[int, tuple] = {}
+
+    async def _fetch(dev_id: int, name: str, ip: str, user: str | None, pwd: str | None) -> None:
+        if not user or not pwd:
             logger.warning(
                 "LTU API skip — %s (%s) : credentials manquants en base "
                 "(ssh_username/ssh_password). Configure-les via PUT /api/v1/devices/%d.",
-                device.name, device.ip_address, device.id,
+                name, ip, dev_id,
             )
-            continue
+            return
+        async with sem:
+            res = await ltu_api_service.collect_ltu_api_full(
+                host=ip, username=user, password=pwd, port=443,  # firmware forces TLS
+            )
+        if res[0] is None:  # rocket_ap_metrics is None → unreachable / auth fail
+            logger.debug("LTU API no response — %s (%s)", name, ip)
+            return
+        fetched[dev_id] = res
 
-        rocket_ap_metrics, all_peers, per_peer_metrics = await ltu_api_service.collect_ltu_api_full(
-            host=device.ip_address,
-            username=device.ssh_username,
-            password=device.ssh_password,
-            port=443,  # LTU HTTP API requires HTTPS — firmware forces TLS
+    tasks = [asyncio.create_task(_fetch(*t)) for t in targets]
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True),
+            timeout=_LTU_POLL_DEADLINE_S,
+        )
+    except TimeoutError:  # asyncio.TimeoutError is an alias of builtin on 3.11+
+        for t in tasks:
+            t.cancel()
+        logger.warning(
+            "LTU API poll : délai global de %.0fs atteint — %d/%d Rocket(s) "
+            "récupéré(s), le reste sera repris au prochain cycle.",
+            _LTU_POLL_DEADLINE_S, len(fetched), len(tasks),
         )
 
-        if rocket_ap_metrics is None:
-            logger.debug("LTU API no response — %s (%s)", device.name, device.ip_address)
-            continue
-
+    # ── Phase 2 : persist + discovery + alerting sequentially (DB-bound) ──
+    for dev_id, (rocket_ap_metrics, all_peers, per_peer_metrics) in fetched.items():
         async with async_session_factory() as session:
-            dev = await session.get(Device, device.id)
+            dev = await session.get(Device, dev_id)
             if dev is None:
                 continue
 

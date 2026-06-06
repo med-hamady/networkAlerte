@@ -538,11 +538,18 @@ async def device_ping_job() -> None:
 
                 logger.info("UP   %s (%s)", dev.name, dev.ip_address)
             else:
-                dev.status = "down"
                 failures = await _get_ping_failure_count(session, dev.id) + 1
                 await _set_ping_failure_count(session, dev.id, failures)
 
                 if failures >= settings.ping_down_threshold:
+                    # Anti-flap du STATUT affiché : on ne bascule en "down"
+                    # qu'au seuil (comme l'incident), jamais sur un seul ping
+                    # raté. Un device qui route le trafic client et répond à son
+                    # API ne doit pas afficher "HORS LIGNE" pour un ICMP perdu
+                    # (radios Ubiquiti rate-limitent l'ICMP de gestion). Sous le
+                    # seuil il reste "up" → il continue aussi d'être pollé par
+                    # les jobs API/SNMP qui filtrent status="up".
+                    dev.status = "down"
                     # Un LR qui ne répond plus = panne côté client (courant coupé
                     # chez l'abonné, LR débranché), pas une panne de notre infra.
                     # On ne lève donc AUCUN incident pour un LR down. Son

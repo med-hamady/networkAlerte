@@ -645,53 +645,81 @@ async def snmp_poll_job() -> None:
 
     logger.info("SNMP poll — checking %d device(s)", len(devices))
 
-    for device in devices:
-        community = device.snmp_community or settings.snmp_default_community
-        category = device.rule_category
-
-        if category in AIRMAX_RULE_CATEGORIES:
-            metrics = await snmp_service.collect_airmax_metrics(
-                host=device.ip_address,
-                community=community,
-                port=settings.snmp_port,
-                timeout=settings.snmp_timeout,
-            )
-        elif category in RADIO_RULE_CATEGORIES:
-            metrics = await snmp_service.collect_ltu_metrics(
-                host=device.ip_address,
-                community=community,
-                port=settings.snmp_port,
-                timeout=settings.snmp_timeout,
-            )
-        elif category in SWITCH_RULE_CATEGORIES:
-            metrics = await snmp_service.collect_switch_port_metrics(
-                host=device.ip_address,
-                community=community,
-                port=settings.snmp_port,
-                timeout=settings.snmp_timeout,
-                max_ports=device.max_ports,
-            )
-        else:
-            metrics = await snmp_service.collect_standard_metrics(
-                host=device.ip_address,
-                community=community,
-                port=settings.snmp_port,
-                timeout=settings.snmp_timeout,
-            )
-
-        if not any(v is not None for v in metrics.values()):
-            logger.warning("SNMP no data — %s (%s)", device.name, device.ip_address)
-            continue
-
-        logger.info(
-            "SNMP %s (%s) — %s",
-            device.name,
-            device.ip_address,
-            " | ".join(f"{k}={v}" for k, v in metrics.items() if v is not None),
+    # Snapshot the fields both phases need (read from the already-loaded
+    # instances). Switch-only columns (max_ports / rocket_port_index /
+    # port_min_speed_mbps) are read only for switches.
+    def _snap(d: Device) -> tuple:
+        is_switch = d.rule_category in SWITCH_RULE_CATEGORIES
+        return (
+            d.id, d.name, d.ip_address,
+            d.snmp_community or settings.snmp_default_community,
+            d.rule_category,
+            d.max_ports if is_switch else None,
+            d.rocket_port_index if is_switch else None,
+            d.port_min_speed_mbps if is_switch else None,
         )
 
+    targets = [_snap(d) for d in devices]
+
+    # ── Phase 1 : fetch SNMP de tous les devices EN PARALLÈLE (borné) ──
+    # Le job était série (un walk à la fois) → à 78 devices, aggravé par les
+    # timeouts des airMAX SNMP-off qui s'additionnaient, un tour dépassait 60 s.
+    # Les collecteurs pysnmp sont async → gather + sémaphore (les timeouts
+    # tournent en parallèle). On fait AUSSI la découverte airMAX (autre walk
+    # SNMP) ici. dev_id -> (metrics, airmax_peers | None).
+    snmp_port = settings.snmp_port
+    snmp_timeout = settings.snmp_timeout
+    sem = asyncio.Semaphore(settings.snmp_concurrency)
+    fetched: dict[int, tuple] = {}
+
+    async def _fetch(snap: tuple) -> None:
+        dev_id, name, ip, community, category, max_ports, _pidx, _pmin = snap
+        async with sem:
+            if category in AIRMAX_RULE_CATEGORIES:
+                metrics = await snmp_service.collect_airmax_metrics(
+                    host=ip, community=community, port=snmp_port, timeout=snmp_timeout,
+                )
+            elif category in RADIO_RULE_CATEGORIES:
+                metrics = await snmp_service.collect_ltu_metrics(
+                    host=ip, community=community, port=snmp_port, timeout=snmp_timeout,
+                )
+            elif category in SWITCH_RULE_CATEGORIES:
+                metrics = await snmp_service.collect_switch_port_metrics(
+                    host=ip, community=community, port=snmp_port, timeout=snmp_timeout,
+                    max_ports=max_ports,
+                )
+            else:
+                metrics = await snmp_service.collect_standard_metrics(
+                    host=ip, community=community, port=snmp_port, timeout=snmp_timeout,
+                )
+
+            if not any(v is not None for v in metrics.values()):
+                logger.warning("SNMP no data — %s (%s)", name, ip)
+                return
+
+            logger.info(
+                "SNMP %s (%s) — %s", name, ip,
+                " | ".join(f"{k}={v}" for k, v in metrics.items() if v is not None),
+            )
+
+            # airMAX peer discovery — also an SNMP walk → done here in Phase 1.
+            airmax_peers = None
+            if category in AIRMAX_RULE_CATEGORIES:
+                airmax_peers = await snmp_service.discover_airmax_peers(
+                    host=ip, community=community, port=snmp_port, timeout=snmp_timeout,
+                )
+        fetched[dev_id] = (metrics, airmax_peers)
+
+    await asyncio.gather(*[_fetch(s) for s in targets], return_exceptions=True)
+
+    # ── Phase 2 : persist + alert engine + découverte + ports switch (série DB) ──
+    snap_by_id = {s[0]: s for s in targets}
+    for dev_id, (metrics, airmax_peers) in fetched.items():
+        _id, _name, _ip, _community, category, _mp, rocket_port_index, port_min_speed = (
+            snap_by_id[dev_id]
+        )
         async with async_session_factory() as session:
-            dev = await session.get(Device, device.id)
+            dev = await session.get(Device, dev_id)
             if dev is None:
                 continue
 
@@ -721,33 +749,26 @@ async def snmp_poll_job() -> None:
             # Delegate anomaly detection to alert engine
             await alert_engine.evaluate_device_metrics(session, dev, metrics, settings)
 
-            # Auto-discovery for airMAX Rockets — walks the UBNT station table
-            # via SNMP and feeds the same reconcile_peers() pipeline as LTU API.
+            # Auto-discovery for airMAX Rockets — station table walked in Phase 1
+            # (airmax_peers), fed to the same reconcile_peers() pipeline as LTU API.
             # Peers are persisted as Lr rows with model_variant="litebeam_5ac"
             # by default; the operator can override via PUT after creation.
-            if category in AIRMAX_RULE_CATEGORIES:
-                airmax_peers = await snmp_service.discover_airmax_peers(
-                    host=device.ip_address,
-                    community=community,
-                    port=settings.snmp_port,
-                    timeout=settings.snmp_timeout,
+            if category in AIRMAX_RULE_CATEGORIES and airmax_peers:
+                recon = await discovery_service.reconcile_peers(
+                    session, dev, airmax_peers,
                 )
-                if airmax_peers:
-                    recon = await discovery_service.reconcile_peers(
-                        session, dev, airmax_peers,
+                if recon.created or recon.ip_changed or recon.reassigned:
+                    logger.info(
+                        "Discovery — airMAX '%s' : %d nouveau(x), %d IP changée(s), %d rebascule(s)",
+                        dev.name, len(recon.created),
+                        len(recon.ip_changed), len(recon.reassigned),
                     )
-                    if recon.created or recon.ip_changed or recon.reassigned:
-                        logger.info(
-                            "Discovery — airMAX '%s' : %d nouveau(x), %d IP changée(s), %d rebascule(s)",
-                            dev.name, len(recon.created),
-                            len(recon.ip_changed), len(recon.reassigned),
-                        )
 
             # Switch port monitoring (not handled by alert engine — device-level rule).
             # Per-switch settings come from the UispSwitch row (port index + min speed).
             if category in SWITCH_RULE_CATEGORIES:
-                port_idx = device.rocket_port_index or 0
-                min_speed = device.port_min_speed_mbps
+                port_idx = rocket_port_index or 0
+                min_speed = port_min_speed
                 if port_idx > 0:
                     port_status = metrics.get(f"port_{port_idx}_up")
                     if port_status is not None:

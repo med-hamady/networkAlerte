@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     # Anti-flapping — nombre de pings ratés consécutifs avant d'ouvrir un incident
     ping_down_threshold: int = 3
 
+    # Concurrence du snmp_poll_job. Le job était série (un walk SNMP à la fois)
+    # → à 78 rockets/switches, aggravé par les timeouts des airMAX SNMP-off qui
+    # s'additionnaient, un tour dépassait 60 s. Les collecteurs pysnmp sont async
+    # → gather + sémaphore : les timeouts s'exécutent en parallèle.
+    snmp_concurrency: int = 30
+
     # Concurrence de la sonde transit/latence LR (lr_internet_probe_job). Le job
     # était SÉRIE (une session SSH à la fois) → ~1 h par tour à 500 LR (chaque LR
     # n'était sondé qu'une fois/heure). On parallélise sur un pool de threads

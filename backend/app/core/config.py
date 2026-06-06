@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     # Anti-flapping — nombre de pings ratés consécutifs avant d'ouvrir un incident
     ping_down_threshold: int = 3
 
+    # Concurrence de la sonde transit/latence LR (lr_internet_probe_job). Le job
+    # était SÉRIE (une session SSH à la fois) → ~1 h par tour à 500 LR (chaque LR
+    # n'était sondé qu'une fois/heure). On parallélise sur un pool de threads
+    # dédié de cette taille (chaque sonde = paramiko sync borné par ses timeouts).
+    # ceil(parc_LR / concurrence) × ~8 s ≈ durée d'un tour (ex. 500/60 ≈ 70 s).
+    lr_probe_concurrency: int = 60
+
     # Concurrence max du device_ping_job. Le job lançait TOUS les pings d'un coup
     # (asyncio.gather sur tout le parc) — à 600+ devices ça spawn 600 sous-process
     # `ping` simultanés qui se starvent mutuellement → des devices joignables

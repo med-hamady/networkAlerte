@@ -12,7 +12,9 @@ Scheduled supervision jobs.
 
 import asyncio
 import datetime
+import functools
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import delete, func, select
@@ -1460,9 +1462,9 @@ async def lr_internet_probe_job() -> None:
 
     async with async_session_factory() as session:
         # Skip LRs already known DOWN by device_ping_job — sinon chaque cycle
-        # gaspille un timeout SSH (~10–30 s) par LR mort, en série. Un LR down
-        # ne lève aucun incident (panne côté client) ; on reprend la sonde dès
-        # qu'il remonte (status repassé à up).
+        # gaspille un timeout SSH (~10–30 s) par LR mort. Un LR down ne lève
+        # aucun incident (panne côté client) ; on reprend la sonde dès qu'il
+        # remonte (status repassé à up).
         result = await session.execute(
             select(Lr).where(
                 Lr.ssh_username.is_not(None),
@@ -1470,37 +1472,63 @@ async def lr_internet_probe_job() -> None:
                 Lr.status == "up",
             )
         )
-        lrs = list(result.scalars().all())
+        # Snapshot des champs nécessaires à la sonde SSH (lus session ouverte) —
+        # la Phase 1 tourne hors session.
+        targets = [
+            (lr.id, lr.name, lr.ip_address, lr.ssh_port or 22,
+             lr.ssh_username, lr.ssh_password, lr.ssh_host_fingerprint)
+            for lr in result.scalars().all()
+        ]
 
-    if not lrs:
+    if not targets:
         logger.debug("lr_internet_probe: aucun LR up avec credentials SSH — ignoré")
         return
 
-    logger.info("lr_internet_probe — sonde sur %d LR(s)", len(lrs))
+    logger.info("lr_internet_probe — sonde sur %d LR(s)", len(targets))
 
+    # ── Phase 1 : sonder tous les LR EN PARALLÈLE (borné par le pool) ──
+    # Le job était série (1 SSH à la fois) → ~1 h/tour à 500 LR. On exécute la
+    # sonde paramiko sync (_measure_latency_via_ssh_sync, déjà bornée par ses
+    # timeouts connect 6 s / ping ~20 s) sur un pool de threads dédié : le pool
+    # limite lui-même la concurrence à lr_probe_concurrency, le reste fait la
+    # queue. dev_id -> (ssh_ok, ping_ok, avg_rtt, msg, observed_fp, used_pw).
+    loop = asyncio.get_running_loop()
+    results: dict[int, tuple] = {}
+
+    async def _probe(t: tuple, pool: ThreadPoolExecutor) -> None:
+        dev_id, name, ip, port, user, pwd, fp = t
+        try:
+            results[dev_id] = await loop.run_in_executor(
+                pool,
+                functools.partial(
+                    ssh_service._measure_latency_via_ssh_sync,
+                    ip, port, user, pwd,
+                    settings.lr_latency_target,
+                    settings.lr_latency_ping_count,
+                    fp,
+                    settings.lr_fallback_password_list,
+                ),
+            )
+        except Exception:
+            logger.exception("lr_internet_probe: sonde %s (%s) a crashé", name, ip)
+
+    with ThreadPoolExecutor(
+        max_workers=settings.lr_probe_concurrency, thread_name_prefix="lr-probe",
+    ) as pool:
+        await asyncio.gather(
+            *[_probe(t, pool) for t in targets], return_exceptions=True,
+        )
+
+    # ── Phase 2 : traitement DB séquentiel des résultats récupérés ──
     async with async_session_factory() as session:
-        for lr in lrs:
-            dev = await session.get(Lr, lr.id)
+        for dev_id, (ssh_ok, ping_ok, avg_rtt, msg, observed_fp, used_pw) in results.items():
+            dev = await session.get(Lr, dev_id)
             if dev is None:
                 continue
 
-            primary_pw = dev.ssh_password
-            ssh_ok, ping_ok, avg_rtt, msg, observed_fp, used_pw = (
-                await ssh_service.measure_latency_via_ssh(
-                    host=dev.ip_address,
-                    port=dev.ssh_port or 22,
-                    username=dev.ssh_username,
-                    password=primary_pw,
-                    target=settings.lr_latency_target,
-                    count=settings.lr_latency_ping_count,
-                    expected_fingerprint=dev.ssh_host_fingerprint,
-                    fallback_passwords=settings.lr_fallback_password_list,
-                )
-            )
-
             if observed_fp and dev.ssh_host_fingerprint != observed_fp:
                 dev.ssh_host_fingerprint = observed_fp
-            if used_pw and used_pw != primary_pw:
+            if used_pw and used_pw != dev.ssh_password:
                 logger.info(
                     "lr_internet_probe: LR '%s' (%s) — fallback password "
                     "succeeded → promoting on LR.",

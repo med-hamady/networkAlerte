@@ -156,6 +156,9 @@ backend/app/
 | `SMTP_FROM` | Adresse expéditeur |
 | `SMTP_TO` | Destinataire(s) emails |
 | `WARNING_DIGEST_MINUTES` | Intervalle digest warnings (défaut 15 min) |
+| `DEVICE_METRICS_RETENTION_DAYS` | Fenêtre de rétention des `device_metrics` historiques (défaut 90 j ; couvre les matviews 30 j + rapport avec marge) |
+| `DEVICE_METRICS_RETENTION_INTERVAL_MINUTES` | Intervalle du `device_metrics_retention_job` (défaut 360 = 6 h) |
+| `DEVICE_METRICS_RETENTION_BATCH_SIZE` | Taille de batch de la purge (défaut 50000 lignes/DELETE) |
 | `PING_DOWN_THRESHOLD` | Pings consécutifs échoués avant incident (défaut 3) |
 | `SIGNAL_WARNING_DBM` | Seuil signal warning (défaut -75 dBm — un signal entre -75 et -80 = warning) |
 | `SIGNAL_CRITICAL_DBM` | Seuil signal critical (défaut -80 dBm — strictement sous -80 = critique) |
@@ -224,7 +227,7 @@ backend/app/
 |---|---|---|
 | `heartbeat_job` | 60s | Sanity check scheduler |
 | `device_ping_job` | 30s | Ping ICMP tous les devices (anti-flap 3 cycles) |
-| `snmp_poll_job` | 60s | Métriques SNMP LTU radio (ath0/eth0) + Switch (ports) → alert engine. **Switch = écrasement en place** : les ~130 métriques/cycle d'un UISP Switch (display-only) sont stockées en **une seule ligne par (device_id, metric_name)** via DELETE+INSERT par métrique, pas d'historique empilé — sinon ~190k lignes/jour que rien ne lit au-delà du « dernier point » (faisait timeout `/metrics/latest`). Au 1er cycle, le DELETE par métrique absorbe aussi le backlog historique (indexé `(device_id, metric_name)`), dans le scheduler — surtout PAS dans une migration de démarrage (un bulk delete bloquait le healthcheck backend, cf. no-op `u2a3b4c5d6e7`). Les radios (Rocket/LR) gardent l'historique (consommé par les matviews conso/lr-health). |
+| `snmp_poll_job` | 60s | Métriques SNMP LTU radio (ath0/eth0) + Switch (ports) → alert engine. Persistance via `persist_device_metrics` (cf. **Politique device_metrics** ci-dessous) : seules les métriques de `HISTORY_METRICS` sont empilées, le reste (tout le switch, noise, rates…) est écrasé en place (1 ligne/`(device_id, metric_name)`). Au 1er cycle après bascule d'une métrique en collapse, le DELETE absorbe son backlog historique, dans le scheduler — surtout PAS dans une migration de démarrage (un bulk delete bloquait le healthcheck backend, cf. no-op `u2a3b4c5d6e7`). |
 | `power_poll_job` | 30s | API REST UISP Power (voltage, batterie) |
 | `ltu_api_poll_job` | 60s | API HTTP LTU Rocket (signal, CCQ, CINR, CPE auto-discovery) → alert engine + check topologie via `peer.remote.netMode` (router/bridge) par LR, sans SSH |
 | `airos_api_poll_job` | 60s | API HTTP airOS (`login.cgi`+`status.cgi`) sur **chaque LR airMAX** (LiteBeam) à son IP → métriques de lien (link_potential, total_capacity, rate idx, signal, CINR…), auto-rename via `host.hostname`, + check topologie via `host.netrole` (router/bridge). Remplace le SNMP pour ces LR. Requiert `ssh_username`/`ssh_password` (creds airOS) |
@@ -234,6 +237,15 @@ backend/app/
 | `lr_health_matview_refresh_job` | 15 min | `REFRESH MATERIALIZED VIEW CONCURRENTLY lr_health_metric_stats_30d` — pré-calcule l'agrégat 30 j utilisé par `/lr-health/bad-installations`. Sans cette vue, l'endpoint faisait un seq scan de ~4 s sur `device_metrics` (16 M+ rows en prod) ; avec la vue, l'endpoint passe à <100 ms. La fenêtre glissante 30 j est encodée dans la vue (`now() - interval '30 days'`), réévaluée à chaque refresh. |
 | `client_consumption_matview_refresh_job` | 15 min | `REFRESH MATERIALIZED VIEW CONCURRENTLY client_consumption_30d` — pré-calcule la somme des deltas de compteurs bytes sur 30 j (download/upload par CPE). Avant : l'endpoint `/clients/consumption?period=30d` transférait des millions de samples vers Python pour faire la boucle `_sum_positive_deltas` → ~36 s en prod. Maintenant : delta calculé en SQL via `LAG()` + `CASE`, et 30d servi depuis la vue. |
 | `client_consumption_7d_refresh_job` | 15 min | `REFRESH MATERIALIZED VIEW CONCURRENTLY client_consumption_7d` — même pattern que le matview 30 j mais borné à 7 j. La période 7 j à elle seule clockait ~13 s sur le live SQL (seq scan + external sort 30 MB) ; le matview la fait passer à <100 ms. Matview séparé car l'agrégat 30 j est un seul SUM qui ne peut pas être soustrait à une fenêtre plus étroite. 24h reste en SQL live (true rolling window, ~2 s acceptable) ; lifetime aussi (sera adressé via la rétention 90 j). |
+| `device_metrics_retention_job` | 6 h | Purge `device_metrics` plus vieux que `DEVICE_METRICS_RETENTION_DAYS` (défaut 90 j) en **batches** (`DELETE … WHERE id IN (SELECT id … LIMIT n)`, boucle jusqu'à épuisement) — jamais une grosse transaction (cf. leçon `u2a3b4c5d6e7`). Seules les métriques de `HISTORY_METRICS` accumulent encore des lignes ; le reste est déjà collapsé par `persist_device_metrics`. Crée aussi `ix_device_metrics_collected_at` via `CREATE INDEX CONCURRENTLY IF NOT EXISTS` (dans le scheduler, hors path de démarrage — cf. no-op `w4c5d6e7f8a9`) pour que la purge soit un index range scan. |
+
+#### Politique device_metrics (history vs latest) — `persist_device_metrics` dans `jobs.py`
+Tous les jobs de polling persistent leurs métriques via `persist_device_metrics(session, device_id, metrics, unit_map)`. Règle unique : si le `metric_name` est dans `HISTORY_METRICS`, on **empile** une ligne par cycle (série temporelle conservée) ; sinon on **écrase en place** (1 ligne par `(device_id, metric_name)` via DELETE+INSERT). `HISTORY_METRICS` = les **seules** métriques relues comme série par un consommateur :
+- compteurs bytes (`peer_tx_bytes`, `peer_rx_bytes`, `radio_rx_bytes`, `radio_tx_bytes`) → deltas `LAG()` de `consumption_service` ;
+- `signal_dbm`, `link_potential_pct`, `total_capacity_mbps`, `local_rx_rate_idx`, `remote_rx_rate_idx` → matview `lr_health_metric_stats_30d` (garder ce set synchro avec la vue) ;
+- `cinr_db`, `ccq_pct` → moyennes 30 j du `report_service`.
+
+Tout le reste (mirror UISP Power, métriques radio secondaires, `lr_latency_ms`, ports switch…) n'est lu qu'en « dernier point » via `/metrics/latest` (LATERAL). L'alert engine lit ses baselines (EMA throughput, deltas d'erreurs) depuis `AlertState`, **jamais** depuis `device_metrics` → collapser ne casse aucune alerte. Sans cette politique, un seul UISP Power empilait ~25 métriques toutes les 30 s (~70k lignes/jour) que rien ne relit.
 
 ### Device types reconnus
 | `device_type` | Polling |

@@ -67,6 +67,75 @@ logger = logging.getLogger(__name__)
 _PING_FAILURE_STATE_KEY = "_ping_failures"
 
 
+# ── device_metrics persistence policy ───────────────────────────────────────
+# Only these metric names are ever read as a TIME SERIES (history) by a real
+# consumer:
+#   - byte counters → consumption_service LAG() deltas (24h/7d/30d)
+#   - signal/link_potential/capacity/rate idx → lr_health_metric_stats_30d
+#     matview (30-day avg, keep this set in sync with that view's metric list)
+#   - signal/cinr/ccq → report_service avg/min over the report window
+# Everything else we poll is read ONLY as "latest" (the /metrics/latest LATERAL
+# probe). The alert engine reads its baselines (EMA throughput, error deltas)
+# from AlertState, never from device_metrics — so collapsing a non-history
+# metric to a single row breaks no alert. We therefore APPEND history metrics
+# (one row per cycle) and COLLAPSE all others to a single row per
+# (device_id, metric_name) via DELETE+INSERT — the same strategy already proven
+# on UISP Switch metrics. Without this a single UISP Power device appends ~25
+# metrics every 30 s (~70k rows/day) that nothing reads past the last point.
+HISTORY_METRICS: frozenset[str] = frozenset({
+    # consumption_service — cumulative byte counters → only meaningful as deltas
+    "peer_tx_bytes", "peer_rx_bytes", "radio_rx_bytes", "radio_tx_bytes",
+    # lr_health_metric_stats_30d matview (mirror of _TRACKED_METRICS)
+    "signal_dbm", "link_potential_pct", "total_capacity_mbps",
+    "local_rx_rate_idx", "remote_rx_rate_idx",
+    # report_service RADIO_METRIC_NAMES (signal_dbm already above)
+    "cinr_db", "ccq_pct",
+})
+
+
+async def persist_device_metrics(
+    session,
+    device_id: int,
+    metrics: dict[str, float | None],
+    unit_map: dict[str, str] | None = None,
+    *,
+    now: datetime.datetime | None = None,
+) -> None:
+    """Persist one poll cycle of metrics, honouring the history/latest policy.
+
+    - metric_name in :data:`HISTORY_METRICS` → APPEND a new row (series kept).
+    - otherwise → COLLAPSE to a single latest row per (device_id, metric_name)
+      via DELETE+INSERT (no append-forever bloat).
+
+    ``None`` values are skipped. The caller owns the transaction (no commit).
+    Each per-metric DELETE rides ``ix_device_metrics_lookup`` (device_id,
+    metric_name), so in steady state it removes exactly one row; on the first
+    cycle after a metric becomes collapse-only it also absorbs that metric's
+    historical backlog, entirely inside the scheduler (never on the backend
+    startup path — a bulk migration delete once stalled the healthcheck).
+    """
+    if now is None:
+        now = datetime.datetime.now(datetime.UTC)
+    units = unit_map or {}
+    for metric_name, value in metrics.items():
+        if value is None:
+            continue
+        if metric_name not in HISTORY_METRICS:
+            await session.execute(
+                delete(DeviceMetric).where(
+                    DeviceMetric.device_id == device_id,
+                    DeviceMetric.metric_name == metric_name,
+                )
+            )
+        session.add(DeviceMetric(
+            device_id=device_id,
+            metric_name=metric_name,
+            metric_value=float(value),
+            unit=units.get(metric_name),
+            collected_at=now,
+        ))
+
+
 async def _get_ping_failure_count(session, device_id: int) -> int:
     """Read the persisted consecutive ping-failure count for a device."""
     res = await session.execute(
@@ -631,49 +700,10 @@ async def snmp_poll_job() -> None:
                         unit_map[key] = "Mbps"
                     else:
                         unit_map[key] = ""
-            if category in SWITCH_RULE_CATEGORIES:
-                # Switch metrics are display-only (the modal reads the latest
-                # value per port; no matview/report consumes switch history),
-                # so we keep a SINGLE row per (device_id, metric_name): delete
-                # any existing row(s) for the metric, then write the latest.
-                # A switch emits ~130 metrics/cycle — appending would add ~190k
-                # rows/day that nothing reads beyond "latest" (it had bloated
-                # one switch to 1.6 M rows → /metrics/latest timed out).
-                #
-                # Each per-metric DELETE is indexed on (device_id, metric_name),
-                # so in steady state it removes exactly one row before the
-                # insert. On the FIRST cycle after this ships it also absorbs
-                # the historical backlog, one metric_name at a time, entirely
-                # inside the scheduler — never on the backend startup path, so
-                # it can't stall the healthcheck the way a bulk migration did.
-                now = datetime.datetime.now(datetime.UTC)
-                for metric_name, value in metrics.items():
-                    if value is None:
-                        continue
-                    await session.execute(
-                        delete(DeviceMetric).where(
-                            DeviceMetric.device_id == dev.id,
-                            DeviceMetric.metric_name == metric_name,
-                        )
-                    )
-                    session.add(DeviceMetric(
-                        device_id=dev.id,
-                        metric_name=metric_name,
-                        metric_value=value,
-                        unit=unit_map.get(metric_name),
-                        collected_at=now,
-                    ))
-            else:
-                # Radio devices keep full history (consumed by consumption /
-                # lr-health matviews and reports) → append a new row per cycle.
-                for metric_name, value in metrics.items():
-                    if value is not None:
-                        session.add(DeviceMetric(
-                            device_id=dev.id,
-                            metric_name=metric_name,
-                            metric_value=value,
-                            unit=unit_map.get(metric_name),
-                        ))
+            # History metrics (radio_rx/tx_bytes, signal_dbm…) are appended;
+            # everything else (all switch port metrics, noise, rates…) collapses
+            # to a single latest row. See persist_device_metrics / HISTORY_METRICS.
+            await persist_device_metrics(session, dev.id, metrics, unit_map)
 
             # Delegate anomaly detection to alert engine
             await alert_engine.evaluate_device_metrics(session, dev, metrics, settings)
@@ -875,51 +905,35 @@ async def power_poll_job() -> None:
 
                 # Mirror readings into device_metrics so the unified
                 # /devices/{id}/metrics/latest endpoint exposes them to the UI.
-                metric_units = {
-                    "voltage_v": ("voltage", "V"),
-                    "current_a": ("current", "A"),
-                    "power_w":   ("power",   "W"),
-                    "battery_pct":       ("battery_percentage", "%"),
-                    "battery_voltage_v": ("battery_voltage",    "V"),
-                    "uptime_seconds":     ("uptime_seconds",     "s"),
-                    "output_max_power_w": ("output_max_power_w", "W"),
-                    "output_energy_wh":   ("output_energy",      "Wh"),
-                    "ac_connected":       ("ac_connected",       "bool"),
-                }
-                for metric_name, (key, unit) in metric_units.items():
-                    val = readings.get(key)
-                    if val is None:
-                        continue
-                    session.add(DeviceMetric(
-                        device_id=dev.id,
-                        metric_name=metric_name,
-                        metric_value=float(val),
-                        unit=unit,
-                    ))
+                # None of these are in HISTORY_METRICS (power history lives in
+                # PowerStatusLog), so persist_device_metrics collapses them all
+                # to one latest row each — see the policy note on that helper.
+                # (name, value, unit) — value None entries are skipped downstream.
+                power_entries: list[tuple[str, float | None, str]] = [
+                    ("voltage_v",          readings.get("voltage"),            "V"),
+                    ("current_a",          readings.get("current"),            "A"),
+                    ("power_w",            readings.get("power"),              "W"),
+                    ("battery_pct",        readings.get("battery_percentage"), "%"),
+                    ("battery_voltage_v",  readings.get("battery_voltage"),    "V"),
+                    ("uptime_seconds",     readings.get("uptime_seconds"),     "s"),
+                    ("output_max_power_w", readings.get("output_max_power_w"), "W"),
+                    ("output_energy_wh",   readings.get("output_energy"),      "Wh"),
+                    ("ac_connected",       readings.get("ac_connected"),       "bool"),
+                ]
 
                 # Per-battery metrics — charge/voltage/capacity/autonomy per
                 # battery the device reports (internal Li-Ion UPS, external
                 # lead-acid bank…), keyed by type slug so the UI shows each one.
                 for batt_entry in readings.get("batteries") or []:
                     slug = batt_entry.get("type_slug") or "unknown"
-                    batt_metrics = {
-                        f"battery_{slug}_pct":         ("percentage",      "%"),
-                        f"battery_{slug}_voltage_v":   ("voltage",         "V"),
-                        f"battery_{slug}_capacity_ah": ("capacity_ah",     "Ah"),
-                        f"battery_{slug}_runtime_s":   ("runtime_seconds", "s"),
+                    power_entries += [
+                        (f"battery_{slug}_pct",         batt_entry.get("percentage"),      "%"),
+                        (f"battery_{slug}_voltage_v",   batt_entry.get("voltage"),         "V"),
+                        (f"battery_{slug}_capacity_ah", batt_entry.get("capacity_ah"),     "Ah"),
+                        (f"battery_{slug}_runtime_s",   batt_entry.get("runtime_seconds"), "s"),
                         # 1 = cette batterie débite (en service sur coupure secteur).
-                        f"battery_{slug}_discharging": ("discharging",     "bool"),
-                    }
-                    for metric_name, (key, unit) in batt_metrics.items():
-                        val = batt_entry.get(key)
-                        if val is None:
-                            continue
-                        session.add(DeviceMetric(
-                            device_id=dev.id,
-                            metric_name=metric_name,
-                            metric_value=float(val),
-                            unit=unit,
-                        ))
+                        (f"battery_{slug}_discharging", batt_entry.get("discharging"),     "bool"),
+                    ]
 
                 # Per-DC-output metrics — electrical readings + connection state
                 # (1/0) for each output port the device exposes.
@@ -927,23 +941,16 @@ async def power_poll_job() -> None:
                     oid = out.get("id")
                     if oid is None:
                         continue
-                    out_metrics = {
-                        f"dc_output_{oid}_voltage_v": (out.get("voltage"), "V"),
-                        f"dc_output_{oid}_current_a": (out.get("current"), "A"),
-                        f"dc_output_{oid}_power_w":   (out.get("power"),   "W"),
-                        f"dc_output_{oid}_connected": (
-                            1.0 if out.get("connected") else 0.0, "bool",
-                        ),
-                    }
-                    for metric_name, (val, unit) in out_metrics.items():
-                        if val is None:
-                            continue
-                        session.add(DeviceMetric(
-                            device_id=dev.id,
-                            metric_name=metric_name,
-                            metric_value=float(val),
-                            unit=unit,
-                        ))
+                    power_entries += [
+                        (f"dc_output_{oid}_voltage_v", out.get("voltage"), "V"),
+                        (f"dc_output_{oid}_current_a", out.get("current"), "A"),
+                        (f"dc_output_{oid}_power_w",   out.get("power"),   "W"),
+                        (f"dc_output_{oid}_connected", 1.0 if out.get("connected") else 0.0, "bool"),
+                    ]
+
+                power_metrics = {name: val for name, val, _ in power_entries}
+                power_units = {name: unit for name, _, unit in power_entries}
+                await persist_device_metrics(session, dev.id, power_metrics, power_units)
 
                 logger.info(
                     "UISP Power %s — voltage=%.1fV current=%.2fA power=%.1fW",
@@ -1075,14 +1082,7 @@ async def ltu_api_poll_job() -> None:
             # Persist AP-wide metrics on the Rocket (noise_dbm). Per-link
             # metrics (signal/CCQ/CINR/etc.) belong to each LR and are stored
             # in the fan-out loop below.
-            for metric_name, value in rocket_ap_metrics.items():
-                if value is not None:
-                    session.add(DeviceMetric(
-                        device_id=dev.id,
-                        metric_name=metric_name,
-                        metric_value=value,
-                        unit=unit_map.get(metric_name),
-                    ))
+            await persist_device_metrics(session, dev.id, rocket_ap_metrics, unit_map)
 
             # Rocket-level alert engine pass: only cares about peer_count and
             # whatever the SNMP IF-MIB poll added (radio_if_up, eth_if_up,
@@ -1125,14 +1125,7 @@ async def ltu_api_poll_job() -> None:
                 distance = peer_metrics.get("distance_m")
                 if distance is not None:
                     lr.distance_m = distance
-                for metric_name, value in peer_metrics.items():
-                    if value is not None:
-                        session.add(DeviceMetric(
-                            device_id=lr.id,
-                            metric_name=metric_name,
-                            metric_value=value,
-                            unit=unit_map.get(metric_name),
-                        ))
+                await persist_device_metrics(session, lr.id, dict(peer_metrics), unit_map)
                 # Per-LR alert engine pass — radio-quality rules evaluate
                 # against this LR's metrics, not the Rocket's peer[0].
                 await alert_engine.evaluate_device_metrics(
@@ -1238,14 +1231,7 @@ async def airos_api_poll_job() -> None:
                     )
                     dev.name = hostname
 
-            for metric_name, value in metrics.items():
-                if value is not None:
-                    session.add(DeviceMetric(
-                        device_id=dev.id,
-                        metric_name=metric_name,
-                        metric_value=value,
-                        unit=unit_map.get(metric_name),
-                    ))
+            await persist_device_metrics(session, dev.id, metrics, unit_map)
 
             # Per-LR alert engine pass — radio-quality + link_substandard rules
             # evaluate against this LR's metrics (engine injects model_variant
@@ -1319,14 +1305,7 @@ async def af60_api_poll_job() -> None:
             if distance is not None:
                 dev.distance_m = distance
 
-            for metric_name, value in metrics.items():
-                if value is not None:
-                    session.add(DeviceMetric(
-                        device_id=dev.id,
-                        metric_name=metric_name,
-                        metric_value=value,
-                        unit=unit_map.get(metric_name),
-                    ))
+            await persist_device_metrics(session, dev.id, metrics, unit_map)
 
             # Évaluation per-device : règles AF60 (rule_category == "airfiber").
             await alert_engine.evaluate_device_metrics(session, dev, dict(metrics), settings)
@@ -1492,13 +1471,12 @@ async def lr_internet_probe_job() -> None:
             await _evaluate_lr_transit(session, dev, ping_ok, settings)
 
             # Si transit OK et RTT mesuré → métrique + évaluation latence.
+            # lr_latency_ms n'est lu qu'en "latest" (LATERAL dans lr_health) →
+            # collapse (1 ligne/LR) via persist_device_metrics.
             if ping_ok and avg_rtt is not None:
-                session.add(DeviceMetric(
-                    device_id=dev.id,
-                    metric_name="lr_latency_ms",
-                    metric_value=avg_rtt,
-                    unit="ms",
-                ))
+                await persist_device_metrics(
+                    session, dev.id, {"lr_latency_ms": avg_rtt}, {"lr_latency_ms": "ms"}
+                )
                 await _evaluate_lr_latency(session, dev, avg_rtt, settings)
             elif ping_ok:
                 # Ping a réussi (exit 0) mais RTT non parsé — défensif.
@@ -1688,6 +1666,86 @@ async def client_consumption_7d_refresh_job() -> None:
             "client_consumption_7d matview refresh failed — page will keep "
             "serving the previous snapshot until next attempt",
         )
+
+
+async def device_metrics_retention_job() -> None:
+    """Purge device_metrics rows older than the retention window.
+
+    Only HISTORY_METRICS still accumulate rows (everything else is collapsed
+    to one latest row by persist_device_metrics), so in practice this prunes
+    the byte-counter and radio-quality series feeding the 30-day matviews and
+    the report. 90 days (default) covers those with margin.
+
+    The delete is BATCHED (delete a bounded set of ids per statement, loop
+    until none remain) so it never holds one giant transaction over the table
+    — a bulk delete on device_metrics (16 M+ rows in prod) once stalled the
+    backend healthcheck when run on the startup path. Here it runs in the
+    scheduler, in small committed chunks.
+    """
+    from sqlalchemy import text
+
+    from app.db.session import engine
+
+    settings = get_settings()
+    cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
+        days=settings.device_metrics_retention_days
+    )
+    batch = settings.device_metrics_retention_batch_size
+
+    # Ensure the index that makes the purge's `collected_at < cutoff` scan an
+    # index range (not a 16 M-row seq scan every run). Built CONCURRENTLY here
+    # in the scheduler — NOT in a startup migration — because a non-concurrent
+    # build locks writes and a concurrent build in a migration would stall the
+    # backend healthcheck (same lesson as u2a3b4c5d6e7's switch backlog). IF
+    # NOT EXISTS makes it a cheap no-op after the first build. CONCURRENTLY
+    # cannot run inside a transaction → AUTOCOMMIT connection.
+    try:
+        async with engine.connect() as conn:
+            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            await conn.execute(
+                text(
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
+                    "ix_device_metrics_collected_at ON device_metrics (collected_at)"
+                )
+            )
+    except Exception:
+        # A failed CONCURRENTLY build can leave an INVALID index; the purge
+        # still works (seq scan), just slower. Don't abort the purge.
+        logger.exception("device_metrics retention — collected_at index ensure failed")
+
+    started = datetime.datetime.now(datetime.UTC)
+    total = 0
+    try:
+        async with async_session_factory() as session:
+            while True:
+                # DELETE ... WHERE id IN (SELECT id ... LIMIT n) — Postgres has
+                # no DELETE ... LIMIT, so we bound each pass via a subquery on
+                # the PK. ix on (collected_at) keeps the lookup cheap.
+                result = await session.execute(
+                    text(
+                        "DELETE FROM device_metrics WHERE id IN ("
+                        "  SELECT id FROM device_metrics"
+                        "  WHERE collected_at < :cutoff"
+                        "  LIMIT :batch"
+                        ")"
+                    ),
+                    {"cutoff": cutoff, "batch": batch},
+                )
+                await session.commit()
+                deleted = result.rowcount or 0
+                total += deleted
+                if deleted < batch:
+                    break
+        elapsed = (datetime.datetime.now(datetime.UTC) - started).total_seconds()
+        if total:
+            logger.info(
+                "device_metrics retention — purged %d rows older than %d days in %.1f s",
+                total, settings.device_metrics_retention_days, elapsed,
+            )
+        else:
+            logger.debug("device_metrics retention — nothing to purge")
+    except Exception:
+        logger.exception("device_metrics retention job failed")
 
 
 async def client_block_enforcement_job() -> None:
@@ -1904,6 +1962,18 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         max_instances=1,
         coalesce=True,
         misfire_grace_time=120,
+    )
+    scheduler.add_job(
+        device_metrics_retention_job,
+        trigger="interval",
+        minutes=settings.device_metrics_retention_interval_minutes,
+        id="device_metrics_retention",
+        name="device_metrics retention (purge history older than N days)",
+        replace_existing=True,
+        # A missed purge isn't urgent — rows just live a little longer.
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=300,
     )
     if settings.client_block_enforcement_enabled:
         scheduler.add_job(

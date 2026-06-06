@@ -320,6 +320,18 @@ class Settings(BaseSettings):
     # can't be subtracted down to 7d.
     client_consumption_7d_refresh_interval_minutes: int = 15
 
+    # device_metrics retention. Only HISTORY_METRICS rows (byte counters +
+    # the radio metrics feeding the lr-health matview / 30-day report) keep a
+    # time series; everything else is collapsed to one latest row per metric
+    # by persist_device_metrics, so it never accumulates. This job purges the
+    # history rows older than the window — 90 days covers the 30-day matviews
+    # and the report with margin. The delete runs in batches (LIMIT) inside the
+    # scheduler so a single transaction never locks the table or stalls the
+    # backend healthcheck the way a bulk migration delete once did.
+    device_metrics_retention_days: int = 90
+    device_metrics_retention_interval_minutes: int = 360  # every 6 h
+    device_metrics_retention_batch_size: int = 50_000
+
     @computed_field(repr=False)
     @property
     def database_url(self) -> str:

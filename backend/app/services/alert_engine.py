@@ -124,12 +124,18 @@ async def _resolve_alert(
     recovery_message: str,
 ) -> None:
     """Resolve open incidents for this alert_type and notify."""
+    # resolve_incidents already hard-deletes non-availability incidents; the
+    # returned objects keep their loaded attributes so we can still notify.
     resolved = await incident_service.resolve_incidents(
         db, device.id, title=recovery_message, alert_type=alert_type
     )
     for inc in resolved:
         ok = await notification_service.notify_incident_resolved(device, inc)
-        await _create_alert_record(db, inc, recovery_message, ok)
+        # Audit row only for incidents kept in DB. A purged incident's row is
+        # already gone and alerts.incident_id has no matching row → inserting
+        # one would violate the FK, so skip it.
+        if incident_service.is_availability_incident(inc.alert_type):
+            await _create_alert_record(db, inc, recovery_message, ok)
         logger.info("ALERT RESOLVED %s — %s", device.name, alert_type)
 
 

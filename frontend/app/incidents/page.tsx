@@ -1,6 +1,5 @@
 'use client'
 
-import Link from 'next/link'
 import { useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
@@ -36,20 +35,11 @@ export default function IncidentsPage() {
     <div className="space-y-6">
 
       {/* Header */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Anomalies détectées</h1>
-          <p className="text-blue-400 text-sm mt-1">
-            Anomalies actuellement détectées par le système — résolution automatique dès retour à la normale — actualisation toutes les 30s
-          </p>
-        </div>
-        <Link
-          href="/incidents/archive"
-          className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-blue-500 border border-blue-200 rounded-xl bg-white hover:bg-blue-50 hover:border-blue-300 transition-all shrink-0"
-        >
-          <ArchiveIcon className="w-4 h-4" />
-          Archives
-        </Link>
+      <div>
+        <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Anomalies détectées</h1>
+        <p className="text-blue-400 text-sm mt-1">
+          Anomalies actuellement détectées par le système — résolution automatique dès retour à la normale — actualisation toutes les 30s
+        </p>
       </div>
 
       {/* Content */}
@@ -163,14 +153,6 @@ function SeverityGroupIcon({ severity }: { severity: string }) {
   return (
     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-    </svg>
-  )
-}
-
-function ArchiveIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
     </svg>
   )
 }

@@ -137,6 +137,18 @@ AT_AF60_LINK_SUBSTANDARD = "af60_link_substandard" # consolidé : potentiel / ca
 AT_SECURITY_ANOMALY = "security_anomaly"
 
 
+# Availability / outage alert_types — a device fully unreachable. These are the
+# ONLY incidents kept in DB after resolution: the downtime journal
+# (network_uptime_service) reconstructs past outages + availability % from their
+# resolved_at. Every OTHER resolved incident is hard-deleted on resolution
+# (there is no /archive view anymore). Keep this in sync with the journal's
+# query — network_uptime_service imports this set.
+AVAILABILITY_ALERT_TYPES: frozenset[str] = frozenset({
+    AT_ROCKET_DOWN, AT_SWITCH_DOWN, AT_DEVICE_UNREACHABLE,
+    AT_UISP_POWER_UNREACH, AT_AIRMAX_DOWN,
+})
+
+
 KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_ROCKET_DOWN, AT_SWITCH_DOWN, AT_DEVICE_UNREACHABLE,
     AT_RADIO_INTERFACE_DOWN, AT_ETH0_DOWN, AT_CPE_DISCONNECTED,

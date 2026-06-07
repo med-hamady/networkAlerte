@@ -4,6 +4,7 @@ import logging
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.alert_constants import AVAILABILITY_ALERT_TYPES
 from app.models.device import Device
 from app.models.incident import Incident
 
@@ -115,6 +116,16 @@ async def open_incident(
     return incident, True
 
 
+def is_availability_incident(alert_type: str | None) -> bool:
+    """True if this alert_type is an availability/outage type (device down).
+
+    Only these incidents are kept in DB once resolved — the downtime journal
+    reconstructs past outages + availability % from their resolved_at. Every
+    other resolved incident is purged on resolution (no /archive view).
+    """
+    return alert_type in AVAILABILITY_ALERT_TYPES
+
+
 async def resolve_incidents(
     db: AsyncSession,
     device_id: int,
@@ -124,6 +135,15 @@ async def resolve_incidents(
     """
     Resolve all open incidents matching device and alert_type (preferred) or title.
     Returns the list of resolved incidents (empty if none were open).
+
+    Resolution is terminal: non-availability incidents are hard-deleted right
+    away (there is no /archive view anymore). Availability incidents (device
+    down) are kept with status=resolved so the downtime journal can still
+    reconstruct past outages + availability %. The returned objects keep their
+    loaded attributes either way, so the caller can still send a recovery
+    notification for the purged ones. The alerts FK is ON DELETE CASCADE, so a
+    purged incident's audit rows go with it — the caller must therefore avoid
+    creating an audit row for a purged incident (see alert_engine._resolve_alert).
     """
     conditions = [
         Incident.device_id == device_id,
@@ -144,11 +164,25 @@ async def resolve_incidents(
         inc.status = "resolved"
         inc.resolved_at = now
 
+    # Purge everything that isn't an availability/outage incident — those don't
+    # belong to the downtime journal and there is no /archive to view them in.
+    # Issued as a bulk core DELETE: the in-memory objects keep their already
+    # loaded attributes for the recovery notification, and the alerts FK
+    # (ON DELETE CASCADE) drops their audit rows in the same statement.
+    purge_ids = [inc.id for inc in incidents if not is_availability_incident(inc.alert_type)]
+    if purge_ids:
+        await db.execute(
+            delete(Incident)
+            .where(Incident.id.in_(purge_ids))
+            .execution_options(synchronize_session=False)
+        )
+
     logger.info(
-        "Incident resolved — device_id=%d | %s (%d resolved)",
+        "Incident resolved — device_id=%d | %s (%d resolved, %d purged)",
         device_id,
         alert_type or title,
         len(incidents),
+        len(purge_ids),
     )
     return incidents
 

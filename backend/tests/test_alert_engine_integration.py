@@ -129,8 +129,8 @@ async def test_signal_critical_opens_critical_incident(db, settings, patch_notif
     assert incident.severity == "critical"
 
 
-async def test_signal_recovery_resolves_incident(db, settings, patch_notif):
-    """Retour nominal → incident résolu, resolved_at renseigné."""
+async def test_signal_recovery_purges_incident(db, settings, patch_notif):
+    """Retour nominal → incident non-disponibilité purgé de la DB (pas d'archive)."""
     device = await _make_rocket(db)
 
     # Ouvrir l'incident
@@ -148,10 +148,8 @@ async def test_signal_recovery_resolves_incident(db, settings, patch_notif):
             Incident.alert_type == "signal_low",
         )
     )
-    incident = result.scalar_one_or_none()
-    assert incident is not None
-    assert incident.status == "resolved"
-    assert incident.resolved_at is not None
+    # signal_low n'est pas un type de disponibilité → supprimé dès résolution.
+    assert result.scalar_one_or_none() is None
 
 
 # ---------------------------------------------------------------------------
@@ -262,8 +260,8 @@ async def test_cpe_disconnected_immediate(db, settings, patch_notif):
     assert incident.severity == "critical"
 
 
-async def test_cpe_reconnected_resolves(db, settings, patch_notif):
-    """CPE revient → incident cpe_disconnected résolu."""
+async def test_cpe_reconnected_purges(db, settings, patch_notif):
+    """CPE revient → incident cpe_disconnected purgé de la DB (pas d'archive)."""
     device = await _make_rocket(db)
 
     await evaluate_device_metrics(db, device, {"peer_count": 0}, settings)
@@ -278,8 +276,34 @@ async def test_cpe_reconnected_resolves(db, settings, patch_notif):
             Incident.alert_type == "cpe_disconnected",
         )
     )
-    incident = result.scalar_one_or_none()
-    assert incident.status == "resolved"
+    # cpe_disconnected n'est pas un type de disponibilité → supprimé dès résolution.
+    assert result.scalar_one_or_none() is None
+
+
+async def test_availability_incident_kept_resolved_for_journal(db, patch_notif):
+    """Un incident de disponibilité résolu reste en DB (le journal coupures en a besoin)."""
+    from app.services import incident_service
+
+    device = await _make_rocket(db)
+
+    incident, _ = await incident_service.open_incident(
+        db, device, title="Rocket down", severity="critical", alert_type="rocket_down"
+    )
+    await db.flush()
+
+    # Les types de disponibilité ne sont jamais purgés à la résolution.
+    resolved = await incident_service.resolve_incidents(
+        db, device.id, title="Rocket up", alert_type="rocket_down"
+    )
+    assert len(resolved) == 1
+    await db.flush()
+
+    row = (
+        await db.execute(select(Incident).where(Incident.id == incident.id))
+    ).scalar_one_or_none()
+    assert row is not None
+    assert row.status == "resolved"
+    assert row.resolved_at is not None
 
 
 # ---------------------------------------------------------------------------

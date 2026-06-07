@@ -27,13 +27,7 @@ from dataclasses import dataclass
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.alert_constants import (
-    AT_AIRMAX_DOWN,
-    AT_DEVICE_UNREACHABLE,
-    AT_ROCKET_DOWN,
-    AT_SWITCH_DOWN,
-    AT_UISP_POWER_UNREACH,
-)
+from app.core.alert_constants import AVAILABILITY_ALERT_TYPES
 from app.models.device import Device
 from app.models.incident import Incident
 from app.schemas.network_uptime import (
@@ -49,15 +43,10 @@ logger = logging.getLogger(__name__)
 # Every alert_type that indicates a network device is fully unreachable.
 # LRs are intentionally excluded: a down LR is a client-side outage (power cut /
 # unplugged), not our infra, and no longer raises any incident.
-_DOWN_ALERT_TYPES: frozenset[str] = frozenset(
-    {
-        AT_ROCKET_DOWN,
-        AT_AIRMAX_DOWN,
-        AT_SWITCH_DOWN,
-        AT_UISP_POWER_UNREACH,
-        AT_DEVICE_UNREACHABLE,
-    }
-)
+# These are also the only resolved incidents that survive in DB (see
+# AVAILABILITY_ALERT_TYPES) — every other resolved incident is purged, so this
+# journal can only ever reconstruct outages from these types anyway.
+_DOWN_ALERT_TYPES: frozenset[str] = AVAILABILITY_ALERT_TYPES
 
 _SEVERITY_RANK: dict[str, int] = {"info": 0, "warning": 1, "critical": 2}
 _DEFAULT_MERGE_GAP_SECONDS = 300  # 5 min — typical flapping signature

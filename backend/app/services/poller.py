@@ -51,30 +51,39 @@ async def ping_host(
 
 
 async def ping_hosts_bulk(
-    ip_addresses: list[str], *, timeout_ms: int = 800, retries: int = 2,
+    ip_addresses: list[str],
+    *,
+    timeout_ms: int = 800,
+    retries: int = 1,
+    interval_ms: int = 1,
 ) -> dict[str, bool]:
     """Ping MANY hosts in a single ``fping`` process → ``{ip: reachable}``.
 
     ``fping`` pings every target in parallel from ONE process (one ICMP socket),
     instead of forking one ``ping`` per host. At 600+ devices this collapses the
     sweep from ~600 subprocesses (~30 s, heavy on the event loop) to a single
-    process (~2-5 s) and makes the cost **flat** regardless of parc size.
+    process and makes the cost **flat** regardless of parc size.
 
-    A host is "alive" if it answers within ``retries`` + 1 attempts — same
-    1-drop tolerance as the old ``ping -c 2`` (Ubiquiti radios rate-limit ICMP
-    to their mgmt CPU). Only up/down is returned; supervisor-side RTT is unused.
+    A host is "alive" if it answers within ``retries`` + 1 attempts — ``-r 1``
+    = 2 attempts = same 1-drop tolerance as the old ``ping -c 2`` (Ubiquiti
+    radios rate-limit ICMP to their mgmt CPU). Only up/down is returned.
+
+    ``interval_ms`` (``-i``) is the gap between probes to DIFFERENT targets.
+    fping's default (10 ms) means sending to 600 hosts alone takes ~6 s/round —
+    observed in prod as a ~24-43 s ping sweep. At ``-i 1`` the send is ~0.6 s, so
+    the whole sweep drops to a few seconds (dominated by the down-host timeout,
+    not the send pacing).
 
     Falls back to bounded per-host :func:`ping_host` if ``fping`` is missing or
     errors, so liveness detection never breaks.
     """
     if not ip_addresses:
         return {}
-    # -a alive only (printed one IP/line on stdout), -q quiet (no per-probe
-    # stats on stderr), -r retries, -t per-probe timeout (ms). fping pings all
-    # targets concurrently, so wall time ≈ (retries+1)*timeout, host-count
-    # independent; we still cap it generously.
+    # -a alive only (one IP/line on stdout), -q quiet (no per-probe stats),
+    # -r retries, -t per-probe timeout (ms), -i inter-target send gap (ms).
     args = [
-        "fping", "-a", "-q", "-r", str(retries), "-t", str(timeout_ms),
+        "fping", "-a", "-q",
+        "-r", str(retries), "-t", str(timeout_ms), "-i", str(interval_ms),
         *ip_addresses,
     ]
     try:
@@ -83,7 +92,13 @@ async def ping_hosts_bulk(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        wall = (retries + 1) * (timeout_ms / 1000.0) + 15
+        # Worst case ≈ send pacing (N×interval over rounds) + down-host waits
+        # (timeout × backoff over retries). Generous cap before we give up.
+        wall = (
+            (retries + 1) * (timeout_ms / 1000.0)
+            + len(ip_addresses) * (interval_ms / 1000.0) * (retries + 1)
+            + 15
+        )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=wall)
     except FileNotFoundError:
         logger.warning("fping introuvable — fallback ping par hôte")

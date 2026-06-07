@@ -28,6 +28,7 @@ from app.core.alert_constants import (
     AT_MAINS_POWER_LOST,
     AT_ROCKET_DOWN,
     AT_SWITCH_DOWN,
+    AVAILABILITY_ALERT_TYPES,
 )
 from app.core.alert_constants import AT_BATTERY_LOW_CRIT as AT_BATT_CRIT
 from app.core.alert_constants import AT_BATTERY_LOW_WARN as AT_BATT_WARN
@@ -43,6 +44,7 @@ from app.models.alert_state import AlertState
 from app.models.audit_log import AuditLog
 from app.models.device import AirFiber, Device, Lr, Rocket, UispPower
 from app.models.device_metric import DeviceMetric
+from app.models.incident import Incident
 from app.models.power_status_log import PowerStatusLog
 from app.services import (
     af60_api_service,
@@ -169,40 +171,6 @@ async def persist_device_metrics(
             unit=units.get(metric_name),
             collected_at=now,
         ))
-
-
-async def _get_ping_failure_count(session, device_id: int) -> int:
-    """Read the persisted consecutive ping-failure count for a device."""
-    res = await session.execute(
-        select(AlertState).where(
-            AlertState.device_id == device_id,
-            AlertState.alert_type == _PING_FAILURE_STATE_KEY,
-        )
-    )
-    state = res.scalar_one_or_none()
-    return state.failure_count if state else 0
-
-
-async def _set_ping_failure_count(session, device_id: int, count: int) -> None:
-    """Upsert the consecutive ping-failure count for a device."""
-    res = await session.execute(
-        select(AlertState).where(
-            AlertState.device_id == device_id,
-            AlertState.alert_type == _PING_FAILURE_STATE_KEY,
-        )
-    )
-    state = res.scalar_one_or_none()
-    now = datetime.datetime.now(datetime.UTC)
-    if state is None:
-        session.add(AlertState(
-            device_id=device_id,
-            alert_type=_PING_FAILURE_STATE_KEY,
-            failure_count=count,
-            last_evaluated_at=now,
-        ))
-    else:
-        state.failure_count = count
-        state.last_evaluated_at = now
 
 
 async def _send_ping_instability_email(
@@ -515,137 +483,147 @@ async def device_ping_job() -> None:
     async with async_session_factory() as _ts_session:
         settings = await threshold_service.get_effective_settings(_ts_session, base_settings)
 
+    # Light load (id + ip) only — we must NOT hold a DB session open during the
+    # ~3 s fping network sweep. client_modem rows are skipped: behind an LR's
+    # NAT, unreachable by ICMP from the supervisor (checked via ping-from-LR).
     async with async_session_factory() as session:
-        # Skip client_modem rows: they sit behind an LR's NAT and are NOT
-        # reachable by ICMP from the supervisor — pinging them would trigger
-        # constant device_unreachable incidents. Reachability is checked
-        # on demand via the ping-from-LR diagnostic instead.
-        result = await session.execute(
-            select(Device).where(Device.device_type != "client_modem")
-        )
-        devices = list(result.scalars().all())
+        rows = (await session.execute(
+            select(Device.id, Device.ip_address).where(
+                Device.device_type != "client_modem"
+            )
+        )).all()
 
-    if not devices:
+    if not rows:
         logger.debug("No devices registered — skipping ping poll")
         return
 
-    logger.info("Ping poll — checking %d device(s)", len(devices))
+    logger.info("Ping poll — checking %d device(s)", len(rows))
 
     # One `fping` process pings the WHOLE parc in parallel → {ip: reachable}.
-    # Replaces a gather of one `ping` subprocess per device: at 600+ devices
-    # that spawned hundreds of simultaneous subprocesses that starved each
-    # other (reachable devices failed in bulk = false "down", sweep > 30 s).
-    # fping is a single process, ~2-5 s, and its cost is flat with parc size.
-    # Falls back to bounded per-host ping inside ping_hosts_bulk if fping is
-    # unavailable. (supervisor-side RTT is unused → up/down only.)
-    reachable_by_ip = await poller.ping_hosts_bulk([d.ip_address for d in devices])
+    # Single process (~3 s), flat cost with parc size; bounded per-host fallback
+    # inside ping_hosts_bulk if fping is unavailable. (RTT superviseur inutilisé.)
+    reachable_by_ip = await poller.ping_hosts_bulk([ip for _id, ip in rows])
 
     now = datetime.datetime.now(datetime.UTC)
+    ids = [i for i, _ip in rows]
 
-    # Single session for the entire loop — commits after each device so that
-    # one device failure never rolls back another device's state changes.
+    # ── P2.1 : une session, BULK loads, traitement en mémoire, commits par paquets.
+    # Avant : par device (×N) un session.get + 2 SELECT AlertState + un SELECT
+    # resolve + un commit ≈ ~5N requêtes/cycle (~12 s à 600 devices). Ici : 3
+    # SELECT bulk au total ; les requêtes restantes ne tombent qu'aux TRANSITIONS
+    # (recovery d'un device qui avait un incident, ou passage down au seuil) — rares.
     async with async_session_factory() as session:
-        for device in devices:
+        devices = (await session.execute(
+            select(Device).where(Device.id.in_(ids))
+        )).scalars().all()
+        # Compteurs d'échecs ping de TOUS les devices en une requête.
+        states = (await session.execute(
+            select(AlertState).where(
+                AlertState.alert_type == _PING_FAILURE_STATE_KEY,
+                AlertState.device_id.in_(ids),
+            )
+        )).scalars().all()
+        state_by_dev = {s.device_id: s for s in states}
+        # Devices ayant un incident de disponibilité OUVERT → seuls ceux-là ont
+        # besoin d'un resolve au recovery (sinon, pour un device up sans incident,
+        # c'était un SELECT resolve no-op par device).
+        open_down = set((await session.execute(
+            select(Incident.device_id).where(
+                Incident.status == "open",
+                Incident.device_id.in_(ids),
+                Incident.alert_type.in_(tuple(AVAILABILITY_ALERT_TYPES)),
+            )
+        )).scalars().all())
+
+        def _set_failures(device_id: int, count: int) -> None:
+            """Met à jour le compteur d'échecs ping en mémoire (flush au commit)."""
+            st = state_by_dev.get(device_id)
+            if st is None:
+                st = AlertState(
+                    device_id=device_id, alert_type=_PING_FAILURE_STATE_KEY,
+                    failure_count=count, last_evaluated_at=now,
+                )
+                session.add(st)
+                state_by_dev[device_id] = st
+            else:
+                st.failure_count = count
+                st.last_evaluated_at = now
+
+        for i, device in enumerate(devices, 1):
             reachable = reachable_by_ip.get(device.ip_address, False)
-
-            dev = await session.get(Device, device.id)
-            if dev is None:
-                continue
-
-            at = _alert_type_for_device(dev)
+            at = _alert_type_for_device(device)
+            st = state_by_dev.get(device.id)
+            prev_failures = st.failure_count if st else 0
 
             if reachable:
-                # Capture previous failure count to detect instability that
-                # never reached the down threshold (info-only signal).
-                prev_failures = await _get_ping_failure_count(session, dev.id)
-                await _set_ping_failure_count(session, dev.id, 0)
-                dev.status = "up"
-                dev.last_seen = now
-
-                # La latence ICMP superviseur ↔ device n'est plus exploitée :
-                # seule la latence LR → Internet (lr_internet_probe_job) est
-                # utile. On garde le ping en lui-même pour le UP/DOWN, mais on
-                # ne persiste pas le RTT.
-
-                recovery_title = f"RECOVERY : {dev.name} de nouveau disponible"
-                await _resolve_and_notify(session, dev, recovery_title, alert_type=at)
-
-                # Ping instability — recovered after N partial failures without
-                # ever opening a *_down incident.
+                _set_failures(device.id, 0)
+                device.status = "up"
+                device.last_seen = now
+                # Recovery : uniquement si le device avait un incident *_down ouvert.
+                if device.id in open_down:
+                    recovery_title = f"RECOVERY : {device.name} de nouveau disponible"
+                    await _resolve_and_notify(session, device, recovery_title, alert_type=at)
+                # Instabilité ping : recovery après N échecs partiels sans atteindre
+                # le seuil down (signal info-only).
                 if (
                     settings.ping_instability_threshold > 0
                     and prev_failures >= settings.ping_instability_threshold
                     and prev_failures < settings.ping_down_threshold
                 ):
                     sent = await _send_ping_instability_email(
-                        dev, prev_failures, settings.ping_down_threshold,
+                        device, prev_failures, settings.ping_down_threshold,
                     )
                     logger.info(
-                        "PING INSTABILITY %s (%s) — %d échec(s) puis recovery, "
-                        "email %s",
-                        dev.name, dev.ip_address, prev_failures,
+                        "PING INSTABILITY %s (%s) — %d échec(s) puis recovery, email %s",
+                        device.name, device.ip_address, prev_failures,
                         "envoyé" if sent else "non envoyé",
                     )
-
-                logger.info("UP   %s (%s)", dev.name, dev.ip_address)
+                logger.info("UP   %s (%s)", device.name, device.ip_address)
             else:
-                failures = await _get_ping_failure_count(session, dev.id) + 1
-                await _set_ping_failure_count(session, dev.id, failures)
-
+                failures = prev_failures + 1
+                _set_failures(device.id, failures)
                 if failures >= settings.ping_down_threshold:
-                    # Anti-flap du STATUT affiché : on ne bascule en "down"
-                    # qu'au seuil (comme l'incident), jamais sur un seul ping
-                    # raté. Un device qui route le trafic client et répond à son
-                    # API ne doit pas afficher "HORS LIGNE" pour un ICMP perdu
-                    # (radios Ubiquiti rate-limitent l'ICMP de gestion). Sous le
-                    # seuil il reste "up" → il continue aussi d'être pollé par
-                    # les jobs API/SNMP qui filtrent status="up".
-                    dev.status = "down"
-                    # Un LR qui ne répond plus = panne côté client (courant coupé
-                    # chez l'abonné, LR débranché), pas une panne de notre infra.
-                    # On ne lève donc AUCUN incident pour un LR down. Son
-                    # indisponibilité reste visible via `status=down` dans
-                    # /devices, mais ne génère ni incident ni notification.
-                    # Une vraie panne de notre côté (Rocket/Switch) reste signalée
-                    # par ses propres incidents rocket_down / switch_down.
-                    if dev.rule_category == "lr":
-                        # Un LR down = panne côté abonné. On purge en plus ses
-                        # incidents ouverts (qualité radio, lien, transit…) :
-                        # ils sont devenus du bruit obsolète puisque le LR ne
-                        # répond plus. Aucun poller ne les recréera tant que le
-                        # LR est down (les autres jobs ne ciblent que status=up).
-                        purged = await incident_service.delete_open_incidents(session, dev.id)
+                    # Anti-flap du statut : on ne bascule "down" qu'au seuil (jamais
+                    # sur un ICMP perdu — radios Ubiquiti rate-limitent leur mgmt).
+                    device.status = "down"
+                    if device.rule_category == "lr":
+                        # Un LR down = panne côté abonné : aucun incident infra. On
+                        # purge ses incidents ouverts (qualité/lien/transit), devenus
+                        # du bruit obsolète tant qu'il ne répond pas.
+                        purged = await incident_service.delete_open_incidents(session, device.id)
                         logger.info(
-                            "LR DOWN (côté client) %s (%s) — %d échecs, "
-                            "%d incident(s) ouvert(s) purgé(s)",
-                            dev.name, dev.ip_address, failures, purged,
+                            "LR DOWN (côté client) %s (%s) — %d échecs, %d incident(s) purgé(s)",
+                            device.name, device.ip_address, failures, purged,
                         )
-                        await session.commit()
-                        continue
-
-                    context = await _build_switch_context(session, dev)
-                    down_title = _down_title_for_device(dev)
-                    await _open_and_notify(
-                        session, dev,
-                        title=down_title,
-                        severity="critical",
-                        description=(
-                            f"{dev.name} ({dev.ip_address}) ne répond pas au ping ICMP"
-                            f" ({failures} tentatives consécutives échouées).{context}"
-                        ),
-                        alert_type=at,
-                    )
-                    logger.warning(
-                        "DOWN %s (%s) — %d/%d échecs consécutifs",
-                        dev.name, dev.ip_address, failures, settings.ping_down_threshold,
-                    )
+                    else:
+                        context = await _build_switch_context(session, device)
+                        down_title = _down_title_for_device(device)
+                        await _open_and_notify(
+                            session, device,
+                            title=down_title,
+                            severity="critical",
+                            description=(
+                                f"{device.name} ({device.ip_address}) ne répond pas au ping ICMP"
+                                f" ({failures} tentatives consécutives échouées).{context}"
+                            ),
+                            alert_type=at,
+                        )
+                        logger.warning(
+                            "DOWN %s (%s) — %d/%d échecs consécutifs",
+                            device.name, device.ip_address, failures, settings.ping_down_threshold,
+                        )
                 else:
                     logger.warning(
                         "PING KO %s (%s) — %d/%d (seuil non atteint)",
-                        dev.name, dev.ip_address, failures, settings.ping_down_threshold,
+                        device.name, device.ip_address, failures, settings.ping_down_threshold,
                     )
 
-            await session.commit()
+            # Commit par paquets : ~N/200 commits au lieu d'un par device, tout
+            # en bornant le blast radius si un commit échoue.
+            if i % 200 == 0:
+                await session.commit()
+
+        await session.commit()
 
 
 @_timed_job

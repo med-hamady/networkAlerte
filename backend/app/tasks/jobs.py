@@ -483,32 +483,22 @@ async def device_ping_job() -> None:
 
     logger.info("Ping poll — checking %d device(s)", len(devices))
 
-    # Bound concurrency: at 600+ devices, gathering one ping_host per device
-    # spawned 600 simultaneous `ping` subprocesses that starved each other —
-    # reachable devices failed in bulk (false "down") and the sweep blew past
-    # the 30 s interval. A semaphore keeps only `ping_concurrency` pings in
-    # flight; ceil(parc/concurrency) batches × ~2 s/ping fits under the interval.
-    _ping_sem = asyncio.Semaphore(settings.ping_concurrency)
-
-    async def _bounded_ping(ip: str):
-        async with _ping_sem:
-            return await poller.ping_host(ip)
-
-    ping_results = await asyncio.gather(
-        *[_bounded_ping(d.ip_address) for d in devices],
-        return_exceptions=True,
-    )
+    # One `fping` process pings the WHOLE parc in parallel → {ip: reachable}.
+    # Replaces a gather of one `ping` subprocess per device: at 600+ devices
+    # that spawned hundreds of simultaneous subprocesses that starved each
+    # other (reachable devices failed in bulk = false "down", sweep > 30 s).
+    # fping is a single process, ~2-5 s, and its cost is flat with parc size.
+    # Falls back to bounded per-host ping inside ping_hosts_bulk if fping is
+    # unavailable. (supervisor-side RTT is unused → up/down only.)
+    reachable_by_ip = await poller.ping_hosts_bulk([d.ip_address for d in devices])
 
     now = datetime.datetime.now(datetime.UTC)
 
     # Single session for the entire loop — commits after each device so that
     # one device failure never rolls back another device's state changes.
     async with async_session_factory() as session:
-        for device, result in zip(devices, ping_results, strict=True):
-            if isinstance(result, Exception):
-                reachable = False
-            else:
-                reachable, _ = result  # latency_ms discarded — supervisor-side latency unused
+        for device in devices:
+            reachable = reachable_by_ip.get(device.ip_address, False)
 
             dev = await session.get(Device, device.id)
             if dev is None:

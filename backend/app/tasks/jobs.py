@@ -319,9 +319,16 @@ async def _resolve_and_notify(
     )
     for incident in resolved:
         ok = await notification_service.notify_incident_resolved(device, incident)
-        await _create_alert_record(
-            session, incident, f"RECOVERY: {title} — {device.name}", ok
-        )
+        # Only record an audit row if the incident STILL EXISTS. Non-availability
+        # incidents are hard-deleted by resolve_incidents → inserting an Alert
+        # referencing one violates alerts_incident_id_fkey (and rolls back the
+        # whole job transaction). The recovery notification is still sent for the
+        # purged ones; only the audit row is skipped (same contract as
+        # alert_engine._resolve_alert — see resolve_incidents docstring).
+        if incident_service.is_availability_incident(incident.alert_type):
+            await _create_alert_record(
+                session, incident, f"RECOVERY: {title} — {device.name}", ok
+            )
 
 
 async def _evaluate_lr_latency(

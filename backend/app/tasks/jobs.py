@@ -14,6 +14,7 @@ import asyncio
 import datetime
 import functools
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -62,6 +63,34 @@ from app.services import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Last-run duration per scheduled job (seconds), updated by @_timed_job. In the
+# scheduler PROCESS only — the API runs in a separate container, so exposing this
+# via /system needs a DB-backed store (P2.2 volet B). For now it powers the
+# duration log line + lets a same-process caller read it.
+JOB_LAST_DURATION: dict[str, float] = {}
+
+
+def _timed_job(fn):
+    """Log how long each run of a scheduled job takes (observability P2.2).
+
+    Gives an at-a-glance « durée vs intervalle » signal to spot a job creeping
+    toward saturation BEFORE it starts skipping cycles — no more grepping for
+    `skipped: maximum instances` after the fact.
+    """
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        started = time.monotonic()
+        try:
+            return await fn(*args, **kwargs)
+        finally:
+            elapsed = time.monotonic() - started
+            JOB_LAST_DURATION[fn.__name__] = elapsed
+            logger.info("JOB %s — tour terminé en %.2f s", fn.__name__, elapsed)
+
+    return wrapper
+
 
 # alert_type sentinel used to persist the consecutive-ping-failure counter in
 # AlertState. Picking a leading underscore keeps it out of the regular alert
@@ -470,6 +499,7 @@ async def heartbeat_job() -> None:
     logger.info("Scheduler heartbeat — system is alive")
 
 
+@_timed_job
 async def device_ping_job() -> None:
     """
     Ping all registered devices via ICMP.
@@ -618,6 +648,7 @@ async def device_ping_job() -> None:
             await session.commit()
 
 
+@_timed_job
 async def snmp_poll_job() -> None:
     """
     Collect SNMP metrics from Ubiquiti radio and switch devices.
@@ -886,6 +917,7 @@ async def _evaluate_mains_power(
     )
 
 
+@_timed_job
 async def power_poll_job() -> None:
     """
     Poll UISP Power devices via their local REST API.
@@ -1071,6 +1103,7 @@ _LTU_POLL_CONCURRENCY = 10
 _LTU_POLL_DEADLINE_S = 40.0
 
 
+@_timed_job
 async def ltu_api_poll_job() -> None:
     """
     Poll LTU Rockets via HTTP API (signal, CCQ, CINR, rates, CPE info).
@@ -1221,6 +1254,7 @@ async def ltu_api_poll_job() -> None:
             await session.commit()
 
 
+@_timed_job
 async def airos_api_poll_job() -> None:
     """
     Poll airMAX LR (LiteBeam) devices via their own airOS HTTP API (status.cgi).
@@ -1328,6 +1362,7 @@ async def airos_api_poll_job() -> None:
             await session.commit()
 
 
+@_timed_job
 async def af60_api_poll_job() -> None:
     """Poll airFiber 60 (AF60-LR) — liens backhaul 60 GHz via leur UDAPI locale.
 
@@ -1460,6 +1495,7 @@ async def _evaluate_lr_transit(
     )
 
 
+@_timed_job
 async def lr_internet_probe_job() -> None:
     """Sonde par LR : accès Internet (transit) + latence vers Google.
 

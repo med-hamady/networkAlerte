@@ -103,25 +103,36 @@ async def persist_device_metrics(
       via DELETE+INSERT (no append-forever bloat).
 
     ``None`` values are skipped. The caller owns the transaction (no commit).
-    Each per-metric DELETE rides ``ix_device_metrics_lookup`` (device_id,
-    metric_name), so in steady state it removes exactly one row; on the first
-    cycle after a metric becomes collapse-only it also absorbs that metric's
-    historical backlog, entirely inside the scheduler (never on the backend
-    startup path — a bulk migration delete once stalled the healthcheck).
+
+    The collapse DELETE is **batched** : one ``DELETE … WHERE metric_name IN
+    (...)`` for ALL collapse metrics of the device, instead of one DELETE per
+    metric. A switch emits ~130 metrics/cycle → this turns ~130 DELETEs into 1
+    (×15 switches ≈ 2000 → 15 DELETEs per SNMP cycle). The INSERTs stay ORM
+    ``add`` — SQLAlchemy batches them into one ``executemany`` at flush. The
+    DELETE rides ``ix_device_metrics_lookup`` (device_id, metric_name); on the
+    first cycle after a metric becomes collapse-only it also absorbs its
+    historical backlog, inside the scheduler (never on the startup path).
     """
     if now is None:
         now = datetime.datetime.now(datetime.UTC)
     units = unit_map or {}
+
+    collapse_names = [
+        name for name, value in metrics.items()
+        if value is not None and name not in HISTORY_METRICS
+    ]
+    # One batched DELETE for every collapse metric of this device.
+    if collapse_names:
+        await session.execute(
+            delete(DeviceMetric).where(
+                DeviceMetric.device_id == device_id,
+                DeviceMetric.metric_name.in_(collapse_names),
+            )
+        )
+
     for metric_name, value in metrics.items():
         if value is None:
             continue
-        if metric_name not in HISTORY_METRICS:
-            await session.execute(
-                delete(DeviceMetric).where(
-                    DeviceMetric.device_id == device_id,
-                    DeviceMetric.metric_name == metric_name,
-                )
-            )
         session.add(DeviceMetric(
             device_id=device_id,
             metric_name=metric_name,

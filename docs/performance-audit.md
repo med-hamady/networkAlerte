@@ -59,7 +59,10 @@ réarchitecturer en priorité, car le parc grossit surtout en LR.
 
 ### 🔴 P1 — Gros gains, effort modéré (à faire avant 1000 devices)
 
-**P1.1 — Ping : remplacer 603 sous-process par `fping` (un seul process)**
+**P1.1 — Ping : remplacer 603 sous-process par `fping` (un seul process) — ✅ FAIT (2026-06-07, commit `c770ab1`)**
+`poller.ping_hosts_bulk()` lance un seul `fping` pour tout le parc → `{ip: reachable}`,
+fallback per-host borné si `fping` absent. Sweep ~31 s → ~2-5 s, coût plat. Testé
+non-root dans le container (ICMP non-privilégié OK, pas de `CAP_NET_RAW`).
 `fping` pingue des centaines d'hôtes en parallèle nativement, dans **un seul
 process**, et sort un statut up/down par hôte. On remplace la boucle
 `asyncio.gather` de N `ping -c 2` par **un appel `fping -a -r1 -t <timeout>`**
@@ -68,29 +71,34 @@ sur toute la liste d'IP.
 - Effort : ~½ jour. Refacto de `poller.py` + `device_ping_job` (parsing fping).
 - Garder le fallback `ping` si `fping` absent. Ajouter `fping` à l'image Docker.
 
-**P1.2 — Transit : passer de per-LR à per-Rocket (ou par échantillon)**
-Aujourd'hui on SSH **chaque LR** (482) pour pinger Internet. Or tous les LR d'un
-même Rocket partagent **le même chemin de transit** (Rocket → backhaul → cœur).
-Tester le transit **une fois par Rocket** (63 SSH au lieu de 482) couvre la
-réalité métier « ce site/secteur a-t-il Internet ». Options :
-- (a) **per-Rocket** : 1 SSH/Rocket vers `8.8.8.8`. 482 → 63 SSH/cycle.
-- (b) **échantillon tournant** : sonder 1/4 des LR par cycle (rotation) si on
-  tient à la granularité par client.
-- (c) garder per-LR mais **espacer** (intervalle 300 s) + pool plus large.
-- Gain : ÷7 à ÷8 sur le job le plus cher et le plus fragile.
-- ⚠️ Décision **métier** : veut-on la latence/transit *par client* ou *par
-  secteur* ? À trancher avant de coder.
+**P1.2 — Transit per-Rocket — ❌ ABANDONNÉ (décision métier 2026-06-07)**
+Idée initiale : SSH 1×/Rocket au lieu de 1×/LR (482 → 63 SSH). **Rejeté** car la
+latence d'un client vers Internet = **saut radio (client↔Rocket, VARIE selon la
+qualité du lien) + backhaul (Rocket→Internet, partagé)**. Attribuer la latence du
+Rocket à tous ses clients fausse la mesure (un client au lien radio dégradé a une
+latence/gigue plus élevée que le secteur). On **garde donc la mesure per-client**
+(SSH par LR) — c'est la seule fidèle.
+**Et ce n'est plus un problème de perf** : depuis la parallélisation (commit
+`805ff6c`), le job per-LR fait ~70 s/tour à 482 LR (au lieu de ~1 h en série).
+La latence est une métrique de **qualité** (pas de liveness) → intervalle
+**300 s** + `lr_probe_concurrency` 100 suffisent jusqu'à plusieurs milliers de LR.
+Enrichissement futur possible : mesurer *aussi* la latence Rocket→Internet (cheap,
+per-Rocket) pour **décomposer** « total client = backhaul + saut radio » à titre
+de diagnostic — sans remplacer la mesure par client.
 
-**P1.3 — Batcher les écritures `device_metrics`**
-`persist_device_metrics` fait un DELETE puis un INSERT **par métrique
-collapse**, et la phase 2 ouvre **une session par device**. À 1000 devices ×
-~10-25 métriques × chaque cycle = dizaines de milliers de petites requêtes.
-- Collapse : remplacer le DELETE+INSERT par métrique par un **UPSERT** groupé
-  (`INSERT … ON CONFLICT (device_id, metric_name) DO UPDATE`) avec un index
-  unique sur `(device_id, metric_name)` pour les métriques latest-only. Une
-  seule requête multi-lignes par device (ou par batch de devices).
-- History (compteurs bytes) : `executemany` / `insert().values([...])` groupé.
-- Gain : round-trips DB ÷10+, charge d'écriture Postgres très réduite.
+**P1.3 — Batcher les écritures `device_metrics` — 🔧 EN COURS**
+`persist_device_metrics` faisait un **DELETE par métrique collapse** (un switch à
+~130 métriques = ~130 DELETEs/cycle ; ×15 switches = ~2000 DELETEs/cycle SNMP).
+- **Fait** : un **seul DELETE groupé** par device (`metric_name IN (...)`) au lieu
+  d'un par métrique. Les INSERTs restent en ORM `add` (SQLAlchemy les batche déjà
+  en `executemany` au flush). Gain immédiat : DELETEs ÷K, faible risque, zéro
+  changement de schéma.
+- **Plus tard (gros mais structurant)** : sortir les métriques latest-only dans
+  une table dédiée `device_metric_latest` (PK `(device_id, metric_name)`) et
+  passer en **UPSERT** (`ON CONFLICT DO UPDATE`) → 1 ligne/métrique au lieu de
+  DELETE+INSERT, et écritures groupées multi-devices. Touche tous les lecteurs de
+  « latest » (`/metrics/latest`, `lr_health`) → migration + refacto, à planifier.
+- Complément (P2.1) : **une session par job** au lieu d'une par device en phase 2.
 
 ### 🟠 P2 — Moyen (hygiène & observabilité)
 
@@ -162,9 +170,11 @@ idempotence des incidents, `max_instances=1` + `coalesce`.
 
 ## 5. Roadmap recommandée (ordre d'exécution)
 
-1. **fping** (P1.1) — plus gros ratio gain/effort. ~½ j.
-2. **Transit per-Rocket** (P1.2) — après décision métier. ~1 j.
-3. **Batch/UPSERT device_metrics** (P1.3) + **session par job** (P2.1). ~1 j.
+1. ✅ **fping** (P1.1) — FAIT (`c770ab1`).
+2. ❌ ~~Transit per-Rocket (P1.2)~~ — ABANDONNÉ (latence per-client = radio + backhaul ;
+   le per-LR parallélisé scale déjà, intervalle 300 s).
+3. 🔧 **Batch device_metrics** (P1.3, DELETE groupé) — EN COURS. Puis **session par
+   job** (P2.1) et, plus tard, table `device_metric_latest` + UPSERT.
 4. **Observabilité durée des jobs** (P2.2). ~½ j.
 5. **Circuit-breaker devices morts** (P2.3). ~½ j.
 6. **Test de charge** mock 1500 devices → valider. ~1 j.

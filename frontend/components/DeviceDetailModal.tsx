@@ -9,6 +9,7 @@ import { deviceLabel, formatDate, timeAgo, formatBytes, formatUptime, parentRock
 import { useThresholds } from '@/lib/useThresholds'
 import DeviceImage from './DeviceImage'
 import DevicePolicyOverridesEditor from './DevicePolicyOverridesEditor'
+import IpLink from './IpLink'
 
 const RADIO_TYPES = new Set(['rocket', 'lr', 'airfiber'])
 const REFRESH      = 15_000
@@ -179,7 +180,7 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
 
         {/* Base info */}
         <Section title="Informations générales">
-          <MetricRow label="Adresse IP"    value={<span className="font-mono text-blue-700">{device.ip_address}</span>} />
+          <MetricRow label="Adresse IP"    value={<IpLink ip={device.ip_address} className="font-mono text-blue-700" />} />
           <MetricRow label="Type"          value={deviceLabel(device)} />
           {device.location && <MetricRow label="Localisation" value={device.location} />}
           <MetricRow
@@ -562,7 +563,7 @@ function LRMiniCard({ lr, onClick }: { lr: Device; onClick: () => void }) {
             <span className="text-blue-300 text-xs font-bold shrink-0">—</span>
           )}
         </div>
-        <p className="text-blue-400 text-xs font-mono mt-0.5">{lr.ip_address}</p>
+        <p className="text-blue-400 text-xs font-mono mt-0.5"><IpLink ip={lr.ip_address} /></p>
         {lr.location && <p className="text-slate-400 text-xs truncate">{lr.location}</p>}
       </div>
 

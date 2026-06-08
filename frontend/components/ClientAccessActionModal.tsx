@@ -3,6 +3,7 @@
 import React from 'react'
 import { setClientBlock, type ClientBlockResult } from '@/lib/api'
 import type { BlockMode, Lr } from '@/lib/types'
+import IpLink from './IpLink'
 
 interface Props {
   lr: Lr | null
@@ -86,7 +87,7 @@ export default function ClientAccessActionModal({ lr, action, onClose, onSuccess
           <div>
             <p className="text-xs text-blue-400">Client</p>
             <p className="text-base font-semibold text-slate-800">{lr.name}</p>
-            <p className="text-xs text-blue-300 font-mono">{lr.ip_address}</p>
+            <p className="text-xs text-blue-300 font-mono"><IpLink ip={lr.ip_address} /></p>
           </div>
 
           {isBlock ? (

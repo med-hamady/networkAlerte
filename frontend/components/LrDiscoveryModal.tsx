@@ -13,6 +13,7 @@ import type { Lr } from '@/lib/types'
 import type { LanNeighbor } from '@/lib/api'
 import { discoverModemsViaLr, pingTargetFromLr } from '@/lib/api'
 import type { DeviceFormPrefill } from './DeviceFormModal'
+import IpLink from './IpLink'
 
 interface Props {
   lr: Lr | null
@@ -72,7 +73,7 @@ export default function LrDiscoveryModal({ lr, onClose, onPick }: Props) {
           <div>
             <h2 className="text-lg font-bold text-blue-900">Découverte des modems</h2>
             <p className="text-xs text-blue-400 mt-0.5">
-              Via SSH depuis <span className="font-mono">{lr.name}</span> ({lr.ip_address})
+              Via SSH depuis <span className="font-mono">{lr.name}</span> (<IpLink ip={lr.ip_address} />)
             </p>
           </div>
           <button onClick={onClose} className="text-blue-300 hover:text-blue-600">

@@ -4,6 +4,7 @@ import { useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import { formatBytes } from '@/lib/types'
+import IpLink from '@/components/IpLink'
 
 type Period = '24h' | '7d' | '30d' | 'lifetime'
 
@@ -371,7 +372,7 @@ function ClientsTable({ clients, isLifetime }: {
                 <tr key={row.device_id} className="hover:bg-blue-50/60 align-top">
                   <td className="px-4 py-3">
                     <div className="text-slate-800 font-medium">{row.name}</div>
-                    <div className="text-blue-300 font-mono text-[11px]">{row.ip_address}</div>
+                    <div className="text-blue-300 font-mono text-[11px]"><IpLink ip={row.ip_address} /></div>
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-700">
                     {row.has_data ? formatBytes(row.download_bytes) : <span className="text-blue-300">—</span>}

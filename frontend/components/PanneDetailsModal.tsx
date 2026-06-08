@@ -3,6 +3,7 @@
 import React from 'react'
 import type { Device } from '@/lib/types'
 import { deviceLabel, formatUptime, formatDate } from '@/lib/types'
+import IpLink from './IpLink'
 
 interface Props {
   site: string | null     // site name; null = closed
@@ -85,7 +86,7 @@ export default function PanneDetailsModal({ site, devices, onClose, onSelect }: 
                         <p className="font-semibold text-slate-800 text-sm truncate">{d.name}</p>
                       </div>
                       <p className="text-blue-400 text-xs mt-0.5 ml-[18px]">
-                        {deviceLabel(d)} · <span className="font-mono">{d.ip_address}</span>
+                        {deviceLabel(d)} · <IpLink ip={d.ip_address} className="font-mono" />
                       </p>
                     </div>
                     <div className="text-right shrink-0">

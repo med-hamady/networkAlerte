@@ -4,6 +4,7 @@ import type { ReactNode } from 'react'
 import type { Device } from '@/lib/types'
 import { deviceLabel, timeAgo } from '@/lib/types'
 import DeviceImage from './DeviceImage'
+import IpLink from './IpLink'
 
 interface Props {
   device: Device
@@ -46,7 +47,7 @@ export default function DeviceCard({ device, onClick, linkedLRCount = 0 }: Props
 
         {/* Metadata rows */}
         <div className="space-y-1.5">
-          <Row label="IP" value={<span className="font-mono">{device.ip_address}</span>} />
+          <Row label="IP" value={<IpLink ip={device.ip_address} className="font-mono" />} />
           <Row
             label="Vu"
             value={

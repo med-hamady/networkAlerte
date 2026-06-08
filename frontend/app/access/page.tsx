@@ -5,6 +5,7 @@ import useSWR from 'swr'
 import { endpoints, fetcher, type ClientBlockResult } from '@/lib/api'
 import type { Device, Lr } from '@/lib/types'
 import ClientAccessActionModal from '@/components/ClientAccessActionModal'
+import IpLink from '@/components/IpLink'
 
 type Filter = 'all' | 'active' | 'blocked_full' | 'blocked_whatsapp' | 'bridge'
 
@@ -176,7 +177,7 @@ export default function AccessPage() {
                     <tr key={lr.id} className="hover:bg-blue-50/60 align-top">
                       <td className="px-4 py-3">
                         <div className="text-slate-800 font-medium">{lr.name}</div>
-                        <div className="text-blue-300 font-mono text-[11px]">{lr.ip_address}</div>
+                        <div className="text-blue-300 font-mono text-[11px]"><IpLink ip={lr.ip_address} /></div>
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">
                         <TopologyBadge mode={lr.topology_mode} />

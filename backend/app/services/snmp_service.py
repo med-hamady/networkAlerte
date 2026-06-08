@@ -581,20 +581,27 @@ async def discover_airmax_peers(
         )
         mgmt_ip = _format_ip_from_snmp(ip_raw)
 
-        model_raw = await _snmp_get(
+        name_raw = await _snmp_get(
             engine, host, community, f"{_UBNT_STA_MODEL_COL}.{idx}", port, timeout, mp_model,
         )
-        model = str(model_raw).strip() if model_raw is not None else None
+        station_name = str(name_raw).strip() if name_raw is not None else None
         # Drop non-printable padding some firmwares emit for empty slots.
-        if model and not all(c.isprintable() and c.isascii() for c in model):
-            model = None
+        if station_name and not all(c.isprintable() and c.isascii() for c in station_name):
+            station_name = None
 
         peers.append({
             "mac":      mac,
             "mgmt_ip":  mgmt_ip,
-            "hostname": None,          # this firmware exposes no station hostname
-            "model":    model or None,  # e.g. "LiteBeam 5AC" → _infer_model_variant
-            "firmware": None,           # not available via this MIB branch
+            # On this airOS firmware the UBNT station "model" column actually
+            # returns the station NAME (e.g. "26700775-Tahya El Hassen"), not a
+            # device model. Use it as the hostname → the LR gets a meaningful
+            # name at discovery (airos_api_poll later refines from host.hostname).
+            "hostname": station_name,
+            # No reliable device model via this MIB → None so _infer_model_variant
+            # defaults SILENTLY to litebeam_5ac (the airMAX family default) instead
+            # of warning « unknown peer model 'client-name' » on every station.
+            "model":    None,
+            "firmware": None,
         })
 
     if peers:

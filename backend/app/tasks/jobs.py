@@ -1252,13 +1252,17 @@ async def airos_api_poll_job() -> None:
                 Lr.model_variant.in_(AIRMAX_LR_VARIANTS),
             )
         )
-        devices = list(result.scalars().all())
+        # Snapshot creds/ip for the concurrent fetch (no session held during HTTP).
+        targets = [
+            (d.id, d.name, d.ip_address, d.ssh_username, d.ssh_password)
+            for d in result.scalars().all()
+        ]
 
-    if not devices:
+    if not targets:
         logger.debug("airOS API poll — no eligible devices")
         return
 
-    logger.info("airOS API poll — checking %d device(s)", len(devices))
+    logger.info("airOS API poll — checking %d device(s)", len(targets))
 
     # airOS HTTP metric keys reuse the LTU units; add the few SNMP-style keys
     # this poll also fills (byte counters, uptime).
@@ -1269,39 +1273,45 @@ async def airos_api_poll_job() -> None:
         "uptime_seconds": "s",
     }
 
-    for device in devices:
-        if not device.ssh_username or not device.ssh_password:
+    # ── Phase 1 : fetch airOS status.cgi de tous les LiteBeam EN PARALLÈLE ──
+    # Le job était série (un login + status.cgi à la fois) → à beaucoup de LR
+    # airMAX (découverts dès le SNMP du Rocket parent), un tour dépassait 250 s.
+    # Le fetch HTTP est async → gather + sémaphore. Phase 2 (persist/alert/topo)
+    # reste en série DB, une session par LR. dev_id -> (metrics, hostname, netrole).
+    sem = asyncio.Semaphore(settings.airos_concurrency)
+    fetched: dict[int, tuple] = {}
+
+    async def _fetch(dev_id: int, name: str, ip: str, user: str | None, pwd: str | None) -> None:
+        if not user or not pwd:
             logger.warning(
                 "airOS API skip — %s (%s) : credentials manquants en base "
                 "(ssh_username/ssh_password). Configure-les via PUT /api/v1/devices/%d.",
-                device.name, device.ip_address, device.id,
+                name, ip, dev_id,
             )
-            continue
-
-        collected = await airos_api_service.collect_airos_link_metrics(
-            host=device.ip_address,
-            username=device.ssh_username,
-            password=device.ssh_password,
-            port=443,  # airOS HTTP API requires HTTPS
-        )
+            return
+        async with sem:
+            collected = await airos_api_service.collect_airos_link_metrics(
+                host=ip, username=user, password=pwd, port=443,  # airOS forces HTTPS
+            )
         if collected is None:
-            logger.debug("airOS API no response — %s (%s)", device.name, device.ip_address)
-            continue
+            logger.debug("airOS API no response — %s (%s)", name, ip)
+            return
         metrics, hostname, netrole = collected
-
         if not any(v is not None for v in metrics.values()):
-            logger.warning("airOS API no data — %s (%s)", device.name, device.ip_address)
-            continue
-
+            logger.warning("airOS API no data — %s (%s)", name, ip)
+            return
         logger.info(
-            "airOS %s (%s) — %s",
-            device.name,
-            device.ip_address,
+            "airOS %s (%s) — %s", name, ip,
             " | ".join(f"{k}={v}" for k, v in metrics.items() if v is not None),
         )
+        fetched[dev_id] = (metrics, hostname, netrole)
 
+    await asyncio.gather(*[_fetch(*t) for t in targets], return_exceptions=True)
+
+    # ── Phase 2 : persist + alert engine + topologie en série DB ──
+    for dev_id, (metrics, hostname, netrole) in fetched.items():
         async with async_session_factory() as session:
-            dev = await session.get(Device, device.id)
+            dev = await session.get(Device, dev_id)
             if dev is None:
                 continue
 
@@ -1320,7 +1330,7 @@ async def airos_api_poll_job() -> None:
                 if dev.name != hostname:
                     logger.info(
                         "airMAX LR name ← airOS hostname — '%s' (%s) → '%s'",
-                        dev.name, device.ip_address, hostname,
+                        dev.name, dev.ip_address, hostname,
                     )
                     dev.name = hostname
 

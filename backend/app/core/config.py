@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     # Anti-flapping — nombre de pings ratés consécutifs avant d'ouvrir un incident
     ping_down_threshold: int = 3
 
+    # Concurrence de l'airos_api_poll_job (fetch status.cgi des LiteBeam airMAX).
+    # Le job était série → à beaucoup de LR airMAX (découverts dès que le SNMP du
+    # Rocket parent est activé), un tour dépassait 250 s. Le fetch HTTP (login +
+    # status.cgi) est async → gather + sémaphore.
+    airos_concurrency: int = 12
+
     # Concurrence du snmp_poll_job. Le job était série (un walk SNMP à la fois)
     # → à 78 rockets/switches, aggravé par les timeouts des airMAX SNMP-off qui
     # s'additionnaient, un tour dépassait 60 s. Les collecteurs pysnmp sont async

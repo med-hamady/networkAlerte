@@ -68,3 +68,52 @@ class LiveLinkHealthResponse(BaseModel):
     generated_at: datetime.datetime
     unreachable_count: int
     items: list[BadInstallationRow]
+
+
+class SiteLinkRow(BaseModel):
+    """Une liaison backhaul point-à-point entre deux sites (airFiber 60).
+
+    Contrairement à ``BadInstallationRow`` (LR client rattaché à un Rocket), un
+    AF60 est un équipement d'infra autonome : pas de parent, un seul peer (l'autre
+    extrémité du lien). Le scoring utilise **4 indicateurs** propres au 60 GHz
+    (signal, SNR, potentiel, capacité) avec les seuils ``af60_*`` — le SNR remplace
+    les 2 indicateurs de débit-idx des LR (pas de plancher 60 GHz défini)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    # Identity
+    device_id: int
+    name: str
+    ip: str
+    distance_m: float | None
+
+    # Verdict (out of 4 indicators — suspect ≥2, critical ≥3)
+    verdict: str               # suspect | critical
+    active_signals_count: int
+    total_indicators: int
+    signals: list[SignalEvidence]
+
+    # Latest values behind the indicators (+ remote signal, affichage seul)
+    latest_signal_dbm: float | None
+    latest_snr_db: float | None
+    latest_remote_signal_dbm: float | None
+    latest_link_potential_pct: float | None
+    latest_total_capacity_mbps: float | None
+
+    # Floors actually applied (AF60-specific settings)
+    signal_warning_threshold: float
+    snr_warning_threshold: float
+    link_potential_floor_pct: float
+    total_capacity_floor_mbps: float
+
+
+class SiteLinkHealthResponse(BaseModel):
+    """Réponse de la section « Liaisons entre sites (P2P) » en mode **live**.
+
+    Même sémantique live que ``LiveLinkHealthResponse`` mais pour les liens
+    backhaul AF60 : on n'affiche que les liaisons dégradées (≥2/4 indicateurs).
+    ``unreachable_count`` = AF60 exclus faute d'avoir pu être joints en direct."""
+
+    generated_at: datetime.datetime
+    unreachable_count: int
+    items: list[SiteLinkRow]

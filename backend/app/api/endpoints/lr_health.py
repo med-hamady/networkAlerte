@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.schemas.lr_health import LiveLinkHealthResponse
+from app.schemas.lr_health import LiveLinkHealthResponse, SiteLinkHealthResponse
 from app.services import lr_health_service
 
 router = APIRouter()
@@ -22,3 +22,16 @@ async def list_bad_installations(
     moyenne 30 j (métriques radio non historisées depuis le collapse latest-only).
     """
     return await lr_health_service.get_live_link_health(db)
+
+
+@router.get("/site-links", response_model=SiteLinkHealthResponse)
+async def list_site_links(
+    db: AsyncSession = Depends(get_db),
+) -> SiteLinkHealthResponse:
+    """Liaisons backhaul site-à-site (airFiber 60) dégradées, pires d'abord.
+
+    Interroge chaque AF60 en direct (UDAPI locale) et n'expose que les liens avec
+    ≥2/4 indicateurs actifs (signal, SNR, potentiel, capacité — seuils af60_*).
+    Verdict suspect (≥2) ou critique (≥3). Les AF60 injoignables sont exclus.
+    """
+    return await lr_health_service.get_live_site_link_health(db)

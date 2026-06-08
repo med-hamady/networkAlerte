@@ -8,6 +8,8 @@ import type {
   BadInstallationVerdict,
   LiveLinkHealthResponse,
   SignalEvidence,
+  SiteLinkHealthResponse,
+  SiteLinkRow,
 } from '@/lib/types'
 import { LR_MODEL_VARIANT_LABELS, VERDICT_LABELS } from '@/lib/types'
 
@@ -40,6 +42,13 @@ function potentialClass(v: number | null, floor: number): string {
   if (v === null) return 'text-blue-300'
   if (v < floor) return 'text-red-600 font-semibold'
   if (v < floor + 10) return 'text-amber-600 font-medium'
+  return 'text-slate-700'
+}
+// SNR (dB) — plancher AF60 (warning 10 dB). Plus haut = mieux.
+function snrClass(v: number | null, floor: number): string {
+  if (v === null) return 'text-blue-300'
+  if (v < floor) return 'text-red-600 font-semibold'
+  if (v < floor + 4) return 'text-amber-600 font-medium'
   return 'text-slate-700'
 }
 // Capacité totale — plancher fixe (Mbps).
@@ -79,23 +88,33 @@ export default function LrHealthPage() {
     .filter(g => g.items.length > 0)
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-10">
 
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Liaisons clients</h1>
+          <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Santé des liaisons radio</h1>
           <p className="text-blue-400 text-sm mt-1">
-            État <strong>actuel</strong> des LR clients — interrogés en direct à l'ouverture —
-            classés par 5 indicateurs de niveau indépendants. Seuls les LR avec ≥ 3 indicateurs
-            actifs sont surfacés.
+            État <strong>actuel</strong> des liaisons — interrogées en direct à l'ouverture.
+            Deux familles : les <strong>liaisons clients</strong> (LR) et les
+            <strong> liaisons entre sites</strong> (backhaul airFiber 60). Seules les liaisons
+            dégradées sont surfacées.
           </p>
-          {unreachable > 0 && (
-            <p className="text-amber-500 text-xs mt-1">
-              {unreachable} LR injoignable{unreachable > 1 ? 's' : ''} au moment de la lecture —
-              exclu{unreachable > 1 ? 's' : ''} de la liste.
-            </p>
-          )}
         </div>
+      </div>
+
+      <section className="space-y-4">
+      <div>
+        <h2 className="text-lg font-bold text-blue-900 tracking-tight">Liaisons clients</h2>
+        <p className="text-blue-400 text-sm mt-1">
+          LR clients classés par 5 indicateurs de niveau indépendants. Seuls les LR avec
+          ≥ 3 indicateurs actifs sont surfacés.
+        </p>
+        {unreachable > 0 && (
+          <p className="text-amber-500 text-xs mt-1">
+            {unreachable} LR injoignable{unreachable > 1 ? 's' : ''} au moment de la lecture —
+            exclu{unreachable > 1 ? 's' : ''} de la liste.
+          </p>
+        )}
       </div>
 
       <details className="bg-white border border-blue-100 rounded-xl shadow-sm">
@@ -291,7 +310,142 @@ export default function LrHealthPage() {
           ))}
         </div>
       )}
+      </section>
+
+      <SiteLinksSection />
     </div>
+  )
+}
+
+// ─── Liaisons entre sites (Point-à-Point) — backhaul airFiber 60 ──────────────
+function SiteLinksSection() {
+  const { data, isLoading } = useSWR<SiteLinkHealthResponse>(
+    endpoints.siteLinks,
+    fetcher,
+    { refreshInterval: 60_000 },
+  )
+
+  const items: SiteLinkRow[] = data?.items ?? []
+  const unreachable = data?.unreachable_count ?? 0
+  const groups = VERDICT_GROUPS
+    .map(v => ({ verdict: v, items: items.filter(i => i.verdict === v) }))
+    .filter(g => g.items.length > 0)
+
+  return (
+    <section className="space-y-4">
+      <div>
+        <h2 className="text-lg font-bold text-blue-900 tracking-tight">Liaisons entre sites (Point-à-Point)</h2>
+        <p className="text-blue-400 text-sm mt-1">
+          Backhauls <strong>airFiber 60</strong> classés par 4 indicateurs de niveau (signal, SNR,
+          potentiel, capacité). Seuls les liens avec ≥ 2 indicateurs actifs sont surfacés.
+        </p>
+        {unreachable > 0 && (
+          <p className="text-amber-500 text-xs mt-1">
+            {unreachable} AF60 injoignable{unreachable > 1 ? 's' : ''} au moment de la lecture —
+            exclu{unreachable > 1 ? 's' : ''} de la liste.
+          </p>
+        )}
+      </div>
+
+      {isLoading ? (
+        <div className="bg-white border border-blue-100 rounded-xl px-6 py-12 text-center text-blue-300 shadow-sm">
+          Chargement…
+        </div>
+      ) : items.length === 0 ? (
+        <div className="bg-white border border-blue-100 rounded-xl px-6 py-12 text-center shadow-sm">
+          <p className="text-green-600 font-semibold text-sm">✓ Toutes les liaisons entre sites sont actuellement stables</p>
+          <p className="text-blue-400 text-xs mt-1">Aucun lien AF60 joignable n'a ≥ 2 indicateurs actifs en ce moment</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {groups.map(({ verdict, items: rows }) => (
+            <div key={verdict} className="bg-white border border-blue-100 rounded-xl overflow-hidden shadow-sm">
+
+              <div className={`flex items-center gap-2 px-4 py-2.5 border-b ${VERDICT_HEADER[verdict]}`}>
+                <span className="text-xs font-bold uppercase tracking-widest">{VERDICT_LABELS[verdict]}</span>
+                <span className="ml-auto text-xs font-semibold opacity-70">
+                  {rows.length} lien{rows.length > 1 ? 's' : ''}
+                </span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-blue-50 border-b border-blue-100">
+                    <tr>
+                      {['Liaison', 'Distance', 'Verdict', 'Indicateurs actifs', 'Métriques actuelles', ''].map(h => (
+                        <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-blue-50">
+                    {rows.map(row => (
+                      <tr key={row.device_id} className="hover:bg-blue-50/60 transition-colors align-top">
+
+                        <td className="px-4 py-3">
+                          <div className="text-slate-800 font-medium">{row.name}</div>
+                          <div className="text-blue-300 font-mono text-[11px]">{row.ip}</div>
+                          <div className="text-blue-400 text-[11px]">airFiber 60</div>
+                        </td>
+
+                        <td className="px-4 py-3 text-xs whitespace-nowrap text-blue-400">
+                          {row.distance_m !== null ? `${Math.round(row.distance_m)} m` : '—'}
+                        </td>
+
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${VERDICT_BADGE[verdict]}`}>
+                            {row.active_signals_count}/{row.total_indicators} indicateurs
+                          </span>
+                        </td>
+
+                        <td className="px-4 py-3">
+                          <div className="flex flex-col gap-1 max-w-[400px]">
+                            {row.signals.map(s => <SignalPill key={s.key} signal={s} />)}
+                          </div>
+                        </td>
+
+                        <td className="px-4 py-3 text-xs whitespace-nowrap">
+                          <div className={signalClass(row.latest_signal_dbm, row.signal_warning_threshold)}
+                               title={`Seuil signal : ${row.signal_warning_threshold.toFixed(0)} dBm`}>
+                            Signal {fmt(row.latest_signal_dbm, ' dBm')}
+                          </div>
+                          <div className={snrClass(row.latest_snr_db, row.snr_warning_threshold)}
+                               title={`Seuil SNR : ${row.snr_warning_threshold.toFixed(0)} dB`}>
+                            SNR {fmt(row.latest_snr_db, ' dB', 1)}
+                          </div>
+                          <div className={potentialClass(row.latest_link_potential_pct, row.link_potential_floor_pct)}
+                               title={`Plancher : ${row.link_potential_floor_pct.toFixed(0)} %`}>
+                            Potentiel {fmt(row.latest_link_potential_pct, ' %')}
+                          </div>
+                          <div className={capacityClass(row.latest_total_capacity_mbps, row.total_capacity_floor_mbps)}
+                               title={`Plancher : ${row.total_capacity_floor_mbps.toFixed(0)} Mbps`}>
+                            Capacité {fmt(row.latest_total_capacity_mbps, ' Mbps', 1)}
+                          </div>
+                          <div className="text-slate-400"
+                               title="Signal côté distant (autre extrémité du lien)">
+                            Signal distant {fmt(row.latest_remote_signal_dbm, ' dBm')}
+                          </div>
+                        </td>
+
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <Link
+                            href="/sites"
+                            className="text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline"
+                          >
+                            Voir l'équipement →
+                          </Link>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   )
 }
 

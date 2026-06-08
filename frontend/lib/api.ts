@@ -63,6 +63,7 @@ export const endpoints = {
   reportGenerate:       (params: string) => `${API_BASE}/reports/generate?${params}`,
   thresholds:           `${API_BASE}/system/thresholds`,
   badInstallations:     `${API_BASE}/lr-health/bad-installations`,
+  siteLinks:            `${API_BASE}/lr-health/site-links`,
   clientsConsumption:   (period: '24h' | '7d' | '30d' | 'lifetime') => `${API_BASE}/clients/consumption?period=${period}`,
   downtimeLog:          (startIso: string, endIso: string) =>
     `${API_BASE}/network-uptime/downtime-log?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`,

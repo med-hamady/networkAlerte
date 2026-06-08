@@ -579,6 +579,37 @@ export interface LiveLinkHealthResponse {
   items: BadInstallationRow[]
 }
 
+// Section « Liaisons entre sites (P2P) » — liens backhaul airFiber 60 dégradés.
+// 4 indicateurs (signal, SNR, potentiel, capacité), verdict suspect ≥2 / critique ≥3.
+export interface SiteLinkRow {
+  device_id: number
+  name: string
+  ip: string
+  distance_m: number | null
+
+  verdict: BadInstallationVerdict
+  active_signals_count: number
+  total_indicators: number
+  signals: SignalEvidence[]
+
+  latest_signal_dbm: number | null
+  latest_snr_db: number | null
+  latest_remote_signal_dbm: number | null
+  latest_link_potential_pct: number | null
+  latest_total_capacity_mbps: number | null
+
+  signal_warning_threshold: number
+  snr_warning_threshold: number
+  link_potential_floor_pct: number
+  total_capacity_floor_mbps: number
+}
+
+export interface SiteLinkHealthResponse {
+  generated_at: string
+  unreachable_count: number
+  items: SiteLinkRow[]
+}
+
 // ─── Network uptime — Journal des coupures ─────────────────────────────────
 
 export interface FlapSubEpisode {

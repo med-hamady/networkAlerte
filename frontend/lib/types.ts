@@ -533,7 +533,7 @@ export interface SignalEvidence {
 export interface BadInstallationRow {
   lr_id: number
   lr_name: string
-  lr_ip: string
+  lr_ip: string | null
   lr_mac: string | null
   model_variant: LrModelVariant
   distance_m: number | null

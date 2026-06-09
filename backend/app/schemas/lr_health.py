@@ -24,7 +24,7 @@ class BadInstallationRow(BaseModel):
     # Identity
     lr_id: int
     lr_name: str
-    lr_ip: str
+    lr_ip: str | None          # ip_address est NULLABLE depuis l'identité LR par MAC
     lr_mac: str | None
     model_variant: str
     distance_m: float | None

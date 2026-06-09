@@ -45,12 +45,15 @@ export default function AccessPage() {
   )
 
   const stats = React.useMemo(() => {
+    // Total = every LR client whatever its status (UP or down); the other
+    // counters stay scoped to reachable LRs (the actionable ones).
+    const total = (devices ?? []).filter(d => d.device_type === 'lr').length
     const active = lrs.filter(l => !l.client_blocked).length
     const blockedFull = lrs.filter(l => l.client_blocked && l.block_mode === 'full').length
     const blockedWa = lrs.filter(l => l.client_blocked && l.block_mode === 'whatsapp_only').length
     const bridge = lrs.filter(l => l.topology_mode === 'bridge').length
-    return { total: lrs.length, active, blockedFull, blockedWa, bridge }
-  }, [lrs])
+    return { total, active, blockedFull, blockedWa, bridge }
+  }, [lrs, devices])
 
   const filtered = React.useMemo(() => {
     const q = search.trim().toLowerCase()

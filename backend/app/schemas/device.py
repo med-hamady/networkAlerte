@@ -279,7 +279,9 @@ class _DeviceBaseRead(BaseModel):
     id: int
     device_type: str
     name: str
-    ip_address: str
+    # Nullable: a stale LR binding is freed (NULL) during DHCP churn until its
+    # own Rocket rediscovers it. Operator-created devices always have an IP.
+    ip_address: str | None
     status: str
     location: str | None
     snmp_community: str | None

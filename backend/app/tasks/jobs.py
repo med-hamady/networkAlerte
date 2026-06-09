@@ -489,7 +489,10 @@ async def device_ping_job() -> None:
     async with async_session_factory() as session:
         rows = (await session.execute(
             select(Device.id, Device.ip_address).where(
-                Device.device_type != "client_modem"
+                Device.device_type != "client_modem",
+                # A NULL ip is a stale LR binding freed during DHCP churn,
+                # awaiting rediscovery by its own Rocket — nothing to ping.
+                Device.ip_address.is_not(None),
             )
         )).all()
 
@@ -1523,6 +1526,7 @@ async def lr_internet_probe_job() -> None:
                 Lr.ssh_username.is_not(None),
                 Lr.ssh_password.is_not(None),
                 Lr.status == "up",
+                Lr.ip_address.is_not(None),
             )
         )
         # Snapshot des champs nécessaires à la sonde SSH (lus session ouverte) —

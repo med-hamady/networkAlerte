@@ -136,6 +136,13 @@ AT_AF60_LINK_SUBSTANDARD = "af60_link_substandard" # consolidé : potentiel / ca
 # notification_service.notify_security_event.
 AT_SECURITY_ANOMALY = "security_anomaly"
 
+# Charge / capacité de l'AP — un Rocket de base station dépasse le nombre de
+# clients qu'il peut servir correctement pour sa (famille radio × largeur de
+# canal). Incident critique quand clients connectés ≥ seuil (AP saturé). La
+# largeur de canal est lue en direct (LTU channelWidth.tx / airMAX chwidth) ;
+# si elle est inconnue ou hors {10, 20} MHz, la règle ne déclenche pas.
+AT_ROCKET_CLIENT_OVERLOAD = "rocket_client_overload"
+
 
 # Availability / outage alert_types — a device fully unreachable. These are the
 # ONLY incidents kept in DB after resolution: the downtime journal
@@ -165,6 +172,7 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_PING_INSTABILITY, AT_LR_LATENCY_HIGH,
     AT_AF60_LINK_DOWN, AT_AF60_SIGNAL_LOW, AT_AF60_SNR_LOW, AT_AF60_LINK_SUBSTANDARD,
     AT_SECURITY_ANOMALY,
+    AT_ROCKET_CLIENT_OVERLOAD,
 })
 
 

@@ -252,6 +252,11 @@ async def evaluate_device_metrics(
     if isinstance(device, Lr) and "model_variant" not in metrics:
         metrics = dict(metrics)
         metrics["model_variant"] = device.model_variant
+    # For base-station Rockets, surface the radio family so the per-family
+    # rocket_client_overload rule picks airMAX vs LTU client ceilings.
+    if device.rule_category in ("ltu_rocket", "airmax_rocket") and "is_airmax_rocket" not in metrics:
+        metrics = dict(metrics)
+        metrics["is_airmax_rocket"] = device.rule_category == "airmax_rocket"
 
     for rule in rules:
         eval_result: AlertEvalResult = rule.evaluate(device.name, metrics, settings)

@@ -250,7 +250,7 @@ La page `/incidents` ne montre que les incidents **d'infrastructure**. Les incid
 
 Conséquence : plus aucune notification ni ligne `alerts` pour les alertes client (signal/ccq/cinr/capacity sur LR, `lr_link_substandard`, `lr_no_transit`, `lr_latency_high`, `lr_discovered`/`lr_ip_changed`/`lr_reassigned`, `cpe_disconnected`). Les jobs continuent de sonder les LR (latence/transit/SSH) et d'incrémenter leurs `AlertState` ; seul l'incident final est court-circuité.
 
-### 24 Alert types
+### 25 Alert types
 | Catégorie | alert_type | Déclencheur |
 |---|---|---|
 | Disponibilité | `rocket_down` | Ping LTU Rocket échoue ×3 |
@@ -266,6 +266,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | Performance | `capacity_low` | Débit réel / idéal < seuil |
 | Performance | `high_rx_tx_errors` | Taux d'erreurs delta > seuil |
 | Performance | `throughput_anomaly` | Débit < EMA × facteur (détection anomalie) |
+| Charge AP | `rocket_client_overload` | Rocket de base station saturé : clients connectés ≥ seuil par (famille × largeur canal). LTU 10MHz≥15 / 20MHz≥25 ; airMAX 10MHz≥12 / 20MHz≥20 (configurables, page Seuils). Largeur auto-détectée en direct : LTU via API `wireless.radios[0].channelWidth.tx`, airMAX via airOS `status.cgi` `wireless.chanbw` (lu dans `snmp_poll_job`, requiert les creds airOS sur la fiche). Clients = `len(all_peers)` (LTU) / stations SNMP `airmax_peers` (airMAX). Largeurs hors {10,20} MHz → pas de seuil → pas d'incident (ex. airMAX 40 MHz). Critique, anti-flap 3 cycles |
 | Power | `uisp_power_unreachable` | API UISP Power injoignable |
 | Power | `battery_low_warning` | Batterie < 25% |
 | Power | `battery_low_critical` | Batterie < 10% |

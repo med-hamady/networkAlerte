@@ -62,6 +62,7 @@ METRIC_UNITS: dict[str, str] = {
     "peer_rx_kbps":        "Kbps",
     "peer_tx_bytes":       "B",
     "peer_rx_bytes":       "B",
+    "channel_width_mhz":   "MHz",
 }
 
 
@@ -315,7 +316,8 @@ def parse_rocket_ap_metrics(raw: dict) -> dict[str, float | None]:
     `parse_per_peer_metrics` and stored against the LR's device_id.
 
     Currently AP-wide metrics from the LTU HTTP API are:
-      noise_dbm  : noise floor at the AP radio (wireless.radios[0].noiseFloor)
+      noise_dbm         : noise floor at the AP radio (wireless.radios[0].noiseFloor)
+      channel_width_mhz : channel width in MHz (wireless.radios[0].channelWidth.tx)
 
     Additional Rocket-level metrics (radio_if_up, eth_if_up, byte counters)
     come from a separate SNMP IF-MIB poll, not this function.
@@ -323,9 +325,13 @@ def parse_rocket_ap_metrics(raw: dict) -> dict[str, float | None]:
     wireless = raw.get("wireless") if isinstance(raw, dict) else None
     radios = wireless.get("radios") if isinstance(wireless, dict) else None
     noise_dbm: float | None = None
+    channel_width_mhz: float | None = None
     if isinstance(radios, list) and radios:
         noise_dbm = _float(_nested(radios[0], "noiseFloor"))
-    return {"noise_dbm": noise_dbm}
+        # channelWidth = {"tx": 10, "rx": 10} (MHz). Used by the
+        # rocket_client_overload rule to pick the per-width client ceiling.
+        channel_width_mhz = _float(_nested(radios[0], "channelWidth", "tx"))
+    return {"noise_dbm": noise_dbm, "channel_width_mhz": channel_width_mhz}
 
 
 def parse_per_peer_metrics(

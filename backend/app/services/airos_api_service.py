@@ -211,6 +211,28 @@ def _extract_netrole(raw: dict) -> str | None:
     return None
 
 
+def parse_airos_channel_width_mhz(raw: dict) -> float | None:
+    """Channel width (MHz) from airOS status.cgi.
+
+    airMAX exposes it as ``wireless.chanbw`` (e.g. 10/20/40). The newer
+    ``wireless.chwidth`` key is None on the Rocket firmware seen in the field,
+    so ``chanbw`` is the source of truth. Used by the rocket_client_overload
+    rule to pick the per-width client ceiling for airMAX base stations.
+    """
+    return _float(_nested(raw, "wireless", "chanbw"))
+
+
+async def collect_airos_channel_width(
+    host: str, username: str, password: str, port: int = 443
+) -> float | None:
+    """Fetch airOS status and return the radio channel width in MHz, or None
+    when the device is unreachable / auth fails / the field is absent."""
+    raw = await AirOsApiClient(host, username, password, port).fetch_status()
+    if raw is None:
+        return None
+    return parse_airos_channel_width_mhz(raw)
+
+
 async def collect_airos_link_metrics(
     host: str, username: str, password: str, port: int = 443
 ) -> tuple[dict[str, float | None], str | None, str | None] | None:

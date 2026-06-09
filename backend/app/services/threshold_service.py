@@ -181,6 +181,45 @@ THRESHOLD_SCHEMA: dict[str, dict[str, Any]] = {
         "max": 12,
         "step": 1,
     },
+    # Surcharge clients par Rocket (rocket_client_overload) — seuils par
+    # (famille radio × largeur de canal). Incident critique quand le nombre de
+    # clients connectés ATTEINT le seuil.
+    "rocket_overload_clients_ltu_10mhz": {
+        "label": "Surcharge clients — Rocket LTU 10 MHz",
+        "category": "rocket_overload",
+        "unit": "clients",
+        "type": int,
+        "min": 1,
+        "max": 500,
+        "step": 1,
+    },
+    "rocket_overload_clients_ltu_20mhz": {
+        "label": "Surcharge clients — Rocket LTU 20 MHz",
+        "category": "rocket_overload",
+        "unit": "clients",
+        "type": int,
+        "min": 1,
+        "max": 500,
+        "step": 1,
+    },
+    "rocket_overload_clients_airmax_10mhz": {
+        "label": "Surcharge clients — Rocket airMAX 10 MHz",
+        "category": "rocket_overload",
+        "unit": "clients",
+        "type": int,
+        "min": 1,
+        "max": 500,
+        "step": 1,
+    },
+    "rocket_overload_clients_airmax_20mhz": {
+        "label": "Surcharge clients — Rocket airMAX 20 MHz",
+        "category": "rocket_overload",
+        "unit": "clients",
+        "type": int,
+        "min": 1,
+        "max": 500,
+        "step": 1,
+    },
     # RX/TX error rate (%)
     "rx_tx_error_warning_pct": {
         "label": "Taux d'erreurs RX/TX — seuil warning",

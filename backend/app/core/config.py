@@ -268,6 +268,17 @@ class Settings(BaseSettings):
     lr_rx_rate_warning_idx_airmax: float = 6.0  # airMAX : 4 ≤ rx < 6 → warning
     lr_rx_rate_critical_idx_airmax: float = 4.0 # airMAX < 4 → critical
 
+    # Surcharge clients par Rocket (rocket_client_overload) — l'AP de base
+    # station est saturé quand le nombre de clients connectés ATTEINT le seuil.
+    # Seuils déclinés par (famille radio × largeur de canal). La largeur est lue
+    # en direct depuis l'API (LTU channelWidth.tx / airMAX chwidth) ; une largeur
+    # hors {10, 20} MHz n'a pas de seuil défini → la règle ne déclenche pas.
+    # Incident critique. Surchargables via la page Seuils.
+    rocket_overload_clients_ltu_10mhz: int = 15
+    rocket_overload_clients_ltu_20mhz: int = 25
+    rocket_overload_clients_airmax_10mhz: int = 12
+    rocket_overload_clients_airmax_20mhz: int = 20
+
     # Anomaly thresholds — airFiber 60 (AF60-LR) backhaul, lien 60 GHz.
     # Le 60 GHz a des plages très différentes du sub-6 GHz : le signal idéal
     # tourne ~-43 dBm, un linkScore de ~40 % reste exploitable, et un lien sain
@@ -312,6 +323,9 @@ class Settings(BaseSettings):
     af60_snr_failure_threshold: int = 2
     af60_link_down_failure_threshold: int = 2
     af60_link_substandard_failure_threshold: int = 3
+    # Le nombre de clients fluctue (associations/désassociations transitoires) →
+    # ouvre l'incident sur le 4e cycle saturé consécutif (count > 3).
+    rocket_overload_failure_threshold: int = 3
 
     # Throughput anomaly — detect sudden drops vs exponential moving average
     throughput_anomaly_drop_pct: float = 50.0   # alert if rate < EMA * (1 - drop_pct/100)

@@ -234,6 +234,7 @@ export const ALERT_TYPE_LABELS: Record<string, string> = {
   high_rx_tx_errors:       "Taux d'erreurs réseau élevé",
   throughput_anomaly:      'Anomalie de débit détectée',
   lr_link_substandard:     'Lien client sous le seuil',
+  rocket_client_overload:  'Station de base saturée (trop de clients)',
   // Qualité radio UL (montant — client → base)
   ccq_ul_low:              'Qualité de connexion côté client faible',
   cinr_ul_low:             'Qualité du signal côté client faible (CINR)',

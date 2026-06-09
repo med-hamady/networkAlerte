@@ -47,6 +47,26 @@ def _is_airmax_lr(metrics: dict) -> bool:
     return variant in _AIRMAX_LR_VARIANTS
 
 
+def _rocket_overload_threshold(settings, airmax: bool, width_mhz: float) -> int | None:
+    """Client-count ceiling for a base-station Rocket given its radio family and
+    channel width. Returns None for channel widths outside the configured set
+    ({10, 20} MHz) — the rule then does not fire (no defined ceiling)."""
+    w = round(width_mhz)
+    if w == 10:
+        return (
+            settings.rocket_overload_clients_airmax_10mhz
+            if airmax
+            else settings.rocket_overload_clients_ltu_10mhz
+        )
+    if w == 20:
+        return (
+            settings.rocket_overload_clients_airmax_20mhz
+            if airmax
+            else settings.rocket_overload_clients_ltu_20mhz
+        )
+    return None
+
+
 @dataclass
 class AlertEvalResult:
     """Result of a single rule evaluation."""
@@ -876,6 +896,87 @@ class ThroughputAnomalyRule(AlertRule):
         )
 
 
+# ---------------------------------------------------------------------------
+# Famille E — Charge / capacité de l'AP (base-station Rocket)
+# ---------------------------------------------------------------------------
+
+
+class RocketClientOverloadRule(AlertRule):
+    """Rocket de base station saturé — trop de clients pour sa capacité.
+
+    Le nombre de clients qu'un AP sert correctement dépend de sa famille radio
+    (LTU > airMAX à spectre égal) et de sa largeur de canal (20 MHz > 10 MHz).
+    Incident CRITIQUE quand ``peer_count`` (clients connectés) ATTEINT le seuil
+    de la combinaison (famille × largeur). Seuils configurables (env + page
+    Seuils) via ``_rocket_overload_threshold``.
+
+    Entrées injectées dans ``metrics`` :
+      - ``peer_count``        : nombre de clients connectés (jobs de polling)
+      - ``channel_width_mhz`` : largeur de canal lue en direct (API)
+      - ``is_airmax_rocket``  : famille radio de l'AP (alert_engine)
+
+    La règle ``skip`` si l'une de ces entrées manque (pas de data → on
+    n'incrémente pas l'anti-flap) ou si la largeur n'a pas de seuil défini
+    (largeur hors {10, 20} MHz). Anti-flap : ``rocket_overload_failure_threshold``
+    cycles (le compte de clients fluctue avec les associations transitoires)."""
+
+    alert_type = "rocket_client_overload"
+
+    def evaluate(self, device_name: str, metrics: dict, settings) -> AlertEvalResult:
+        clients = metrics.get("peer_count")
+        width = metrics.get("channel_width_mhz")
+        if clients is None or width is None:
+            return AlertEvalResult(
+                alert_type=self.alert_type,
+                severity=None,
+                metric_name="peer_count",
+                metric_value=None,
+                threshold_value=None,
+                message="",
+                skip=True,
+            )
+
+        airmax = bool(metrics.get("is_airmax_rocket"))
+        threshold = _rocket_overload_threshold(settings, airmax, width)
+        if threshold is None:
+            # Channel width without a configured ceiling (e.g. 40 MHz) — no rule.
+            return AlertEvalResult(
+                alert_type=self.alert_type,
+                severity=None,
+                metric_name="peer_count",
+                metric_value=None,
+                threshold_value=None,
+                message="",
+                skip=True,
+            )
+
+        family = "airMAX" if airmax else "LTU"
+        if clients >= threshold:
+            return AlertEvalResult(
+                alert_type=self.alert_type,
+                severity="critical",
+                metric_name="peer_count",
+                metric_value=float(clients),
+                threshold_value=float(threshold),
+                message=(
+                    f"ALERTE CRITIQUE : Rocket {device_name} saturé — "
+                    f"{clients} clients connectés en {width:.0f} MHz ({family}), "
+                    f"seuil {threshold}. Capacité de l'AP dépassée."
+                ),
+            )
+        return AlertEvalResult(
+            alert_type=self.alert_type,
+            severity=None,
+            metric_name="peer_count",
+            metric_value=float(clients),
+            threshold_value=float(threshold),
+            message=(
+                f"RECOVERY : charge clients de {device_name} repassée sous le "
+                f"seuil ({clients}/{threshold} clients en {width:.0f} MHz)"
+            ),
+        )
+
+
 class LrLinkSubstandardRule(AlertRule):
     """Lien client sous le seuil — incident CONSOLIDÉ (per-LR).
 
@@ -1162,6 +1263,7 @@ _ROCKET_RULES: list[AlertRule] = [
     CPEDisconnectedRule(),
     HighRxTxErrorsRule(),
     ThroughputAnomalyRule(),
+    RocketClientOverloadRule(),
 ]
 
 _LR_RULES: list[AlertRule] = [
@@ -1195,6 +1297,7 @@ _AIRMAX_ROCKET_RULES: list[AlertRule] = [
     RadioLinkDegradedRule(),
     HighRxTxErrorsRule(),
     ThroughputAnomalyRule(),
+    RocketClientOverloadRule(),
 ]
 
 _AF60_RULES: list[AlertRule] = [
@@ -1226,6 +1329,7 @@ FAILURE_THRESHOLDS: dict[str, str] = {
     "radio_link_degraded": "radio_degraded_failure_threshold",
     "throughput_anomaly": "throughput_anomaly_failure_threshold",
     "lr_link_substandard": "lr_link_substandard_failure_threshold",
+    "rocket_client_overload": "rocket_overload_failure_threshold",
     "af60_signal_low": "af60_signal_failure_threshold",
     "af60_snr_low": "af60_snr_failure_threshold",
     "af60_link_down": "af60_link_down_failure_threshold",

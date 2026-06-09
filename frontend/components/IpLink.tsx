@@ -3,7 +3,7 @@
 import type { MouseEvent } from 'react'
 
 interface Props {
-  ip: string
+  ip: string | null
   /** Extra classes merged with the default link styling. */
   className?: string
 }

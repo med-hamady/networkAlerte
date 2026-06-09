@@ -30,7 +30,7 @@ class ClientConsumption(BaseModel):
 
     device_id: int
     name: str
-    ip_address: str
+    ip_address: str | None  # devices.ip_address est NULLABLE (identité LR par MAC)
     rocket_id: int | None
     rocket_name: str | None
     download_bytes: int

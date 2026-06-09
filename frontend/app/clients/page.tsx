@@ -11,7 +11,7 @@ type Period = '24h' | '7d' | '30d' | 'lifetime'
 type ClientConsumption = {
   device_id: number
   name: string
-  ip_address: string
+  ip_address: string | null
   rocket_id: number | null
   rocket_name: string | null
   download_bytes: number

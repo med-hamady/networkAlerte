@@ -40,7 +40,6 @@ from app.core.alert_constants import (
     Severity,
 )
 from app.core.config import get_settings
-from app.models.alert import Alert
 from app.models.device import Device, Lr, Rocket
 from app.schemas.device import normalize_mac
 from app.services import client_block_service, incident_service, notification_service
@@ -238,14 +237,8 @@ async def _emit_lifecycle_event(
     if not is_new:
         return  # already-open lifecycle event — no double notification
 
-    ok = await notification_service.notify_incident_opened(device, incident)
+    await notification_service.notify_incident_opened(device, incident)
     now = datetime.datetime.now(datetime.UTC)
-    session.add(Alert(
-        incident_id=incident.id,
-        message=f"{title} — {device.name}",
-        status="sent" if ok else "failed",
-        sent_at=now if ok else None,
-    ))
 
     # Auto-resolve the lifecycle incident — it is an event, not a state.
     incident.status = "resolved"

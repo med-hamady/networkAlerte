@@ -212,32 +212,6 @@ export interface Incident {
   notification_channel_policy: string[]
 }
 
-/** Operational policy attached to a single alert_type. */
-export interface AlertPolicy {
-  alert_type: string
-  severity: string                 // info | warning | critical | dynamic
-  notify_immediately: boolean
-  channels: string[]
-  groupable: boolean
-  recovery_notification: boolean
-}
-
-/** Notification channel stored in the DB (overrides env-based fallback). */
-export interface NotificationChannel {
-  id: number
-  name: string
-  channel_type: string             // email
-  config: Record<string, unknown>
-  enabled: boolean
-}
-
-export interface NotificationChannelInput {
-  name: string
-  channel_type: string
-  config: Record<string, unknown>
-  enabled: boolean
-}
-
 // Human-readable labels for every alert_type the engine can raise.
 // Keep aligned with backend/app/core/alert_labels.py — single operator vocabulary.
 export const ALERT_TYPE_LABELS: Record<string, string> = {
@@ -330,23 +304,6 @@ export function metricLabel(metricName: string | null): string {
   return METRIC_LABELS[metricName] ?? metricName
 }
 
-
-export interface AlertRecord {
-  id: number
-  incident_id: number
-  channel_id: number | null
-  message: string
-  status: string          // sent | failed | pending
-  sent_at: string | null
-  created_at: string
-  incident_title: string | null
-  incident_severity: string | null
-  incident_alert_type: string | null
-  device_id: number | null
-  device_name: string | null
-  device_ip: string | null
-  is_pending_digest: boolean
-}
 
 export interface MetricPoint {
   value: number

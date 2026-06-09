@@ -8,7 +8,6 @@ import type { Device, DeviceMetrics } from '@/lib/types'
 import { deviceLabel, formatDate, timeAgo, formatBytes, formatUptime, parentRocketId } from '@/lib/types'
 import { useThresholds } from '@/lib/useThresholds'
 import DeviceImage from './DeviceImage'
-import DevicePolicyOverridesEditor from './DevicePolicyOverridesEditor'
 import IpLink from './IpLink'
 
 const RADIO_TYPES = new Set(['rocket', 'lr', 'airfiber'])
@@ -511,8 +510,6 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
             <p className="text-slate-600 text-sm">{device.notes}</p>
           </Section>
         )}
-
-        <DevicePolicyOverridesEditor device={device} />
       </div>
     </>
   )

@@ -1,6 +1,4 @@
 import type {
-  AlertPolicy,
-  AlertRecord,
   BadInstallationRow,
   BadInstallationsResponse,
   LiveLinkHealthResponse,
@@ -10,8 +8,6 @@ import type {
   DowntimeLogResponse,
   HealthResponse,
   Incident,
-  NotificationChannel,
-  NotificationChannelInput,
   SupervisionReport,
   SystemInfo,
   Threshold,
@@ -54,12 +50,7 @@ export const endpoints = {
   blockClient:          (lrId: number) => `${API_BASE}/devices/${lrId}/block-client`,
   unblockClient:        (lrId: number) => `${API_BASE}/devices/${lrId}/unblock-client`,
   systemInfo:           `${API_BASE}/system/info`,
-  alertPolicies:        `${API_BASE}/alert-policies`,
-  alertPolicy:          (alertType: string) => `${API_BASE}/alert-policies/${alertType}`,
-  notificationChannels: `${API_BASE}/notification-channels`,
-  notificationChannel:  (id: number) => `${API_BASE}/notification-channels/${id}`,
-  alertRecords:         (params?: string) => `${API_BASE}/notifications${params ? `?${params}` : ''}`,
-  testEmail:            `${API_BASE}/notifications/test-email`,
+  testEmail:            `${API_BASE}/system/test-email`,
   reportGenerate:       (params: string) => `${API_BASE}/reports/generate?${params}`,
   thresholds:           `${API_BASE}/system/thresholds`,
   badInstallations:     `${API_BASE}/lr-health/bad-installations`,
@@ -180,39 +171,6 @@ export async function updateDevice(
   return jsonOrThrow<Device>(res)
 }
 
-export async function createNotificationChannel(
-  data: NotificationChannelInput,
-): Promise<NotificationChannel> {
-  const res = await fetch(endpoints.notificationChannels, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  })
-  return jsonOrThrow<NotificationChannel>(res)
-}
-
-export async function updateNotificationChannel(
-  id: number,
-  patch: Partial<NotificationChannelInput>,
-): Promise<NotificationChannel> {
-  const res = await fetch(endpoints.notificationChannel(id), {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(patch),
-  })
-  return jsonOrThrow<NotificationChannel>(res)
-}
-
-export async function deleteNotificationChannel(id: number): Promise<void> {
-  const res = await fetch(endpoints.notificationChannel(id), {
-    method: 'DELETE',
-  })
-  if (!res.ok && res.status !== 204) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail ?? `HTTP ${res.status}`)
-  }
-}
-
 export async function generateReport(
   dateFrom: string,
   dateTo: string,
@@ -298,8 +256,6 @@ export async function discoverModemsViaLr(lrId: number): Promise<DiscoverModemsR
 
 // Typed wrappers for SWR (pass to useSWR as key)
 export type {
-  AlertPolicy,
-  AlertRecord,
   BadInstallationRow,
   BadInstallationsResponse,
   LiveLinkHealthResponse,
@@ -307,8 +263,6 @@ export type {
   DowntimeLogResponse,
   HealthResponse,
   Incident,
-  NotificationChannel,
-  NotificationChannelInput,
   SupervisionReport,
   SystemInfo,
 }

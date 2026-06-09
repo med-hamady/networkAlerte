@@ -579,34 +579,25 @@ export interface LiveLinkHealthResponse {
   items: BadInstallationRow[]
 }
 
-// Section « Liaisons entre sites (P2P) » — liens backhaul airFiber 60 dégradés.
-// 4 indicateurs (signal, SNR, potentiel, capacité), verdict suspect ≥2 / critique ≥3.
+// Section « Liaisons entre sites (P2P) » — backhauls airFiber 60.
+// Critère unique : dernière capacité totale < plancher (1.95 Gb/s), lue en base.
 export interface SiteLinkRow {
   device_id: number
   name: string
-  ip: string
+  ip: string | null
   distance_m: number | null
 
-  verdict: BadInstallationVerdict
-  active_signals_count: number
-  total_indicators: number
-  signals: SignalEvidence[]
+  latest_total_capacity_mbps: number | null
+  capacity_floor_mbps: number
 
+  // Affichage seul (dernières valeurs en base), hors filtre.
   latest_signal_dbm: number | null
   latest_snr_db: number | null
-  latest_remote_signal_dbm: number | null
-  latest_link_potential_pct: number | null
-  latest_total_capacity_mbps: number | null
-
-  signal_warning_threshold: number
-  snr_warning_threshold: number
-  link_potential_floor_pct: number
-  total_capacity_floor_mbps: number
 }
 
 export interface SiteLinkHealthResponse {
   generated_at: string
-  unreachable_count: number
+  no_data_count: number
   items: SiteLinkRow[]
 }
 

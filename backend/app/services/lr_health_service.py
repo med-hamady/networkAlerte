@@ -45,7 +45,7 @@ from app.schemas.lr_health import (
     SiteLinkHealthResponse,
     SiteLinkRow,
 )
-from app.services import af60_api_service, airos_api_service, ltu_api_service
+from app.services import airos_api_service, ltu_api_service
 
 _AIRMAX_LR_VARIANTS = frozenset({"litebeam_5ac", "litebeam_m5"})
 
@@ -94,11 +94,9 @@ _TRACKED_METRICS: tuple[str, ...] = (
 # transit, pas un indicateur de qualité du lien radio.
 _M_LATENCY = "lr_latency_ms"
 
-# Métriques propres aux liens AF60 (clés de af60_api_service). Le SNR remplace le
-# CINR en 60 GHz ; remote_signal/distance sont affichés seuls (hors scoring).
+# Métrique propre aux liens AF60 (clé de af60_api_service) : le SNR 60 GHz,
+# affiché seul à côté de la capacité (hors filtre).
 _M_SNR = "snr_db"
-_M_REMOTE_SIGNAL = "remote_signal_dbm"
-_M_DISTANCE = "distance_m"
 
 # Floors live in Settings (single source shared with the lr_link_substandard
 # alert rule). Read at request time so a config change applies to both the
@@ -530,189 +528,85 @@ def _verdict(active_count: int) -> str:
 # ---------------------------------------------------------------------------
 #
 # Un AF60 est un équipement d'infra autonome (pas de Rocket parent), un seul peer.
-# On le classe sur 4 indicateurs propres au 60 GHz, tirés des seuils ``af60_*``
-# déjà partagés avec les règles d'alerte (signal / SNR / potentiel / capacité).
-# Le SNR remplace les 2 indicateurs de débit-idx des LR : aucun plancher de
-# rate-idx 60 GHz n'est défini, et le SNR est l'indicateur de qualité natif du lien.
-#
-# Verdict sur 4 indicateurs (mêmes paliers relatifs que les LR : ~la moitié =
-# suspect, majorité = critique) :
-_AF60_TOTAL_INDICATORS = 4
-_AF60_VERDICT_SUSPECT_AT = 2
-_AF60_VERDICT_CRITICAL_AT = 3
+# Critère d'affichage UNIQUE : la **dernière capacité totale** lue en base est sous
+# le plancher ``af60_capacity_display_min_mbps`` (1.95 Gb/s). Pas de fetch live (trop
+# coûteux) — on relit la dernière valeur de ``device_metrics`` (collapsée latest-only).
+# Signal/SNR sont joints uniquement pour l'affichage, jamais pour le filtre.
+
+# Métriques relues en base pour la section P2P (capacité = filtre ; signal/SNR = info).
+_AF60_DISPLAY_METRICS: tuple[str, ...] = (_M_TOTAL_CAP, _M_SIGNAL, _M_SNR)
 
 
-def _af60_verdict(active_count: int) -> str:
-    if active_count >= _AF60_VERDICT_CRITICAL_AT:
-        return "critical"
-    if active_count >= _AF60_VERDICT_SUSPECT_AT:
-        return "suspect"
-    return "stable"
+async def get_site_link_health(db: AsyncSession) -> SiteLinkHealthResponse:
+    """Lister les liens backhaul AF60 dont la dernière capacité est sous le plancher.
 
-
-def _build_af60_signals(metrics: dict[str, float | None], settings) -> list[SignalEvidence]:
-    """4 indicateurs « état » pour un lien AF60, mêmes seuils que les alertes af60_*."""
-    signal_warn = float(settings.af60_signal_warning_dbm)
-    snr_warn = float(settings.af60_snr_warning_db)
-    pot_floor = float(settings.af60_link_potential_min_pct)
-    cap_floor = float(settings.af60_total_capacity_min_mbps)
-
-    # 1. Signal — état (seuil ≤, comme les LR)
-    s_mean = metrics.get(_M_SIGNAL)
-    s_has = s_mean is not None and not math.isnan(s_mean)
-    s_active = s_has and s_mean <= signal_warn
-    signal_sig = SignalEvidence(
-        key="signal_state",
-        label="Signal — état",
-        active=s_active,
-        value=(
-            f"Actuel {s_mean:.1f} dBm — seuil ≤ {signal_warn:.0f} dBm"
-            if s_has
-            else "Aucune mesure de signal"
-        ),
-        detail=f"Indicateur actif si le signal actuel est ≤ {signal_warn:.0f} dBm (af60_signal_warning_dbm).",
-    )
-
-    return [
-        signal_sig,
-        _level_signal(
-            key="snr_state",
-            label="SNR — état",
-            stat={"mean": metrics.get(_M_SNR), "samples": 1 if metrics.get(_M_SNR) is not None else 0},
-            floor=snr_warn,
-            unit=" dB",
-            value_word="Actuel",
-            fmt="{:.1f}",
-            detail=(
-                "SNR du lien 60 GHz (remplace le CINR des LR). "
-                f"Indicateur actif si la valeur actuelle est < {snr_warn:.0f} dB (af60_snr_warning_db)."
-            ),
-        ),
-        _level_signal(
-            key="link_potential_state",
-            label="Potentiel du lien — état",
-            stat={"mean": metrics.get(_M_LINK_POT), "samples": 1 if metrics.get(_M_LINK_POT) is not None else 0},
-            floor=pot_floor,
-            unit=" %",
-            value_word="Actuel",
-            fmt="{:.0f}",
-            detail=(
-                "Potentiel du lien (moyenne des linkScore DL/UL). "
-                f"Indicateur actif si la valeur actuelle est < {pot_floor:.0f} % (af60_link_potential_min_pct)."
-            ),
-        ),
-        _level_signal(
-            key="total_capacity_state",
-            label="Capacité totale — état",
-            stat={"mean": metrics.get(_M_TOTAL_CAP), "samples": 1 if metrics.get(_M_TOTAL_CAP) is not None else 0},
-            floor=cap_floor,
-            unit=" Mbps",
-            value_word="Actuel",
-            fmt="{:.0f}",
-            detail=(
-                "Capacité totale du lien (DL + UL). "
-                f"Indicateur actif si la valeur actuelle est < {cap_floor:.0f} Mbps (af60_total_capacity_min_mbps)."
-            ),
-        ),
-    ]
-
-
-async def get_live_site_link_health(db: AsyncSession) -> SiteLinkHealthResponse:
-    """Classer les liens backhaul AF60 (site-à-site) sur leur **état actuel**.
-
-    Interroge chaque AF60 en direct (même UDAPI que les LTU) et n'expose que les
-    liaisons dégradées (≥2/4 indicateurs). Un AF60 injoignable en live (lien down,
-    auth KO, timeout, creds manquants) est **exclu** (pas de repli DB)."""
+    Critère unique : ``total_capacity_mbps`` (dernière valeur en base) <
+    ``af60_capacity_display_min_mbps`` (1.95 Gb/s). Aucune interrogation live."""
     now = datetime.datetime.now(datetime.UTC)
 
     afs = (await db.execute(select(AirFiber))).scalars().all()
     if not afs:
-        return SiteLinkHealthResponse(generated_at=now, unreachable_count=0, items=[])
+        return SiteLinkHealthResponse(generated_at=now, no_data_count=0, items=[])
 
-    live_metrics = await _fetch_live_af60_metrics(afs)
     settings = get_settings()
+    floor = float(settings.af60_capacity_display_min_mbps)
+    latest = await _fetch_latest_af60_metrics(db, [af.id for af in afs])
 
     items: list[SiteLinkRow] = []
+    no_data = 0
     for af in afs:
-        metrics = live_metrics.get(af.id)
-        if metrics is None:
-            continue  # injoignable en live → exclu
-
-        signals = _build_af60_signals(metrics, settings)
-        active = sum(1 for s in signals if s.active)
-        if active < _AF60_VERDICT_SUSPECT_AT:
-            continue
-
+        metrics = latest.get(af.id, {})
+        cap = metrics.get(_M_TOTAL_CAP)
+        if cap is None:
+            no_data += 1
+            continue  # aucun relevé de capacité → pas évaluable
+        if cap >= floor:
+            continue  # lien sain → non surfacé
         items.append(
             SiteLinkRow(
                 device_id=af.id,
                 name=af.name,
                 ip=af.ip_address,
-                distance_m=metrics.get(_M_DISTANCE) if metrics.get(_M_DISTANCE) is not None else af.distance_m,
-                verdict=_af60_verdict(active),
-                active_signals_count=active,
-                total_indicators=_AF60_TOTAL_INDICATORS,
-                signals=signals,
+                distance_m=af.distance_m,
+                latest_total_capacity_mbps=cap,
+                capacity_floor_mbps=floor,
                 latest_signal_dbm=metrics.get(_M_SIGNAL),
                 latest_snr_db=metrics.get(_M_SNR),
-                latest_remote_signal_dbm=metrics.get(_M_REMOTE_SIGNAL),
-                latest_link_potential_pct=metrics.get(_M_LINK_POT),
-                latest_total_capacity_mbps=metrics.get(_M_TOTAL_CAP),
-                signal_warning_threshold=float(settings.af60_signal_warning_dbm),
-                snr_warning_threshold=float(settings.af60_snr_warning_db),
-                link_potential_floor_pct=float(settings.af60_link_potential_min_pct),
-                total_capacity_floor_mbps=float(settings.af60_total_capacity_min_mbps),
             )
         )
 
-    items.sort(
-        key=lambda r: (_VERDICT_ORDER[r.verdict], -r.active_signals_count, r.name)
-    )
-
-    unreachable = sum(1 for af in afs if af.id not in live_metrics)
+    items.sort(key=lambda r: r.latest_total_capacity_mbps or 0.0)  # pires d'abord
     return SiteLinkHealthResponse(
-        generated_at=now, unreachable_count=unreachable, items=items
+        generated_at=now, no_data_count=no_data, items=items
     )
 
 
-async def _fetch_live_af60_metrics(
-    afs: list[AirFiber],
-) -> dict[int, dict[str, float | None]]:
-    """Interroger les AF60 en direct ; ``{af_id: metrics}`` pour les seuls joignables.
+async def _fetch_latest_af60_metrics(
+    db: AsyncSession,
+    ids: list[int],
+) -> dict[int, dict[str, float]]:
+    """Dernière valeur de chaque métrique d'affichage AF60, par device.
 
-    Un appel ``collect_af60_metrics`` par équipement (UDAPI locale), parallélisé
-    (sémaphore ``_LIVE_FETCH_CONCURRENCY``) et borné par ``_LIVE_FETCH_DEADLINE_S``,
-    exactement comme la collecte des LR airMAX."""
-    result: dict[int, dict[str, float | None]] = {}
-    sem = asyncio.Semaphore(_LIVE_FETCH_CONCURRENCY)
-
-    async def fetch(af: AirFiber) -> None:
-        if not af.ssh_username or not af.ssh_password:
-            return  # creds API manquants → exclu
-        async with sem:
-            metrics = await af60_api_service.collect_af60_metrics(
-                host=af.ip_address,
-                username=af.ssh_username,
-                password=af.ssh_password,
-                port=af.ssh_port or 443,
-            )
-        if metrics and any(v is not None for v in metrics.values()):
-            result[af.id] = metrics
-
-    tasks = [asyncio.create_task(fetch(af)) for af in afs]
-    if not tasks:
-        return result
-    try:
-        await asyncio.wait_for(
-            asyncio.gather(*tasks, return_exceptions=True),
-            timeout=_LIVE_FETCH_DEADLINE_S,
+    ``DISTINCT ON (device_id, metric_name) … ORDER BY collected_at DESC`` — la table
+    est collapsée latest-only pour ces métriques, donc c'est une lecture triviale."""
+    if not ids:
+        return {}
+    sql = text(
+        """
+        SELECT DISTINCT ON (dm.device_id, dm.metric_name)
+               dm.device_id, dm.metric_name, dm.metric_value
+        FROM device_metrics dm
+        WHERE dm.device_id = ANY(CAST(:ids AS integer[]))
+          AND dm.metric_name = ANY(CAST(:names AS text[]))
+        ORDER BY dm.device_id, dm.metric_name, dm.collected_at DESC
+        """
+    )
+    rows = (
+        await db.execute(
+            sql, {"ids": ids, "names": list(_AF60_DISPLAY_METRICS)}
         )
-    except TimeoutError:
-        for t in tasks:
-            t.cancel()
-        logger.warning(
-            "Live site-link health : délai global de %.0fs atteint — le reste est "
-            "compté injoignable.",
-            _LIVE_FETCH_DEADLINE_S,
-        )
-    return result
+    ).all()
+    out: dict[int, dict[str, float]] = defaultdict(dict)
+    for r in rows:
+        out[r.device_id][r.metric_name] = float(r.metric_value)
+    return out

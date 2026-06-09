@@ -285,6 +285,12 @@ class Settings(BaseSettings):
     af60_link_potential_min_pct: float = 30.0
     af60_total_capacity_min_mbps: float = 500.0
 
+    # Seuil d'AFFICHAGE de la section « Liaisons entre sites » de /lr-health :
+    # un AF60 dont la dernière capacité totale est < ce plancher y est surfacé
+    # (critère unique, sur la dernière valeur en base — pas de fetch live).
+    # 1.95 Gb/s = capacité nominale d'un backhaul AF60-LR sain.
+    af60_capacity_display_min_mbps: float = 1950.0
+
     # Anomaly thresholds — RX/TX error rate (errors / total bytes, %)
     rx_tx_error_warning_pct: float = 1.0    # above → warning
     rx_tx_error_critical_pct: float = 5.0   # above → critical

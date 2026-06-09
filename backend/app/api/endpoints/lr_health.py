@@ -30,8 +30,8 @@ async def list_site_links(
 ) -> SiteLinkHealthResponse:
     """Liaisons backhaul site-à-site (airFiber 60) dégradées, pires d'abord.
 
-    Interroge chaque AF60 en direct (UDAPI locale) et n'expose que les liens avec
-    ≥2/4 indicateurs actifs (signal, SNR, potentiel, capacité — seuils af60_*).
-    Verdict suspect (≥2) ou critique (≥3). Les AF60 injoignables sont exclus.
+    Critère unique : la **dernière capacité totale** lue en base est sous le
+    plancher d'affichage (``af60_capacity_display_min_mbps``, 1.95 Gb/s). Lecture
+    de la dernière valeur de ``device_metrics`` — pas d'interrogation live.
     """
-    return await lr_health_service.get_live_site_link_health(db)
+    return await lr_health_service.get_site_link_health(db)

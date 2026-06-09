@@ -102,7 +102,7 @@ function emptyForm(type: DeviceFormData['device_type']): DeviceFormData {
 function deviceToForm(device: Device): DeviceFormData {
   const base = {
     name: device.name,
-    ip_address: device.ip_address,
+    ip_address: device.ip_address ?? '',
     location: device.location ?? '',
     snmp_community: device.snmp_community ?? '',
     notes: device.notes ?? '',

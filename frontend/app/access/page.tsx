@@ -55,7 +55,7 @@ export default function AccessPage() {
   const filtered = React.useMemo(() => {
     const q = search.trim().toLowerCase()
     return lrs.filter(lr => {
-      if (q && !lr.name.toLowerCase().includes(q) && !lr.ip_address.includes(q)) return false
+      if (q && !lr.name.toLowerCase().includes(q) && !lr.ip_address?.includes(q)) return false
       switch (filter) {
         case 'active':           return !lr.client_blocked
         case 'blocked_full':     return lr.client_blocked && lr.block_mode === 'full'

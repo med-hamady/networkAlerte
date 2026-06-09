@@ -2,7 +2,7 @@
 interface DeviceBase {
   id: number
   name: string
-  ip_address: string
+  ip_address: string | null   // NULLABLE depuis l'identité LR par MAC (IP volatile)
   status: string        // up | down | unknown
   location: string | null
   snmp_community: string | null

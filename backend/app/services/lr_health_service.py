@@ -133,15 +133,19 @@ _LIVE_FETCH_DEADLINE_S = 12.0
 
 
 async def get_live_link_health(db: AsyncSession) -> LiveLinkHealthResponse:
-    """Classer les LR clients sur leur **état actuel** (valeurs live).
+    """Classer les LR clients sur leur **dernière mesure connue** (device_metrics).
 
-    Interroge chaque équipement **en direct** à l'ouverture de la page : LTU via
-    l'API HTTP du Rocket parent (un appel par Rocket, peers mappés par MAC),
-    airMAX via l'API airOS de chaque LiteBeam. Les 5 indicateurs et le verdict
-    (≥3/5) sont évalués sur la valeur actuelle comparée à chaque plancher.
+    Lit les dernières valeurs radio collectées en continu par les polls de fond
+    (``ltu_api_poll_job`` / ``airos_api_poll_job``, collapse latest-only dans
+    ``device_metrics``) — **au lieu de re-contacter EN DIRECT chaque LR** à
+    l'ouverture. L'ancien fetch live contactait 600+ devices, tapait le deadline
+    de 12 s et excluait ~60 LR au hasard du timing (page lente ET inexacte). Ici :
+    une requête SQL → page quasi instantanée, **exhaustive** (tous les LR up
+    évalués), fraîcheur ≤ intervalle des polls (60-180 s).
 
-    Un LR **injoignable en live** (lien radio down, auth KO, timeout, creds
-    manquants) est **exclu** : pas de repli sur la dernière valeur en base.
+    Un LR ``down`` (ping) ou sans métrique radio récente est exclu (non
+    évaluable). Les 5 indicateurs et le verdict (≥3/5) sont identiques — seules
+    les valeurs viennent de la DB plutôt que d'un fetch live.
     """
     now = datetime.datetime.now(datetime.UTC)
 
@@ -149,29 +153,32 @@ async def get_live_link_health(db: AsyncSession) -> LiveLinkHealthResponse:
     if not lrs:
         return LiveLinkHealthResponse(generated_at=now, unreachable_count=0, items=[])
 
-    live_metrics = await _fetch_live_metrics(lrs)
     settings = get_settings()
+    latest = await _fetch_latest_link_metrics(db, [lr.id for lr in lrs])
 
     items: list[BadInstallationRow] = []
+    unreachable = 0
     for lr in lrs:
-        metrics = live_metrics.get(lr.id)
-        if metrics is None:
-            continue  # injoignable en live → exclu (pas de repli DB)
+        metrics = latest.get(lr.id) or {}
+        # Down (ping) ou aucune métrique radio en base → non évaluable, exclu.
+        if lr.status != "up" or not any(
+            metrics.get(m) is not None for m in _TRACKED_METRICS
+        ):
+            unreachable += 1
+            continue
 
-        # Réutilise la logique d'indicateurs : on enveloppe chaque valeur live
-        # dans la même forme {mean, samples} que la matview (samples=1), avec le
-        # wording « Actuel ».
+        # Même logique d'indicateurs : chaque valeur enveloppée en {mean, samples}.
         stats = {
-            name: {"mean": value, "samples": 1}
-            for name, value in metrics.items()
-            if name in _TRACKED_METRICS and value is not None
+            name: {"mean": metrics[name], "samples": 1}
+            for name in _TRACKED_METRICS
+            if metrics.get(name) is not None
         }
         signals = _build_signals(
             lr=lr,
             metric_stats=stats,
             settings=settings,
-            value_word="Actuel",
-            basis_phrase="la valeur actuelle",
+            value_word="Dernier",
+            basis_phrase="la dernière mesure",
         )
         active = sum(1 for s in signals if s.active)
         if active < _VERDICT_SUSPECT_AT:
@@ -200,6 +207,7 @@ async def get_live_link_health(db: AsyncSession) -> LiveLinkHealthResponse:
                 link_potential_floor_pct=_link_potential_floor(lr.model_variant, settings),
                 total_capacity_floor_mbps=settings.lr_total_capacity_min_mbps,
                 rx_rate_floor_idx=_rx_rate_floor(lr.model_variant, settings),
+                latency_ms=metrics.get(_M_LATENCY),
             )
         )
 
@@ -210,17 +218,6 @@ async def get_live_link_health(db: AsyncSession) -> LiveLinkHealthResponse:
             r.lr_name,
         )
     )
-
-    # Latence LR → Internet : dernier relevé en base (sonde SSH 60 s), uniquement
-    # pour les LR surfacés. Affichage seul, ne change pas le verdict. On ne sonde
-    # PAS en live (un ping SSH par LR doublerait le temps de page) — la valeur ≤60 s
-    # est déjà une mesure réelle fraîche, cohérente avec « état actuel ».
-    if items:
-        latency = await _fetch_latest_latency(db, [it.lr_id for it in items])
-        for it in items:
-            it.latency_ms = latency.get(it.lr_id)
-
-    unreachable = sum(1 for lr in lrs if lr.id not in live_metrics)
     return LiveLinkHealthResponse(
         generated_at=now, unreachable_count=unreachable, items=items
     )
@@ -256,6 +253,40 @@ async def _fetch_latest_latency(
         await db.execute(sql, {"lr_ids": lr_ids, "metric_name": _M_LATENCY})
     ).all()
     return {r.device_id: float(r.metric_value) for r in rows}
+
+
+async def _fetch_latest_link_metrics(
+    db: AsyncSession,
+    lr_ids: list[int],
+) -> dict[int, dict[str, float]]:
+    """Dernières valeurs des métriques de lien (scoring + latence) par LR, lues
+    depuis ``device_metrics`` — ``{lr_id: {metric_name: value}}``.
+
+    Ces métriques sont collectées en continu par ``ltu_api_poll_job`` /
+    ``airos_api_poll_job`` et stockées en collapse latest-only (1 ligne fraîche
+    par ``(device_id, metric_name)``). Lire ici remplace le fetch LIVE de tous
+    les LR à l'ouverture de la page (qui contactait 600+ devices, tapait le
+    deadline de 12 s et excluait ~60 LR au hasard du timing). Une seule requête
+    ``DISTINCT ON`` (latest par paire) servie par ``ix_device_metrics_lookup`` ;
+    fraîcheur ≤ intervalle des polls (60-180 s)."""
+    if not lr_ids:
+        return {}
+    names = [*_TRACKED_METRICS, _M_LATENCY]
+    sql = text(
+        """
+        SELECT DISTINCT ON (device_id, metric_name)
+               device_id, metric_name, metric_value
+        FROM device_metrics
+        WHERE device_id = ANY(CAST(:lr_ids AS integer[]))
+          AND metric_name = ANY(CAST(:metric_names AS text[]))
+        ORDER BY device_id, metric_name, collected_at DESC
+        """
+    )
+    rows = (await db.execute(sql, {"lr_ids": lr_ids, "metric_names": names})).all()
+    out: dict[int, dict[str, float]] = defaultdict(dict)
+    for r in rows:
+        out[r.device_id][r.metric_name] = float(r.metric_value)
+    return out
 
 
 async def _fetch_live_metrics(

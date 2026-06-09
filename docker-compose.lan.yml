@@ -1,0 +1,42 @@
+# LAN exposure override — OPT-IN, use ONLY on the physical server, with:
+#
+#   LAN_BIND_IP=10.135.3.25 docker compose \
+#       -f docker-compose.yml \
+#       -f docker-compose.prod.yml \
+#       -f docker-compose.lan.yml up -d
+#
+# What it does
+# ------------
+# Adds a SECOND publish address for nginx on the server's private LAN IP, so
+# the dashboard is reachable directly from inside the company network at
+# https://<LAN_BIND_IP>/ — no SSH tunnel needed on the LAN.
+#
+# Compose MERGES `ports` additively across files, so this does NOT replace the
+# loopback bindings from docker-compose.prod.yml — it ADDS to them. nginx ends
+# up listening on:
+#   - 127.0.0.1:80/443   → kept from prod.yml (SSH tunnel, for the PUBLIC IP)
+#   - ${LAN_BIND_IP}:80/443 → added here (direct LAN access)
+#
+# Why a specific IP and never 0.0.0.0
+# -----------------------------------
+# Binding to the LAN IP makes Docker publish the port ONLY on that interface.
+# The server's PUBLIC interface stays unbound, so the supervisor remains
+# unreachable from the Internet — public access still requires the SSH tunnel
+# to 127.0.0.1. This is the whole point: re-exposing on 0.0.0.0 would reopen
+# the 2026-05-17 incident (a scanner wiped the inventory via a public binding).
+#
+# LAN_BIND_IP is REQUIRED (`:?`) on purpose: an unset/empty value would make
+# Compose bind 0.0.0.0 — exactly what we must never do. The deploy fails loudly
+# instead.
+#
+# Access over the LAN is HTTPS only (nginx redirects 80 → 443). Reaching it by
+# IP will trip a certificate-name warning in the browser (the cert is not
+# issued for 10.135.3.25); accept it once. The session cookie is `Secure`, and
+# browsers DO set Secure cookies over HTTPS even with a self-signed cert, so
+# login works normally once the warning is accepted.
+
+services:
+  nginx:
+    ports:
+      - "${LAN_BIND_IP:?Set LAN_BIND_IP to the server private LAN IP, e.g. 10.135.3.25}:80:80"
+      - "${LAN_BIND_IP:?Set LAN_BIND_IP to the server private LAN IP, e.g. 10.135.3.25}:443:443"

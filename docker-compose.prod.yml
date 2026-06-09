@@ -69,12 +69,17 @@ services:
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
-    # Bound to 127.0.0.1 only — the supervisor is NOT exposed to the Internet.
-    # Admin access goes through an SSH tunnel:
+    # Bound to 127.0.0.1 only — the supervisor is NOT exposed on the public
+    # interface. Public/remote admin access goes through an SSH tunnel:
     #   ssh -L 8443:127.0.0.1:443 a2@<server>  →  https://localhost:8443/
     # Rationale: incident 2026-05-17 — a public 0.0.0.0 binding let an
-    # automated scanner reach /api/proxy and wipe the device inventory. Do NOT
-    # revert to 0.0.0.0 without a real auth layer + IP allow-list/firewall.
+    # automated scanner reach /api/proxy and wipe the device inventory.
+    #
+    # Direct LAN access (no tunnel) is now supported by the auth layer (login +
+    # server-side sessions, see backend/app/services/auth_service.py). Enable it
+    # by ALSO composing docker-compose.lan.yml, which adds a binding on the
+    # server's private LAN IP only — never 0.0.0.0, so the public interface
+    # stays tunnel-only. Do NOT bind 0.0.0.0 here.
     ports:
       - "127.0.0.1:80:80"
       - "127.0.0.1:443:443"

@@ -13,8 +13,10 @@ the network topology changes:
   - same MAC, different parent    → update rocket_id, open AT_LR_REASSIGNED
   - hostname / firmware drifted   → silent update (logged)
 
-The MAC address is the stable identifier. IP-based matching is only used as a
-fallback for legacy devices created before mac_address was tracked.
+The MAC address is the stable identifier. IP is volatile (DHCP churn moves an IP
+between MACs over time), so IP-based matching is only a fallback for legacy peers
+with no MAC, and it is scoped to the SAME Rocket to avoid stealing a row whose IP
+has since been reassigned to a different device on another Rocket.
 
 The function is data-source agnostic: peers can come from the LTU HTTP API or
 from the airOS UBNT SNMP station table — anything that produces a list of
@@ -166,14 +168,47 @@ async def _find_lr_by_mac(session: AsyncSession, mac: str) -> Lr | None:
     return res.scalar_one_or_none()
 
 
-async def _find_lr_by_ip(session: AsyncSession, ip: str) -> Lr | None:
-    """Lookup by IP, restricted to LRs.
+async def _find_lr_by_ip(session: AsyncSession, ip: str, rocket_id: int | None) -> Lr | None:
+    """Lookup an LR by IP, scoped to a single Rocket.
 
-    Without the type guard we'd match a Rocket whose IP collides with a peer's
-    mgmt_ip (rare but possible on misconfigured networks).
+    IP is NOT a stable identity: DHCP churn reassigns an IP from one CPE to
+    another over time. A global IP lookup would match a stale row owned by a
+    different Rocket and "steal" it (reassignment thrashing). Scoping to the
+    parent Rocket means this fallback only ever re-finds a legacy MAC-less LR
+    that already belongs to this Rocket.
     """
-    res = await session.execute(select(Lr).where(Lr.ip_address == ip))
+    res = await session.execute(
+        select(Lr).where(Lr.ip_address == ip, Lr.rocket_id == rocket_id)
+    )
     return res.scalar_one_or_none()
+
+
+async def _release_ip_if_held(
+    session: AsyncSession, ip: str, exclude_id: int | None = None
+) -> bool:
+    """Free `ip` from a stale LR binding so an incoming device can take it.
+
+    UNIQUE(ip_address) is kept, so an IP belongs to exactly one device at a time.
+    When DHCP moves an IP to a new CPE, the previous holder's binding is stale:
+    null its `ip_address` (it keeps its MAC identity and gets its real current IP
+    back when its own Rocket rediscovers it).
+
+    Returns True if the IP is now free to use, False if it is held by a non-LR
+    device (operator-created Rocket/Switch/Power) which must never be touched.
+    """
+    res = await session.execute(select(Device).where(Device.ip_address == ip))
+    holder = res.scalar_one_or_none()
+    if holder is None or holder.id == exclude_id:
+        return True
+    if holder.device_type != "lr":
+        return False
+    logger.info(
+        "Discovery: IP %s libérée du LR stale '%s' (id=%s) — réattribuée (churn DHCP)",
+        ip, holder.name, holder.id,
+    )
+    holder.ip_address = None
+    await session.flush()
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -241,19 +276,26 @@ async def _reconcile_single_peer(
     now = datetime.datetime.now(datetime.UTC)
 
     # ── 1. Lookup ─────────────────────────────────────────────────────────
+    # MAC is the only stable identity. IP is volatile, so it is used only to
+    # re-find LEGACY MAC-less LRs, strictly within the SAME Rocket (a churned IP
+    # now owned elsewhere must never be stolen).
     device: Lr | None = None
     if mac:
         device = await _find_lr_by_mac(session, mac)
-    if device is None and ip:
-        # Fallback for legacy LR devices created before MAC tracking existed.
-        # Once matched, the MAC gets pinned so future cycles use the fast path.
-        device = await _find_lr_by_ip(session, ip)
-        if device and mac and not device.mac_address:
-            device.mac_address = mac
-            logger.info(
-                "Discovery: pinned MAC %s on legacy LR '%s' (matched by IP)",
-                mac, device.name,
-            )
+        if device is None and ip:
+            # No row carries this MAC yet. If a legacy MAC-less LR on THIS Rocket
+            # holds the IP, adopt it (pin the MAC) rather than create a duplicate.
+            legacy = await _find_lr_by_ip(session, ip, parent.id)
+            if legacy is not None and legacy.mac_address is None:
+                legacy.mac_address = mac
+                device = legacy
+                logger.info(
+                    "Discovery: MAC %s épinglée sur LR legacy '%s' (match IP, même Rocket)",
+                    mac, legacy.name,
+                )
+    elif ip:
+        # Peer with no MAC at all — same-Rocket IP fallback only.
+        device = await _find_lr_by_ip(session, ip, parent.id)
 
     # ── 2. Create branch ──────────────────────────────────────────────────
     if device is None:
@@ -267,14 +309,12 @@ async def _reconcile_single_peer(
             )
             return None
 
-        # Avoid creating a duplicate when the IP is already used by any other
-        # device row (operator-created Rocket, Switch, etc.).
-        existing_any = await session.execute(
-            select(Device).where(Device.ip_address == ip)
-        )
-        if existing_any.scalar_one_or_none() is not None:
+        # The IP may still be bound to a stale LR row (previous DHCP lease).
+        # Free it from that stale holder so we can take it; refuse only if it
+        # belongs to an operator device (Rocket/Switch/Power), never an LR.
+        if not await _release_ip_if_held(session, ip):
             logger.warning(
-                "Discovery: IP %s déjà attribuée — création du LR (mac=%s) abandonnée",
+                "Discovery: IP %s détenue par un device non-LR — création du LR (mac=%s) abandonnée",
                 ip, mac or "?",
             )
             return None
@@ -335,26 +375,41 @@ async def _reconcile_single_peer(
     if device.first_discovered_at is None:
         device.first_discovered_at = now
 
-    # IP change (only if MAC matched — we trust the MAC as identity)
-    if mac and ip and device.ip_address != ip:
-        old_ip = device.ip_address
-        device.ip_address = ip
-        result.ip_changed.append((device, old_ip))
-        logger.warning(
-            "Discovery: LR '%s' (MAC=%s) — IP changée %s → %s",
-            device.name, mac, old_ip, ip,
-        )
-        await _emit_lifecycle_event(
-            session, device,
-            alert_type=AT_LR_IP_CHANGED,
-            title=f"Changement d'IP : {device.name} ({old_ip} → {ip})",
-            severity=Severity.WARNING,
-            description=(
-                f"Le LR '{device.name}' (MAC={mac}) a changé d'adresse IP : "
-                f"{old_ip} → {ip}. Vérifier la cohérence DHCP/configuration. "
-                f"Les anciennes sessions SSH/API pointant vers {old_ip} sont obsolètes."
-            ),
-        )
+    # IP (re)assignment — identity is the MAC; the IP just follows it. Free the
+    # target IP from any stale holder first to honour UNIQUE(ip_address).
+    if ip and device.ip_address != ip:
+        if not await _release_ip_if_held(session, ip, exclude_id=device.id):
+            logger.warning(
+                "Discovery: IP %s détenue par un device non-LR — IP du LR '%s' inchangée",
+                ip, device.name,
+            )
+        elif device.ip_address is None:
+            # Device had its IP freed earlier (stale) — silent re-bind, not an
+            # operationally meaningful "IP changed" event.
+            device.ip_address = ip
+            logger.info(
+                "Discovery: LR '%s' (MAC=%s) — IP réassignée → %s",
+                device.name, mac or "?", ip,
+            )
+        else:
+            old_ip = device.ip_address
+            device.ip_address = ip
+            result.ip_changed.append((device, old_ip))
+            logger.warning(
+                "Discovery: LR '%s' (MAC=%s) — IP changée %s → %s",
+                device.name, mac or "?", old_ip, ip,
+            )
+            await _emit_lifecycle_event(
+                session, device,
+                alert_type=AT_LR_IP_CHANGED,
+                title=f"Changement d'IP : {device.name} ({old_ip} → {ip})",
+                severity=Severity.WARNING,
+                description=(
+                    f"Le LR '{device.name}' (MAC={mac or 'inconnue'}) a changé d'adresse IP : "
+                    f"{old_ip} → {ip}. Vérifier la cohérence DHCP/configuration. "
+                    f"Les anciennes sessions SSH/API pointant vers {old_ip} sont obsolètes."
+                ),
+            )
 
     # Parent reassignment (LR reported by a different Rocket than its current parent)
     if device.rocket_id != parent.id:

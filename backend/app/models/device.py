@@ -25,7 +25,10 @@ class Device(Base):
     __tablename__ = "devices"
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    ip_address: Mapped[str] = mapped_column(String(45), nullable=False, unique=True)
+    # Volatile, NOT an identity: DHCP churn moves an IP between MACs over time.
+    # Kept UNIQUE (one device per IP at any instant) but nullable so a stale
+    # binding can be released (set NULL) when the IP migrates to another device.
+    ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True, unique=True)
     device_type: Mapped[str] = mapped_column(String(20), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="unknown")
     location: Mapped[str | None] = mapped_column(String(255))

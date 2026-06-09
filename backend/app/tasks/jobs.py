@@ -14,11 +14,13 @@ import asyncio
 import datetime
 import functools
 import logging
+import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import DBAPIError
 
 from app.core.alert_constants import (
     AT_AIRMAX_DOWN,
@@ -73,8 +75,33 @@ logger = logging.getLogger(__name__)
 JOB_LAST_DURATION: dict[str, float] = {}
 
 
+# ── Anti-deadlock retry (transient Postgres serialization conflicts) ──────────
+# Plusieurs jobs de polling écrivent dans `devices` (ping → last_seen/status,
+# ltu/airos/af60/snmp → last_discovered_at, rename, topologie). Ils tournent en
+# parallèle sur la boucle asyncio ; quand deux transactions verrouillent les
+# mêmes lignes `devices` dans un ordre différent, Postgres tue l'une des deux
+# avec `deadlock detected` (SQLSTATE 40P01). C'est transitoire : la transaction
+# victime est rollback par Postgres, et les jobs de polling sont idempotents
+# (latest-wins) → il suffit de **rejouer le job**. On NE sérialise PAS les jobs
+# (un verrou global tiendrait pendant les envois SMTP faits dans la session, eux
+# lents jusqu'à 8 s) : on rejoue, donc rien n'est perdu et aucune I/O n'est
+# bloquée. On couvre aussi 40001 (serialization_failure) par sécurité.
+_RETRYABLE_SQLSTATES: frozenset[str] = frozenset({"40P01", "40001"})
+_JOB_DB_MAX_RETRIES = 2          # → 3 tentatives au total
+_JOB_DB_RETRY_BASE_S = 0.2       # backoff exponentiel de base
+_JOB_DB_RETRY_JITTER_S = 0.5     # jitter aléatoire pour désynchroniser les rejeux
+
+
+def _retryable_db_conflict(exc: BaseException) -> bool:
+    """True si l'exception est un deadlock / serialization failure Postgres."""
+    orig = getattr(exc, "orig", None)
+    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    return code in _RETRYABLE_SQLSTATES
+
+
 def _timed_job(fn):
-    """Log how long each run of a scheduled job takes (observability P2.2).
+    """Log how long each run of a scheduled job takes (observability P2.2) and
+    rejoue le job sur deadlock/serialization Postgres (transitoire, sans perte).
 
     Gives an at-a-glance « durée vs intervalle » signal to spot a job creeping
     toward saturation BEFORE it starts skipping cycles — no more grepping for
@@ -84,7 +111,26 @@ def _timed_job(fn):
     async def wrapper(*args, **kwargs):
         started = time.monotonic()
         try:
-            return await fn(*args, **kwargs)
+            attempt = 0
+            while True:
+                try:
+                    return await fn(*args, **kwargs)
+                except DBAPIError as exc:
+                    # Seuls les conflits transitoires sont rejoués ; toute autre
+                    # DBAPIError remonte inchangée. La transaction victime est
+                    # déjà rollback par Postgres → rejouer le job repart propre.
+                    if attempt >= _JOB_DB_MAX_RETRIES or not _retryable_db_conflict(exc):
+                        raise
+                    attempt += 1
+                    backoff = _JOB_DB_RETRY_BASE_S * (2 ** (attempt - 1)) + random.uniform(
+                        0, _JOB_DB_RETRY_JITTER_S
+                    )
+                    logger.warning(
+                        "JOB %s — conflit DB transitoire (deadlock/serialization), "
+                        "rejeu %d/%d dans %.2f s",
+                        fn.__name__, attempt, _JOB_DB_MAX_RETRIES, backoff,
+                    )
+                    await asyncio.sleep(backoff)
         finally:
             elapsed = time.monotonic() - started
             JOB_LAST_DURATION[fn.__name__] = elapsed
@@ -1811,6 +1857,7 @@ async def device_metrics_retention_job() -> None:
         logger.exception("device_metrics retention job failed")
 
 
+@_timed_job
 async def client_block_enforcement_job() -> None:
     """Re-assert every active client block so it survives an LR reboot.
 

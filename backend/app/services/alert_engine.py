@@ -22,7 +22,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.models.alert import Alert
 from app.models.alert_state import AlertState
 from app.models.device import Device, Lr
 from app.models.incident import Incident
@@ -70,23 +69,8 @@ async def _reset_failure(db: AsyncSession, state: AlertState) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Alert record helpers
+# Incident lifecycle
 # ---------------------------------------------------------------------------
-
-async def _create_alert_record(
-    db: AsyncSession,
-    incident: Incident,
-    message: str,
-    notif_success: bool,
-) -> None:
-    now = datetime.datetime.now(datetime.UTC)
-    db.add(Alert(
-        incident_id=incident.id,
-        message=message,
-        status="sent" if notif_success else "failed",
-        sent_at=now if notif_success else None,
-    ))
-
 
 async def _open_alert(
     db: AsyncSession,
@@ -110,8 +94,7 @@ async def _open_alert(
         threshold_value=result.threshold_value,
     )
     if is_new:
-        ok = await notification_service.notify_incident_opened(device, incident)
-        await _create_alert_record(db, incident, result.message, ok)
+        await notification_service.notify_incident_opened(device, incident)
         logger.warning(
             "ALERT OPENED [%s] %s — %s",
             result.severity.upper(),
@@ -134,12 +117,7 @@ async def _resolve_alert(
         db, device.id, title=recovery_message, alert_type=alert_type
     )
     for inc in resolved:
-        ok = await notification_service.notify_incident_resolved(device, inc)
-        # Audit row only for incidents kept in DB. A purged incident's row is
-        # already gone and alerts.incident_id has no matching row → inserting
-        # one would violate the FK, so skip it.
-        if incident_service.is_availability_incident(inc.alert_type):
-            await _create_alert_record(db, inc, recovery_message, ok)
+        await notification_service.notify_incident_resolved(device, inc)
         logger.info("ALERT RESOLVED %s — %s", device.name, alert_type)
 
 

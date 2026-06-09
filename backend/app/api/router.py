@@ -2,7 +2,6 @@ from fastapi import APIRouter, Depends
 
 from app.api.deps import require_user_or_api_key
 from app.api.endpoints import (
-    alert_policies,
     auth,
     clients,
     devices,
@@ -10,8 +9,6 @@ from app.api.endpoints import (
     incidents,
     lr_health,
     network_uptime,
-    notification_channels,
-    notifications,
     reports,
     system,
 )
@@ -33,18 +30,5 @@ api_router.include_router(incidents.router, prefix="/incidents", tags=["incident
 api_router.include_router(lr_health.router, prefix="/lr-health", tags=["lr-health"], dependencies=_auth)
 api_router.include_router(clients.router, prefix="/clients", tags=["clients"], dependencies=_auth)
 api_router.include_router(network_uptime.router, prefix="/network-uptime", tags=["network-uptime"], dependencies=_auth)
-api_router.include_router(notifications.router, prefix="/notifications", tags=["notifications"], dependencies=_auth)
-api_router.include_router(
-    notification_channels.router,
-    prefix="/notification-channels",
-    tags=["notification-channels"],
-    dependencies=_auth,
-)
-api_router.include_router(
-    alert_policies.router,
-    prefix="/alert-policies",
-    tags=["alert-policies"],
-    dependencies=_auth,
-)
 api_router.include_router(system.router, prefix="/system", tags=["system"], dependencies=_auth)
 api_router.include_router(reports.router, prefix="/reports", tags=["reports"], dependencies=_auth)

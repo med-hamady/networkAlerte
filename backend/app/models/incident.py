@@ -35,7 +35,6 @@ class Incident(Base):
 
     # Relationships
     device: Mapped["Device"] = relationship(back_populates="incidents")  # noqa: F821
-    alerts: Mapped[list["Alert"]] = relationship(back_populates="incident")  # noqa: F821
 
     def __repr__(self) -> str:
         return f"<Incident(id={self.id}, title={self.title!r}, severity={self.severity})>"

@@ -39,7 +39,6 @@ from app.core.alert_constants import AT_UISP_POWER_UNREACH as AT_POWER_UNREACH
 from app.core.alert_constants import AT_VOLTAGE_ANOMALY as AT_VOLT_ANOMALY
 from app.core.config import get_settings
 from app.db.session import async_session_factory
-from app.models.alert import Alert
 from app.models.alert_state import AlertState
 from app.models.audit_log import AuditLog
 from app.models.device import AirFiber, Device, Lr, Rocket, UispPower
@@ -251,23 +250,6 @@ INC_SWITCH_PORT_SPEED = "Port switch vitesse insuffisante"
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _create_alert_record(
-    session,
-    incident: object,
-    message: str,
-    notif_success: bool,
-) -> None:
-    """Persist an Alert row recording the notification attempt."""
-    now = datetime.datetime.now(datetime.UTC)
-    alert = Alert(
-        incident_id=incident.id,
-        message=message,
-        status="sent" if notif_success else "failed",
-        sent_at=now if notif_success else None,
-    )
-    session.add(alert)
-
-
 def _alert_type_for_device(device: Device) -> str:
     """Return the appropriate device-down alert_type for a given device type."""
     mapping = {
@@ -300,8 +282,7 @@ async def _open_and_notify(
         session, device, title, severity, description, alert_type=alert_type
     )
     if is_new:
-        ok = await notification_service.notify_incident_opened(device, incident)
-        await _create_alert_record(session, incident, f"{title} — {device.name}", ok)
+        await notification_service.notify_incident_opened(device, incident)
 
 
 async def _resolve_and_notify(
@@ -315,17 +296,7 @@ async def _resolve_and_notify(
         session, device.id, title, alert_type=alert_type
     )
     for incident in resolved:
-        ok = await notification_service.notify_incident_resolved(device, incident)
-        # Only record an audit row if the incident STILL EXISTS. Non-availability
-        # incidents are hard-deleted by resolve_incidents → inserting an Alert
-        # referencing one violates alerts_incident_id_fkey (and rolls back the
-        # whole job transaction). The recovery notification is still sent for the
-        # purged ones; only the audit row is skipped (same contract as
-        # alert_engine._resolve_alert — see resolve_incidents docstring).
-        if incident_service.is_availability_incident(incident.alert_type):
-            await _create_alert_record(
-                session, incident, f"RECOVERY: {title} — {device.name}", ok
-            )
+        await notification_service.notify_incident_resolved(device, incident)
 
 
 async def _evaluate_lr_latency(
@@ -404,8 +375,7 @@ async def _evaluate_lr_latency(
         threshold_value=threshold,
     )
     if is_new:
-        ok = await notification_service.notify_incident_opened(lr, incident)
-        await _create_alert_record(session, incident, f"{title}", ok)
+        await notification_service.notify_incident_opened(lr, incident)
         logger.warning(
             "lr_latency: %s → %s = %.1f ms ≥ %.0f ms — incident critique ouvert (%d cycles)",
             lr.name, settings.lr_latency_target, avg_rtt_ms, threshold, count,

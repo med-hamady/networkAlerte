@@ -24,7 +24,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.alert_constants import Severity
-from app.models.alert import Alert
 from app.models.device import Device
 from app.models.incident import Incident
 from app.services import alert_formatter, email_service, notification_service
@@ -116,18 +115,9 @@ async def flush_warning_digest(db: AsyncSession) -> int:
     now = datetime.datetime.now(datetime.UTC)
 
     if not targets:
-        # No channel will accept this digest — record the silence as failed
-        # Alert rows so the operator can spot the problem on the dashboard.
         logger.error(
             "Digest: %d warnings pending but no channel matches policy", len(items),
         )
-        for _, incident in items:
-            db.add(Alert(
-                incident_id=incident.id,
-                message=f"[Digest][failed] {incident.title} — no channel matched policy",
-                status="failed",
-                sent_at=None,
-            ))
         return 0
 
     delivered = False
@@ -142,25 +132,11 @@ async def flush_warning_digest(db: AsyncSession) -> int:
     if delivered:
         for _, incident in items:
             incident.digested_at = now
-            db.add(Alert(
-                incident_id=incident.id,
-                message=f"[Digest] {incident.title}",
-                status="sent",
-                sent_at=now,
-            ))
     else:
-        # All channels failed — leave digested_at NULL so we retry next cycle,
-        # but write failed Alert rows so the failure is visible in audit trail.
+        # All channels failed — leave digested_at NULL so we retry next cycle.
         logger.error(
             "Digest: %d warnings — all %d channel(s) failed to deliver",
             len(items), len(targets),
         )
-        for _, incident in items:
-            db.add(Alert(
-                incident_id=incident.id,
-                message=f"[Digest][failed] {incident.title} — all channels failed",
-                status="failed",
-                sent_at=None,
-            ))
 
     return len(items)

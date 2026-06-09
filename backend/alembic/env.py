@@ -10,12 +10,10 @@ from app.core.config import get_settings
 from app.db.base import Base
 
 # Import all models so Alembic can detect schema changes
-from app.models.alert import Alert  # noqa: F401
 from app.models.alert_state import AlertState  # noqa: F401
 from app.models.device import Device  # noqa: F401
 from app.models.device_metric import DeviceMetric  # noqa: F401
 from app.models.incident import Incident  # noqa: F401
-from app.models.notification_channel import NotificationChannel  # noqa: F401
 from app.models.power_status_log import PowerStatusLog  # noqa: F401
 from app.models.system_setting import SystemSetting  # noqa: F401
 

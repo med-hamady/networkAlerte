@@ -48,29 +48,21 @@ backend/app/
 │       ├── health.py              # GET /health (public — test DB inclus)
 │       ├── devices.py             # CRUD + diagnostics SSH/ping sur /devices
 │       ├── incidents.py           # GET/PATCH /incidents
-│       ├── notifications.py       # GET /notifications (historique alertes)
-│       ├── notification_channels.py  # CRUD /notification-channels
-│       ├── alert_policies.py      # CRUD /alert-policies
-│       └── system.py              # GET/POST /system (infos système, test notifications)
+│       └── system.py              # GET/POST /system (infos système, /system/test-email)
 ├── models/                  # SQLAlchemy ORM (Base avec id, created_at, updated_at)
 │   ├── device.py            # Équipements supervisés (+ parent_id hiérarchie, policy_overrides JSON)
 │   ├── device_metric.py     # Métriques time-series
 │   ├── incident.py          # Incidents (open/acknowledged/resolved)
-│   ├── alert.py             # Notifications envoyées (audit trail)
 │   ├── alert_state.py       # Compteurs d'anti-flapping persistés en DB (survit aux redémarrages)
-│   ├── power_status_log.py  # Relevés UISP Power (voltage, current, power)
-│   └── notification_channel.py  # Canaux d'alerte configurés via API
+│   └── power_status_log.py  # Relevés UISP Power (voltage, current, power)
 ├── schemas/                 # Pydantic — validation I/O API
 │   ├── device.py
-│   ├── incident.py
-│   ├── alert.py
-│   ├── notification_channel.py
-│   └── alert_policy.py
+│   └── incident.py
 ├── services/
 │   ├── device_service.py           # CRUD devices
 │   ├── poller.py                   # Ping ICMP async (asyncio subprocess)
 │   ├── incident_service.py         # Création/résolution/déduplication d'incidents
-│   ├── notification_service.py     # Routage et envoi des notifications (Slack/webhook/email)
+│   ├── notification_service.py     # Envoi des notifications email (canaux résolus depuis l'env SMTP uniquement)
 │   ├── email_service.py            # Envoi SMTP HTML + plain text
 │   ├── snmp_service.py             # SNMP : LTU radio (ath0/eth0) + Switch (ports 1..N)
 │   ├── uisp_power_service.py       # API REST UISP Power (voltage, current, batterie)
@@ -80,9 +72,8 @@ backend/app/
 │   ├── alert_engine.py             # Orchestrateur : évalue règles, gère AlertState, ouvre/résout incidents
 │   ├── alert_rules.py              # Règles d'alerte pure Python (sans DB) — 10+ règles
 │   ├── alert_formatter.py          # Formatage messages Slack/email par type d'alerte
-│   ├── alert_policy.py             # Politiques : quel canal pour quel alert_type
-│   ├── digest_service.py           # Regroupement des warnings en digest 15 min
-│   └── notification_channel_service.py  # CRUD canaux via DB
+│   ├── alert_policy.py             # Registre interne : politique (canal/groupable/recovery/immédiat) par alert_type — plus exposé en API
+│   └── digest_service.py           # Regroupement des warnings en digest 15 min
 ├── tasks/
 │   ├── scheduler.py         # Init APScheduler, start/stop lifecycle
 │   └── jobs.py              # 7 jobs planifiés (voir tableau ci-dessous)
@@ -214,14 +205,13 @@ backend/app/
 - [x] **Digest warnings** — `digest_service.py` + `warning_digest_job` (regroupement 15 min)
 - [x] **Auto-découverte LTU LR** — le job LTU API lit les CPE peers du Rocket et établit la hiérarchie parent/enfant automatiquement
 - [x] **Authentification API** — API key via header `X-API-Key` (`app/api/deps.py`)
-- [x] **Canaux de notification via DB** — CRUD `/api/v1/notification-channels`
-- [x] **Politiques d'alerte** — CRUD `/api/v1/alert-policies` (routage alert_type → canal)
-- [x] **Formatage des alertes** — `alert_formatter.py` (messages Slack/email contextualisés par type)
+- [x] **Notifications email — env-only** — depuis le 2026-06-09 les canaux sont résolus **uniquement** depuis l'env SMTP (`SMTP_ENABLED` + `NOTIFICATION_EMAILS`). La table `notification_channels` et son CRUD (`/notification-channels`) ont été **supprimés**. Le registre `alert_policy.py` reste **interne** (politique groupable/recovery/immédiat/canal par alert_type) mais n'est plus exposé en API (`/alert-policies` supprimé). Diagnostic SMTP via `POST /api/v1/system/test-email`.
+- [x] **Formatage des alertes** — `alert_formatter.py` (messages email contextualisés par type)
 - [x] **API incidents** — `GET/PATCH /api/v1/incidents` (filtres status/severity/device_id/alert_type)
-- [x] **Résolution = suppression** — pas d'archive : à la résolution, `incident_service.resolve_incidents` **hard-delete** l'incident (et ses lignes `alerts` via FK `ON DELETE CASCADE`). **Exception** : les types de **disponibilité** (`AVAILABILITY_ALERT_TYPES` dans `alert_constants` = `rocket_down`, `switch_down`, `device_unreachable`, `uisp_power_unreachable`, `airmax_down`) sont conservés en `status=resolved` car le **Journal des coupures** (`network_uptime_service`) reconstruit l'historique + la dispo % depuis leur `resolved_at`. La notification de résolution part quand même pour les incidents purgés (objets encore en mémoire), mais **aucune ligne d'audit `alerts`** n'est créée pour eux (sinon violation de FK). La page `/incidents/archive` et le lien sidebar ont été supprimés. Conséquence assumée : les rapports (`report_service` — fréquences/MTTR) et `/notifications` ne gardent plus l'historique des incidents non-disponibilité résolus
-- [x] **Enregistrement alertes** — table `alerts` alimentée à chaque notification (audit trail)
+- [x] **Résolution = suppression** — pas d'archive : à la résolution, `incident_service.resolve_incidents` **hard-delete** l'incident. **Exception** : les types de **disponibilité** (`AVAILABILITY_ALERT_TYPES` dans `alert_constants` = `rocket_down`, `switch_down`, `device_unreachable`, `uisp_power_unreachable`, `airmax_down`) sont conservés en `status=resolved` car le **Journal des coupures** (`network_uptime_service`) reconstruit l'historique + la dispo % depuis leur `resolved_at`. La notification de résolution part quand même pour les incidents purgés (objets encore en mémoire). La page `/incidents/archive` et le lien sidebar ont été supprimés.
+- [x] **Pas d'audit trail des notifications** — la table `alerts` et la page `/notifications` ont été **supprimées** (2026-06-09, migration `a8b9c0d1e2f3`). Les notifications sont toujours **envoyées** mais aucune ligne d'audit n'est persistée.
 - [x] **Blocage internet client (2 modes)** — SSH sur le LR. Mode `full` : shutdown du port LAN (`lan_interface`). Mode `whatsapp_only` : **3 couches** sur le LR pour vraiment séparer WhatsApp de FB/IG (qui partagent les IP Meta) : (1) DNAT en `iptables -t nat PREROUTING` redirigeant tout DNS du sous-réseau client vers le dnsmasq du LR (anti-bypass `8.8.8.8`), (2) entrées `address=/<domaine>/0.0.0.0` ajoutées à `/etc/dnsmasq.conf` pour FB/IG/Messenger/Threads (résolus en `0.0.0.0` → connexion immédiate impossible), (3) chaîne `CLIENTBLOCK` sur `FORWARD` autorisant DNS + plages Meta (`WHATSAPP_ALLOW_CIDRS`), `DROP` le reste. **Quirk terrain (airOS 8) : `kill -HUP dnsmasq` n'applique pas les `address=` — il faut `killall dnsmasq` (airOS le respawn).** Mode persisté (`block_mode`) + `client_blocked` en DB + job `client_block_enforcement_job` qui ré-applique le mode actif toutes les 120 s (survit au reboot du LR — airOS régénère `/etc/dnsmasq.conf` au boot, l'enforcement remet le bloc dans la minute). **Garde-fou dynamique du mode `full`** : avant un shutdown, `ssh_service._collect_forbidden_ifaces` calcule en direct sur le LR les interfaces du chemin SSH/route par défaut (+ membres de bridge, parents VLAN) et refuse de les couper. **Défaut `lan_interface` par famille** : `client_block_service.default_lan_interface(model_variant)` → `eth0.1` (LTU) / `eth0` (airMAX), appliqué à la création par `discovery_service` et backfillé par la migration `m4e5f6a7b8c9`. Remplace l'ancien `is_suspended` (flag no-op supprimé)
-- [x] **Dashboard frontend** — Next.js avec pages : devices, notification-channels
+- [x] **Dashboard frontend** — Next.js avec pages : devices, incidents, etc.
 
 ### Jobs planifiés actifs
 | Job | Intervalle | Rôle |
@@ -304,23 +294,14 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | POST | `/api/v1/devices/{id}/unblock-client` | Oui | Rétablit l'accès internet complet du client (port LAN remonté + filtre WhatsApp retiré) |
 | GET | `/api/v1/incidents` | Oui | Liste incidents (filtres: status, severity, device_id, alert_type) — lecture seule |
 | GET | `/api/v1/incidents/{id}` | Oui | Détail incident — lecture seule |
-| GET | `/api/v1/notifications` | Oui | Historique des alertes envoyées |
-| GET | `/api/v1/notification-channels` | Oui | Liste canaux de notification |
-| POST | `/api/v1/notification-channels` | Oui | Créer un canal |
-| PUT | `/api/v1/notification-channels/{id}` | Oui | Modifier un canal |
-| DELETE | `/api/v1/notification-channels/{id}` | Oui | Supprimer un canal |
-| GET | `/api/v1/alert-policies` | Oui | Liste politiques d'alerte |
-| POST | `/api/v1/alert-policies` | Oui | Créer une politique (alert_type → canal) |
-| PUT | `/api/v1/alert-policies/{id}` | Oui | Modifier une politique |
-| DELETE | `/api/v1/alert-policies/{id}` | Oui | Supprimer une politique |
 | GET | `/api/v1/system` | Oui | Infos système (version, uptime scheduler) |
+| POST | `/api/v1/system/test-email` | Oui | Diagnostic SMTP — envoie un email de test aux `NOTIFICATION_EMAILS` |
 
 ### Frontend Next.js
 | Page | Chemin | Contenu |
 |---|---|---|
 | Devices | `/devices` | Liste avec statut, dernière vue, métriques, modal détail |
 | Anomalies détectées | `/incidents` | Anomalies actuellement détectées (lecture seule, résolution automatique) |
-| Notification Channels | `/notification-channels` | Gestion des canaux Slack/email/webhook |
 
 ### À implémenter (prochaines phases)
 - [ ] Tests unitaires et d'intégration

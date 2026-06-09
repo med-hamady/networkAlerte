@@ -41,6 +41,7 @@ from app.core.alert_constants import (
     AT_PING_INSTABILITY,
     AT_RADIO_INTERFACE_DOWN,
     AT_RADIO_LINK_DEGRADED,
+    AT_ROCKET_CLIENT_OVERLOAD,
     AT_ROCKET_DOWN,
     AT_SECURITY_ANOMALY,
     AT_SIGNAL_LOW,
@@ -80,6 +81,7 @@ ALERT_TYPE_LABELS: dict[str, str] = {
     AT_HIGH_RX_TX_ERRORS:    "Taux d'erreurs réseau élevé",
     AT_THROUGHPUT_ANOMALY:   "Anomalie de débit détectée",
     AT_LR_LINK_SUBSTANDARD:  "Lien client sous le seuil",
+    AT_ROCKET_CLIENT_OVERLOAD: "Station de base saturée (trop de clients)",
 
     # Radio quality UL (uplink — client → base)
     AT_CCQ_UL_LOW:           "Qualité de connexion côté client faible",

@@ -46,6 +46,7 @@ from app.core.alert_constants import (
     AT_PING_INSTABILITY,
     AT_RADIO_INTERFACE_DOWN,
     AT_RADIO_LINK_DEGRADED,
+    AT_ROCKET_CLIENT_OVERLOAD,
     AT_ROCKET_DOWN,
     AT_SECURITY_ANOMALY,
     AT_SIGNAL_LOW,
@@ -195,6 +196,13 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     ),
     AT_LR_LINK_SUBSTANDARD: AlertPolicy(
         alert_type=AT_LR_LINK_SUBSTANDARD,
+        severity=Severity.CRITICAL,
+        notify_immediately=True,
+        channels=_CHANNELS_CRITICAL,
+        groupable=False,
+    ),
+    AT_ROCKET_CLIENT_OVERLOAD: AlertPolicy(
+        alert_type=AT_ROCKET_CLIENT_OVERLOAD,
         severity=Severity.CRITICAL,
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,

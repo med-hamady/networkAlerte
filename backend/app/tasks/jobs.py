@@ -686,6 +686,7 @@ async def snmp_poll_job() -> None:
     # port_min_speed_mbps) are read only for switches.
     def _snap(d: Device) -> tuple:
         is_switch = d.rule_category in SWITCH_RULE_CATEGORIES
+        is_airmax = d.rule_category in AIRMAX_RULE_CATEGORIES
         return (
             d.id, d.name, d.ip_address,
             d.snmp_community or settings.snmp_default_community,
@@ -693,6 +694,10 @@ async def snmp_poll_job() -> None:
             d.max_ports if is_switch else None,
             d.rocket_port_index if is_switch else None,
             d.port_min_speed_mbps if is_switch else None,
+            # airOS creds (ssh_username/ssh_password) — only needed for airMAX
+            # Rockets, to read the channel width (chanbw) via status.cgi.
+            d.ssh_username if is_airmax else None,
+            d.ssh_password if is_airmax else None,
         )
 
     targets = [_snap(d) for d in devices]
@@ -709,7 +714,7 @@ async def snmp_poll_job() -> None:
     fetched: dict[int, tuple] = {}
 
     async def _fetch(snap: tuple) -> None:
-        dev_id, name, ip, community, category, max_ports, _pidx, _pmin = snap
+        dev_id, name, ip, community, category, max_ports, _pidx, _pmin, airos_user, airos_pwd = snap
         async with sem:
             if category in AIRMAX_RULE_CATEGORIES:
                 metrics = await snmp_service.collect_airmax_metrics(
@@ -740,20 +745,27 @@ async def snmp_poll_job() -> None:
 
             # airMAX peer discovery — also an SNMP walk → done here in Phase 1.
             airmax_peers = None
+            channel_width_mhz = None
             if category in AIRMAX_RULE_CATEGORIES:
                 airmax_peers = await snmp_service.discover_airmax_peers(
                     host=ip, community=community, port=snmp_port, timeout=snmp_timeout,
                 )
-        fetched[dev_id] = (metrics, airmax_peers)
+                # Channel width (chanbw) is NOT in SNMP — read it from airOS
+                # status.cgi for the rocket_client_overload rule. Needs airOS
+                # creds on the device; None (missing/unreachable) → rule skips.
+                if airos_user and airos_pwd:
+                    channel_width_mhz = await airos_api_service.collect_airos_channel_width(
+                        host=ip, username=airos_user, password=airos_pwd, port=443,
+                    )
+        fetched[dev_id] = (metrics, airmax_peers, channel_width_mhz)
 
     await asyncio.gather(*[_fetch(s) for s in targets], return_exceptions=True)
 
     # ── Phase 2 : persist + alert engine + découverte + ports switch (série DB) ──
     snap_by_id = {s[0]: s for s in targets}
-    for dev_id, (metrics, airmax_peers) in fetched.items():
-        _id, _name, _ip, _community, category, _mp, rocket_port_index, port_min_speed = (
-            snap_by_id[dev_id]
-        )
+    for dev_id, (metrics, airmax_peers, channel_width_mhz) in fetched.items():
+        (_id, _name, _ip, _community, category, _mp, rocket_port_index,
+         port_min_speed, _airos_user, _airos_pwd) = snap_by_id[dev_id]
         async with async_session_factory() as session:
             dev = await session.get(Device, dev_id)
             if dev is None:
@@ -781,6 +793,16 @@ async def snmp_poll_job() -> None:
             # everything else (all switch port metrics, noise, rates…) collapses
             # to a single latest row. See persist_device_metrics / HISTORY_METRICS.
             await persist_device_metrics(session, dev.id, metrics, unit_map)
+
+            # airMAX Rocket : alimente la règle rocket_client_overload —
+            # nombre de clients = stations découvertes par le walk SNMP (Phase 1),
+            # largeur de canal = chanbw lu via airOS status.cgi (Phase 1). Une
+            # largeur hors {10, 20} MHz n'a pas de seuil → la règle ne déclenche pas.
+            if category in AIRMAX_RULE_CATEGORIES and airmax_peers is not None:
+                metrics = dict(metrics)
+                metrics["peer_count"] = len(airmax_peers)
+                if channel_width_mhz is not None:
+                    metrics["channel_width_mhz"] = channel_width_mhz
 
             # Delegate anomaly detection to alert engine
             await alert_engine.evaluate_device_metrics(session, dev, metrics, settings)

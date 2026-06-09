@@ -1,14 +1,12 @@
 'use client'
 
-import React, { useMemo, useState } from 'react'
+import React, { useMemo } from 'react'
 import Link from 'next/link'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type { Device, Incident } from '@/lib/types'
 import StatsBar from '@/components/StatsBar'
-import SiteCard from '@/components/SiteCard'
-import DeviceDetailModal from '@/components/DeviceDetailModal'
-import PanneDetailsModal from '@/components/PanneDetailsModal'
+import SiteOutageCharts from '@/components/SiteOutageCharts'
 
 const REFRESH = 15_000
 const SITE_FALLBACK = 'Sans site'
@@ -18,10 +16,7 @@ const SITE_FALLBACK = 'Sans site'
 const INFRA_TYPES = new Set(['rocket', 'uisp_switch', 'uisp_power'])
 
 export default function DashboardPage() {
-  const [selected, setSelected] = useState<Device | null>(null)
-  const [pannesSite, setPannesSite] = useState<string | null>(null)
-
-  const { data: devices, isLoading: loadingDevices } = useSWR<Device[]>(
+  const { data: devices } = useSWR<Device[]>(
     endpoints.devices, fetcher, { refreshInterval: REFRESH },
   )
   const { data: incidents } = useSWR<Incident[]>(
@@ -48,39 +43,14 @@ export default function DashboardPage() {
     return d.location?.trim() || SITE_FALLBACK
   }
 
-  // Group devices into site summaries: outage count (+ oldest downtime) and client count.
-  const sites = useMemo(() => {
-    const map = new Map<string, Device[]>()
-    devices?.forEach(d => {
-      const key = siteOf(d)
-      if (!map.has(key)) map.set(key, [])
-      map.get(key)!.push(d)
-    })
-    return [...map.entries()]
-      .map(([name, list]) => {
-        const downInfra = list.filter(d => INFRA_TYPES.has(d.device_type) && d.status === 'down')
-        const downSince = downInfra.reduce<string | null>((oldest, d) => {
-          if (!d.last_seen) return oldest
-          if (!oldest) return d.last_seen
-          return new Date(d.last_seen) < new Date(oldest) ? d.last_seen : oldest
-        }, null)
-        return {
-          name,
-          pannes: downInfra.length,
-          clients: list.filter(d => d.device_type === 'lr').length,
-          downSince,
-          downDevices: downInfra,
-        }
-      })
-      .sort((a, b) => a.name.localeCompare(b.name, 'fr'))
+  // KPI counts: distinct sites, live infra outages, client (LR) count.
+  const siteCount = useMemo(() => {
+    const set = new Set<string>()
+    devices?.forEach(d => set.add(siteOf(d)))
+    return set.size
   }, [devices, rocketById])
-
-  const totalPannes  = sites.reduce((s, x) => s + x.pannes, 0)
-  const totalClients = sites.reduce((s, x) => s + x.clients, 0)
-
-  const pannesDevices = pannesSite != null
-    ? (sites.find(s => s.name === pannesSite)?.downDevices ?? [])
-    : []
+  const livePannes = devices?.filter(d => INFRA_TYPES.has(d.device_type) && d.status === 'down').length ?? 0
+  const clientCount = devices?.filter(d => d.device_type === 'lr').length ?? 0
 
   return (
     <>
@@ -103,31 +73,25 @@ export default function DashboardPage() {
 
         {/* KPI bar */}
         <StatsBar
-          sites={sites.length}
-          pannes={totalPannes}
-          clients={totalClients}
+          sites={siteCount}
+          pannes={livePannes}
+          clients={clientCount}
           total={total}
           up={up}
           down={down}
           openIncidents={openInc}
         />
 
-        {/* Sites grid */}
+        {/* Outage charts per site */}
         <section>
           <div className="flex items-center justify-between mb-4">
-            <h2 className="font-semibold text-blue-900 text-lg">Sites</h2>
-            <Link href="/sites" className="text-sm text-blue-500 hover:text-blue-700 transition-colors shrink-0">
-              Détails par site →
+            <h2 className="font-semibold text-blue-900 text-lg">Pannes par site</h2>
+            <Link href="/network-uptime" className="text-sm text-blue-500 hover:text-blue-700 transition-colors shrink-0">
+              Journal des coupures →
             </Link>
           </div>
 
-          {loadingDevices ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-              {Array.from({ length: 4 }, (_, i) => (
-                <div key={i} className="rounded-xl bg-white border border-blue-100 h-64 animate-pulse" />
-              ))}
-            </div>
-          ) : !devices?.length ? (
+          {!devices?.length ? (
             <div className="bg-white border border-blue-100 rounded-xl px-6 py-12 text-center shadow-sm space-y-2">
               <p className="text-blue-700 font-medium">Aucun équipement enregistré</p>
               <p className="text-blue-400 text-sm">
@@ -135,28 +99,10 @@ export default function DashboardPage() {
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-              {sites.map(s => (
-                <SiteCard key={s.name} site={s} onShowPannes={setPannesSite} />
-              ))}
-            </div>
+            <SiteOutageCharts devices={devices} />
           )}
         </section>
       </div>
-
-      <PanneDetailsModal
-        site={pannesSite}
-        devices={pannesDevices}
-        onClose={() => setPannesSite(null)}
-        onSelect={d => { setPannesSite(null); setSelected(d) }}
-      />
-
-      <DeviceDetailModal
-        device={selected}
-        devices={devices ?? []}
-        onClose={() => setSelected(null)}
-        onNavigate={setSelected}
-      />
     </>
   )
 }

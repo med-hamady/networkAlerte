@@ -92,8 +92,12 @@ async def _open_alert(
     db: AsyncSession,
     device: Device,
     result: AlertEvalResult,
-) -> Incident:
-    """Open (or refresh) an incident for this alert. Notifies only on first open."""
+) -> Incident | None:
+    """Open (or refresh) an incident for this alert. Notifies only on first open.
+
+    Returns None when the incident is suppressed as client-side (the engine
+    ignores the return value either way) — see incident_service.open_incident.
+    """
     incident, is_new = await incident_service.open_incident(
         db,
         device,

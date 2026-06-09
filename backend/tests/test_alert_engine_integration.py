@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import select
 
 from app.models.alert_state import AlertState
-from app.models.device import Device, Rocket
+from app.models.device import Device, Lr, Rocket
 from app.models.incident import Incident
 from app.services.alert_engine import evaluate_device_metrics
 
@@ -41,6 +41,60 @@ async def _make_rocket(db) -> Device:
     db.add(device)
     await db.flush()
     return device
+
+
+async def _make_lr(db, model_variant="ltu_lr") -> Device:
+    """Insert a minimal subscriber LR (rule_category == 'lr') and return it."""
+    device = Lr(
+        name="Test LR",
+        ip_address="10.99.0.50",
+        model_variant=model_variant,
+        status="up",
+    )
+    db.add(device)
+    await db.flush()
+    return device
+
+
+# ---------------------------------------------------------------------------
+# Suppression des incidents côté client (page /incidents = infra uniquement)
+# ---------------------------------------------------------------------------
+
+async def test_lr_radio_alert_suppressed(db, settings, patch_notif):
+    """Une alerte radio sur un LR abonné (client) n'ouvre aucun incident."""
+    lr = await _make_lr(db)
+
+    # Signal très bas : ouvrirait signal_low sur une Rocket, mais le LR est client.
+    for _ in range(10):
+        await evaluate_device_metrics(db, lr, {"signal_dbm": -95.0}, settings)
+        await db.flush()
+
+    result = await db.execute(
+        select(Incident).where(Incident.device_id == lr.id)
+    )
+    assert result.scalars().first() is None
+
+
+async def test_lr_bridge_misconfig_kept(db, patch_notif):
+    """Exception : lr_bridge_mode_misconfig est conservé même sur un LR (client)."""
+    from app.services import incident_service
+
+    lr = await _make_lr(db)
+
+    incident, is_new = await incident_service.open_incident(
+        db, lr,
+        title="LR en mode bridge",
+        severity="warning",
+        alert_type="lr_bridge_mode_misconfig",
+    )
+    await db.flush()
+
+    assert is_new is True
+    assert incident is not None
+    row = (
+        await db.execute(select(Incident).where(Incident.id == incident.id))
+    ).scalar_one_or_none()
+    assert row is not None
 
 
 # ---------------------------------------------------------------------------
@@ -241,8 +295,8 @@ async def test_eth0_down_immediate(db, settings, patch_notif):
     assert result.scalar_one_or_none() is not None
 
 
-async def test_cpe_disconnected_immediate(db, settings, patch_notif):
-    """cpe_disconnected : seuil=0, incident critique dès le 1er cycle."""
+async def test_cpe_disconnected_suppressed(db, settings, patch_notif):
+    """cpe_disconnected est supprimé (client-side) même levé sur une Rocket infra."""
     device = await _make_rocket(db)
 
     await evaluate_device_metrics(db, device, {"peer_count": 0}, settings)
@@ -252,31 +306,9 @@ async def test_cpe_disconnected_immediate(db, settings, patch_notif):
         select(Incident).where(
             Incident.device_id == device.id,
             Incident.alert_type == "cpe_disconnected",
-            Incident.status == "open",
         )
     )
-    incident = result.scalar_one_or_none()
-    assert incident is not None
-    assert incident.severity == "critical"
-
-
-async def test_cpe_reconnected_purges(db, settings, patch_notif):
-    """CPE revient → incident cpe_disconnected purgé de la DB (pas d'archive)."""
-    device = await _make_rocket(db)
-
-    await evaluate_device_metrics(db, device, {"peer_count": 0}, settings)
-    await db.flush()
-
-    await evaluate_device_metrics(db, device, {"peer_count": 1}, settings)
-    await db.flush()
-
-    result = await db.execute(
-        select(Incident).where(
-            Incident.device_id == device.id,
-            Incident.alert_type == "cpe_disconnected",
-        )
-    )
-    # cpe_disconnected n'est pas un type de disponibilité → supprimé dès résolution.
+    # Jamais créé : cpe_disconnected ∈ INFRA_DEVICE_SUPPRESSED_ALERT_TYPES.
     assert result.scalar_one_or_none() is None
 
 

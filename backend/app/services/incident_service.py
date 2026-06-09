@@ -4,7 +4,12 @@ import logging
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.alert_constants import AVAILABILITY_ALERT_TYPES
+from app.core.alert_constants import (
+    AVAILABILITY_ALERT_TYPES,
+    CLIENT_KEPT_ALERT_TYPES,
+    CLIENT_RULE_CATEGORY,
+    INFRA_DEVICE_SUPPRESSED_ALERT_TYPES,
+)
 from app.models.device import Device
 from app.models.incident import Incident
 
@@ -24,6 +29,27 @@ def _truncate_title(title: str) -> str:
     if len(title) <= _TITLE_MAX_LEN:
         return title
     return title[: _TITLE_MAX_LEN - 1] + "…"
+
+
+def is_suppressed_incident(device: Device, alert_type: str | None) -> bool:
+    """True if this (device, alert_type) is a client-side incident we neither
+    create nor store.
+
+    The /incidents page is infrastructure-only. The split is by DEVICE
+    (rule_category), not by alert_type, because radio alert_types fire on both
+    base-station Rockets (kept) and subscriber LRs (dropped). Two exceptions
+    override the device rule — see alert_constants for the full rationale:
+      - INFRA_DEVICE_SUPPRESSED_ALERT_TYPES: dropped even on an infra device
+        (cpe_disconnected = a subscriber CPE vanished, client-side churn).
+      - CLIENT_KEPT_ALERT_TYPES: kept even on an LR (lr_bridge_mode_misconfig
+        breaks the client-block feature, the operator must act).
+    """
+    if alert_type in INFRA_DEVICE_SUPPRESSED_ALERT_TYPES:
+        return True
+    return (
+        device.rule_category == CLIENT_RULE_CATEGORY
+        and alert_type not in CLIENT_KEPT_ALERT_TYPES
+    )
 
 
 async def get_open_incident(
@@ -65,12 +91,21 @@ async def open_incident(
     metric_name: str | None = None,
     metric_value: float | None = None,
     threshold_value: float | None = None,
-) -> tuple[Incident, bool]:
+) -> tuple[Incident | None, bool]:
     """
     Open a new incident for a device if no open incident with the same alert_type/title exists.
     Returns (incident, is_new) — is_new is False when an existing incident was found.
     When not new, last_triggered_at is updated to now.
+
+    Client-side incidents are suppressed at this single chokepoint: when
+    is_suppressed_incident() matches, no row is created and (None, False) is
+    returned. Every caller only dereferences the incident when is_new is True,
+    so a None incident is safe (see alert_engine._open_alert, jobs._open_and_notify,
+    discovery_service._emit_lifecycle_event).
     """
+    if is_suppressed_incident(device, alert_type):
+        return None, False
+
     # Truncate before both the dedup lookup and the insert so the title used
     # for matching is identical to the one stored (avoids dedup misses).
     title = _truncate_title(title)

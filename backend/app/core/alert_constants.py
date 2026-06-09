@@ -169,6 +169,37 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
 
 
 # ---------------------------------------------------------------------------
+# Client-side incident suppression (policy 2026-06-09)
+# ---------------------------------------------------------------------------
+# The /incidents page surfaces INFRASTRUCTURE incidents only. Anything raised
+# on a subscriber radio (a device whose rule_category == CLIENT_RULE_CATEGORY)
+# is client-side and is neither created nor stored — see
+# incident_service.is_suppressed_incident, the single chokepoint.
+#
+# The split is by DEVICE, not by alert_type: the radio alert_types (signal_low,
+# ccq_low, cinr_low, capacity_low, radio_link_degraded, high_rx_tx_errors,
+# throughput_anomaly) fire on BOTH base-station Rockets (infra → kept) and
+# subscriber LRs (client → dropped), so filtering on the alert_type string would
+# wrongly silence real infra alerts. Two explicit exceptions override the device
+# rule:
+#   - CLIENT_KEPT_ALERT_TYPES — kept even when raised on an LR: the operator
+#     must act on them. lr_bridge_mode_misconfig means the LR is in bridge mode,
+#     which silently breaks the client-block feature.
+#   - INFRA_DEVICE_SUPPRESSED_ALERT_TYPES — dropped even when raised on an infra
+#     device: cpe_disconnected is a Rocket-side signal that a subscriber CPE
+#     vanished, i.e. client-side churn, not our outage.
+CLIENT_RULE_CATEGORY: str = "lr"
+
+CLIENT_KEPT_ALERT_TYPES: frozenset[str] = frozenset({
+    AT_LR_BRIDGE_MODE_MISCONFIG,
+})
+
+INFRA_DEVICE_SUPPRESSED_ALERT_TYPES: frozenset[str] = frozenset({
+    AT_CPE_DISCONNECTED,
+})
+
+
+# ---------------------------------------------------------------------------
 # Notification events
 # ---------------------------------------------------------------------------
 

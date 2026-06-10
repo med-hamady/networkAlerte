@@ -147,6 +147,9 @@ async def get_network_capacity(db: AsyncSession) -> dict:
     for site in sites.values():
         _finalize(site["ltu"])
         _finalize(site["airmax"])
+        # Total des Rockets à capacité indéterminée du site (toutes familles) —
+        # calculé ici pour que le front l'affiche tel quel sans re-sommer.
+        site["unknown"] = site["ltu"]["unknown"] + site["airmax"]["unknown"]
         site["rockets"].sort(key=lambda r: r["name"].lower())
         site_list.append(site)
     site_list.sort(key=lambda s: s["site"].lower())

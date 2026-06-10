@@ -103,7 +103,17 @@ export default function CapacityPage() {
                     onClick={() => setSelectedSite(s.site)}
                     className="w-full text-left rounded-lg px-2 py-2 hover:bg-blue-50 transition-colors"
                   >
-                    <div className="text-sm font-semibold text-slate-800 mb-1.5 truncate">{s.site}</div>
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className="text-sm font-semibold text-slate-800 truncate">{s.site}</span>
+                      {s.unknown > 0 && (
+                        <span
+                          className="shrink-0 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5"
+                          title="Rockets à capacité indéterminée (largeur de canal inconnue, exclus des totaux)"
+                        >
+                          {s.unknown} indéterminé{s.unknown > 1 ? 's' : ''}
+                        </span>
+                      )}
+                    </div>
                     <div className="space-y-1">
                       <SiteFamilyBar family="ltu" bucket={s.ltu} globalMax={globalMax} />
                       <SiteFamilyBar family="airmax" bucket={s.airmax} globalMax={globalMax} />

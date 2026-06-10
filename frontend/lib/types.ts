@@ -584,6 +584,7 @@ export interface SiteCapacity {
   site: string
   ltu: CapacityBucket
   airmax: CapacityBucket
+  unknown: number                 // total Rockets à capacité indéterminée (LTU + airMAX)
   rockets: RocketCapacity[]
 }
 

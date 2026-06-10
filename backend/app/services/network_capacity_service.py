@@ -78,7 +78,15 @@ async def get_network_capacity(db: AsyncSession) -> dict:
     """Whole-network + per-site client-capacity roll-up (see module docstring)."""
     settings = await threshold_service.get_effective_settings(db, get_settings())
 
-    rockets = (await db.execute(select(Rocket))).scalars().all()
+    # Column-only select (NOT `select(Rocket)`) : loading full Rocket ORM
+    # objects would eager-load the `lrs` relationship (lazy="selectin") for every
+    # Rocket — materialising the whole ~600-LR subscriber tree just to read 4
+    # scalar columns per AP. Rows carry no relationships → no extra query.
+    rockets = (
+        await db.execute(
+            select(Rocket.id, Rocket.name, Rocket.location, Rocket.radio_tech)
+        )
+    ).all()
     latest = await _fetch_latest_capacity_metrics(db, [r.id for r in rockets])
 
     families = {"ltu": _empty_bucket(), "airmax": _empty_bucket()}

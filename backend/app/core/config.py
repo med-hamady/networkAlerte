@@ -303,14 +303,16 @@ class Settings(BaseSettings):
 
     # Surcharge clients par Rocket (rocket_client_overload) — l'AP de base
     # station est saturé quand le nombre de clients connectés ATTEINT le seuil.
-    # Seuils déclinés par (famille radio × largeur de canal). La largeur est lue
-    # en direct depuis l'API (LTU channelWidth.tx / airMAX chwidth) ; une largeur
-    # hors {10, 20} MHz n'a pas de seuil défini → la règle ne déclenche pas.
+    # Le seuil est une FORMULE déclinée par famille radio : base à 10 MHz, puis
+    # +`per_10mhz` clients par tranche de +10 MHz de largeur de canal. La largeur
+    # est lue en direct depuis l'API (LTU channelWidth.tx / airMAX chwidth) et
+    # arrondie au multiple de 10 MHz le plus proche ; une largeur < 10 MHz n'a
+    # pas de seuil défini → la règle ne déclenche pas. Ex. (base LTU 15 / airMAX
+    # 10, step 5) : LTU 10→15, 20→20, 30→25 ; airMAX 10→10, 20→15, 40→25.
     # Incident critique. Surchargables via la page Seuils.
-    rocket_overload_clients_ltu_10mhz: int = 15
-    rocket_overload_clients_ltu_20mhz: int = 25
-    rocket_overload_clients_airmax_10mhz: int = 12
-    rocket_overload_clients_airmax_20mhz: int = 20
+    rocket_overload_clients_ltu_base: int = 15
+    rocket_overload_clients_airmax_base: int = 10
+    rocket_overload_clients_per_10mhz: int = 5
 
     # Anomaly thresholds — airFiber 60 (AF60-LR) backhaul, lien 60 GHz.
     # Le 60 GHz a des plages très différentes du sub-6 GHz : le signal idéal

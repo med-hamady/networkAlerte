@@ -181,11 +181,12 @@ THRESHOLD_SCHEMA: dict[str, dict[str, Any]] = {
         "max": 12,
         "step": 1,
     },
-    # Surcharge clients par Rocket (rocket_client_overload) — seuils par
-    # (famille radio × largeur de canal). Incident critique quand le nombre de
-    # clients connectés ATTEINT le seuil.
-    "rocket_overload_clients_ltu_10mhz": {
-        "label": "Surcharge clients — Rocket LTU 10 MHz",
+    # Surcharge clients par Rocket (rocket_client_overload) — seuil = base par
+    # famille radio à 10 MHz, +`per_10mhz` clients par tranche de +10 MHz de
+    # largeur de canal. Incident critique quand le nombre de clients connectés
+    # ATTEINT le seuil calculé.
+    "rocket_overload_clients_ltu_base": {
+        "label": "Surcharge clients — Rocket LTU (base 10 MHz)",
         "category": "rocket_overload",
         "unit": "clients",
         "type": int,
@@ -193,8 +194,8 @@ THRESHOLD_SCHEMA: dict[str, dict[str, Any]] = {
         "max": 500,
         "step": 1,
     },
-    "rocket_overload_clients_ltu_20mhz": {
-        "label": "Surcharge clients — Rocket LTU 20 MHz",
+    "rocket_overload_clients_airmax_base": {
+        "label": "Surcharge clients — Rocket airMAX (base 10 MHz)",
         "category": "rocket_overload",
         "unit": "clients",
         "type": int,
@@ -202,22 +203,13 @@ THRESHOLD_SCHEMA: dict[str, dict[str, Any]] = {
         "max": 500,
         "step": 1,
     },
-    "rocket_overload_clients_airmax_10mhz": {
-        "label": "Surcharge clients — Rocket airMAX 10 MHz",
+    "rocket_overload_clients_per_10mhz": {
+        "label": "Surcharge clients — incrément par +10 MHz",
         "category": "rocket_overload",
         "unit": "clients",
         "type": int,
-        "min": 1,
-        "max": 500,
-        "step": 1,
-    },
-    "rocket_overload_clients_airmax_20mhz": {
-        "label": "Surcharge clients — Rocket airMAX 20 MHz",
-        "category": "rocket_overload",
-        "unit": "clients",
-        "type": int,
-        "min": 1,
-        "max": 500,
+        "min": 0,
+        "max": 100,
         "step": 1,
     },
     # RX/TX error rate (%)

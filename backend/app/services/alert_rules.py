@@ -49,22 +49,20 @@ def _is_airmax_lr(metrics: dict) -> bool:
 
 def _rocket_overload_threshold(settings, airmax: bool, width_mhz: float) -> int | None:
     """Client-count ceiling for a base-station Rocket given its radio family and
-    channel width. Returns None for channel widths outside the configured set
-    ({10, 20} MHz) — the rule then does not fire (no defined ceiling)."""
-    w = round(width_mhz)
-    if w == 10:
-        return (
-            settings.rocket_overload_clients_airmax_10mhz
-            if airmax
-            else settings.rocket_overload_clients_ltu_10mhz
-        )
-    if w == 20:
-        return (
-            settings.rocket_overload_clients_airmax_20mhz
-            if airmax
-            else settings.rocket_overload_clients_ltu_20mhz
-        )
-    return None
+    channel width. The ceiling is a formula: a per-family base at 10 MHz, then
+    ``+rocket_overload_clients_per_10mhz`` clients for every additional 10 MHz of
+    channel width. The live width is rounded to the nearest 10 MHz step. Returns
+    None for widths below 10 MHz (no defined ceiling → the rule does not fire)."""
+    w10 = round(width_mhz / 10.0) * 10
+    if w10 < 10:
+        return None
+    base = (
+        settings.rocket_overload_clients_airmax_base
+        if airmax
+        else settings.rocket_overload_clients_ltu_base
+    )
+    steps = (w10 - 10) // 10
+    return base + settings.rocket_overload_clients_per_10mhz * steps
 
 
 @dataclass
@@ -905,10 +903,11 @@ class RocketClientOverloadRule(AlertRule):
     """Rocket de base station saturé — trop de clients pour sa capacité.
 
     Le nombre de clients qu'un AP sert correctement dépend de sa famille radio
-    (LTU > airMAX à spectre égal) et de sa largeur de canal (20 MHz > 10 MHz).
-    Incident CRITIQUE quand ``peer_count`` (clients connectés) ATTEINT le seuil
-    de la combinaison (famille × largeur). Seuils configurables (env + page
-    Seuils) via ``_rocket_overload_threshold``.
+    (LTU > airMAX à spectre égal) et croît avec sa largeur de canal. Le seuil est
+    une formule : base par famille à 10 MHz, +``rocket_overload_clients_per_10mhz``
+    par tranche de +10 MHz. Incident CRITIQUE quand ``peer_count`` (clients
+    connectés) ATTEINT ce seuil. Seuils configurables (env + page Seuils) via
+    ``_rocket_overload_threshold``.
 
     Entrées injectées dans ``metrics`` :
       - ``peer_count``        : nombre de clients connectés (jobs de polling)
@@ -916,9 +915,9 @@ class RocketClientOverloadRule(AlertRule):
       - ``is_airmax_rocket``  : famille radio de l'AP (alert_engine)
 
     La règle ``skip`` si l'une de ces entrées manque (pas de data → on
-    n'incrémente pas l'anti-flap) ou si la largeur n'a pas de seuil défini
-    (largeur hors {10, 20} MHz). Anti-flap : ``rocket_overload_failure_threshold``
-    cycles (le compte de clients fluctue avec les associations transitoires)."""
+    n'incrémente pas l'anti-flap) ou si la largeur est < 10 MHz (pas de seuil
+    défini). Anti-flap : ``rocket_overload_failure_threshold`` cycles (le compte
+    de clients fluctue avec les associations transitoires)."""
 
     alert_type = "rocket_client_overload"
 
@@ -939,7 +938,7 @@ class RocketClientOverloadRule(AlertRule):
         airmax = bool(metrics.get("is_airmax_rocket"))
         threshold = _rocket_overload_threshold(settings, airmax, width)
         if threshold is None:
-            # Channel width without a configured ceiling (e.g. 40 MHz) — no rule.
+            # Channel width below 10 MHz — no defined ceiling, no rule.
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity=None,

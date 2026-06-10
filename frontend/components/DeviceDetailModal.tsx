@@ -4,7 +4,7 @@ import React from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher, runDiag } from '@/lib/api'
 import type { DiagResult } from '@/lib/api'
-import type { Device, DeviceMetrics } from '@/lib/types'
+import type { Device, DeviceMetrics, NetworkCapacity, RocketCapacity } from '@/lib/types'
 import { deviceLabel, formatDate, timeAgo, formatBytes, formatUptime, parentRocketId } from '@/lib/types'
 import { useThresholds } from '@/lib/useThresholds'
 import DeviceImage from './DeviceImage'
@@ -95,6 +95,19 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
   const liveState: 'live' | 'loading' | 'deferred' =
     liveMetrics ? 'live' : liveValidating ? 'loading' : 'deferred'
 
+  // Client capacity for a base-station Rocket: connected peers (current) vs the
+  // rocket_client_overload ceiling (max). Read from /network-capacity so the
+  // per-family/width formula stays a single backend source of truth.
+  const { data: capacity } = useSWR<NetworkCapacity>(
+    isRocket ? endpoints.networkCapacity : null,
+    fetcher,
+    { refreshInterval: REFRESH },
+  )
+  const rocketCap: RocketCapacity | undefined =
+    isRocket && capacity
+      ? capacity.sites.flatMap(s => s.rockets).find(r => r.id === device.id)
+      : undefined
+
   return (
     <>
       {/* Header */}
@@ -144,6 +157,13 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
 
       {/* Content */}
       <div className="flex-1 px-6 py-5 space-y-6">
+
+        {/* Capacité clients (Rocket only) */}
+        {isRocket && rocketCap && (
+          <Section title="Capacité clients">
+            <RocketCapacityContent cap={rocketCap} />
+          </Section>
+        )}
 
         {/* LR associés (Rocket only) */}
         {isRocket && (
@@ -569,6 +589,50 @@ function LRMiniCard({ lr, onClick }: { lr: Device; onClick: () => void }) {
         <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
       </svg>
     </button>
+  )
+}
+
+/* ─── Rocket client capacity ─── */
+
+function RocketCapacityContent({ cap }: { cap: RocketCapacity }) {
+  const { current_clients: current, max_clients: max, channel_width_mhz: width } = cap
+  const rawPct = max && max > 0 ? (current / max) * 100 : null
+  const barPct = rawPct == null ? 0 : Math.min(100, rawPct)
+  // Occupancy bands: <70 % OK, 70–90 % chargé, ≥90 % (ou saturé) critique.
+  const band = rawPct == null ? 'unknown' : rawPct >= 90 ? 'crit' : rawPct >= 70 ? 'warn' : 'ok'
+  const barCls = band === 'crit' ? 'bg-red-500' : band === 'warn' ? 'bg-yellow-400' : 'bg-green-500'
+  const txtCls = band === 'crit' ? 'text-red-500' : band === 'warn' ? 'text-yellow-600' : 'text-green-600'
+
+  return (
+    <>
+      <MetricRow
+        label="Capacité actuelle"
+        value={<span className="font-semibold text-slate-700">{current} client{current > 1 ? 's' : ''}</span>}
+      />
+      <MetricRow
+        label="Capacité maximale"
+        value={max != null
+          ? <span className="font-semibold text-slate-700">{max} clients</span>
+          : <span className="text-blue-300">indéterminée</span>}
+      />
+      {width != null && <MetricRow label="Largeur de canal" value={`${width} MHz`} />}
+
+      {max != null && rawPct != null ? (
+        <>
+          <MetricRow
+            label="Taux d'occupation"
+            value={<span className={`font-semibold ${txtCls}`}>{current}/{max} · {rawPct.toFixed(0)} %</span>}
+          />
+          <div className="bg-slate-100 rounded h-2.5 overflow-hidden">
+            <div className={`h-full ${barCls} rounded transition-all`} style={{ width: `${Math.max(2, barPct)}%` }} />
+          </div>
+        </>
+      ) : (
+        <p className="text-blue-300 text-xs">
+          Capacité maximale indéterminée — largeur de canal inconnue (créds airOS manquants sur la fiche).
+        </p>
+      )}
+    </>
   )
 }
 

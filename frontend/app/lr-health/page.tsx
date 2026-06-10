@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type {
@@ -67,18 +68,10 @@ function latencyClass(ms: number | null): string {
   return 'text-slate-700'
 }
 
-export default function LrHealthPage() {
-  const { data, isLoading } = useSWR<LiveLinkHealthResponse>(
-    endpoints.badInstallations,
-    fetcher,
-    { refreshInterval: 60_000 },
-  )
+type LinkTab = 'clients' | 'sites'
 
-  const items: BadInstallationRow[] = data?.items ?? []
-  const unreachable = data?.unreachable_count ?? 0
-  const groups = VERDICT_GROUPS
-    .map(v => ({ verdict: v, items: items.filter(i => i.verdict === v) }))
-    .filter(g => g.items.length > 0)
+export default function LrHealthPage() {
+  const [tab, setTab] = useState<LinkTab>('clients')
 
   return (
     <div className="space-y-10">
@@ -95,7 +88,47 @@ export default function LrHealthPage() {
         </div>
       </div>
 
-      <section className="space-y-4">
+      <div className="inline-flex rounded-xl border border-blue-100 bg-white p-1 shadow-sm">
+        {([
+          { id: 'clients' as const, label: 'Liaisons des clients' },
+          { id: 'sites' as const,   label: 'Liaisons des sites' },
+        ]).map(t => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setTab(t.id)}
+            className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+              tab === t.id
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-blue-600 hover:bg-blue-50'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'clients' ? <ClientLinksSection /> : <SiteLinksSection />}
+    </div>
+  )
+}
+
+// ─── Liaisons des clients (LR) ────────────────────────────────────────────────
+function ClientLinksSection() {
+  const { data, isLoading } = useSWR<LiveLinkHealthResponse>(
+    endpoints.badInstallations,
+    fetcher,
+    { refreshInterval: 60_000 },
+  )
+
+  const items: BadInstallationRow[] = data?.items ?? []
+  const unreachable = data?.unreachable_count ?? 0
+  const groups = VERDICT_GROUPS
+    .map(v => ({ verdict: v, items: items.filter(i => i.verdict === v) }))
+    .filter(g => g.items.length > 0)
+
+  return (
+    <section className="space-y-4">
       <div>
         <h2 className="text-lg font-bold text-blue-900 tracking-tight">Liaisons clients</h2>
         <p className="text-blue-400 text-sm mt-1">
@@ -303,10 +336,7 @@ export default function LrHealthPage() {
           ))}
         </div>
       )}
-      </section>
-
-      <SiteLinksSection />
-    </div>
+    </section>
   )
 }
 

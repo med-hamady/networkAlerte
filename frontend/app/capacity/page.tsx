@@ -152,6 +152,14 @@ function SiteFamilyBar({
       <span className="w-16 shrink-0 text-[11px] font-semibold text-slate-800 text-right tabular-nums">
         {bucket.consumed}/{bucket.capacity}
       </span>
+      <span
+        className="w-8 shrink-0 text-[10px] text-amber-600 text-right tabular-nums"
+        title={bucket.unknown > 0
+          ? `${bucket.unknown} Rocket(s) à capacité indéterminée (largeur inconnue, exclus du total)`
+          : undefined}
+      >
+        {bucket.unknown > 0 ? `+${bucket.unknown}` : ''}
+      </span>
     </div>
   )
 }

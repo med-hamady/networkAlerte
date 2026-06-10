@@ -63,6 +63,7 @@ from app.services import (
     ssh_service,
     threshold_service,
     uisp_power_service,
+    uisp_sync_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -1985,6 +1986,33 @@ async def security_anomaly_detection_job() -> None:
 # Registration
 # ---------------------------------------------------------------------------
 
+@_timed_job
+async def uisp_sync_job() -> None:
+    """Import infrastructure devices from the UISP controller (name/IP/site).
+
+    Disabled unless UISP_SYNC_ENABLED and a base URL + credentials (token or
+    username/password) are configured. Subscriber stations are ignored; nothing
+    is ever deleted. See services/uisp_sync_service.
+    """
+    settings = get_settings()
+    if not settings.uisp_sync_enabled:
+        return
+    has_auth = settings.uisp_api_token or (settings.uisp_username and settings.uisp_password)
+    if not settings.uisp_base_url or not has_auth:
+        logger.warning(
+            "UISP sync enabled but UISP_BASE_URL / credentials missing — skipping cycle",
+        )
+        return
+    try:
+        async with async_session_factory() as session:
+            await uisp_sync_service.sync_uisp_devices(session)
+            await session.commit()
+    except uisp_sync_service.uisp_service.UISPAuthError as exc:
+        logger.error("UISP sync auth failed: %s", exc)
+    except Exception as exc:
+        logger.error("UISP sync cycle failed: %s", exc)
+
+
 def register_jobs(scheduler: AsyncIOScheduler) -> None:
     """Register all scheduled jobs. Intervals are read from settings.
 
@@ -2112,6 +2140,18 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
             name="Security anomaly detection (abnormal API write volume)",
             replace_existing=True,
             **safety,
+        )
+    if settings.uisp_sync_enabled:
+        scheduler.add_job(
+            uisp_sync_job,
+            trigger="interval", minutes=settings.uisp_sync_interval_minutes,
+            id="uisp_sync",
+            name="UISP controller inventory sync (infra devices)",
+            replace_existing=True,
+            # Run once right after the scheduler boots (i.e. at deploy) instead
+            # of waiting a full interval, then every uisp_sync_interval_minutes.
+            next_run_time=datetime.datetime.now(),
+            max_instances=1, coalesce=True, misfire_grace_time=120,
         )
 
 

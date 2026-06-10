@@ -11,6 +11,7 @@ from app.api.endpoints import (
     network_uptime,
     reports,
     system,
+    uisp,
 )
 
 api_router = APIRouter(prefix="/api/v1")
@@ -32,3 +33,4 @@ api_router.include_router(clients.router, prefix="/clients", tags=["clients"], d
 api_router.include_router(network_uptime.router, prefix="/network-uptime", tags=["network-uptime"], dependencies=_auth)
 api_router.include_router(system.router, prefix="/system", tags=["system"], dependencies=_auth)
 api_router.include_router(reports.router, prefix="/reports", tags=["reports"], dependencies=_auth)
+api_router.include_router(uisp.router, prefix="/uisp", tags=["uisp"], dependencies=_auth)

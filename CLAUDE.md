@@ -48,7 +48,8 @@ backend/app/
 │       ├── health.py              # GET /health (public — test DB inclus)
 │       ├── devices.py             # CRUD + diagnostics SSH/ping sur /devices
 │       ├── incidents.py           # GET/PATCH /incidents
-│       └── system.py              # GET/POST /system (infos système, /system/test-email)
+│       ├── system.py              # GET/POST /system (infos système, /system/test-email)
+│       └── uisp.py                # POST /uisp/sync (import infra depuis le contrôleur UISP, ?dry_run=true pour prévisualiser)
 ├── models/                  # SQLAlchemy ORM (Base avec id, created_at, updated_at)
 │   ├── device.py            # Équipements supervisés (+ parent_id hiérarchie, policy_overrides JSON)
 │   ├── device_metric.py     # Métriques time-series
@@ -73,7 +74,9 @@ backend/app/
 │   ├── alert_rules.py              # Règles d'alerte pure Python (sans DB) — 10+ règles
 │   ├── alert_formatter.py          # Formatage messages Slack/email par type d'alerte
 │   ├── alert_policy.py             # Registre interne : politique (canal/groupable/recovery/immédiat) par alert_type — plus exposé en API
-│   └── digest_service.py           # Regroupement des warnings en digest 15 min
+│   ├── digest_service.py           # Regroupement des warnings en digest 15 min
+│   ├── uisp_service.py             # Client REST contrôleur UISP/UNMS (login → token, GET /devices) — read-only
+│   └── uisp_sync_service.py        # Import auto des équipements d'INFRA depuis UISP : classify→upsert name/IP/site, creds par convention famille/site à la CRÉATION, abonnés ignorés, aucun delete/deactivate
 ├── tasks/
 │   ├── scheduler.py         # Init APScheduler, start/stop lifecycle
 │   └── jobs.py              # 7 jobs planifiés (voir tableau ci-dessous)
@@ -173,6 +176,16 @@ backend/app/
 | `CLIENT_BLOCK_DEFAULT_MODE` | Mode de blocage par défaut : `full` (coupure totale) ou `whatsapp_only` (défaut `full`) |
 | `WHATSAPP_ALLOW_CIDRS` | Plages IPv4 laissées joignables en mode `whatsapp_only` (Meta AS32934, séparées par virgule) |
 | `BLOCKED_DOMAINS_WHATSAPP_ONLY` | Domaines FB/IG/Messenger/Threads résolus en `0.0.0.0` par dnsmasq du LR en mode `whatsapp_only` (séparés par virgule) — neutralise le leak FB/IG via les IP Meta partagées |
+| `UISP_SYNC_ENABLED` | Active le job d'import inventaire depuis le contrôleur UISP (défaut `false`) |
+| `UISP_BASE_URL` | URL du contrôleur UISP (ex. `https://13.62.145.152`) |
+| `UISP_API_TOKEN` | Token API UISP (préféré ; sinon `UISP_USERNAME`/`UISP_PASSWORD`) |
+| `UISP_USERNAME` / `UISP_PASSWORD` | Login web UISP (fallback si pas de token) |
+| `UISP_VERIFY_TLS` | Vérif TLS du contrôleur (défaut `false` — cert auto-signé) |
+| `UISP_SYNC_INTERVAL_MINUTES` | Intervalle du `uisp_sync_job` (défaut 1440 = 24 h ; le job tourne aussi 1× au démarrage du scheduler) |
+| `UISP_REQUEST_TIMEOUT` | Timeout HTTP des appels UISP en s (défaut 30) |
+| `UISP_ROCKET_SSH_USERNAME` / `UISP_ROCKET_SSH_PASSWORD_TEMPLATE` | Creds posés sur un Rocket créé par le sync. `{site}` = code extrait du nom de site UISP (`A2 SNDE`→`SNDE`). Défaut `ubnt` / `A2{site}@4321$A2` |
+| `UISP_POWER_API_USERNAME` / `UISP_POWER_API_PASSWORD` | Creds API posés sur un UISP Power créé par le sync (défaut `ubnt` / `A2@uispp2025`) |
+| `UISP_AF60_SSH_USERNAME` / `UISP_AF60_SSH_PASSWORD` | Creds API posés sur un AF60 créé par le sync (défaut `ubnt` / `A2F60@4321`) |
 
 ## État d'implémentation
 
@@ -228,6 +241,7 @@ backend/app/
 | `client_consumption_matview_refresh_job` | 15 min | `REFRESH MATERIALIZED VIEW CONCURRENTLY client_consumption_30d` — pré-calcule la somme des deltas de compteurs bytes sur 30 j (download/upload par CPE). Avant : l'endpoint `/clients/consumption?period=30d` transférait des millions de samples vers Python pour faire la boucle `_sum_positive_deltas` → ~36 s en prod. Maintenant : delta calculé en SQL via `LAG()` + `CASE`, et 30d servi depuis la vue. |
 | `client_consumption_7d_refresh_job` | 15 min | `REFRESH MATERIALIZED VIEW CONCURRENTLY client_consumption_7d` — même pattern que le matview 30 j mais borné à 7 j. La période 7 j à elle seule clockait ~13 s sur le live SQL (seq scan + external sort 30 MB) ; le matview la fait passer à <100 ms. Matview séparé car l'agrégat 30 j est un seul SUM qui ne peut pas être soustrait à une fenêtre plus étroite. 24h reste en SQL live (true rolling window, ~2 s acceptable) ; lifetime aussi (sera adressé via la rétention 90 j). |
 | `device_metrics_retention_job` | 6 h | Purge `device_metrics` plus vieux que `DEVICE_METRICS_RETENTION_DAYS` (défaut 90 j) en **batches** (`DELETE … WHERE id IN (SELECT id … LIMIT n)`, boucle jusqu'à épuisement) — jamais une grosse transaction (cf. leçon `u2a3b4c5d6e7`). Seules les métriques de `HISTORY_METRICS` accumulent encore des lignes ; le reste est déjà collapsé par `persist_device_metrics`. Crée aussi `ix_device_metrics_collected_at` via `CREATE INDEX CONCURRENTLY IF NOT EXISTS` (dans le scheduler, hors path de démarrage — cf. no-op `w4c5d6e7f8a9`) pour que la purge soit un index range scan. |
+| `uisp_sync_job` | `UISP_SYNC_INTERVAL_MINUTES` (24 h) + **1× au démarrage** (`next_run_time=now` → import dès le déploiement) | **Désactivé par défaut** (`UISP_SYNC_ENABLED=false`). Importe les équipements d'**infra** (Rocket LTU/airMAX role=ap, switches `uisps`/blackBox, UISP Power `uispp`, AF60* P2P) depuis `GET /nms/api/v2.1/devices` du contrôleur UISP. Mapping `classify_device(type, role, model)` ; identité = **MAC** (sinon IP, sinon (type,nom)). Met à jour **name/IP/site(location)** ; pose les **creds par convention famille/site à la création** (jamais d'écrasement). **Abonnés (LTU-LR/LiteBeam station) ignorés** (auto-découverte CPE), **aucun delete/deactivate**. Voir `uisp_sync_service`. |
 
 #### Politique device_metrics (history vs latest) — `persist_device_metrics` dans `jobs.py`
 Tous les jobs de polling persistent leurs métriques via `persist_device_metrics(session, device_id, metrics, unit_map)`. Règle unique : si le `metric_name` est dans `HISTORY_METRICS`, on **empile** une ligne par cycle (série temporelle conservée) ; sinon on **écrase en place** (1 ligne par `(device_id, metric_name)` via DELETE+INSERT). `HISTORY_METRICS` = les **seules** métriques relues comme série par un consommateur, c.-à-d. **uniquement les compteurs bytes** :
@@ -297,6 +311,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | GET | `/api/v1/incidents/{id}` | Oui | Détail incident — lecture seule |
 | GET | `/api/v1/system` | Oui | Infos système (version, uptime scheduler) |
 | POST | `/api/v1/system/test-email` | Oui | Diagnostic SMTP — envoie un email de test aux `NOTIFICATION_EMAILS` |
+| POST | `/api/v1/uisp/sync` | Oui | Import des équipements d'infra depuis le contrôleur UISP (`?dry_run=true` = prévisualisation sans écriture). Renvoie un résumé (créés/màj/ignorés + échantillon) |
 
 ### Frontend Next.js
 | Page | Chemin | Contenu |

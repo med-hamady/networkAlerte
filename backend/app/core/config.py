@@ -161,6 +161,39 @@ class Settings(BaseSettings):
         """Parse lr_fallback_ssh_passwords into a non-empty list (or empty)."""
         return [p for p in self.lr_fallback_ssh_passwords.split(",") if p]
 
+    # ── UISP controller sync ─────────────────────────────────────────────────
+    # Periodic import of INFRASTRUCTURE devices (base-station Rockets, switches,
+    # UISP Power, AF60 backhauls) from the UISP/UNMS controller so the operator
+    # doesn't enter each AP/switch/power by hand. Subscriber stations (LTU-LR,
+    # LiteBeam) are NOT imported — they keep coming from CPE auto-discovery.
+    # Only name / IP / site come from UISP; credentials are stamped from the
+    # per-family/site conventions below at CREATE time only, never overwriting an
+    # existing device. A device that disappears from UISP is left untouched
+    # (no delete, no deactivate). Auth: either UISP_API_TOKEN (preferred — UISP
+    # → Settings → Users → API tokens, revocable) or UISP_USERNAME/PASSWORD.
+    uisp_sync_enabled: bool = False
+    uisp_base_url: str = ""          # e.g. https://13.62.145.152
+    uisp_username: str = ""
+    uisp_password: str = ""
+    uisp_api_token: str = ""         # alternative to username/password
+    uisp_verify_tls: bool = False    # controller usually has a self-signed cert
+    # Inventory drifts slowly (new sites/APs are rare) → daily is plenty. The job
+    # also runs ONCE at scheduler startup (next_run_time=now) so a deploy imports
+    # immediately instead of waiting a full interval.
+    uisp_sync_interval_minutes: int = 1440  # 24 h
+    uisp_request_timeout: int = 30
+
+    # Credential conventions stamped on a device CREATED by the UISP sync.
+    # Rocket password is per-site: {site} is the code extracted from the UISP
+    # site name ("A2 SNDE" → "SNDE") → "A2SNDE@4321$A2". Switches need no creds
+    # (SNMP-only, community auto-filled). Override any of these via env.
+    uisp_rocket_ssh_username: str = "ubnt"
+    uisp_rocket_ssh_password_template: str = "A2{site}@4321$A2"
+    uisp_power_api_username: str = "ubnt"
+    uisp_power_api_password: str = "A2@uispp2025"
+    uisp_af60_ssh_username: str = "ubnt"
+    uisp_af60_ssh_password: str = "A2F60@4321"
+
     # Client internet block — the enforcement job re-asserts the LAN-port
     # shutdown on every LR marked client_blocked, so a block survives an LR
     # reboot (the port comes back UP on boot) and retries blocks that could

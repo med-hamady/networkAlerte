@@ -36,7 +36,6 @@ const sections: NavSection[] = [
     title: 'Anomalies',
     links: [
       { href: '/incidents',         label: 'Incidents',       icon: WarningIcon, exact: true },
-      { href: '/network-uptime',    label: 'Journal coupures', icon: ClockIcon   },
     ],
   },
   {
@@ -239,15 +238,6 @@ function ReportIcon({ className }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round"
         d="M9 17v-6m3 6V7m3 10v-4M5 21h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z" />
-    </svg>
-  )
-}
-
-function ClockIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <circle cx="12" cy="12" r="9" strokeLinecap="round" strokeLinejoin="round" />
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 7v5l3 2" />
     </svg>
   )
 }

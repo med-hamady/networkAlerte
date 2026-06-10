@@ -1,7 +1,6 @@
 'use client'
 
 import React, { useMemo } from 'react'
-import Link from 'next/link'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type { Device, Incident } from '@/lib/types'
@@ -86,9 +85,6 @@ export default function DashboardPage() {
         <section>
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold text-blue-900 text-lg">Pannes par site</h2>
-            <Link href="/network-uptime" className="text-sm text-blue-500 hover:text-blue-700 transition-colors shrink-0">
-              Journal des coupures →
-            </Link>
           </div>
 
           {!devices?.length ? (

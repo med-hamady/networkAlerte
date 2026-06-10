@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from app.api.deps import require_user_or_api_key
 from app.api.endpoints import (
     auth,
+    client_signal,
     clients,
     devices,
     health,
@@ -30,6 +31,7 @@ _auth = [Depends(require_user_or_api_key)]
 api_router.include_router(devices.router, prefix="/devices", tags=["devices"], dependencies=_auth)
 api_router.include_router(incidents.router, prefix="/incidents", tags=["incidents"], dependencies=_auth)
 api_router.include_router(lr_health.router, prefix="/lr-health", tags=["lr-health"], dependencies=_auth)
+api_router.include_router(client_signal.router, prefix="/client-signal", tags=["client-signal"], dependencies=_auth)
 api_router.include_router(clients.router, prefix="/clients", tags=["clients"], dependencies=_auth)
 api_router.include_router(network_capacity.router, prefix="/network-capacity", tags=["network-capacity"], dependencies=_auth)
 api_router.include_router(network_uptime.router, prefix="/network-uptime", tags=["network-uptime"], dependencies=_auth)

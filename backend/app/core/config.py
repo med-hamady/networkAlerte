@@ -262,6 +262,11 @@ class Settings(BaseSettings):
     # divergeait de ces seuils sur les liens courts).
     signal_warning_dbm: int = -75   # below → warning incident
     signal_critical_dbm: int = -80  # below → critical incident
+    # Plafond « bien/excellent » pour la classification qualitative du signal
+    # exposée par GET /client-signal (consommée par un système tiers). Réutilise
+    # warning/critical pour les bandes basses ; ce seuil sépare « bien » (> -65)
+    # d'« excellent » (≥ -65). Voir services/client_signal_service.classify_signal.
+    signal_excellent_dbm: int = -65  # ≥ → excellent
     # Tolerance band on signal: an incident opens only when the signal is
     # this many dBm *below* the threshold, so a small dip at the boundary
     # is absorbed instead of flapping into an incident. Default 0 = strict

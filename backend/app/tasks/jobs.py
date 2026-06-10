@@ -782,6 +782,19 @@ async def snmp_poll_job() -> None:
                 "radio_if_up":      "",
                 "eth_if_up":        "",
             }
+            # airMAX Rocket : alimente la règle rocket_client_overload ET la page
+            # Capacité réseau — nombre de clients = stations découvertes par le
+            # walk SNMP (Phase 1), largeur de canal = chanbw lu via airOS
+            # status.cgi (Phase 1). Une largeur < 10 MHz n'a pas de seuil → la
+            # règle ne déclenche pas. On les ajoute AVANT la persistance pour que
+            # peer_count / channel_width_mhz soient interrogeables au query-time
+            # (latest-only collapse — pas dans HISTORY_METRICS).
+            if category in AIRMAX_RULE_CATEGORIES and airmax_peers is not None:
+                metrics = dict(metrics)
+                metrics["peer_count"] = len(airmax_peers)
+                if channel_width_mhz is not None:
+                    metrics["channel_width_mhz"] = channel_width_mhz
+
             for key in metrics:
                 if key not in unit_map:
                     if "_rx_bytes" in key or "_tx_bytes" in key:
@@ -794,16 +807,6 @@ async def snmp_poll_job() -> None:
             # everything else (all switch port metrics, noise, rates…) collapses
             # to a single latest row. See persist_device_metrics / HISTORY_METRICS.
             await persist_device_metrics(session, dev.id, metrics, unit_map)
-
-            # airMAX Rocket : alimente la règle rocket_client_overload —
-            # nombre de clients = stations découvertes par le walk SNMP (Phase 1),
-            # largeur de canal = chanbw lu via airOS status.cgi (Phase 1). Une
-            # largeur hors {10, 20} MHz n'a pas de seuil → la règle ne déclenche pas.
-            if category in AIRMAX_RULE_CATEGORIES and airmax_peers is not None:
-                metrics = dict(metrics)
-                metrics["peer_count"] = len(airmax_peers)
-                if channel_width_mhz is not None:
-                    metrics["channel_width_mhz"] = channel_width_mhz
 
             # Delegate anomaly detection to alert engine
             await alert_engine.evaluate_device_metrics(session, dev, metrics, settings)
@@ -1213,16 +1216,19 @@ async def ltu_api_poll_job() -> None:
                     dev.name, len(recon.created), len(recon.ip_changed), len(recon.reassigned),
                 )
 
-            # Persist AP-wide metrics on the Rocket (noise_dbm). Per-link
-            # metrics (signal/CCQ/CINR/etc.) belong to each LR and are stored
-            # in the fan-out loop below.
+            # Persist AP-wide metrics on the Rocket (noise_dbm, channel_width_mhz).
+            # peer_count (connected clients) feeds the rocket_client_overload rule
+            # AND the Network Capacity page, so persist it here (latest-only
+            # collapse — not in HISTORY_METRICS) instead of only on the engine
+            # copy. Per-link metrics (signal/CCQ/CINR/etc.) belong to each LR and
+            # are stored in the fan-out loop below.
+            rocket_ap_metrics["peer_count"] = len(all_peers)
             await persist_device_metrics(session, dev.id, rocket_ap_metrics, unit_map)
 
-            # Rocket-level alert engine pass: only cares about peer_count and
-            # whatever the SNMP IF-MIB poll added (radio_if_up, eth_if_up,
-            # byte/error counters via _inject_error_deltas inside the engine).
+            # Rocket-level alert engine pass: cares about peer_count and whatever
+            # the SNMP IF-MIB poll added (radio_if_up, eth_if_up, byte/error
+            # counters via _inject_error_deltas inside the engine).
             rocket_engine_metrics = dict(rocket_ap_metrics)
-            rocket_engine_metrics["peer_count"] = len(all_peers)
             await alert_engine.evaluate_device_metrics(
                 session, dev, rocket_engine_metrics, settings,
             )

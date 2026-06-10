@@ -56,6 +56,7 @@ export const endpoints = {
   badInstallations:     `${API_BASE}/lr-health/bad-installations`,
   siteLinks:            `${API_BASE}/lr-health/site-links`,
   clientsConsumption:   (period: '24h' | '7d' | '30d' | 'lifetime') => `${API_BASE}/clients/consumption?period=${period}`,
+  networkCapacity:      `${API_BASE}/network-capacity`,
   downtimeLog:          (startIso: string, endIso: string) =>
     `${API_BASE}/network-uptime/downtime-log?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`,
 }

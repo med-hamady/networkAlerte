@@ -280,7 +280,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | Performance | `capacity_low` | Débit réel / idéal < seuil |
 | Performance | `high_rx_tx_errors` | Taux d'erreurs delta > seuil |
 | Performance | `throughput_anomaly` | Débit < EMA × facteur (détection anomalie) |
-| Charge AP | `rocket_client_overload` | Rocket de base station saturé : clients connectés ≥ seuil par (famille × largeur canal). LTU 10MHz≥15 / 20MHz≥25 ; airMAX 10MHz≥12 / 20MHz≥20 (configurables, page Seuils). Largeur auto-détectée en direct : LTU via API `wireless.radios[0].channelWidth.tx`, airMAX via airOS `status.cgi` `wireless.chanbw` (lu dans `snmp_poll_job`, requiert les creds airOS sur la fiche). Clients = `len(all_peers)` (LTU) / stations SNMP `airmax_peers` (airMAX). Largeurs hors {10,20} MHz → pas de seuil → pas d'incident (ex. airMAX 40 MHz). Critique, anti-flap 3 cycles |
+| Charge AP | `rocket_client_overload` | Rocket de base station saturé : clients connectés ≥ seuil. Seuil = **formule** par famille : base à 10 MHz + `rocket_overload_clients_per_10mhz` (défaut 5) clients par tranche de +10 MHz. Bases : LTU 15, airMAX 10 (configurables, page Seuils). Donc LTU 10→15 / 20→20 / 30→25… ; airMAX 10→10 / 20→15 / 40→25… Largeur auto-détectée en direct (arrondie au multiple de 10 MHz) : LTU via API `wireless.radios[0].channelWidth.tx`, airMAX via airOS `status.cgi` `wireless.chanbw` (lu dans `snmp_poll_job`, requiert les creds airOS sur la fiche). Clients = `len(all_peers)` (LTU) / stations SNMP `airmax_peers` (airMAX). Largeur < 10 MHz → pas de seuil → pas d'incident. Critique, anti-flap 3 cycles |
 | Power | `uisp_power_unreachable` | API UISP Power injoignable |
 | Power | `battery_low_warning` | Batterie < 25% |
 | Power | `battery_low_critical` | Batterie < 10% |
@@ -312,12 +312,14 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | GET | `/api/v1/system` | Oui | Infos système (version, uptime scheduler) |
 | POST | `/api/v1/system/test-email` | Oui | Diagnostic SMTP — envoie un email de test aux `NOTIFICATION_EMAILS` |
 | POST | `/api/v1/uisp/sync` | Oui | Import des équipements d'infra depuis le contrôleur UISP (`?dry_run=true` = prévisualisation sans écriture). Renvoie un résumé (créés/màj/ignorés + échantillon) |
+| GET | `/api/v1/network-capacity` | Oui | Capacité clients : par famille (LTU/airMAX) et par site, clients connectés (`peer_count`) vs max (seuil `rocket_client_overload`). Rockets sans largeur connue exclus des totaux (`unknown`). `network_capacity_service` |
 
 ### Frontend Next.js
 | Page | Chemin | Contenu |
 |---|---|---|
 | Devices | `/devices` | Liste avec statut, dernière vue, métriques, modal détail |
 | Anomalies détectées | `/incidents` | Anomalies actuellement détectées (lecture seule, résolution automatique) |
+| Capacité du réseau | `/capacity` | 2 cercles (LTU/airMAX) consommé vs disponible sur tout le réseau + barres par site (LTU/airMAX séparés) ; clic site → table Rockets (connectés/max + largeur). Donut SVG custom (pas de lib de charts) |
 
 ### À implémenter (prochaines phases)
 - [ ] Tests unitaires et d'intégration

@@ -8,6 +8,7 @@ from app.api.endpoints import (
     health,
     incidents,
     lr_health,
+    network_capacity,
     network_uptime,
     reports,
     system,
@@ -30,6 +31,7 @@ api_router.include_router(devices.router, prefix="/devices", tags=["devices"], d
 api_router.include_router(incidents.router, prefix="/incidents", tags=["incidents"], dependencies=_auth)
 api_router.include_router(lr_health.router, prefix="/lr-health", tags=["lr-health"], dependencies=_auth)
 api_router.include_router(clients.router, prefix="/clients", tags=["clients"], dependencies=_auth)
+api_router.include_router(network_capacity.router, prefix="/network-capacity", tags=["network-capacity"], dependencies=_auth)
 api_router.include_router(network_uptime.router, prefix="/network-uptime", tags=["network-uptime"], dependencies=_auth)
 api_router.include_router(system.router, prefix="/system", tags=["system"], dependencies=_auth)
 api_router.include_router(reports.router, prefix="/reports", tags=["reports"], dependencies=_auth)

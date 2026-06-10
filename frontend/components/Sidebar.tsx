@@ -28,6 +28,7 @@ const sections: NavSection[] = [
       { href: '/sites',      label: 'Sites',               icon: ServerIcon    },
       { href: '/lr-health',  label: 'Liaisons clients',    icon: LinkIcon      },
       { href: '/clients',    label: 'Consommation clients', icon: TrafficIcon  },
+      { href: '/capacity',   label: 'Capacité du réseau',  icon: CapacityIcon },
       { href: '/access',     label: 'Accès clients',       icon: ShieldIcon   },
     ],
   },
@@ -247,6 +248,17 @@ function ClockIcon({ className }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <circle cx="12" cy="12" r="9" strokeLinecap="round" strokeLinejoin="round" />
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 7v5l3 2" />
+    </svg>
+  )
+}
+
+function CapacityIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round"
+        d="M11 3.055A9 9 0 1020.945 13H11V3.055z" />
+      <path strokeLinecap="round" strokeLinejoin="round"
+        d="M20.488 9A9.004 9.004 0 0015 3.512V9h5.488z" />
     </svg>
   )
 }

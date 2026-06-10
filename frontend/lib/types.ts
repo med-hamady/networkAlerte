@@ -559,6 +559,39 @@ export interface SiteLinkHealthResponse {
   items: SiteLinkRow[]
 }
 
+// ─── Capacité du réseau — clients consommés vs disponibles par famille/site ──
+// consumed = clients connectés (peer_count), capacity = somme des max par Rocket
+// (seuil rocket_client_overload). available = capacity − consumed (≥ 0).
+// unknown = Rockets sans largeur de canal connue → exclus des totaux.
+export interface CapacityBucket {
+  consumed: number
+  capacity: number
+  available: number
+  rockets: number
+  unknown: number
+}
+
+export interface RocketCapacity {
+  id: number
+  name: string
+  family: 'ltu' | 'airmax'
+  current_clients: number
+  max_clients: number | null      // null = largeur inconnue → indéterminé
+  channel_width_mhz: number | null
+}
+
+export interface SiteCapacity {
+  site: string
+  ltu: CapacityBucket
+  airmax: CapacityBucket
+  rockets: RocketCapacity[]
+}
+
+export interface NetworkCapacity {
+  families: { ltu: CapacityBucket; airmax: CapacityBucket }
+  sites: SiteCapacity[]
+}
+
 // ─── Network uptime — Journal des coupures ─────────────────────────────────
 
 export interface FlapSubEpisode {

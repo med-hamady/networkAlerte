@@ -39,6 +39,10 @@ class ClientConsumption(BaseModel):
     samples: int
     has_data: bool
     first_sample_at: datetime.datetime | None
+    # Subscription plan (forfait) — rate caps cached from the LR's traffic
+    # shaper by lr_plan_service. None = never synced or no shaper on the device.
+    plan_download_mbps: float | None = None
+    plan_upload_mbps: float | None = None
 
 
 class RocketConsumption(BaseModel):

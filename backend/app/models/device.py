@@ -189,6 +189,20 @@ class Lr(Device):
         String(10), default="unknown", nullable=False, server_default="unknown",
     )
 
+    # ── Subscription plan (forfait) ──────────────────────────────────────────
+    # The customer's plan is provisioned on the LR as an airOS traffic shaper
+    # (egress rate cap per interface in /tmp/system.cfg), NOT exposed by any
+    # HTTP API — `lr_plan_service` reads it over SSH and caches the down/up caps
+    # here so the frontend shows "20/10 Mbps" without an SSH round-trip per view.
+    # `plan_synced_at` is the last successful read (None = never synced). The
+    # commercial plan *name* is not on the device (CRM-only). Both caps None
+    # after a sync = the LR has no shaper configured (no forfait on the device).
+    plan_download_mbps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    plan_upload_mbps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    plan_synced_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
     __mapper_args__ = {"polymorphic_identity": "lr", "polymorphic_load": "selectin"}
 
 

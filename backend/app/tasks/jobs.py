@@ -56,6 +56,7 @@ from app.services import (
     discovery_service,
     email_service,
     incident_service,
+    lr_plan_service,
     ltu_api_service,
     notification_service,
     poller,
@@ -2019,6 +2020,23 @@ async def uisp_sync_job() -> None:
         logger.error("UISP sync cycle failed: %s", exc)
 
 
+async def lr_plan_sync_job() -> None:
+    """Lit le forfait (caps du traffic shaper airOS) de chaque LR up via SSH et
+    le met en cache (plan_download_mbps / plan_upload_mbps / plan_synced_at).
+
+    Cadence lente (`lr_plan_sync_interval_minutes`, défaut 24 h) car le forfait
+    change rarement ; tourne aussi 1× au démarrage du scheduler et est
+    déclenchable à la demande via POST /devices/plans/sync. La concurrence SSH
+    est bornée par `lr_probe_concurrency`. Voir `lr_plan_service`.
+    """
+    try:
+        async with async_session_factory() as session:
+            summary = await lr_plan_service.sync_all_lr_plans(session)
+        logger.info("lr_plan_sync_job terminé — %s", summary)
+    except Exception as exc:
+        logger.error("lr_plan_sync_job cycle failed: %s", exc)
+
+
 def register_jobs(scheduler: AsyncIOScheduler) -> None:
     """Register all scheduled jobs. Intervals are read from settings.
 
@@ -2127,6 +2145,17 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         max_instances=1,
         coalesce=True,
         misfire_grace_time=300,
+    )
+    scheduler.add_job(
+        lr_plan_sync_job,
+        trigger="interval", minutes=settings.lr_plan_sync_interval_minutes,
+        id="lr_plan_sync",
+        name="LR subscription plan sync (traffic-shaper rate caps via SSH)",
+        replace_existing=True,
+        # Run once right after the scheduler boots so plans populate at deploy
+        # instead of waiting a full day.
+        next_run_time=datetime.datetime.now(),
+        max_instances=1, coalesce=True, misfire_grace_time=120,
     )
     if settings.client_block_enforcement_enabled:
         scheduler.add_job(

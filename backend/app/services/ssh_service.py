@@ -924,3 +924,179 @@ async def measure_latency_via_ssh(
         host, port, username, password, target, count,
         expected_fingerprint, fallback_passwords,
     )
+
+
+# ── Traffic shaper (per-client subscription plan / "forfait") ────────────────
+#
+# The customer's plan is NOT in any HTTP API (LTU /statistics, airOS status.cgi
+# carry only live radio/throughput). It is provisioned on the LR itself as an
+# airOS *traffic shaper*: a per-interface rate cap stored as flat `tshaper.*`
+# keys in /tmp/system.cfg. On a CPE the radio interface is the uplink (toward
+# the AP / internet) and the wired interface faces the customer LAN, so an
+# egress (output) shaper maps to a direction:
+#   LAN egress (output) → toward customer = download
+#   WAN egress (output) → toward AP       = upload
+# (ingress/input is the mirror of each). Field-confirmed on a LiteBeam 5AC
+# (router mode): ath0 output=10100 kbit/s = 10 Mbps up, eth0 output=20200 = 20
+# Mbps down → a 20/10 plan.
+_RADIO_IFACE_PREFIXES = ("ath", "wlan", "wifi", "rai")
+_SHAPER_DIRECTION = {
+    ("lan", "output"): "download",
+    ("lan", "input"):  "upload",
+    ("wan", "output"): "upload",
+    ("wan", "input"):  "download",
+}
+
+
+def _iface_role(devname: str) -> str:
+    """Classify a shaper interface as the radio uplink ('wan') or wired LAN ('lan').
+
+    A VLAN sub-interface (eth0.1) keeps its physical parent's role, so the
+    prefix test on the radio names is enough — anything not radio is treated as
+    customer-facing wired.
+    """
+    name = devname.strip().lower()
+    if any(name.startswith(p) for p in _RADIO_IFACE_PREFIXES):
+        return "wan"
+    return "lan"
+
+
+def parse_tshaper_config(raw: str) -> dict:
+    """Parse airOS ``tshaper.*`` config lines into a per-client plan (rate caps).
+
+    Returns::
+
+        {
+          "shaper_enabled": bool,        # tshaper.status
+          "download_mbps": float | None, # cap toward the customer
+          "upload_mbps":   float | None, # cap toward the internet
+          "rules": [ {devname, role, direction, rate_kbps, rate_mbps}, ... ],
+        }
+
+    download/upload stay None when no enabled rule maps to that direction.
+    Rates are airOS kbit/s → Mbit/s (rounded to 0.1).
+    """
+    kv: dict[str, str] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("tshaper.") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        kv[key.strip()] = val.strip()
+
+    result: dict = {
+        "shaper_enabled": kv.get("tshaper.status") == "enabled",
+        "download_mbps": None,
+        "upload_mbps": None,
+        "rules": [],
+    }
+
+    # Group the flat keys by rule index: tshaper.<idx>.<sub> = val
+    by_idx: dict[str, dict[str, str]] = {}
+    for key, val in kv.items():
+        parts = key.split(".")
+        if len(parts) >= 3 and parts[1].isdigit():
+            by_idx.setdefault(parts[1], {})[".".join(parts[2:])] = val
+
+    for idx in sorted(by_idx, key=int):
+        rule = by_idx[idx]
+        if rule.get("status") != "enabled":
+            continue
+        devname = rule.get("devname")
+        if not devname:
+            continue
+        role = _iface_role(devname)
+        for flow in ("output", "input"):
+            if rule.get(f"{flow}.status") != "enabled":
+                continue
+            try:
+                rate_kbps = int(float(rule.get(f"{flow}.rate")))
+            except (TypeError, ValueError):
+                continue
+            direction = _SHAPER_DIRECTION[(role, flow)]
+            rate_mbps = round(rate_kbps / 1000.0, 1)
+            result["rules"].append({
+                "devname": devname, "role": role, "direction": direction,
+                "rate_kbps": rate_kbps, "rate_mbps": rate_mbps,
+            })
+            # First enabled rule for a direction wins (there is normally one).
+            key_mbps = f"{direction}_mbps"
+            if result[key_mbps] is None:
+                result[key_mbps] = rate_mbps
+
+    return result
+
+
+def _read_traffic_shaper_sync(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    expected_fingerprint: str | None,
+    fallback_passwords: list[str] | None,
+) -> tuple[bool, dict | None, str, str | None, str | None]:
+    """SSH into the LR and read its airOS traffic-shaper config (the rate plan).
+
+    Returns ``(ok, plan|None, message, observed_fp, used_pw)``. ``plan`` has the
+    shape documented on :func:`parse_tshaper_config`. ok=False only on a
+    connect/auth/read failure — a reachable LR with no shaper returns ok=True
+    and an all-None plan (no forfait provisioned on the device).
+    """
+    try:
+        transport, observed, used_pw = _open_transport(
+            host, port, username, password, expected_fingerprint,
+            fallback_passwords=fallback_passwords,
+        )
+    except _FingerprintMismatchError as exc:
+        logger.error("read_traffic_shaper host-key mismatch %s — %s", host, exc)
+        return False, None, str(exc), None, None
+    except Exception as exc:
+        logger.debug("read_traffic_shaper SSH connect failed %s — %s", host, exc)
+        return False, None, str(exc), None, None
+
+    try:
+        # tshaper config is flat key=value in the running config. Cover both
+        # filenames airOS uses across firmware (system.cfg / running.cfg).
+        # grep exits 1 on no match — not an error, just an unshaped LR.
+        _code, out = _exec_capture(
+            transport,
+            "grep -h '^tshaper' /tmp/system.cfg /tmp/running.cfg 2>/dev/null",
+            timeout=10,
+        )
+        plan = parse_tshaper_config(out)
+        if not plan["shaper_enabled"] and not plan["rules"]:
+            return (
+                True, plan,
+                "Aucun traffic shaper configuré sur ce LR — pas de forfait posé "
+                "sur l'équipement.",
+                observed, used_pw,
+            )
+        return (
+            True, plan,
+            "Forfait lu depuis le traffic shaper du LR.",
+            observed, used_pw,
+        )
+    except Exception as exc:
+        logger.debug("read_traffic_shaper exec failed %s — %s", host, exc)
+        return False, None, str(exc), observed, used_pw
+    finally:
+        transport.close()
+
+
+async def read_traffic_shaper(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    expected_fingerprint: str | None = None,
+    fallback_passwords: list[str] | None = None,
+) -> tuple[bool, dict | None, str, str | None, str | None]:
+    """SSH into the LR and read its airOS traffic-shaper rate caps (the forfait).
+
+    Returns ``(ok, plan|None, message, observed_fp, used_pw)`` — see
+    :func:`_read_traffic_shaper_sync`.
+    """
+    return await asyncio.to_thread(
+        _read_traffic_shaper_sync, host, port, username, password,
+        expected_fingerprint, fallback_passwords,
+    )

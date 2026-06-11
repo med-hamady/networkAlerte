@@ -28,6 +28,7 @@ from app.services import (
     client_block_service,
     device_service,
     lan_discovery,
+    lr_plan_service,
     ltu_api_service,
     snmp_service,
     ssh_service,
@@ -621,6 +622,77 @@ async def block_client(
         db, device, body.reason, body.mode
     )
     return _block_result(device, ok, message)
+
+
+class ShaperRule(BaseModel):
+    devname: str
+    role: str          # "wan" (radio uplink) | "lan" (customer-facing)
+    direction: str     # "download" | "upload"
+    rate_kbps: int
+    rate_mbps: float
+
+
+class LrPlanResult(BaseModel):
+    ok: bool
+    message: str
+    shaper_enabled: bool = False
+    download_mbps: float | None = None
+    upload_mbps: float | None = None
+    rules: list[ShaperRule] = []
+
+
+class PlanSyncSummary(BaseModel):
+    eligible: int
+    updated: int
+    no_shaper: int
+    failed: int
+
+
+@router.post("/plans/sync", response_model=PlanSyncSummary)
+async def sync_lr_plans(
+    db: AsyncSession = Depends(get_db),
+) -> PlanSyncSummary:
+    """Lit et met en cache le forfait de TOUS les LR joignables via SSH.
+
+    Pour chaque LR ``up`` avec credentials SSH, lit les caps du traffic shaper
+    et stocke ``plan_download_mbps`` / ``plan_upload_mbps`` (affichés ensuite
+    sur le frontend sans re-SSH). Tâche lourde — un SSH par LR, concurrence
+    bornée par ``lr_probe_concurrency``. Le job ``lr_plan_sync`` la relance
+    quotidiennement ; cet endpoint permet de la déclencher à la demande.
+    """
+    summary = await lr_plan_service.sync_all_lr_plans(db)
+    return PlanSyncSummary(**summary)
+
+
+@router.get("/{device_id}/plan", response_model=LrPlanResult)
+async def get_lr_plan(
+    device_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> LrPlanResult:
+    """Read a client's subscription plan (forfait) from its LR's traffic shaper.
+
+    The plan (download/upload Mbps) is provisioned on the LR as an airOS
+    traffic-shaper rate cap — it is not exposed by any device HTTP API, so we
+    read it over SSH. ``rules`` shows exactly which interface/direction each cap
+    came from. The commercial plan *name* is not on the device (CRM-only). Only
+    valid on LR devices.
+    """
+    device = await device_service.get_device(db, device_id)
+    if not isinstance(device, Lr):
+        raise HTTPException(
+            status_code=400,
+            detail="Le forfait n'est lisible que sur les LR (équipement client).",
+        )
+    ok, plan, message = await lr_plan_service.get_lr_plan(device)
+    plan = plan or {}
+    return LrPlanResult(
+        ok=ok,
+        message=message,
+        shaper_enabled=plan.get("shaper_enabled", False),
+        download_mbps=plan.get("download_mbps"),
+        upload_mbps=plan.get("upload_mbps"),
+        rules=plan.get("rules", []),
+    )
 
 
 @router.post("/{device_id}/unblock-client", response_model=ClientBlockResult)

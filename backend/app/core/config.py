@@ -183,6 +183,13 @@ class Settings(BaseSettings):
     uisp_sync_interval_minutes: int = 1440  # 24 h
     uisp_request_timeout: int = 30
 
+    # LR subscription-plan sync (traffic-shaper rate caps read over SSH). The
+    # plan changes rarely, and the read is a per-LR SSH round-trip (bounded by
+    # lr_probe_concurrency), so a slow cadence is plenty. Runs once at scheduler
+    # startup too (next_run_time=now), and is triggerable on demand via POST
+    # /devices/plans/sync.
+    lr_plan_sync_interval_minutes: int = 2880  # 48 h
+
     # Credential conventions stamped on a device CREATED by the UISP sync.
     # Rocket password is per-site: {site} is the code extracted from the UISP
     # site name ("A2 SNDE" → "SNDE") → "A2SNDE@4321$A2". Switches need no creds

@@ -271,6 +271,10 @@ def _build_client_rows(
                     samples=dl_samples + ul_samples,
                     has_data=has_data,
                     first_sample_at=first_sample_at,
+                    # Plan cached on the LR row by lr_plan_service (no extra query
+                    # — lr is already loaded).
+                    plan_download_mbps=lr.plan_download_mbps,
+                    plan_upload_mbps=lr.plan_upload_mbps,
                 ),
             )
         )

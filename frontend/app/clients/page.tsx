@@ -20,6 +20,8 @@ type ClientConsumption = {
   samples: number
   has_data: boolean
   first_sample_at: string | null
+  plan_download_mbps: number | null
+  plan_upload_mbps: number | null
 }
 
 type RocketConsumption = {
@@ -73,6 +75,25 @@ function shortDate(iso: string): string {
   return new Date(iso).toLocaleDateString('fr-FR', {
     day: '2-digit', month: '2-digit', year: 'numeric',
   })
+}
+
+// Subscription plan (forfait) badge — rate caps cached from the LR's traffic
+// shaper. Plans are sold as round numbers; the firmware stores a small overhead
+// margin (e.g. 20200 kbit/s for a 20 Mbps plan), so we round to the nominal.
+function PlanBadge({ dl, ul }: { dl: number | null; ul: number | null }) {
+  if (dl == null && ul == null) return null
+  const fmt = (v: number | null) => (v == null ? '—' : String(Math.round(v)))
+  return (
+    <span
+      className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[10px] font-semibold whitespace-nowrap"
+      title="Forfait provisionné sur le LR (traffic shaper) — download / upload"
+    >
+      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+      </svg>
+      Forfait {fmt(dl)} / {fmt(ul)} Mbps
+    </span>
+  )
 }
 
 // Relative-share bar reused at every level.
@@ -373,6 +394,7 @@ function ClientsTable({ clients, isLifetime }: {
                   <td className="px-4 py-3">
                     <div className="text-slate-800 font-medium">{row.name}</div>
                     <div className="text-blue-300 font-mono text-[11px]"><IpLink ip={row.ip_address} /></div>
+                    <PlanBadge dl={row.plan_download_mbps} ul={row.plan_upload_mbps} />
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-700">
                     {row.has_data ? formatBytes(row.download_bytes) : <span className="text-blue-300">—</span>}

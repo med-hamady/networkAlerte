@@ -330,6 +330,11 @@ class LrRead(_DeviceBaseRead):
     client_block_enforced_at: datetime.datetime | None = None
     block_mode: str = "full"
     topology_mode: str = "unknown"  # "router" | "bridge" | "unknown"
+    # Subscription plan (forfait) cached from the LR's traffic shaper via SSH.
+    # None/None = never synced or no shaper on the device. Name is CRM-only.
+    plan_download_mbps: float | None = None
+    plan_upload_mbps: float | None = None
+    plan_synced_at: datetime.datetime | None = None
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs: Any) -> "LrRead":

@@ -205,6 +205,13 @@ class Settings(BaseSettings):
     uisp_sync_interval_minutes: int = 1440  # 24 h
     uisp_request_timeout: int = 30
 
+    # UISP site names to skip entirely. SEMICOLON-separated (not comma — UISP
+    # site names themselves contain commas, e.g. "Bureau, A2"), case-insensitive.
+    # Any device whose site matches is ignored by the sync — neither created nor
+    # updated. Use for office/LAN sites whose gear (a desk switch, etc.) is
+    # classified as infra but must not be supervised.
+    uisp_ignored_sites: str = ""
+
     # LR subscription-plan sync (traffic-shaper rate caps read over SSH). The
     # plan changes rarely, and the read is a per-LR SSH round-trip (bounded by
     # lr_probe_concurrency), so a slow cadence is plenty. Runs once at scheduler
@@ -222,6 +229,14 @@ class Settings(BaseSettings):
     uisp_power_api_password: str = "A2@uispp2025"
     uisp_af60_ssh_username: str = "ubnt"
     uisp_af60_ssh_password: str = "A2F60@4321"
+
+    @property
+    def uisp_ignored_site_set(self) -> set[str]:
+        """Normalised (lower/trimmed) set of UISP site names to skip.
+
+        Semicolon-separated because UISP site names contain commas ("Bureau, A2").
+        """
+        return {s.strip().lower() for s in self.uisp_ignored_sites.split(";") if s.strip()}
 
     # Client internet block — the enforcement job re-asserts the LAN-port
     # shutdown on every LR marked client_blocked, so a block survives an LR

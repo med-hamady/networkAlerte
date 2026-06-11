@@ -182,13 +182,22 @@ async def sync_uisp_devices(session: AsyncSession, *, dry_run: bool = False) -> 
         "created": 0,
         "updated": 0,
         "unchanged": 0,
-        "skipped": {"no_ip": 0, "no_name": 0, "type_conflict": 0, "ip_conflict": 0},
+        "skipped": {"no_ip": 0, "no_name": 0, "type_conflict": 0, "ip_conflict": 0, "ignored_site": 0},
         "by_type": {},
         "samples": {"create": [], "update": []},
     }
 
+    ignored_sites = settings.uisp_ignored_site_set
+
     for raw in raw_devices:
         ident = raw.get("identification") or {}
+        site_name = (ident.get("site") or {}).get("name")
+
+        # Operator-excluded site (office/LAN gear) → never create or update.
+        if site_name and site_name.strip().lower() in ignored_sites:
+            summary["skipped"]["ignored_site"] += 1
+            continue
+
         mapping = classify_device(ident.get("type"), ident.get("role"), ident.get("model"))
         if mapping is None:
             continue  # subscriber / out-of-scope — ignored silently (≈1000 rows)
@@ -197,7 +206,6 @@ async def sync_uisp_devices(session: AsyncSession, *, dry_run: bool = False) -> 
 
         ip = _strip_ip(raw.get("ipAddress"))
         name = ident.get("name") or ident.get("hostname") or ident.get("displayName")
-        site_name = (ident.get("site") or {}).get("name")
         mac_raw = ident.get("mac")
         try:
             mac = normalize_mac(mac_raw) if mac_raw else None

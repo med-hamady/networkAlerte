@@ -433,49 +433,6 @@ export function timeAgo(iso: string | null): string {
   return `il y a ${Math.floor(h / 24)}j`
 }
 
-// ─── Reporting types ────────────────────────────────────────────────────────
-
-export interface ReportPeriodSummary {
-  date_from: string
-  date_to: string
-}
-
-export interface DeviceReliability {
-  device_id: number
-  device_name: string
-  device_type: string
-  location: string | null
-  current_status: string
-  total_incidents: number
-  downtime_incidents: number
-  avg_resolution_minutes: number | null
-}
-
-export interface AlertTypeFrequency {
-  alert_type: string
-  alert_type_label: string
-  occurrence_count: number
-  affected_device_count: number
-  avg_resolution_minutes: number | null
-}
-
-export interface WeakPoint {
-  device_id: number
-  device_name: string
-  pattern_description: string
-  alert_type: string | null
-  occurrence_count: number
-}
-
-export interface Recommendation {
-  priority: string
-  category: string
-  title: string
-  description: string
-  affected_devices: string[]
-  alert_type: string | null
-}
-
 // ─── Bad installations (Liaisons clients) ──────────────────────────────────
 
 export type BadInstallationVerdict = 'suspect' | 'critical'
@@ -632,13 +589,4 @@ export interface DowntimeLogResponse {
   end: string
   merge_gap_seconds: number
   items: DeviceDowntime[]
-}
-
-export interface SupervisionReport {
-  generated_at: string
-  period: ReportPeriodSummary
-  device_reliability: DeviceReliability[]
-  alert_frequencies: AlertTypeFrequency[]
-  weak_points: WeakPoint[]
-  recommendations: Recommendation[]
 }

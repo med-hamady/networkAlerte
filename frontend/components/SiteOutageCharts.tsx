@@ -30,13 +30,28 @@ interface SiteAgg {
   devices: DeviceDowntime[]   // equipment that was down at least once
 }
 
-export default function SiteOutageCharts({ devices }: { devices: Device[] | undefined }) {
+export default function SiteOutageCharts({
+  devices,
+  startIso: startProp,
+  endIso: endProp,
+  periodLabel,
+}: {
+  devices: Device[] | undefined
+  // Optional explicit window. When omitted, defaults to the last 7 days
+  // (dashboard usage). The /reports page passes its selected date range.
+  startIso?: string
+  endIso?: string
+  periodLabel?: string
+}) {
   // 7-day window — recomputed once (stable enough; SWR refresh keeps data fresh).
   const { startIso, endIso } = useMemo(() => {
+    if (startProp && endProp) return { startIso: startProp, endIso: endProp }
     const end = new Date()
     const start = new Date(end.getTime() - WINDOW_DAYS * 24 * 3_600_000)
     return { startIso: start.toISOString(), endIso: end.toISOString() }
-  }, [])
+  }, [startProp, endProp])
+
+  const period = periodLabel ?? `${WINDOW_DAYS} derniers jours`
 
   const { data: log, isLoading } = useSWR<DowntimeLogResponse>(
     endpoints.downtimeLog(startIso, endIso), fetcher, { refreshInterval: REFRESH },
@@ -102,7 +117,7 @@ export default function SiteOutageCharts({ devices }: { devices: Device[] | unde
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <SiteOutageCard
         title="Nombre de pannes par site"
-        subtitle={`Épisodes de coupure — ${WINDOW_DAYS} derniers jours · cliquer un site pour le détail`}
+        subtitle={`Épisodes de coupure — ${period} · cliquer un site pour le détail`}
         sites={byPannes}
         valueOf={s => s.pannes}
         labelOf={s => `${s.pannes}`}
@@ -111,7 +126,7 @@ export default function SiteOutageCharts({ devices }: { devices: Device[] | unde
       />
       <SiteOutageCard
         title="Temps de panne par site"
-        subtitle={`Downtime cumulé — ${WINDOW_DAYS} derniers jours · cliquer un site pour le détail`}
+        subtitle={`Downtime cumulé — ${period} · cliquer un site pour le détail`}
         sites={byDowntime}
         valueOf={s => s.downtime}
         labelOf={s => fmtDuration(s.downtime)}

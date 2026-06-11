@@ -8,7 +8,6 @@ import type {
   DowntimeLogResponse,
   HealthResponse,
   Incident,
-  SupervisionReport,
   SystemInfo,
   Threshold,
 } from './types'
@@ -51,7 +50,6 @@ export const endpoints = {
   unblockClient:        (lrId: number) => `${API_BASE}/devices/${lrId}/unblock-client`,
   systemInfo:           `${API_BASE}/system/info`,
   testEmail:            `${API_BASE}/system/test-email`,
-  reportGenerate:       (params: string) => `${API_BASE}/reports/generate?${params}`,
   thresholds:           `${API_BASE}/system/thresholds`,
   badInstallations:     `${API_BASE}/lr-health/bad-installations`,
   siteLinks:            `${API_BASE}/lr-health/site-links`,
@@ -172,15 +170,6 @@ export async function updateDevice(
   return jsonOrThrow<Device>(res)
 }
 
-export async function generateReport(
-  dateFrom: string,
-  dateTo: string,
-): Promise<SupervisionReport> {
-  const params = new URLSearchParams({ date_from: dateFrom, date_to: dateTo })
-  const res = await fetch(endpoints.reportGenerate(params.toString()))
-  return jsonOrThrow<SupervisionReport>(res)
-}
-
 export async function createDevice(data: DeviceFormData): Promise<Device> {
   // Empty strings on optional text fields → null so Pydantic accepts them.
   const payload: Record<string, unknown> = { ...data }
@@ -264,6 +253,5 @@ export type {
   DowntimeLogResponse,
   HealthResponse,
   Incident,
-  SupervisionReport,
   SystemInfo,
 }

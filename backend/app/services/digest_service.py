@@ -23,10 +23,15 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.alert_constants import Severity
+from app.core.alert_constants import AlertChannel, Severity
 from app.models.device import Device
 from app.models.incident import Incident
-from app.services import alert_formatter, email_service, notification_service
+from app.services import (
+    alert_formatter,
+    email_service,
+    notification_service,
+    whatsapp_service,
+)
 from app.services.alert_policy import get_policy, get_policy_for_device
 
 logger = logging.getLogger(__name__)
@@ -90,7 +95,10 @@ def _channels_for_digest(
 
 async def _deliver_digest(target, items: list[tuple[Device, Incident]]) -> bool:
     """Send a single digest payload through one channel target."""
-    if target.kind == "email":
+    if target.kind == AlertChannel.WHATSAPP:
+        text = alert_formatter.format_digest_for_whatsapp(items)
+        return await whatsapp_service.send_whatsapp(text)
+    if target.kind == AlertChannel.EMAIL:
         subject, text_body, html_body = alert_formatter.format_digest_for_email(items)
         return await email_service.send_email(
             target.recipients, subject, text_body, html_body,

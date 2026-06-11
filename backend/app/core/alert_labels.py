@@ -26,6 +26,7 @@ from app.core.alert_constants import (
     AT_CINR_LOW,
     AT_CINR_UL_LOW,
     AT_CPE_DISCONNECTED,
+    AT_DEVICE_FLAPPING,
     AT_DEVICE_UNREACHABLE,
     AT_ETH0_DOWN,
     AT_HIGH_RX_TX_ERRORS,
@@ -81,6 +82,7 @@ ALERT_TYPE_LABELS: dict[str, str] = {
     AT_THROUGHPUT_ANOMALY:   "Anomalie de débit détectée",
     AT_LR_LINK_SUBSTANDARD:  "Lien client sous le seuil",
     AT_ROCKET_CLIENT_OVERLOAD: "Station de base saturée (trop de clients)",
+    AT_DEVICE_FLAPPING:      "Équipement instable (flapping répété)",
 
     # Radio quality UL (uplink — client → base)
     AT_CCQ_UL_LOW:           "Qualité de connexion côté client faible",

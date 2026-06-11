@@ -24,6 +24,7 @@ from sqlalchemy.exc import DBAPIError
 
 from app.core.alert_constants import (
     AT_AIRMAX_DOWN,
+    AT_DEVICE_FLAPPING,
     AT_LR_BRIDGE_MODE_MISCONFIG,
     AT_LR_LATENCY_HIGH,
     AT_LR_NO_TRANSIT,
@@ -56,6 +57,7 @@ from app.services import (
     discovery_service,
     email_service,
     incident_service,
+    lr_health_service,
     lr_plan_service,
     ltu_api_service,
     notification_service,
@@ -65,6 +67,7 @@ from app.services import (
     threshold_service,
     uisp_power_service,
     uisp_sync_service,
+    whatsapp_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -1990,6 +1993,166 @@ async def security_anomaly_detection_job() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Equipment flapping — > N availability incidents over a rolling window
+# ---------------------------------------------------------------------------
+
+@_timed_job
+async def flap_detection_job() -> None:
+    """Open a `device_flapping` incident for infra devices that keep bouncing.
+
+    A flapping device repeatedly goes down then recovers. Each down event is one
+    availability incident (rocket_down / switch_down / device_unreachable /
+    uisp_power_unreachable / airmax_down). Those rows are KEPT in DB after
+    resolution (the downtime journal needs them), so we can count, per device,
+    how many were detected over the last `flap_window_hours`. More than
+    `flap_threshold_24h` of them ⇒ unstable ⇒ open a critical incident (→
+    WhatsApp). Fewer again ⇒ resolve it.
+
+    Only infra devices accumulate availability incidents (an LR down is never an
+    incident), so this naturally never fires on a subscriber LR — and
+    is_suppressed_incident would drop it anyway.
+    """
+    settings = get_settings()
+    threshold = settings.flap_threshold_24h
+    window = datetime.timedelta(hours=settings.flap_window_hours)
+    since = datetime.datetime.now(datetime.UTC) - window
+
+    async with async_session_factory() as session:
+        try:
+            # Per-device count of availability incidents in the window.
+            count_res = await session.execute(
+                select(Incident.device_id, func.count().label("n"))
+                .where(
+                    Incident.alert_type.in_(AVAILABILITY_ALERT_TYPES),
+                    Incident.detected_at >= since,
+                )
+                .group_by(Incident.device_id)
+            )
+            counts: dict[int, int] = {row.device_id: row.n for row in count_res.all()}
+
+            # Devices that already have an open flapping incident — candidates to
+            # resolve when their count drops back to/under the threshold.
+            open_res = await session.execute(
+                select(Incident.device_id).where(
+                    Incident.alert_type == AT_DEVICE_FLAPPING,
+                    Incident.status == "open",
+                )
+            )
+            open_flapping: set[int] = {row.device_id for row in open_res.all()}
+
+            flapping_ids = {did for did, n in counts.items() if n > threshold}
+            to_resolve = open_flapping - flapping_ids
+            relevant = flapping_ids | to_resolve
+            if not relevant:
+                logger.debug("flap_detection: aucun équipement instable")
+                return
+
+            dev_res = await session.execute(
+                select(Device).where(Device.id.in_(relevant))
+            )
+            devices = {d.id: d for d in dev_res.scalars().all()}
+
+            for did in flapping_ids:
+                device = devices.get(did)
+                if device is None:
+                    continue
+                n = counts[did]
+                title = f"ALERTE CRITIQUE : équipement instable {device.name} (flapping)"
+                description = (
+                    f"{device.name} ({device.ip_address}) a connu {n} coupures "
+                    f"sur les dernières {settings.flap_window_hours} h "
+                    f"(seuil : {threshold}). Lien/alimentation instable à investiguer."
+                )
+                await _open_and_notify(
+                    session, device, title, "critical", description,
+                    alert_type=AT_DEVICE_FLAPPING,
+                )
+
+            for did in to_resolve:
+                device = devices.get(did)
+                if device is None:
+                    continue
+                await _resolve_and_notify(
+                    session, device,
+                    title=f"RECOVERY : {device.name} stabilisé (plus de flapping)",
+                    alert_type=AT_DEVICE_FLAPPING,
+                )
+
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+
+# ---------------------------------------------------------------------------
+# Network-wide high latency — share of client LRs above the latency threshold
+# ---------------------------------------------------------------------------
+
+# Crossed/cleared flag so the network-latency alert fires once when the share
+# crosses the threshold and once again on recovery — not every cycle. Module-
+# level and reset on restart (a restart re-arms the alert), mirroring the
+# in-memory _security_alerted_until / _failure_counts precedent.
+_network_latency_alerting: bool = False
+
+
+@_timed_job
+async def network_latency_aggregate_job() -> None:
+    """Alert (WhatsApp) when more than N% of client LRs have high latency.
+
+    Network-wide signal, not a per-device incident (an Incident needs a
+    device_id), so it bypasses the incident pipeline and sends WhatsApp directly.
+    Reuses lr_health_service.network_latency_summary (reads the latest
+    lr_latency_ms per UP LR via LATERAL — no live probing). Below
+    network_latency_min_sample readings the network is too small to judge → skip.
+    """
+    global _network_latency_alerting
+    settings = get_settings()
+    threshold_pct = settings.network_high_latency_pct
+    min_sample = settings.network_latency_min_sample
+
+    async with async_session_factory() as session:
+        summary = await lr_health_service.network_latency_summary(session)
+
+    total = int(summary["total"])
+    high = int(summary["high"])
+    pct = float(summary["pct"])
+    threshold_ms = float(summary["threshold_ms"])
+
+    if total < min_sample:
+        logger.debug(
+            "network_latency: échantillon trop faible (%d < %d) — pas d'évaluation",
+            total, min_sample,
+        )
+        return
+
+    if pct > threshold_pct and not _network_latency_alerting:
+        _network_latency_alerting = True
+        logger.warning(
+            "network_latency: %.0f%% des clients (%d/%d) ≥ %.0f ms — alerte WhatsApp",
+            pct, high, total, threshold_ms,
+        )
+        message = (
+            f"*🔴 CRITICAL — Latence réseau élevée*\n"
+            f"{pct:.0f}% des clients ({high}/{total}) ont une latence "
+            f"≥ {threshold_ms:.0f} ms vers Internet.\n"
+            f"Seuil d'alerte : {threshold_pct}% du parc."
+        )
+        await whatsapp_service.send_whatsapp(message)
+    elif pct <= threshold_pct and _network_latency_alerting:
+        _network_latency_alerting = False
+        logger.info(
+            "network_latency: retour à la normale — %.0f%% (%d/%d) sous le seuil",
+            pct, high, total,
+        )
+        message = (
+            f"*✅ RÉTABLI — Latence réseau normale*\n"
+            f"{pct:.0f}% des clients ({high}/{total}) au-dessus de "
+            f"{threshold_ms:.0f} ms — sous le seuil de {threshold_pct}%."
+        )
+        await whatsapp_service.send_whatsapp(message)
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -2156,6 +2319,22 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         # instead of waiting a full day.
         next_run_time=datetime.datetime.now(),
         max_instances=1, coalesce=True, misfire_grace_time=120,
+    )
+    scheduler.add_job(
+        flap_detection_job,
+        trigger="interval", minutes=settings.flap_check_interval_minutes,
+        id="flap_detection",
+        name="Equipment flapping detection (> N outages / window)",
+        replace_existing=True,
+        max_instances=1, coalesce=True, misfire_grace_time=120,
+    )
+    scheduler.add_job(
+        network_latency_aggregate_job,
+        trigger="interval", minutes=settings.network_latency_check_interval_minutes,
+        id="network_latency_aggregate",
+        name="Network-wide high-latency share (WhatsApp alert)",
+        replace_existing=True,
+        **safety,
     )
     if settings.client_block_enforcement_enabled:
         scheduler.add_job(

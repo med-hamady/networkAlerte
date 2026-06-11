@@ -38,9 +38,10 @@ class AlertChannel:
     """Notification channel identifiers used by alert policies."""
 
     EMAIL = "email"
+    WHATSAPP = "whatsapp"  # Ultramsg — current transport (replaces email)
 
 
-CHANNEL_VALUES: frozenset[str] = frozenset({AlertChannel.EMAIL})
+CHANNEL_VALUES: frozenset[str] = frozenset({AlertChannel.EMAIL, AlertChannel.WHATSAPP})
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +137,12 @@ AT_AF60_LINK_SUBSTANDARD = "af60_link_substandard" # consolidé : potentiel / ca
 # notification_service.notify_security_event.
 AT_SECURITY_ANOMALY = "security_anomaly"
 
+# Équipement instable (flapping) — un device d'infra qui enchaîne les cycles
+# down/up : flap_detection_job compte ses incidents de disponibilité sur les
+# dernières flap_window_hours et ouvre cet incident au-delà de flap_threshold_24h.
+# Critique. PAS un type de disponibilité (se résout/purge normalement).
+AT_DEVICE_FLAPPING = "device_flapping"
+
 # Charge / capacité de l'AP — un Rocket de base station dépasse le nombre de
 # clients qu'il peut servir correctement pour sa (famille radio × largeur de
 # canal). Incident critique quand clients connectés ≥ seuil (AP saturé). La
@@ -173,6 +180,7 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_AF60_LINK_DOWN, AT_AF60_SIGNAL_LOW, AT_AF60_SNR_LOW, AT_AF60_LINK_SUBSTANDARD,
     AT_SECURITY_ANOMALY,
     AT_ROCKET_CLIENT_OVERLOAD,
+    AT_DEVICE_FLAPPING,
 })
 
 

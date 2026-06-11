@@ -270,6 +270,31 @@ async def get_high_latency_clients(db: AsyncSession) -> HighLatencyResponse:
     )
 
 
+async def network_latency_summary(db: AsyncSession) -> dict[str, float | int]:
+    """Network-wide high-latency share across all UP client LRs.
+
+    Counts UP LRs that have a fresh ``lr_latency_ms`` reading (``total``) and how
+    many of those are at or above ``lr_latency_critical_ms`` (``high``), then the
+    percentage. Reuses :func:`_fetch_latest_latency` (LATERAL, no live probing).
+
+    Returns ``{total, high, pct, threshold_ms}``. ``pct`` is 0.0 when no LR has a
+    reading. The caller decides whether ``total`` is a large enough sample to act
+    on (``network_latency_min_sample``).
+    """
+    settings = await threshold_service.get_effective_settings(db, get_settings())
+    threshold = float(settings.lr_latency_critical_ms)
+
+    up_ids = (
+        await db.execute(select(Lr.id).where(Lr.status == "up"))
+    ).scalars().all()
+    latency = await _fetch_latest_latency(db, list(up_ids))
+
+    total = len(latency)
+    high = sum(1 for ms in latency.values() if ms >= threshold)
+    pct = (high / total * 100.0) if total else 0.0
+    return {"total": total, "high": high, "pct": pct, "threshold_ms": threshold}
+
+
 async def _fetch_latest_latency(
     db: AsyncSession,
     lr_ids: list[int],

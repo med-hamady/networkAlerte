@@ -32,6 +32,7 @@ from app.core.alert_constants import (
     AT_CINR_LOW,
     AT_CINR_UL_LOW,
     AT_CPE_DISCONNECTED,
+    AT_DEVICE_FLAPPING,
     AT_DEVICE_UNREACHABLE,
     AT_ETH0_DOWN,
     AT_HIGH_RX_TX_ERRORS,
@@ -81,9 +82,9 @@ class AlertPolicy:
 # Default channel sets
 # ---------------------------------------------------------------------------
 
-_CHANNELS_CRITICAL: tuple[str, ...] = (AlertChannel.EMAIL,)
-_CHANNELS_WARNING: tuple[str, ...] = (AlertChannel.EMAIL,)
-_CHANNELS_INFO: tuple[str, ...] = (AlertChannel.EMAIL,)
+_CHANNELS_CRITICAL: tuple[str, ...] = (AlertChannel.WHATSAPP,)
+_CHANNELS_WARNING: tuple[str, ...] = (AlertChannel.WHATSAPP,)
+_CHANNELS_INFO: tuple[str, ...] = (AlertChannel.WHATSAPP,)
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +311,7 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
         alert_type=AT_LR_DISCOVERED,
         severity=Severity.INFO,
         notify_immediately=False,
-        channels=(AlertChannel.EMAIL,),
+        channels=(AlertChannel.WHATSAPP,),
         groupable=False,
         recovery_notification=False,
     ),
@@ -318,7 +319,7 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
         alert_type=AT_LR_IP_CHANGED,
         severity=Severity.WARNING,
         notify_immediately=False,
-        channels=(AlertChannel.EMAIL,),
+        channels=(AlertChannel.WHATSAPP,),
         groupable=False,
         recovery_notification=False,
     ),
@@ -353,6 +354,15 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
         recovery_notification=False,
     ),
 
+    # --- Equipment flapping (critical, immediate) ----------------------------
+
+    AT_DEVICE_FLAPPING: AlertPolicy(
+        alert_type=AT_DEVICE_FLAPPING,
+        severity=Severity.CRITICAL,
+        notify_immediately=True,
+        channels=_CHANNELS_CRITICAL,
+    ),
+
     # --- Security (critical, immediate, no recovery) -------------------------
 
     AT_SECURITY_ANOMALY: AlertPolicy(
@@ -374,7 +384,7 @@ _FALLBACK_POLICY = AlertPolicy(
     alert_type="_unknown",
     severity=Severity.WARNING,
     notify_immediately=False,
-    channels=(AlertChannel.EMAIL,),
+    channels=(AlertChannel.WHATSAPP,),
     groupable=False,
     recovery_notification=True,
 )

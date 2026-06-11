@@ -1,13 +1,13 @@
 """
-Notification service — dispatch alerts via email.
+Notification service — dispatch alerts via WhatsApp (Ultramsg).
 
 Channel resolution:
-  Channels come exclusively from the env-based config
-  (SMTP_ENABLED + NOTIFICATION_EMAILS). SMTP credentials are taken from
-  settings.smtp_*.
+  WhatsApp REPLACES email as the transport. The channel is resolved from the
+  env-based config (WHATSAPP_ENABLED + WHATSAPP_INSTANCE_ID + WHATSAPP_TOKEN +
+  WHATSAPP_GROUP_ID); messages land in the configured WhatsApp group.
 
 Each candidate channel is then gated by the alert_policy: it only fires
-if `email` appears in policy.channels for the alert_type and the event
+if `whatsapp` appears in policy.channels for the alert_type and the event
 (opened/resolved) is allowed by the policy.
 
 Failure on one channel does not block the others. Returns True if at
@@ -27,6 +27,7 @@ from app.models.incident import Incident
 from app.services import (
     alert_formatter,
     email_service,
+    whatsapp_service,
 )
 from app.services.alert_policy import get_policy_for_device, should_notify
 
@@ -67,14 +68,14 @@ _consecutive_fail: dict[str, int] = {}
 # ---------------------------------------------------------------------------
 
 class _ChannelTarget:
-    """Single email delivery target resolved from a DB row or env fallback."""
+    """Single delivery target resolved from the env config."""
 
     __slots__ = ("kind", "label", "recipients")
 
     def __init__(self, kind: str, label: str, recipients: list[str]) -> None:
-        self.kind = kind          # always "email" today
+        self.kind = kind          # AlertChannel.WHATSAPP today
         self.label = label        # for logging
-        self.recipients = recipients
+        self.recipients = recipients  # unused for WhatsApp (single group target)
 
 
 # ---------------------------------------------------------------------------
@@ -82,19 +83,18 @@ class _ChannelTarget:
 # ---------------------------------------------------------------------------
 
 def _channels_from_env() -> list[_ChannelTarget]:
-    """Build the env-based channel list (current backward-compat behaviour)."""
+    """Build the env-based channel list — WhatsApp (Ultramsg group)."""
     settings = get_settings()
     targets: list[_ChannelTarget] = []
-    if settings.smtp_enabled and settings.notification_email_list:
+    if settings.whatsapp_configured:
         targets.append(_ChannelTarget(
-            "email", "env:SMTP",
-            recipients=list(settings.notification_email_list),
+            AlertChannel.WHATSAPP, "env:Ultramsg", recipients=[],
         ))
     return targets
 
 
 async def _resolve_channels() -> list[_ChannelTarget]:
-    """Resolve the active email channels from the env-based config."""
+    """Resolve the active notification channels from the env-based config."""
     return _channels_from_env()
 
 
@@ -109,7 +109,10 @@ async def _deliver(
     event: str,
 ) -> bool:
     """Send the alert through a single resolved channel target."""
-    if target.kind == "email":
+    if target.kind == AlertChannel.WHATSAPP:
+        text = alert_formatter.format_for_whatsapp(device, incident, event)
+        return await whatsapp_service.send_whatsapp(text)
+    if target.kind == AlertChannel.EMAIL:
         subject, text_body, html_body = alert_formatter.format_for_email(
             device, incident, event,
         )
@@ -237,12 +240,13 @@ async def notify_security_event(
     body_text: str,
     body_html: str | None = None,
 ) -> bool:
-    """Send a security/audit alert via configured email channels.
+    """Send a security/audit alert via the configured WhatsApp channel.
 
     Bypasses the Incident pipeline — security events are system-level (no
     device id) and must not depend on alert_policy gating. The per-delivery
-    timeout matches the incident path so a stalled SMTP cannot freeze the
-    detection job. Returns True if at least one channel delivered.
+    timeout matches the incident path so a stalled channel cannot freeze the
+    detection job. `body_html` is accepted for backward compatibility but
+    ignored (WhatsApp is plain text). Returns True if delivered.
     """
     targets = await _resolve_channels()
     if not targets:
@@ -252,13 +256,15 @@ async def notify_security_event(
             subject,
         )
         return False
+    # WhatsApp has no subject — fold it into the first (bold) line of the body.
+    message = f"*{subject}*\n{body_text}" if subject else body_text
     delivered = False
     for target in targets:
-        if target.kind != AlertChannel.EMAIL:
+        if target.kind != AlertChannel.WHATSAPP:
             continue
         try:
             ok = await asyncio.wait_for(
-                email_service.send_email(target.recipients, subject, body_text, body_html),
+                whatsapp_service.send_whatsapp(message),
                 timeout=_DELIVERY_TIMEOUT_S,
             )
         except TimeoutError:

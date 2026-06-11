@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.db.session import get_db
-from app.services import threshold_service
+from app.services import threshold_service, whatsapp_service
 from app.services.email_service import send_email
 
 logger = logging.getLogger(__name__)
@@ -209,3 +209,37 @@ async def test_email() -> dict[str, Any]:
 
     logger.info("Test email sent to %s", recipients)
     return {"status": "sent", "recipients": recipients, "smtp_host": settings.smtp_host}
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp diagnostic — send a test message to the configured group (Ultramsg)
+# ---------------------------------------------------------------------------
+
+@router.post("/test-whatsapp", summary="Send a test WhatsApp message to the configured group")
+async def test_whatsapp() -> dict[str, Any]:
+    """
+    Send a test message to the configured WhatsApp group via Ultramsg.
+    Returns 200 on delivery, 503 if WhatsApp is disabled/misconfigured or the
+    send fails.
+    """
+    settings = get_settings()
+
+    if not settings.whatsapp_enabled:
+        raise HTTPException(status_code=503, detail="WhatsApp is disabled (WHATSAPP_ENABLED=false)")
+    if not settings.whatsapp_instance_id or not settings.whatsapp_token:
+        raise HTTPException(status_code=503, detail="WhatsApp credentials missing (WHATSAPP_INSTANCE_ID / WHATSAPP_TOKEN)")
+    if not settings.whatsapp_group_id:
+        raise HTTPException(status_code=503, detail="WhatsApp group not configured (WHATSAPP_GROUP_ID is empty)")
+
+    body = (
+        "*[Network Supervisor] Test WhatsApp — configuration OK*\n"
+        f"Instance : {settings.whatsapp_instance_id}\n"
+        f"Groupe   : {settings.whatsapp_group_id}\n\n"
+        "Si vous recevez ce message, la configuration Ultramsg est correcte."
+    )
+    ok = await whatsapp_service.send_whatsapp(body)
+    if not ok:
+        raise HTTPException(status_code=503, detail="WhatsApp delivery failed — check logs for Ultramsg error details")
+
+    logger.info("Test WhatsApp sent to group %s", settings.whatsapp_group_id)
+    return {"status": "sent", "group": settings.whatsapp_group_id, "instance": settings.whatsapp_instance_id}

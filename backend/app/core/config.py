@@ -122,6 +122,28 @@ class Settings(BaseSettings):
         """Parse comma-separated notification_emails into a list."""
         return [e.strip() for e in self.notification_emails.split(",") if e.strip()]
 
+    # Notifications — WhatsApp via Ultramsg (https://ultramsg.com).
+    # WhatsApp REPLACES email as the notification transport: when enabled, the
+    # notification pipeline resolves a single WhatsApp target (the group below)
+    # instead of the SMTP target, and every infra incident lands there. The
+    # group id is a WhatsApp group chat id of the form "1203630xxxxxxx@g.us".
+    # email_service stays available only for the /system/test-email diagnostic.
+    whatsapp_enabled: bool = False
+    whatsapp_base_url: str = "https://api.ultramsg.com"
+    whatsapp_instance_id: str = ""   # ex: instance12345
+    whatsapp_token: str = ""         # Ultramsg instance token
+    whatsapp_group_id: str = ""      # ex: 1203630xxxxxxx@g.us
+
+    @property
+    def whatsapp_configured(self) -> bool:
+        """True only when every field needed to send a WhatsApp message is set."""
+        return bool(
+            self.whatsapp_enabled
+            and self.whatsapp_instance_id
+            and self.whatsapp_token
+            and self.whatsapp_group_id
+        )
+
     # SNMP (Ubiquiti airMAX / LTU)
     snmp_default_community: str = "public"
     snmp_port: int = 161
@@ -379,7 +401,7 @@ class Settings(BaseSettings):
     throughput_anomaly_min_mbps: float = 1.0    # ignore if EMA < this (nearly idle link)
 
     # Anomaly thresholds — UISP Power
-    battery_warning_pct: int = 25   # below → warning
+    battery_warning_pct: int = 30   # below → warning
     battery_critical_pct: int = 10  # below → critical
 
     # Security audit log — the FastAPI middleware records every mutating
@@ -418,6 +440,28 @@ class Settings(BaseSettings):
     device_metrics_retention_days: int = 90
     device_metrics_retention_interval_minutes: int = 360  # every 6 h
     device_metrics_retention_batch_size: int = 50_000
+
+    # Equipment flapping — flap_detection_job counts the availability incidents
+    # (rocket_down / switch_down / device_unreachable / uisp_power_unreachable /
+    # airmax_down) a device has accumulated over the last flap_window_hours. A
+    # device with more than flap_threshold_24h of them is unstable (repeated
+    # down/up) and opens a `device_flapping` incident → WhatsApp. Availability
+    # incidents are KEPT in DB after resolution (the downtime journal needs
+    # them), so the count is reconstructed straight from the incidents table.
+    flap_threshold_24h: int = 3
+    flap_window_hours: int = 24
+    flap_check_interval_minutes: int = 10
+
+    # Network-wide high latency — network_latency_aggregate_job computes the
+    # share of UP client LRs whose latest lr_latency_ms is at or above
+    # lr_latency_critical_ms. When more than network_high_latency_pct of them are
+    # affected (and the sample is at least network_latency_min_sample LRs, to
+    # avoid noise on a tiny network) it sends a single WhatsApp message — this is
+    # a network-wide signal, not a per-device incident, so it bypasses the
+    # incident pipeline. Anti-spam via an in-memory crossed/cleared flag.
+    network_high_latency_pct: int = 20
+    network_latency_min_sample: int = 10
+    network_latency_check_interval_minutes: int = 5
 
     @computed_field(repr=False)
     @property

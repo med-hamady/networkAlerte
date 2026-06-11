@@ -63,8 +63,9 @@ backend/app/
 │   ├── device_service.py           # CRUD devices
 │   ├── poller.py                   # Ping ICMP async (asyncio subprocess)
 │   ├── incident_service.py         # Création/résolution/déduplication d'incidents
-│   ├── notification_service.py     # Envoi des notifications email (canaux résolus depuis l'env SMTP uniquement)
-│   ├── email_service.py            # Envoi SMTP HTML + plain text
+│   ├── notification_service.py     # Dispatch des notifications — canal résolu depuis l'env : **WhatsApp (Ultramsg) REMPLACE l'email**. _deliver / digest / security routent vers WhatsApp
+│   ├── whatsapp_service.py         # Envoi WhatsApp via Ultramsg (POST /{instance}/messages/chat → groupe WHATSAPP_GROUP_ID). httpx async, jamais raise (False sur échec)
+│   ├── email_service.py            # Envoi SMTP HTML + plain text — gardé UNIQUEMENT pour le diagnostic /system/test-email (hors pipeline d'alerting)
 │   ├── snmp_service.py             # SNMP : LTU radio (ath0/eth0) + Switch (ports 1..N)
 │   ├── uisp_power_service.py       # API REST UISP Power (voltage, current, batterie)
 │   ├── ltu_api_service.py          # API HTTP LTU Rocket (signal, CCQ, CINR, CPE peers)
@@ -149,6 +150,11 @@ backend/app/
 | `SMTP_PASSWORD` | Mot de passe SMTP |
 | `SMTP_FROM` | Adresse expéditeur |
 | `SMTP_TO` | Destinataire(s) emails |
+| `WHATSAPP_ENABLED` | Active le canal WhatsApp (Ultramsg) qui **remplace l'email** comme transport d'alerting (défaut `false`) |
+| `WHATSAPP_BASE_URL` | URL de base Ultramsg (défaut `https://api.ultramsg.com`) |
+| `WHATSAPP_INSTANCE_ID` | Id d'instance Ultramsg (ex. `instance12345`) |
+| `WHATSAPP_TOKEN` | Token de l'instance Ultramsg |
+| `WHATSAPP_GROUP_ID` | Id du **groupe** WhatsApp destinataire (forme `1203630xxxxxxx@g.us`) |
 | `WARNING_DIGEST_MINUTES` | Intervalle digest warnings (défaut 15 min) |
 | `DEVICE_METRICS_RETENTION_DAYS` | Fenêtre de rétention des `device_metrics` historiques (défaut 90 j ; couvre les matviews conso 30 j avec marge — seuls les compteurs bytes sont encore historisés) |
 | `DEVICE_METRICS_RETENTION_INTERVAL_MINUTES` | Intervalle du `device_metrics_retention_job` (défaut 360 = 6 h) |
@@ -169,8 +175,14 @@ backend/app/
 | `CINR_WARN_DB` | Seuil CINR warning (défaut 20 dB) |
 | `CINR_CRIT_DB` | Seuil CINR critical (défaut 10 dB) |
 | `CINR_TOLERANCE_DB` | Bande d'hystérésis CINR DL+UL — ouvre à `seuil − tol`, résout au seuil nominal (défaut 3 dB ; 0 = strict) |
-| `BATTERY_WARNING_PCT` | Seuil batterie warning (défaut 25%) |
+| `BATTERY_WARNING_PCT` | Seuil batterie warning (défaut **30%**) |
 | `BATTERY_CRITICAL_PCT` | Seuil batterie critical (défaut 10%) |
+| `FLAP_THRESHOLD_24H` | Coupures (incidents de dispo) au-delà desquelles un device est jugé instable → `device_flapping` (défaut 3) |
+| `FLAP_WINDOW_HOURS` | Fenêtre glissante de comptage du flapping (défaut 24 h) |
+| `FLAP_CHECK_INTERVAL_MINUTES` | Intervalle du `flap_detection_job` (défaut 10 min) |
+| `NETWORK_HIGH_LATENCY_PCT` | % de clients (LR up) en latence élevée au-delà duquel `network_latency_aggregate_job` alerte sur WhatsApp (défaut 20) |
+| `NETWORK_LATENCY_MIN_SAMPLE` | Taille d'échantillon minimale (LR avec relevé) avant d'évaluer la latence réseau (défaut 10) |
+| `NETWORK_LATENCY_CHECK_INTERVAL_MINUTES` | Intervalle du `network_latency_aggregate_job` (défaut 5 min) |
 | `CLIENT_BLOCK_ENFORCEMENT_ENABLED` | Active le job qui ré-applique le blocage client (défaut true) |
 | `CLIENT_BLOCK_ENFORCE_INTERVAL` | Intervalle de ré-application du blocage client en secondes (défaut 120) |
 | `CLIENT_BLOCK_DEFAULT_MODE` | Mode de blocage par défaut : `full` (coupure totale) ou `whatsapp_only` (défaut `full`) |
@@ -218,7 +230,7 @@ backend/app/
 - [x] **Digest warnings** — `digest_service.py` + `warning_digest_job` (regroupement 15 min)
 - [x] **Auto-découverte LTU LR** — le job LTU API lit les CPE peers du Rocket et établit la hiérarchie parent/enfant automatiquement
 - [x] **Authentification API** — API key via header `X-API-Key` (`app/api/deps.py`)
-- [x] **Notifications email — env-only** — depuis le 2026-06-09 les canaux sont résolus **uniquement** depuis l'env SMTP (`SMTP_ENABLED` + `NOTIFICATION_EMAILS`). La table `notification_channels` et son CRUD (`/notification-channels`) ont été **supprimés**. Le registre `alert_policy.py` reste **interne** (politique groupable/recovery/immédiat/canal par alert_type) mais n'est plus exposé en API (`/alert-policies` supprimé). Diagnostic SMTP via `POST /api/v1/system/test-email`.
+- [x] **Notifications — WhatsApp (Ultramsg) remplace l'email** — depuis le 2026-06-11 le canal résolu depuis l'env est **WhatsApp** (`WHATSAPP_ENABLED` + `WHATSAPP_INSTANCE_ID` + `WHATSAPP_TOKEN` + `WHATSAPP_GROUP_ID`) : tout le pipeline d'incidents (immédiat + digest + sécurité) part vers le **groupe WhatsApp** via `whatsapp_service` (`POST /{instance}/messages/chat` Ultramsg). `email_service` n'est plus dans le pipeline — gardé **uniquement** pour le diagnostic `POST /api/v1/system/test-email`. Diagnostic WhatsApp : `POST /api/v1/system/test-whatsapp`. Le registre `alert_policy.py` reste interne ; ses jeux de canaux pointent tous sur `AlertChannel.WHATSAPP`. (Historique 2026-06-09 : avant WhatsApp, l'email était env-only `SMTP_ENABLED`+`NOTIFICATION_EMAILS` ; `notification_channels`/`/notification-channels` et `/alert-policies` supprimés.)
 - [x] **Formatage des alertes** — `alert_formatter.py` (messages email contextualisés par type)
 - [x] **API incidents** — `GET/PATCH /api/v1/incidents` (filtres status/severity/device_id/alert_type)
 - [x] **Résolution = suppression** — pas d'archive : à la résolution, `incident_service.resolve_incidents` **hard-delete** l'incident. **Exception** : les types de **disponibilité** (`AVAILABILITY_ALERT_TYPES` dans `alert_constants` = `rocket_down`, `switch_down`, `device_unreachable`, `uisp_power_unreachable`, `airmax_down`) sont conservés en `status=resolved` car le **Journal des coupures** (`network_uptime_service`) reconstruit l'historique + la dispo % depuis leur `resolved_at`. La notification de résolution part quand même pour les incidents purgés (objets encore en mémoire). La page `/incidents/archive` et le lien sidebar ont été supprimés.
@@ -242,6 +254,8 @@ backend/app/
 | `client_consumption_7d_refresh_job` | 15 min | `REFRESH MATERIALIZED VIEW CONCURRENTLY client_consumption_7d` — même pattern que le matview 30 j mais borné à 7 j. La période 7 j à elle seule clockait ~13 s sur le live SQL (seq scan + external sort 30 MB) ; le matview la fait passer à <100 ms. Matview séparé car l'agrégat 30 j est un seul SUM qui ne peut pas être soustrait à une fenêtre plus étroite. 24h reste en SQL live (true rolling window, ~2 s acceptable) ; lifetime aussi (sera adressé via la rétention 90 j). |
 | `device_metrics_retention_job` | 6 h | Purge `device_metrics` plus vieux que `DEVICE_METRICS_RETENTION_DAYS` (défaut 90 j) en **batches** (`DELETE … WHERE id IN (SELECT id … LIMIT n)`, boucle jusqu'à épuisement) — jamais une grosse transaction (cf. leçon `u2a3b4c5d6e7`). Seules les métriques de `HISTORY_METRICS` accumulent encore des lignes ; le reste est déjà collapsé par `persist_device_metrics`. Crée aussi `ix_device_metrics_collected_at` via `CREATE INDEX CONCURRENTLY IF NOT EXISTS` (dans le scheduler, hors path de démarrage — cf. no-op `w4c5d6e7f8a9`) pour que la purge soit un index range scan. |
 | `uisp_sync_job` | `UISP_SYNC_INTERVAL_MINUTES` (24 h) + **1× au démarrage** (`next_run_time=now` → import dès le déploiement) | **Désactivé par défaut** (`UISP_SYNC_ENABLED=false`). Importe les équipements d'**infra** (Rocket LTU/airMAX role=ap, switches `uisps`/blackBox, UISP Power `uispp`, AF60* P2P) depuis `GET /nms/api/v2.1/devices` du contrôleur UISP. Mapping `classify_device(type, role, model)` ; identité = **MAC** (sinon IP, sinon (type,nom)). Met à jour **name/IP/site(location)** ; pose les **creds par convention famille/site à la création** (jamais d'écrasement). **Abonnés (LTU-LR/LiteBeam station) ignorés** (auto-découverte CPE), **aucun delete/deactivate**. Voir `uisp_sync_service`. |
+| `flap_detection_job` | `FLAP_CHECK_INTERVAL_MINUTES` (10 min) | Détecte les équipements d'**infra instables** (flapping). Compte par device les **incidents de disponibilité** (`AVAILABILITY_ALERT_TYPES`, conservés en DB après résolution) avec `detected_at` sur les dernières `FLAP_WINDOW_HOURS` ; au-delà de `FLAP_THRESHOLD_24H` (3) → ouvre `device_flapping` (critique → WhatsApp), résout sinon. Infra-only par nature (un LR down n'est jamais un incident). |
+| `network_latency_aggregate_job` | `NETWORK_LATENCY_CHECK_INTERVAL_MINUTES` (5 min) | Signal **réseau-wide** : part des LR `up` dont le dernier `lr_latency_ms` ≥ seuil latence (`lr_health_service.network_latency_summary`, réutilise `_fetch_latest_latency`). Si > `NETWORK_HIGH_LATENCY_PCT` (20%) et échantillon ≥ `NETWORK_LATENCY_MIN_SAMPLE` (10) → **message WhatsApp direct** (PAS un incident : un Incident exige un device_id). Anti-spam par flag in-memory `_network_latency_alerting` (1 msg au franchissement + 1 au rétablissement). |
 
 #### Politique device_metrics (history vs latest) — `persist_device_metrics` dans `jobs.py`
 Tous les jobs de polling persistent leurs métriques via `persist_device_metrics(session, device_id, metrics, unit_map)`. Règle unique : si le `metric_name` est dans `HISTORY_METRICS`, on **empile** une ligne par cycle (série temporelle conservée) ; sinon on **écrase en place** (1 ligne par `(device_id, metric_name)` via DELETE+INSERT). `HISTORY_METRICS` = les **seules** métriques relues comme série par un consommateur, c.-à-d. **uniquement les compteurs bytes** :
@@ -264,7 +278,7 @@ La page `/incidents` ne montre que les incidents **d'infrastructure**. Les incid
 
 Conséquence : plus aucune notification ni ligne `alerts` pour les alertes client (signal/ccq/cinr/capacity sur LR, `lr_link_substandard`, `lr_no_transit`, `lr_latency_high`, `lr_discovered`/`lr_ip_changed`/`lr_reassigned`, `cpe_disconnected`). Les jobs continuent de sonder les LR (latence/transit/SSH) et d'incrémenter leurs `AlertState` ; seul l'incident final est court-circuité.
 
-### 25 Alert types
+### 26 Alert types
 | Catégorie | alert_type | Déclencheur |
 |---|---|---|
 | Disponibilité | `rocket_down` | Ping LTU Rocket échoue ×3 |
@@ -281,8 +295,9 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | Performance | `high_rx_tx_errors` | Taux d'erreurs delta > seuil |
 | Performance | `throughput_anomaly` | Débit < EMA × facteur (détection anomalie) |
 | Charge AP | `rocket_client_overload` | Rocket de base station saturé : clients connectés ≥ seuil. Seuil = **formule** par famille : base à 10 MHz + `rocket_overload_clients_per_10mhz` (défaut 5) clients par tranche de +10 MHz. Bases : LTU 15, airMAX 10 (configurables, page Seuils). Donc LTU 10→15 / 20→20 / 30→25… ; airMAX 10→10 / 20→15 / 40→25… Largeur auto-détectée en direct (arrondie au multiple de 10 MHz) : LTU via API `wireless.radios[0].channelWidth.tx`, airMAX via airOS `status.cgi` `wireless.chanbw` (lu dans `snmp_poll_job`, requiert les creds airOS sur la fiche). Clients = `len(all_peers)` (LTU) / stations SNMP `airmax_peers` (airMAX). Largeur < 10 MHz → pas de seuil → pas d'incident. Critique, anti-flap 3 cycles |
+| Disponibilité | `device_flapping` | Équipement d'infra qui flappe : > `FLAP_THRESHOLD_24H` (3) incidents de disponibilité sur `FLAP_WINDOW_HOURS` (24 h). Critique. **Pas** un type de disponibilité (se résout/purge normalement). `flap_detection_job` |
 | Power | `uisp_power_unreachable` | API UISP Power injoignable |
-| Power | `battery_low_warning` | Batterie < 25% |
+| Power | `battery_low_warning` | Batterie < 30% |
 | Power | `battery_low_critical` | Batterie < 10% |
 | Power | `voltage_anomaly` | Voltage < 20 V ou > 56 V |
 | Switch | `switch_port_down` | Port switch connecté au Rocket = DOWN |
@@ -311,6 +326,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | GET | `/api/v1/incidents/{id}` | Oui | Détail incident — lecture seule |
 | GET | `/api/v1/system` | Oui | Infos système (version, uptime scheduler) |
 | POST | `/api/v1/system/test-email` | Oui | Diagnostic SMTP — envoie un email de test aux `NOTIFICATION_EMAILS` |
+| POST | `/api/v1/system/test-whatsapp` | Oui | Diagnostic WhatsApp (Ultramsg) — envoie un message de test au groupe `WHATSAPP_GROUP_ID` |
 | POST | `/api/v1/uisp/sync` | Oui | Import des équipements d'infra depuis le contrôleur UISP (`?dry_run=true` = prévisualisation sans écriture). Renvoie un résumé (créés/màj/ignorés + échantillon) |
 | GET | `/api/v1/network-capacity` | Oui | Capacité clients : par famille (LTU/airMAX) et par site, clients connectés (`peer_count`) vs max (seuil `rocket_client_overload`). Rockets sans largeur connue exclus des totaux (`unknown`). `network_capacity_service` |
 

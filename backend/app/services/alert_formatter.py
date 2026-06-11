@@ -228,6 +228,24 @@ def _email_html_resolved(device: Device, incident: Incident) -> str:
 </html>"""
 
 
+def format_for_whatsapp(
+    device: Device,
+    incident: Incident,
+    event: str = NotificationEvent.OPENED,
+) -> str:
+    """Return a single text block for the WhatsApp channel.
+
+    Reuses format_human_readable (already French + emoji, no HTML) and wraps the
+    first line — the severity/alert title — in WhatsApp bold markdown (*...*) so
+    it stands out in the group chat. No subject line: WhatsApp messages have no
+    subject, the first line is the headline.
+    """
+    body = format_human_readable(device, incident, event)
+    head, _, rest = body.partition("\n")
+    head = f"*{head}*"
+    return f"{head}\n{rest}" if rest else head
+
+
 def format_for_email(
     device: Device,
     incident: Incident,
@@ -330,3 +348,8 @@ def format_digest_for_email(
     """Return (subject, plain_text_body, html_body) for a warning digest email."""
     subject = f"[WARNINGS] {len(items)} alerte(s) actives — Network Supervisor"
     return subject, _digest_text_body(items), _digest_html_body(items)
+
+
+def format_digest_for_whatsapp(items: list[tuple[Device, Incident]]) -> str:
+    """Return a single text block for a warning digest sent over WhatsApp."""
+    return _digest_text_body(items)

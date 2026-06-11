@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
-import type { Device, DeviceDowntime, DowntimeEpisode, DowntimeLogResponse } from '@/lib/types'
+import type { Device, DeviceDowntime, DowntimeLogResponse } from '@/lib/types'
 import { deviceTypeLabel } from '@/lib/types'
 
 const SITE_FALLBACK = 'Sans site'
@@ -21,13 +21,6 @@ function fmtDuration(secs: number): string {
   const h = Math.floor(secs / 3_600)
   const m = Math.round((secs % 3_600) / 60)
   return m === 0 ? `${h}h` : `${h}h ${m.toString().padStart(2, '0')}min`
-}
-
-function fmtDateTime(iso: string): string {
-  return new Date(iso).toLocaleString('fr-FR', {
-    day: '2-digit', month: '2-digit',
-    hour: '2-digit', minute: '2-digit',
-  })
 }
 
 interface SiteAgg {
@@ -113,6 +106,7 @@ export default function SiteOutageCharts({ devices }: { devices: Device[] | unde
         sites={byPannes}
         valueOf={s => s.pannes}
         labelOf={s => `${s.pannes}`}
+        deviceLabelOf={d => `${d.episodes_count} panne${d.episodes_count > 1 ? 's' : ''}`}
         barClass="bg-red-400"
       />
       <SiteOutageCard
@@ -121,6 +115,7 @@ export default function SiteOutageCharts({ devices }: { devices: Device[] | unde
         sites={byDowntime}
         valueOf={s => s.downtime}
         labelOf={s => fmtDuration(s.downtime)}
+        deviceLabelOf={d => fmtDuration(d.total_downtime_seconds)}
         barClass="bg-orange-400"
       />
     </div>
@@ -128,13 +123,14 @@ export default function SiteOutageCharts({ devices }: { devices: Device[] | unde
 }
 
 function SiteOutageCard({
-  title, subtitle, sites, valueOf, labelOf, barClass,
+  title, subtitle, sites, valueOf, labelOf, deviceLabelOf, barClass,
 }: {
   title: string
   subtitle: string
   sites: SiteAgg[]
   valueOf: (s: SiteAgg) => number
   labelOf: (s: SiteAgg) => string
+  deviceLabelOf: (d: DeviceDowntime) => string
   barClass: string
 }) {
   const [openSite, setOpenSite] = useState<string | null>(null)
@@ -183,7 +179,7 @@ function SiteOutageCard({
                   </div>
                 </button>
 
-                {isOpen && <SiteDeviceList devices={s.devices} />}
+                {isOpen && <SiteDeviceList devices={s.devices} labelOf={deviceLabelOf} />}
               </div>
             )
           })}
@@ -193,54 +189,30 @@ function SiteOutageCard({
   )
 }
 
-// Equipment of one site that was down at least once, each with its downtime
-// total and the individual outage episodes (start → end · duration).
-function SiteDeviceList({ devices }: { devices: DeviceDowntime[] }) {
+// Equipment of one site that was down at least once. Only the per-device total
+// (panne count or downtime, depending on the card) — no per-episode detail.
+function SiteDeviceList({
+  devices, labelOf,
+}: {
+  devices: DeviceDowntime[]
+  labelOf: (d: DeviceDowntime) => string
+}) {
   return (
-    <div className="ml-7 mr-2 mt-1 mb-2 space-y-2 border-l-2 border-blue-100 pl-3">
+    <div className="ml-7 mr-2 mt-1 mb-2 space-y-1 border-l-2 border-blue-100 pl-3">
       {devices.map(d => (
-        <div key={d.device_id} className="text-xs">
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-slate-800 truncate">{d.device_name}</span>
-            <span className="text-blue-300 font-mono text-[10px]">{d.device_ip}</span>
-            <span className="text-slate-400">· {deviceTypeLabel(d.device_type)}</span>
-            {d.current_status === 'down' && (
-              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">
-                ENCORE DOWN
-              </span>
-            )}
-            <span className="ml-auto shrink-0 font-semibold text-slate-700 tabular-nums">
-              {fmtDuration(d.total_downtime_seconds)}
+        <div key={d.device_id} className="flex items-center gap-2 text-xs">
+          <span className="font-medium text-slate-800 truncate">{d.device_name}</span>
+          <span className="text-slate-400 shrink-0">· {deviceTypeLabel(d.device_type)}</span>
+          {d.current_status === 'down' && (
+            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">
+              ENCORE DOWN
             </span>
-          </div>
-          <div className="text-[11px] text-slate-500 mt-0.5">
-            {d.episodes_count} épisode{d.episodes_count > 1 ? 's' : ''} · disponibilité {d.availability_pct.toFixed(2)} %
-          </div>
-          <ul className="mt-1 space-y-0.5">
-            {d.episodes.map(ep => <EpisodeLine key={ep.incident_id} episode={ep} />)}
-          </ul>
+          )}
+          <span className="ml-auto shrink-0 font-semibold text-slate-700 tabular-nums">
+            {labelOf(d)}
+          </span>
         </div>
       ))}
     </div>
-  )
-}
-
-function EpisodeLine({ episode: ep }: { episode: DowntimeEpisode }) {
-  const dotCls = ep.severity === 'critical' ? 'bg-red-500' : 'bg-amber-400'
-  return (
-    <li className="flex items-center gap-2 text-[11px] text-slate-600">
-      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotCls}`} />
-      <span>
-        {fmtDateTime(ep.started_at)}
-        {' → '}
-        {ep.is_ongoing
-          ? <span className="text-red-600 font-semibold">en cours</span>
-          : fmtDateTime(ep.ended_at!)}
-        <span className="text-slate-400"> · {fmtDuration(ep.duration_seconds)}</span>
-        {ep.flap_count > 1 && (
-          <span className="ml-1 text-orange-600 font-semibold">⚡ instable ×{ep.flap_count}</span>
-        )}
-      </span>
-    </li>
   )
 }

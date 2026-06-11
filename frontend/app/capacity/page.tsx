@@ -3,8 +3,12 @@
 import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
-import type { CapacityBucket, NetworkCapacity, SiteCapacity } from '@/lib/types'
+import type { CapacityBucket, NetworkCapacity, RocketCapacity, SiteCapacity } from '@/lib/types'
 import CapacityDonut from '@/components/CapacityDonut'
+
+// Un Rocket saturé = la même ligne que dans le drill-down, + le site auquel il
+// appartient (perdu dans le nesting par site, ré-attaché ici pour la liste plate).
+type SaturatedRocket = RocketCapacity & { site: string }
 
 // Couleurs par famille (utilisé / disponible) — mêmes teintes que les donuts.
 const FAMILY = {
@@ -28,6 +32,23 @@ export default function CapacityPage() {
     () => sites.reduce((m, s) => Math.max(m, s.ltu.capacity, s.airmax.capacity), 0),
     [sites],
   )
+
+  // Rockets saturés : connectés ≥ max (le critère exact de rocket_client_overload).
+  // Capacité indéterminée (max_clients null) = jamais saturé. Trié du plus
+  // surchargé au moins (ratio connectés/max décroissant).
+  const saturatedRockets = useMemo<SaturatedRocket[]>(() => {
+    const out: SaturatedRocket[] = []
+    for (const s of sites) {
+      for (const r of s.rockets) {
+        if (r.max_clients != null && r.max_clients > 0 && r.current_clients >= r.max_clients) {
+          out.push({ ...r, site: s.site })
+        }
+      }
+    }
+    return out.sort(
+      (a, b) => b.current_clients / b.max_clients! - a.current_clients / a.max_clients!,
+    )
+  }, [sites])
 
   if (error) {
     return <p className="text-red-600 text-sm">Erreur de chargement de la capacité réseau.</p>
@@ -84,6 +105,12 @@ export default function CapacityPage() {
             />
           </div>
 
+          {/* Rockets saturés */}
+          <SaturatedRocketsSection
+            rockets={saturatedRockets}
+            onSelectSite={setSelectedSite}
+          />
+
           {/* Barres par site */}
           <div className="bg-white border border-blue-100 rounded-xl shadow-sm p-5">
             <div className="mb-4">
@@ -128,6 +155,57 @@ export default function CapacityPage() {
 
       {/* Drill-down : Rockets du site */}
       {siteObj != null && <SiteRocketsTable site={siteObj} />}
+    </div>
+  )
+}
+
+function SaturatedRocketsSection({
+  rockets, onSelectSite,
+}: { rockets: SaturatedRocket[]; onSelectSite: (site: string) => void }) {
+  return (
+    <div className="bg-white border border-red-100 rounded-xl shadow-sm p-5">
+      <div className="mb-4 flex items-center gap-2">
+        <span className="inline-block w-2.5 h-2.5 rounded-full bg-red-500" />
+        <h3 className="font-semibold text-blue-900">Rockets saturés</h3>
+        <span className="text-xs font-semibold text-red-600 bg-red-50 border border-red-200 rounded-full px-2 py-0.5 tabular-nums">
+          {rockets.length}
+        </span>
+        <p className="text-xs text-blue-400 ml-1">
+          Clients connectés ≥ maximum — capacité atteinte ou dépassée.
+        </p>
+      </div>
+      {rockets.length === 0 ? (
+        <p className="py-6 text-center text-slate-400 text-sm">Aucun Rocket saturé. 🎉</p>
+      ) : (
+        <div className="space-y-2 max-h-[24rem] overflow-y-auto pr-1">
+          {rockets.map(r => {
+            const fam = FAMILY[r.family]
+            const pct = Math.round((r.current_clients / r.max_clients!) * 100)
+            return (
+              <button
+                key={r.id}
+                onClick={() => onSelectSite(r.site)}
+                className="w-full text-left flex items-center gap-3 rounded-lg px-2 py-2 hover:bg-red-50 transition-colors"
+              >
+                <span className="inline-block w-2.5 h-2.5 shrink-0 rounded-sm" style={{ background: fam.used }} title={fam.label} />
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-slate-800 truncate" title={r.name}>{r.name}</div>
+                  <div className="text-[11px] text-blue-400 truncate">
+                    {r.site} · {fam.label}
+                    {r.channel_width_mhz != null ? ` · ${Math.round(r.channel_width_mhz)} MHz` : ''}
+                  </div>
+                </div>
+                <span className="shrink-0 text-sm font-bold text-red-600 tabular-nums">
+                  {r.current_clients} / {r.max_clients}
+                </span>
+                <span className="w-12 shrink-0 text-right text-xs font-semibold text-red-500 tabular-nums">
+                  {pct}%
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

@@ -1999,11 +1999,15 @@ async def flap_detection_job() -> None:
 
     A flapping device repeatedly goes down then recovers. Each down event is one
     availability incident (rocket_down / switch_down / device_unreachable /
-    uisp_power_unreachable / airmax_down). Those rows are KEPT in DB after
-    resolution (the downtime journal needs them), so we can count, per device,
-    how many were detected over the last `flap_window_hours`. More than
-    `flap_threshold_24h` of them ⇒ unstable ⇒ open a critical incident (→
-    WhatsApp). Fewer again ⇒ resolve it.
+    airmax_down). Those rows are KEPT in DB after resolution (the downtime
+    journal needs them), so we can count, per device, how many were detected over
+    the last `flap_window_hours`. More than `flap_threshold_24h` of them ⇒
+    unstable ⇒ open a critical incident (→ WhatsApp). Fewer again ⇒ resolve it.
+
+    **UISP Power devices are excluded** : they naturally go up/down on mains
+    (SOMELEC) outages, which is expected and already covered by mains_power_lost
+    — counting that as "flapping" would be noise. Only the other infra equipment
+    (Rockets, switches…) is evaluated.
 
     Only infra devices accumulate availability incidents (an LR down is never an
     incident), so this naturally never fires on a subscriber LR — and
@@ -2017,11 +2021,15 @@ async def flap_detection_job() -> None:
     async with async_session_factory() as session:
         try:
             # Per-device count of availability incidents in the window.
+            # UISP Power excluded (device_type=="uisp_power") — their mains-outage
+            # up/down cycles are expected, not equipment instability.
             count_res = await session.execute(
                 select(Incident.device_id, func.count().label("n"))
+                .join(Device, Device.id == Incident.device_id)
                 .where(
                     Incident.alert_type.in_(AVAILABILITY_ALERT_TYPES),
                     Incident.detected_at >= since,
+                    Device.device_type != "uisp_power",
                 )
                 .group_by(Incident.device_id)
             )

@@ -2093,24 +2093,22 @@ async def flap_detection_job() -> None:
 # Network-wide high latency — share of client LRs above the latency threshold
 # ---------------------------------------------------------------------------
 
-# Crossed/cleared flag so the network-latency alert fires once when the share
-# crosses the threshold and once again on recovery — not every cycle. Module-
-# level and reset on restart (a restart re-arms the alert), mirroring the
-# in-memory _security_alerted_until / _failure_counts precedent.
-_network_latency_alerting: bool = False
-
-
 @_timed_job
 async def network_latency_aggregate_job() -> None:
-    """Alert (WhatsApp) when more than N% of client LRs have high latency.
+    """Daily check (WhatsApp) when more than N% of client LRs have high latency.
 
-    Network-wide signal, not a per-device incident (an Incident needs a
-    device_id), so it bypasses the incident pipeline and sends WhatsApp directly.
-    Reuses lr_health_service.network_latency_summary (reads the latest
-    lr_latency_ms per UP LR via LATERAL — no live probing). Below
-    network_latency_min_sample readings the network is too small to judge → skip.
+    Contrôle QUOTIDIEN (cadence network_latency_check_interval_minutes = 1440 min) :
+    on évalue la part des LR `up` dont le dernier lr_latency_ms ≥ seuil (100 ms)
+    et, si elle dépasse network_high_latency_pct (20 %), on envoie un message
+    WhatsApp. Pas de flag franchissement / pas de message de rétabli : c'est un
+    rapport quotidien qui ne part QUE si la condition est remplie.
+
+    Signal réseau-wide, pas un incident par device (un Incident exige un
+    device_id) → envoi WhatsApp direct. Réutilise
+    lr_health_service.network_latency_summary (dernier lr_latency_ms par LR via
+    LATERAL — pas de sonde live). Sous network_latency_min_sample relevés, le
+    réseau est trop petit pour juger → on n'évalue pas.
     """
-    global _network_latency_alerting
     settings = get_settings()
     threshold_pct = settings.network_high_latency_pct
     min_sample = settings.network_latency_min_sample
@@ -2130,31 +2128,24 @@ async def network_latency_aggregate_job() -> None:
         )
         return
 
-    if pct > threshold_pct and not _network_latency_alerting:
-        _network_latency_alerting = True
+    if pct > threshold_pct:
         logger.warning(
             "network_latency: %.0f%% des clients (%d/%d) ≥ %.0f ms — alerte WhatsApp",
             pct, high, total, threshold_ms,
         )
         message = (
-            f"*🔴 CRITICAL — Latence réseau élevée*\n"
+            f"*🔴 Latence réseau élevée (rapport quotidien)*\n"
             f"{pct:.0f}% des clients ({high}/{total}) ont une latence "
             f"≥ {threshold_ms:.0f} ms vers Internet.\n"
             f"Seuil d'alerte : {threshold_pct}% du parc."
         )
         await whatsapp_service.send_whatsapp(message)
-    elif pct <= threshold_pct and _network_latency_alerting:
-        _network_latency_alerting = False
+    else:
         logger.info(
-            "network_latency: retour à la normale — %.0f%% (%d/%d) sous le seuil",
-            pct, high, total,
+            "network_latency: %.0f%% des clients (%d/%d) ≥ %.0f ms — sous le seuil "
+            "(%d%%), pas d'alerte",
+            pct, high, total, threshold_ms, threshold_pct,
         )
-        message = (
-            f"*✅ RÉTABLI — Latence réseau normale*\n"
-            f"{pct:.0f}% des clients ({high}/{total}) au-dessus de "
-            f"{threshold_ms:.0f} ms — sous le seuil de {threshold_pct}%."
-        )
-        await whatsapp_service.send_whatsapp(message)
 
 
 # ---------------------------------------------------------------------------
@@ -2337,9 +2328,11 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         network_latency_aggregate_job,
         trigger="interval", minutes=settings.network_latency_check_interval_minutes,
         id="network_latency_aggregate",
-        name="Network-wide high-latency share (WhatsApp alert)",
+        name="Network-wide high-latency share — daily WhatsApp report",
         replace_existing=True,
-        **safety,
+        # Rapport quotidien : tolérance de misfire large (un redémarrage du
+        # scheduler ne doit pas annuler le contrôle du jour).
+        max_instances=1, coalesce=True, misfire_grace_time=3600,
     )
     if settings.client_block_enforcement_enabled:
         scheduler.add_job(

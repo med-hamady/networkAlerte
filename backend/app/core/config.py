@@ -471,14 +471,14 @@ class Settings(BaseSettings):
 
     # Network-wide high latency — network_latency_aggregate_job computes the
     # share of UP client LRs whose latest lr_latency_ms is at or above
-    # lr_latency_critical_ms. When more than network_high_latency_pct of them are
-    # affected (and the sample is at least network_latency_min_sample LRs, to
-    # avoid noise on a tiny network) it sends a single WhatsApp message — this is
-    # a network-wide signal, not a per-device incident, so it bypasses the
-    # incident pipeline. Anti-spam via an in-memory crossed/cleared flag.
+    # lr_latency_critical_ms (100 ms). CONTRÔLE QUOTIDIEN (1440 min) : si la part
+    # dépasse network_high_latency_pct (20 %) et que l'échantillon vaut au moins
+    # network_latency_min_sample LRs, il envoie un message WhatsApp. Signal
+    # réseau-wide (pas un incident par device) → envoi direct. Pas de flag /
+    # rétabli : rapport quotidien, n'envoie que si la condition est remplie.
     network_high_latency_pct: int = 20
     network_latency_min_sample: int = 10
-    network_latency_check_interval_minutes: int = 5
+    network_latency_check_interval_minutes: int = 1440  # 24 h
 
     @computed_field(repr=False)
     @property

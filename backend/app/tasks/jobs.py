@@ -24,6 +24,8 @@ from sqlalchemy.exc import DBAPIError
 
 from app.core.alert_constants import (
     AT_AIRMAX_DOWN,
+    AT_BATTERY_EXTERNAL_LOW,
+    AT_BATTERY_INTERNAL_LOW,
     AT_DEVICE_FLAPPING,
     AT_LR_BRIDGE_MODE_MISCONFIG,
     AT_LR_LATENCY_HIGH,
@@ -281,17 +283,12 @@ INC_UNREACHABLE   = "Device unreachable"
 INC_POWER_UNREACH = "UISP Power unreachable"
 INC_BATT_WARN     = "Low battery level"
 INC_BATT_CRIT     = "Critical battery level"
+INC_BATT_INTERNAL = "Batterie interne (Li-Ion) critique"
+INC_BATT_EXTERNAL = "Batterie externe (banc plomb) critique"
 INC_VOLT_ANOMALY  = "Voltage anomaly"
+# Conservé uniquement comme titre pour le nettoyage silencieux des anciens
+# incidents legacy (mains_power_lost n'est plus émis — politique UISP Power 2026-06-11).
 INC_MAINS_LOST    = "Coupure secteur (sur batterie)"
-# Cycles consécutifs sans secteur AC avant d'ouvrir mains_power_lost. À 30 s de
-# poll, 2 cycles ≈ 1 min : filtre les micro-coupures / flickers sans retarder
-# l'alerte d'une vraie coupure. Résolution dès le 1er cycle où le secteur revient.
-MAINS_LOSS_THRESHOLD = 2
-# Libellé humain par type de batterie pour les messages d'alerte.
-_BATTERY_HUMAN = {
-    "li-ion": "batterie interne (Li-Ion)",
-    "lead-acid": "banc externe (plomb)",
-}
 INC_TRANSIT       = "Transit réseau indisponible"
 INC_SWITCH_PORT       = "Switch port critique down"
 INC_SWITCH_PORT_SPEED = "Port switch vitesse insuffisante"
@@ -873,77 +870,6 @@ async def snmp_poll_job() -> None:
             await session.commit()
 
 
-def _active_battery_label(batteries: list[dict]) -> str:
-    """Name the battery/batteries currently discharging (in use on outage).
-
-    Falls back to a generic label if the device doesn't flag any as
-    discharging (e.g. load momentarily null right at the cutover).
-    """
-    active = [b for b in batteries if b.get("discharging")]
-    if not active:
-        return "ses batteries"
-    return " + ".join(_BATTERY_HUMAN.get(b.get("type"), b.get("type") or "batterie") for b in active)
-
-
-async def _evaluate_mains_power(
-    session, dev: Device, ac_connected: bool | None, batteries: list[dict],
-) -> None:
-    """
-    Mains (SOMELEC) outage detection for a UISP Power.
-
-    `ac_connected` comes straight from the device API (any AC input slot
-    connected). None = firmware didn't report AC slots → unknown, skip.
-    `batteries` lets the alert name which battery is actually discharging
-    (internal Li-Ion vs external lead-acid bank).
-
-    Anti-flap: open `mains_power_lost` only after MAINS_LOSS_THRESHOLD
-    consecutive cycles on battery (filters brief flickers the battery rides
-    through); resolve as soon as the mains is back. The consecutive count is
-    persisted in AlertState (keyed by AT_MAINS_POWER_LOST) so it survives a
-    scheduler restart.
-    """
-    if ac_connected is None:
-        return  # device doesn't expose AC presence — nothing to evaluate
-
-    state_res = await session.execute(
-        select(AlertState).where(
-            AlertState.device_id == dev.id,
-            AlertState.alert_type == AT_MAINS_POWER_LOST,
-        )
-    )
-    state = state_res.scalar_one_or_none()
-    if state is None:
-        state = AlertState(device_id=dev.id, alert_type=AT_MAINS_POWER_LOST, failure_count=0)
-        session.add(state)
-        await session.flush()
-    state.last_evaluated_at = datetime.datetime.now(datetime.UTC)
-
-    if ac_connected:
-        # Mains present — reset and resolve any open outage.
-        if state.failure_count > 0:
-            state.failure_count = 0
-        await _resolve_and_notify(session, dev, INC_MAINS_LOST, alert_type=AT_MAINS_POWER_LOST)
-        return
-
-    state.failure_count += 1
-    if state.failure_count < MAINS_LOSS_THRESHOLD:
-        logger.warning(
-            "mains: %s (%s) sur batterie (%d/%d cycles, seuil non atteint)",
-            dev.name, dev.ip_address, state.failure_count, MAINS_LOSS_THRESHOLD,
-        )
-        return
-
-    source = _active_battery_label(batteries)
-    await _open_and_notify(
-        session, dev, INC_MAINS_LOST, "warning",
-        f"Coupure secteur détectée : {dev.name} ({dev.ip_address}) est passé sur "
-        f"batterie (aucune entrée AC connectée, {state.failure_count} cycles). "
-        f"Batterie en service : {source}. "
-        f"Le site tient sur batterie — surveiller le niveau de charge.",
-        alert_type=AT_MAINS_POWER_LOST,
-    )
-
-
 @_timed_job
 async def power_poll_job() -> None:
     """
@@ -985,16 +911,22 @@ async def power_poll_job() -> None:
                 continue
 
             if readings is None:
-                await _open_and_notify(
-                    session, dev, INC_POWER_UNREACH, "critical",
-                    f"UISP Power device {dev.name} ({dev.ip_address}) is not responding to API.",
-                    alert_type=AT_POWER_UNREACH,
-                )
-                logger.warning("UISP Power unreachable — %s (%s)", dev.name, dev.ip_address)
+                # Injoignable : on NE crée PAS d'incident ici. Le device_ping_job
+                # ouvre déjà `device_unreachable` (notifié) pour un UISP Power down
+                # — uisp_power_unreachable retiré pour éviter le doublon.
+                logger.warning("UISP Power injoignable (API) — %s (%s)", dev.name, dev.ip_address)
             else:
-                await _resolve_and_notify(
-                    session, dev, INC_POWER_UNREACH, alert_type=AT_POWER_UNREACH
-                )
+                # Nettoyage silencieux des types UISP Power retirés (legacy) — on
+                # ne les émet plus, on ferme ceux encore ouverts sans notifier :
+                # uisp_power_unreachable / voltage_anomaly / mains_power_lost.
+                for _legacy_title, _legacy_at in (
+                    (INC_POWER_UNREACH, AT_POWER_UNREACH),
+                    (INC_VOLT_ANOMALY, AT_VOLT_ANOMALY),
+                    (INC_MAINS_LOST, AT_MAINS_POWER_LOST),
+                ):
+                    await incident_service.resolve_incidents(
+                        session, dev.id, _legacy_title, alert_type=_legacy_at
+                    )
 
                 session.add(PowerStatusLog(
                     device_id=dev.id,
@@ -1061,56 +993,57 @@ async def power_poll_job() -> None:
                     readings.get("power") or 0,
                 )
 
-                # Battery anomaly detection — runs on the canonical battery
-                # (lowest-charge connected battery, see parse_power_readings).
-                # The type is named in the message so the operator knows whether
-                # it's the internal Li-Ion UPS or the external lead-acid bank.
-                #
-                # Politique (2026-06-11) : UN SEUL cas — batterie < seuil (30 %)
-                # → une alerte immédiate. AUCUN message de rétablissement : le
-                # retour au-dessus du seuil ferme l'incident SILENCIEUSEMENT
-                # (resolve_incidents direct, jamais _resolve_and_notify). Le
-                # double seuil critique/warning a été retiré (plus de ping-pong de
-                # messages quand la charge stationne sur une frontière).
-                batt = readings.get("battery_percentage")
-                batt_label = readings.get("battery_type") or "battery"
-                if batt is not None:
-                    if batt < settings.battery_warning_pct:
-                        await _open_and_notify(
-                            session, dev, INC_BATT_WARN, "warning",
-                            f"Batterie faible ({batt_label}) : {batt}% "
-                            f"(seuil {settings.battery_warning_pct}%).",
-                            alert_type=AT_BATT_WARN,
-                        )
-                    else:
-                        # ≥ seuil : fermeture silencieuse (pas de notification).
-                        await incident_service.resolve_incidents(
-                            session, dev.id, INC_BATT_WARN, alert_type=AT_BATT_WARN
-                        )
-                    # Nettoyage silencieux d'éventuels incidents critiques legacy
-                    # (battery_low_critical n'est plus émis depuis 2026-06-11).
-                    await incident_service.resolve_incidents(
-                        session, dev.id, INC_BATT_CRIT, alert_type=AT_BATT_CRIT
-                    )
+                # Battery anomaly detection (politique UISP Power 2026-06-11) :
+                # DEUX alertes batterie distinctes, toutes deux CRITIQUES + notif
+                # immédiate, évaluées par batterie connectée :
+                #   - INTERNE (Li-Ion UPS, type_slug "li_ion")  < 50 %
+                #   - EXTERNE (banc plomb, type_slug "lead_acid") < 30 %
+                # Retour ≥ seuil = fermeture SILENCIEUSE (resolve_incidents direct).
+                # On garde la pire charge par catégorie (plusieurs slots possibles).
+                internal_pct: float | None = None
+                external_pct: float | None = None
+                for b in readings.get("batteries") or []:
+                    pct = b.get("percentage")
+                    if pct is None or not b.get("connected"):
+                        continue
+                    slug = b.get("type_slug")
+                    if slug == "li_ion":
+                        internal_pct = pct if internal_pct is None else min(internal_pct, pct)
+                    elif slug == "lead_acid":
+                        external_pct = pct if external_pct is None else min(external_pct, pct)
 
-                # Voltage anomaly
-                voltage = readings.get("voltage")
-                if voltage is not None and (voltage < 20.0 or voltage > 56.0):
+                # Batterie interne (Li-Ion UPS) < seuil → critique.
+                if internal_pct is not None and internal_pct < settings.battery_internal_critical_pct:
                     await _open_and_notify(
-                        session, dev, INC_VOLT_ANOMALY, "critical",
-                        f"Voltage out of range: {voltage:.1f}V.",
-                        alert_type=AT_VOLT_ANOMALY,
+                        session, dev, INC_BATT_INTERNAL, "critical",
+                        f"Batterie interne (Li-Ion UPS) de {dev.name} à {internal_pct:.0f}% "
+                        f"(seuil {settings.battery_internal_critical_pct}%).",
+                        alert_type=AT_BATTERY_INTERNAL_LOW,
                     )
-                elif voltage is not None:
-                    await _resolve_and_notify(
-                        session, dev, INC_VOLT_ANOMALY, alert_type=AT_VOLT_ANOMALY
+                else:
+                    await incident_service.resolve_incidents(
+                        session, dev.id, INC_BATT_INTERNAL, alert_type=AT_BATTERY_INTERNAL_LOW
                     )
 
-                # Mains (SOMELEC) presence — open mains_power_lost when on
-                # battery, naming which battery is actually discharging.
-                await _evaluate_mains_power(
-                    session, dev, readings.get("ac_connected"),
-                    readings.get("batteries") or [],
+                # Batterie externe (banc plomb) < seuil → critique.
+                if external_pct is not None and external_pct < settings.battery_external_critical_pct:
+                    await _open_and_notify(
+                        session, dev, INC_BATT_EXTERNAL, "critical",
+                        f"Batterie externe (banc plomb) de {dev.name} à {external_pct:.0f}% "
+                        f"(seuil {settings.battery_external_critical_pct}%).",
+                        alert_type=AT_BATTERY_EXTERNAL_LOW,
+                    )
+                else:
+                    await incident_service.resolve_incidents(
+                        session, dev.id, INC_BATT_EXTERNAL, alert_type=AT_BATTERY_EXTERNAL_LOW
+                    )
+
+                # Nettoyage silencieux des anciennes alertes batterie uniques.
+                await incident_service.resolve_incidents(
+                    session, dev.id, INC_BATT_WARN, alert_type=AT_BATT_WARN
+                )
+                await incident_service.resolve_incidents(
+                    session, dev.id, INC_BATT_CRIT, alert_type=AT_BATT_CRIT
                 )
 
             await session.commit()

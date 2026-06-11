@@ -17,6 +17,8 @@ from app.core.alert_constants import (
     AT_AF60_SIGNAL_LOW,
     AT_AF60_SNR_LOW,
     AT_AIRMAX_DOWN,
+    AT_BATTERY_EXTERNAL_LOW,
+    AT_BATTERY_INTERNAL_LOW,
     AT_BATTERY_LOW_CRIT,
     AT_BATTERY_LOW_WARN,
     AT_CAPACITY_LOW,
@@ -93,6 +95,8 @@ ALERT_TYPE_LABELS: dict[str, str] = {
     AT_UISP_POWER_UNREACH:   "UISP Power injoignable",
     AT_BATTERY_LOW_WARN:     "Batterie faible",
     AT_BATTERY_LOW_CRIT:     "Batterie critique",
+    AT_BATTERY_INTERNAL_LOW: "Batterie interne (Li-Ion) critique",
+    AT_BATTERY_EXTERNAL_LOW: "Batterie externe (banc plomb) critique",
     AT_VOLTAGE_ANOMALY:      "Tension d'alimentation anormale",
     AT_MAINS_POWER_LOST:     "Coupure secteur (sur batterie)",
 

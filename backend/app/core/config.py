@@ -418,6 +418,13 @@ class Settings(BaseSettings):
     throughput_anomaly_min_mbps: float = 1.0    # ignore if EMA < this (nearly idle link)
 
     # Anomaly thresholds — UISP Power
+    # Politique 2026-06-11 : deux alertes batterie DISTINCTES, toutes deux
+    # critiques + notif immédiate, évaluées par batterie connectée :
+    #   - batterie INTERNE (Li-Ion UPS) < battery_internal_critical_pct (50 %)
+    #   - batterie EXTERNE (banc plomb) < battery_external_critical_pct (30 %)
+    battery_internal_critical_pct: int = 50  # Li-Ion UPS interne
+    battery_external_critical_pct: int = 30  # banc plomb externe
+    # Legacy (ancienne alerte unique) — conservés pour compat, plus utilisés.
     battery_warning_pct: int = 30   # below → warning
     battery_critical_pct: int = 10  # below → critical
 

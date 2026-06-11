@@ -75,6 +75,12 @@ AT_THROUGHPUT_ANOMALY   = "throughput_anomaly"
 AT_UISP_POWER_UNREACH   = "uisp_power_unreachable"
 AT_BATTERY_LOW_WARN     = "battery_low_warning"
 AT_BATTERY_LOW_CRIT     = "battery_low_critical"
+# UISP Power — deux alertes batterie DISTINCTES (politique 2026-06-11) :
+#   - batterie INTERNE (Li-Ion UPS) < 50 %  → critique + notif immédiate
+#   - batterie EXTERNE (banc plomb)  < 30 %  → critique + notif immédiate
+# Remplacent l'ancienne alerte unique battery_low_warning pour les UISP Power.
+AT_BATTERY_INTERNAL_LOW = "battery_internal_low"
+AT_BATTERY_EXTERNAL_LOW = "battery_external_low"
 AT_VOLTAGE_ANOMALY      = "voltage_anomaly"
 # Coupure secteur (SOMELEC) : le UISP Power n'a plus d'entrée AC connectée et
 # bascule sur batterie. Lu directement depuis l'API (power[].psuType=="AC" /
@@ -169,6 +175,7 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_SIGNAL_LOW, AT_CINR_LOW, AT_CCQ_LOW, AT_RADIO_LINK_DEGRADED,
     AT_CAPACITY_LOW, AT_HIGH_RX_TX_ERRORS, AT_THROUGHPUT_ANOMALY,
     AT_UISP_POWER_UNREACH, AT_BATTERY_LOW_WARN, AT_BATTERY_LOW_CRIT,
+    AT_BATTERY_INTERNAL_LOW, AT_BATTERY_EXTERNAL_LOW,
     AT_VOLTAGE_ANOMALY, AT_MAINS_POWER_LOST,
     AT_TRANSIT_UNAVAILABLE, AT_SWITCH_PORT_DOWN,
     AT_LR_NO_TRANSIT, AT_SWITCH_PORT_SPEED_LOW, AT_LR_LINK_SUBSTANDARD,
@@ -197,18 +204,19 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
 # Conditions demandées :
 #   1. Port switch dégradé .......... switch_port_speed_low + switch_port_down
 #   2. Équipement instable (flapping) device_flapping
-#   3. Batterie UISP Power < 30% .... battery_low_warning
+#   3. Batterie UISP Power ........... battery_internal_low (Li-Ion UPS < 50 %)
+#      + battery_external_low (banc plomb < 30 %), toutes deux critiques
 #   4. > 20 % clients en latence .... network_latency_aggregate_job (envoi
 #      DIRECT, pas un incident → toujours actif, pas concerné par cette liste)
 #   5. Liaison P2P dégradée ......... af60_link_substandard + af60_link_down
 #   6. Équipement injoignable (down)  rocket_down + switch_down +
 #      device_unreachable + airmax_down (couvre aussi un UISP Power down, via
-#      device_unreachable du ping job → uisp_power_unreachable laissé HORS liste
-#      pour éviter la double notif et le bruit des coupures secteur).
+#      device_unreachable du ping job → uisp_power_unreachable HORS liste, plus
+#      émis, pour éviter le doublon ; voltage/coupure secteur retirés).
 WHATSAPP_ALERT_TYPES: frozenset[str] = frozenset({
     AT_SWITCH_PORT_SPEED_LOW, AT_SWITCH_PORT_DOWN,
     AT_DEVICE_FLAPPING,
-    AT_BATTERY_LOW_WARN,
+    AT_BATTERY_INTERNAL_LOW, AT_BATTERY_EXTERNAL_LOW,
     AT_AF60_LINK_SUBSTANDARD, AT_AF60_LINK_DOWN,
     AT_ROCKET_DOWN, AT_SWITCH_DOWN, AT_DEVICE_UNREACHABLE, AT_AIRMAX_DOWN,
 })

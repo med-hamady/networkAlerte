@@ -23,6 +23,8 @@ from dataclasses import dataclass
 
 from app.core.alert_constants import (
     AT_AIRMAX_DOWN,
+    AT_BATTERY_EXTERNAL_LOW,
+    AT_BATTERY_INTERNAL_LOW,
     AT_BATTERY_LOW_CRIT,
     AT_BATTERY_LOW_WARN,
     AT_CAPACITY_LOW,
@@ -257,6 +259,22 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     ),
     AT_BATTERY_LOW_CRIT: AlertPolicy(
         alert_type=AT_BATTERY_LOW_CRIT,
+        severity=Severity.CRITICAL,
+        notify_immediately=True,
+        channels=_CHANNELS_CRITICAL,
+        recovery_notification=False,
+    ),
+    # UISP Power — batterie interne (Li-Ion < 50 %) / externe (plomb < 30 %),
+    # critiques + notif immédiate, pas de message de rétabli (fermeture silencieuse).
+    AT_BATTERY_INTERNAL_LOW: AlertPolicy(
+        alert_type=AT_BATTERY_INTERNAL_LOW,
+        severity=Severity.CRITICAL,
+        notify_immediately=True,
+        channels=_CHANNELS_CRITICAL,
+        recovery_notification=False,
+    ),
+    AT_BATTERY_EXTERNAL_LOW: AlertPolicy(
+        alert_type=AT_BATTERY_EXTERNAL_LOW,
         severity=Severity.CRITICAL,
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,

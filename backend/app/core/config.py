@@ -361,9 +361,11 @@ class Settings(BaseSettings):
     af60_snr_critical_db: float = 6.0     # below → critical
     af60_snr_tolerance_db: float = 0.0
     # Lien dégradé (consolidé) : potentiel sous ce plancher OU capacité totale
-    # (dl+ul) sous ce plancher → critique.
+    # (dl+ul) sous ce plancher → critique. Plancher capacité aligné sur le seuil
+    # d'affichage /lr-health (1.95 Gb/s = capacité nominale d'un backhaul AF60-LR
+    # sain) : un lien P2P qui descend sous 1.95 Gb/s est considéré dégradé.
     af60_link_potential_min_pct: float = 30.0
-    af60_total_capacity_min_mbps: float = 500.0
+    af60_total_capacity_min_mbps: float = 1950.0
 
     # Seuil d'AFFICHAGE de la section « Liaisons entre sites » de /lr-health :
     # un AF60 dont la dernière capacité totale est < ce plancher y est surfacé

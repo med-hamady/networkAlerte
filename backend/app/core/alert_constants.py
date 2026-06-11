@@ -194,18 +194,23 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
 # court-circuite l'envoi si l'alert_type n'est pas ici. C'est l'unique point de
 # contrôle (chokepoint), cf. notification_service._dispatch / digest_service.
 #
-# Les 5 conditions demandées :
+# Conditions demandées :
 #   1. Port switch dégradé .......... switch_port_speed_low + switch_port_down
 #   2. Équipement instable (flapping) device_flapping
 #   3. Batterie UISP Power < 30% .... battery_low_warning
 #   4. > 20 % clients en latence .... network_latency_aggregate_job (envoi
 #      DIRECT, pas un incident → toujours actif, pas concerné par cette liste)
 #   5. Liaison P2P dégradée ......... af60_link_substandard + af60_link_down
+#   6. Équipement injoignable (down)  rocket_down + switch_down +
+#      device_unreachable + airmax_down (couvre aussi un UISP Power down, via
+#      device_unreachable du ping job → uisp_power_unreachable laissé HORS liste
+#      pour éviter la double notif et le bruit des coupures secteur).
 WHATSAPP_ALERT_TYPES: frozenset[str] = frozenset({
     AT_SWITCH_PORT_SPEED_LOW, AT_SWITCH_PORT_DOWN,
     AT_DEVICE_FLAPPING,
     AT_BATTERY_LOW_WARN,
     AT_AF60_LINK_SUBSTANDARD, AT_AF60_LINK_DOWN,
+    AT_ROCKET_DOWN, AT_SWITCH_DOWN, AT_DEVICE_UNREACHABLE, AT_AIRMAX_DOWN,
 })
 
 

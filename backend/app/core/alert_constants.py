@@ -185,6 +185,31 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
 
 
 # ---------------------------------------------------------------------------
+# WhatsApp allowlist (policy 2026-06-11)
+# ---------------------------------------------------------------------------
+# WhatsApp ne pousse QUE ces anomalies — les SEULES que l'opérateur veut
+# recevoir. Tout autre incident (équipement injoignable, qualité radio, voltage,
+# coupure secteur, sécurité, découverte LR…) n'est notifié NULLE PART : le
+# pipeline ouvre/résout toujours l'incident côté DB, mais notification_service
+# court-circuite l'envoi si l'alert_type n'est pas ici. C'est l'unique point de
+# contrôle (chokepoint), cf. notification_service._dispatch / digest_service.
+#
+# Les 5 conditions demandées :
+#   1. Port switch dégradé .......... switch_port_speed_low + switch_port_down
+#   2. Équipement instable (flapping) device_flapping
+#   3. Batterie UISP Power < 30% .... battery_low_warning
+#   4. > 20 % clients en latence .... network_latency_aggregate_job (envoi
+#      DIRECT, pas un incident → toujours actif, pas concerné par cette liste)
+#   5. Liaison P2P dégradée ......... af60_link_substandard + af60_link_down
+WHATSAPP_ALERT_TYPES: frozenset[str] = frozenset({
+    AT_SWITCH_PORT_SPEED_LOW, AT_SWITCH_PORT_DOWN,
+    AT_DEVICE_FLAPPING,
+    AT_BATTERY_LOW_WARN,
+    AT_AF60_LINK_SUBSTANDARD, AT_AF60_LINK_DOWN,
+})
+
+
+# ---------------------------------------------------------------------------
 # Client-side incident suppression (policy 2026-06-09)
 # ---------------------------------------------------------------------------
 # The /incidents page surfaces INFRASTRUCTURE incidents only. Anything raised

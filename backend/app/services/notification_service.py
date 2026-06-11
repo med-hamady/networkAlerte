@@ -20,7 +20,13 @@ import asyncio
 import logging
 import time
 
-from app.core.alert_constants import AlertChannel, NotificationEvent, Severity
+from app.core.alert_constants import (
+    AT_SECURITY_ANOMALY,
+    WHATSAPP_ALERT_TYPES,
+    AlertChannel,
+    NotificationEvent,
+    Severity,
+)
 from app.core.config import get_settings
 from app.models.device import Device
 from app.models.incident import Incident
@@ -127,6 +133,16 @@ async def _deliver(
 
 async def _dispatch(device: Device, incident: Incident, event: str) -> bool:
     """Resolve channels, gate by policy, deliver — return True if any succeeded."""
+    # WhatsApp allowlist (chokepoint) — we only push the handful of anomalies the
+    # operator asked for; every other incident still lives in the DB but is never
+    # notified. Applies to both opened and resolved events.
+    if incident.alert_type not in WHATSAPP_ALERT_TYPES:
+        logger.debug(
+            "Alert %s hors liste blanche WhatsApp — non notifié (%s)",
+            incident.alert_type, event,
+        )
+        return False
+
     policy = get_policy_for_device(incident.alert_type, getattr(device, "policy_overrides", None))
 
     # Groupable warnings are batched by the digest job, not sent immediately.
@@ -247,7 +263,19 @@ async def notify_security_event(
     timeout matches the incident path so a stalled channel cannot freeze the
     detection job. `body_html` is accepted for backward compatibility but
     ignored (WhatsApp is plain text). Returns True if delivered.
+
+    Gated by the same WhatsApp allowlist: security_anomaly is intentionally NOT
+    in it (policy 2026-06-11 — only the 5 monitoring anomalies go to WhatsApp),
+    so this is currently a no-op. Add AT_SECURITY_ANOMALY to WHATSAPP_ALERT_TYPES
+    to re-enable.
     """
+    if AT_SECURITY_ANOMALY not in WHATSAPP_ALERT_TYPES:
+        logger.info(
+            "notify_security_event: hors liste blanche WhatsApp — non envoyé (subject=%r)",
+            subject,
+        )
+        return False
+
     targets = await _resolve_channels()
     if not targets:
         logger.warning(

@@ -23,7 +23,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.alert_constants import AlertChannel, Severity
+from app.core.alert_constants import WHATSAPP_ALERT_TYPES, AlertChannel, Severity
 from app.models.device import Device
 from app.models.incident import Incident
 from app.services import (
@@ -58,6 +58,12 @@ async def _collect_undigested_warnings(
     )
     items: list[tuple[Device, Incident]] = []
     for incident, device in result.all():
+        # WhatsApp allowlist (chokepoint) — never digest an alert_type we don't
+        # push to WhatsApp. None of the 5 allowlisted types are groupable today,
+        # so this effectively keeps the digest empty, but it stays correct if a
+        # groupable type is ever added to the allowlist.
+        if incident.alert_type not in WHATSAPP_ALERT_TYPES:
+            continue
         base = get_policy(incident.alert_type)
         if not base.groupable:
             continue

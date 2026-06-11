@@ -104,3 +104,38 @@ class SiteLinkHealthResponse(BaseModel):
     generated_at: datetime.datetime
     no_data_count: int
     items: list[SiteLinkRow]
+
+
+class HighLatencyRow(BaseModel):
+    """Un LR client dont la latence LR → Internet dépasse le seuil critique.
+
+    Critère unique : dernier ``lr_latency_ms`` (RTT vers ``lr_latency_target``,
+    relevé par la sonde SSH ``lr_internet_probe_job``) ≥ ``lr_latency_critical_ms``
+    (défaut 100 ms, configurable page Seuils). Lecture de la dernière valeur en
+    base, pas d'interrogation live."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    lr_id: int
+    lr_name: str
+    lr_ip: str | None          # ip_address NULLABLE (identité par MAC)
+    lr_mac: str | None
+    model_variant: str
+    distance_m: float | None
+    rocket_id: int | None
+    rocket_name: str | None
+
+    latency_ms: float
+    latency_threshold_ms: float
+
+
+class HighLatencyResponse(BaseModel):
+    """Réponse de la section « Clients à latence élevée ».
+
+    LR clients dont la dernière latence LR → Internet dépasse le seuil critique
+    (``lr_latency_critical_ms``). Pires d'abord. ``latency_threshold_ms`` est le
+    seuil effectif appliqué (env + overrides runtime)."""
+
+    generated_at: datetime.datetime
+    latency_threshold_ms: float
+    items: list[HighLatencyRow]

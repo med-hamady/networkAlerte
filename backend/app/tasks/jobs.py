@@ -1065,36 +1065,33 @@ async def power_poll_job() -> None:
                 # (lowest-charge connected battery, see parse_power_readings).
                 # The type is named in the message so the operator knows whether
                 # it's the internal Li-Ion UPS or the external lead-acid bank.
+                #
+                # Politique (2026-06-11) : UN SEUL cas — batterie < seuil (30 %)
+                # → une alerte immédiate. AUCUN message de rétablissement : le
+                # retour au-dessus du seuil ferme l'incident SILENCIEUSEMENT
+                # (resolve_incidents direct, jamais _resolve_and_notify). Le
+                # double seuil critique/warning a été retiré (plus de ping-pong de
+                # messages quand la charge stationne sur une frontière).
                 batt = readings.get("battery_percentage")
                 batt_label = readings.get("battery_type") or "battery"
                 if batt is not None:
-                    if batt < settings.battery_critical_pct:
-                        await _open_and_notify(
-                            session, dev, INC_BATT_CRIT, "critical",
-                            f"Battery critical ({batt_label}): {batt}% "
-                            f"(threshold {settings.battery_critical_pct}%).",
-                            alert_type=AT_BATT_CRIT,
-                        )
-                        await _resolve_and_notify(
-                            session, dev, INC_BATT_WARN, alert_type=AT_BATT_WARN
-                        )
-                    elif batt < settings.battery_warning_pct:
+                    if batt < settings.battery_warning_pct:
                         await _open_and_notify(
                             session, dev, INC_BATT_WARN, "warning",
-                            f"Battery low ({batt_label}): {batt}% "
-                            f"(threshold {settings.battery_warning_pct}%).",
+                            f"Batterie faible ({batt_label}) : {batt}% "
+                            f"(seuil {settings.battery_warning_pct}%).",
                             alert_type=AT_BATT_WARN,
                         )
-                        await _resolve_and_notify(
-                            session, dev, INC_BATT_CRIT, alert_type=AT_BATT_CRIT
-                        )
                     else:
-                        await _resolve_and_notify(
-                            session, dev, INC_BATT_WARN, alert_type=AT_BATT_WARN
+                        # ≥ seuil : fermeture silencieuse (pas de notification).
+                        await incident_service.resolve_incidents(
+                            session, dev.id, INC_BATT_WARN, alert_type=AT_BATT_WARN
                         )
-                        await _resolve_and_notify(
-                            session, dev, INC_BATT_CRIT, alert_type=AT_BATT_CRIT
-                        )
+                    # Nettoyage silencieux d'éventuels incidents critiques legacy
+                    # (battery_low_critical n'est plus émis depuis 2026-06-11).
+                    await incident_service.resolve_incidents(
+                        session, dev.id, INC_BATT_CRIT, alert_type=AT_BATT_CRIT
+                    )
 
                 # Voltage anomaly
                 voltage = readings.get("voltage")

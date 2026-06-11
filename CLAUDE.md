@@ -297,8 +297,8 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | Charge AP | `rocket_client_overload` | Rocket de base station saturé : clients connectés ≥ seuil. Seuil = **formule** par famille : base à 10 MHz + `rocket_overload_clients_per_10mhz` (défaut 5) clients par tranche de +10 MHz. Bases : LTU 15, airMAX 10 (configurables, page Seuils). Donc LTU 10→15 / 20→20 / 30→25… ; airMAX 10→10 / 20→15 / 40→25… Largeur auto-détectée en direct (arrondie au multiple de 10 MHz) : LTU via API `wireless.radios[0].channelWidth.tx`, airMAX via airOS `status.cgi` `wireless.chanbw` (lu dans `snmp_poll_job`, requiert les creds airOS sur la fiche). Clients = `len(all_peers)` (LTU) / stations SNMP `airmax_peers` (airMAX). Largeur < 10 MHz → pas de seuil → pas d'incident. Critique, anti-flap 3 cycles |
 | Disponibilité | `device_flapping` | Équipement d'infra qui flappe : > `FLAP_THRESHOLD_24H` (3) incidents de disponibilité sur `FLAP_WINDOW_HOURS` (24 h). Critique. **Pas** un type de disponibilité (se résout/purge normalement). `flap_detection_job` |
 | Power | `uisp_power_unreachable` | API UISP Power injoignable |
-| Power | `battery_low_warning` | Batterie < 30% |
-| Power | `battery_low_critical` | Batterie < 10% |
+| Power | `battery_low_warning` | **Seuil unique** : batterie < `BATTERY_WARNING_PCT` (30%) → alerte immédiate. **Aucun message de rétabli** (`recovery_notification=False`) : le retour ≥ seuil ferme l'incident silencieusement. |
+| Power | `battery_low_critical` | ⚠️ **Plus émis depuis 2026-06-11** (politique batterie à seuil unique). Type conservé pour compat ; le job nettoie silencieusement les incidents critiques legacy. |
 | Power | `voltage_anomaly` | Voltage < 20 V ou > 56 V |
 | Switch | `switch_port_down` | Port switch connecté au Rocket = DOWN |
 | Switch | `switch_port_speed_low` | Port UP mais vitesse < 1000 Mbps |

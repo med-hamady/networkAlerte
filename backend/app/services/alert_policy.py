@@ -242,18 +242,25 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
     ),
+    # Batterie : un seul cas — < BATTERY_WARNING_PCT (30 %) → une alerte immédiate.
+    # AUCUN message de rétablissement (recovery_notification=False) : le retour
+    # au-dessus du seuil ferme l'incident silencieusement. groupable=False pour
+    # un envoi immédiat (pas de mise en digest). Le double seuil critique a été
+    # retiré (battery_low_critical n'est plus émis).
     AT_BATTERY_LOW_WARN: AlertPolicy(
         alert_type=AT_BATTERY_LOW_WARN,
         severity=Severity.WARNING,
-        notify_immediately=False,
+        notify_immediately=True,
         channels=_CHANNELS_WARNING,
-        groupable=True,
+        groupable=False,
+        recovery_notification=False,
     ),
     AT_BATTERY_LOW_CRIT: AlertPolicy(
         alert_type=AT_BATTERY_LOW_CRIT,
         severity=Severity.CRITICAL,
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
+        recovery_notification=False,
     ),
     AT_VOLTAGE_ANOMALY: AlertPolicy(
         alert_type=AT_VOLTAGE_ANOMALY,

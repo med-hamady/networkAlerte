@@ -40,12 +40,14 @@ from app.models.device import AirFiber, Lr, Rocket
 from app.schemas.device import normalize_mac
 from app.schemas.lr_health import (
     BadInstallationRow,
+    HighLatencyResponse,
+    HighLatencyRow,
     LiveLinkHealthResponse,
     SignalEvidence,
     SiteLinkHealthResponse,
     SiteLinkRow,
 )
-from app.services import airos_api_service, ltu_api_service
+from app.services import airos_api_service, ltu_api_service, threshold_service
 
 _AIRMAX_LR_VARIANTS = frozenset({"litebeam_5ac", "litebeam_m5"})
 
@@ -218,6 +220,53 @@ async def get_live_link_health(db: AsyncSession) -> LiveLinkHealthResponse:
     )
     return LiveLinkHealthResponse(
         generated_at=now, unreachable_count=unreachable, items=items
+    )
+
+
+async def get_high_latency_clients(db: AsyncSession) -> HighLatencyResponse:
+    """Lister les LR clients dont la latence LR → Internet dépasse le seuil.
+
+    Critère unique : dernier ``lr_latency_ms`` (RTT relevé par
+    ``lr_internet_probe_job``, collapse latest-only en base) ≥
+    ``lr_latency_critical_ms`` (seuil effectif : env + overrides runtime). Seuls
+    les LR ``up`` sont considérés (un LR down n'a pas de latence fraîche → on
+    n'affiche pas une vieille valeur). Pas d'interrogation live."""
+    now = datetime.datetime.now(datetime.UTC)
+
+    settings = await threshold_service.get_effective_settings(db, get_settings())
+    threshold = float(settings.lr_latency_critical_ms)
+
+    lrs = (await db.execute(select(Lr).options(selectinload(Lr.rocket)))).scalars().all()
+    if not lrs:
+        return HighLatencyResponse(
+            generated_at=now, latency_threshold_ms=threshold, items=[]
+        )
+
+    latency = await _fetch_latest_latency(db, [lr.id for lr in lrs if lr.status == "up"])
+
+    items: list[HighLatencyRow] = []
+    for lr in lrs:
+        ms = latency.get(lr.id)
+        if ms is None or ms < threshold:
+            continue
+        items.append(
+            HighLatencyRow(
+                lr_id=lr.id,
+                lr_name=lr.name,
+                lr_ip=lr.ip_address,
+                lr_mac=lr.mac_address,
+                model_variant=lr.model_variant,
+                distance_m=lr.distance_m,
+                rocket_id=lr.rocket.id if lr.rocket else None,
+                rocket_name=lr.rocket.name if lr.rocket else None,
+                latency_ms=ms,
+                latency_threshold_ms=threshold,
+            )
+        )
+
+    items.sort(key=lambda r: r.latency_ms, reverse=True)  # pires d'abord
+    return HighLatencyResponse(
+        generated_at=now, latency_threshold_ms=threshold, items=items
     )
 
 

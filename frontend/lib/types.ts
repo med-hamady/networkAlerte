@@ -516,6 +516,26 @@ export interface SiteLinkHealthResponse {
   items: SiteLinkRow[]
 }
 
+// ─── Clients à latence élevée (RTT LR → Internet ≥ seuil) ────────────────────
+export interface HighLatencyRow {
+  lr_id: number
+  lr_name: string
+  lr_ip: string | null
+  lr_mac: string | null
+  model_variant: LrModelVariant
+  distance_m: number | null
+  rocket_id: number | null
+  rocket_name: string | null
+  latency_ms: number
+  latency_threshold_ms: number
+}
+
+export interface HighLatencyResponse {
+  generated_at: string
+  latency_threshold_ms: number
+  items: HighLatencyRow[]
+}
+
 // ─── Capacité du réseau — clients consommés vs disponibles par famille/site ──
 // consumed = clients connectés (peer_count), capacity = somme des max par Rocket
 // (seuil rocket_client_overload). available = capacity − consumed (≥ 0).

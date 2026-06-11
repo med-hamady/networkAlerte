@@ -2,7 +2,11 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.schemas.lr_health import LiveLinkHealthResponse, SiteLinkHealthResponse
+from app.schemas.lr_health import (
+    HighLatencyResponse,
+    LiveLinkHealthResponse,
+    SiteLinkHealthResponse,
+)
 from app.services import lr_health_service
 
 router = APIRouter()
@@ -35,3 +39,17 @@ async def list_site_links(
     de la dernière valeur de ``device_metrics`` — pas d'interrogation live.
     """
     return await lr_health_service.get_site_link_health(db)
+
+
+@router.get("/high-latency", response_model=HighLatencyResponse)
+async def list_high_latency_clients(
+    db: AsyncSession = Depends(get_db),
+) -> HighLatencyResponse:
+    """LR clients dont la latence LR → Internet dépasse le seuil, pires d'abord.
+
+    Critère unique : dernier ``lr_latency_ms`` (RTT relevé par la sonde SSH
+    ``lr_internet_probe_job``) ≥ ``lr_latency_critical_ms`` (défaut 100 ms,
+    configurable page Seuils). Lecture de la dernière valeur en base, pas
+    d'interrogation live. Seuls les LR ``up`` sont considérés.
+    """
+    return await lr_health_service.get_high_latency_clients(db)

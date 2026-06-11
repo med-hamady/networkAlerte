@@ -7,6 +7,8 @@ import { endpoints, fetcher } from '@/lib/api'
 import type {
   BadInstallationRow,
   BadInstallationVerdict,
+  HighLatencyResponse,
+  HighLatencyRow,
   LiveLinkHealthResponse,
   SignalEvidence,
   SiteLinkHealthResponse,
@@ -68,7 +70,7 @@ function latencyClass(ms: number | null): string {
   return 'text-slate-700'
 }
 
-type LinkTab = 'clients' | 'sites'
+type LinkTab = 'clients' | 'sites' | 'latency'
 
 export default function LrHealthPage() {
   const [tab, setTab] = useState<LinkTab>('clients')
@@ -92,6 +94,7 @@ export default function LrHealthPage() {
         {([
           { id: 'clients' as const, label: 'Liaisons des clients' },
           { id: 'sites' as const,   label: 'Liaisons des sites' },
+          { id: 'latency' as const, label: 'Latence élevée' },
         ]).map(t => (
           <button
             key={t.id}
@@ -108,7 +111,9 @@ export default function LrHealthPage() {
         ))}
       </div>
 
-      {tab === 'clients' ? <ClientLinksSection /> : <SiteLinksSection />}
+      {tab === 'clients' && <ClientLinksSection />}
+      {tab === 'sites' && <SiteLinksSection />}
+      {tab === 'latency' && <HighLatencySection />}
     </div>
   )
 }
@@ -429,6 +434,104 @@ function SiteLinksSection() {
 
                     <td className="px-4 py-3 text-xs whitespace-nowrap text-slate-700">
                       {fmt(row.latest_snr_db, ' dB', 1)}
+                    </td>
+
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <Link
+                        href="/sites"
+                        className="text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline"
+                      >
+                        Voir l'équipement →
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
+// ─── Clients à latence élevée (RTT LR → Internet ≥ seuil) ─────────────────────
+// Critère UNIQUE : dernier lr_latency_ms ≥ lr_latency_critical_ms (défaut 100 ms),
+// lu en base (sonde SSH lr_internet_probe_job). Pas d'interrogation live.
+function HighLatencySection() {
+  const { data, isLoading } = useSWR<HighLatencyResponse>(
+    endpoints.highLatencyClients,
+    fetcher,
+    { refreshInterval: 60_000 },
+  )
+
+  const items: HighLatencyRow[] = data?.items ?? []
+  const threshold = data?.latency_threshold_ms ?? 100
+
+  return (
+    <section className="space-y-4">
+      <div>
+        <h2 className="text-lg font-bold text-blue-900 tracking-tight">Clients à latence élevée</h2>
+        <p className="text-blue-400 text-sm mt-1">
+          LR clients dont la <strong>latence vers Internet</strong> (RTT → {' '}
+          8.8.8.8, sonde SSH) dépasse le seuil de{' '}
+          <strong>{threshold.toFixed(0)} ms</strong>. Pires d'abord, dernière valeur en base.
+        </p>
+      </div>
+
+      {isLoading ? (
+        <div className="bg-white border border-blue-100 rounded-xl px-6 py-12 text-center text-blue-300 shadow-sm">
+          Chargement…
+        </div>
+      ) : items.length === 0 ? (
+        <div className="bg-white border border-blue-100 rounded-xl px-6 py-12 text-center shadow-sm">
+          <p className="text-green-600 font-semibold text-sm">✓ Aucun client au-dessus du seuil de latence</p>
+          <p className="text-blue-400 text-xs mt-1">Aucun LR avec une latence ≥ {threshold.toFixed(0)} ms en ce moment</p>
+        </div>
+      ) : (
+        <div className="bg-white border border-blue-100 rounded-xl overflow-hidden shadow-sm">
+          <div className="flex items-center gap-2 px-4 py-2.5 border-b bg-red-50 border-red-200 text-red-700">
+            <span className="text-xs font-bold uppercase tracking-widest">Latence élevée</span>
+            <span className="ml-auto text-xs font-semibold opacity-70">
+              {items.length} client{items.length > 1 ? 's' : ''}
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-blue-50 border-b border-blue-100">
+                <tr>
+                  {['Client', 'Rocket / distance', 'Latence', ''].map(h => (
+                    <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-blue-50">
+                {items.map(row => (
+                  <tr key={row.lr_id} className="hover:bg-blue-50/60 transition-colors align-top">
+
+                    <td className="px-4 py-3">
+                      <div className="text-slate-800 font-medium">{row.lr_name}</div>
+                      <div className="text-blue-300 font-mono text-[11px]">{row.lr_ip ?? '—'}</div>
+                      <div className="text-blue-400 text-[11px]">
+                        {LR_MODEL_VARIANT_LABELS[row.model_variant] ?? row.model_variant}
+                      </div>
+                    </td>
+
+                    <td className="px-4 py-3 text-xs whitespace-nowrap">
+                      <div className="text-slate-700">{row.rocket_name ?? <span className="text-blue-300">— sans parent —</span>}</div>
+                      <div className="text-blue-400">
+                        {row.distance_m !== null ? `${Math.round(row.distance_m)} m` : ''}
+                      </div>
+                    </td>
+
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <span className={`font-semibold ${latencyClass(row.latency_ms)}`}
+                            title={`Seuil : ${row.latency_threshold_ms.toFixed(0)} ms`}>
+                        {row.latency_ms.toFixed(0)} ms
+                      </span>
+                      <div className="text-blue-300 text-[11px]">seuil {row.latency_threshold_ms.toFixed(0)} ms</div>
                     </td>
 
                     <td className="px-4 py-3 whitespace-nowrap">

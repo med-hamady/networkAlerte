@@ -3,7 +3,6 @@ Human-readable French labels for alert_types and metric names.
 
 Single source of truth used by:
   - alert_formatter (emails: subject, header, metric row, digest)
-  - report_service (PDF/HTML reports)
   - any future channel that needs to show alerts to operators
 
 Keep technical keys out of operator-facing output: every code path that would

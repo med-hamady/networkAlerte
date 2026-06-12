@@ -1,6 +1,6 @@
 'use client'
 
-import { Suspense, useMemo, useState } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
@@ -50,6 +50,26 @@ function SitesPage() {
     }
     return d.location?.trim() || SITE_FALLBACK
   }
+
+  // Deep-link from /lr-health "Voir l'équipement →": /sites?device=<id> opens
+  // that device's detail modal (and its site context). Each distinct device
+  // param is handled once (so closing the modal doesn't re-open it), but a new
+  // param value still fires — the app router updates searchParams without
+  // remounting, so a boolean "handled" flag would swallow the second click.
+  const deviceParam = searchParams.get('device')
+  const lastHandledDevice = useRef<string | null>(null)
+  useEffect(() => {
+    if (!deviceParam || !devices?.length) return
+    if (lastHandledDevice.current === deviceParam) return
+    const dev = devices.find(d => d.id === Number(deviceParam))
+    if (dev) {
+      setSelected(dev)
+      setSelectedSite(siteOf(dev))
+      lastHandledDevice.current = deviceParam
+    }
+    // siteOf is stable enough here; we only want to react to data/param changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deviceParam, devices])
 
   // Group devices into per-site summaries.
   const sites = useMemo<(SiteOverview & { downDevices: Device[]; powerDevices: Device[] })[]>(() => {

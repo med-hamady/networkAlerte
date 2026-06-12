@@ -326,7 +326,7 @@ function ClientLinksSection() {
 
                         <td className="px-4 py-3 whitespace-nowrap">
                           <Link
-                            href="/sites"
+                            href={`/sites?device=${row.lr_id}`}
                             className="text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline"
                           >
                             Voir l'équipement →
@@ -438,7 +438,7 @@ function SiteLinksSection() {
 
                     <td className="px-4 py-3 whitespace-nowrap">
                       <Link
-                        href="/sites"
+                        href={`/sites?device=${row.device_id}`}
                         className="text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline"
                       >
                         Voir l'équipement →
@@ -536,7 +536,7 @@ function HighLatencySection() {
 
                     <td className="px-4 py-3 whitespace-nowrap">
                       <Link
-                        href="/sites"
+                        href={`/sites?device=${row.lr_id}`}
                         className="text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline"
                       >
                         Voir l'équipement →

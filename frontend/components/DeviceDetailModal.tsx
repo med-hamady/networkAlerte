@@ -765,7 +765,7 @@ function DiagRow({ label, url }: { label: string; url: string }) {
         {state.status === 'done' && state.result && (
           <span className={`text-xs font-semibold ${state.result.ok ? 'text-green-600' : 'text-red-500'}`}>
             {state.result.ok
-              ? (label.includes('Ping') ? '● Joignable' : '● OK')
+              ? (label.includes('Ping') ? `● ${state.result.message}` : '● OK')
               : (label.includes('Ping') ? '✗ Non joignable' : '✗ Non accessible')}
           </span>
         )}

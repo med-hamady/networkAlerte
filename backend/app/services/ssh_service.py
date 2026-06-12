@@ -719,10 +719,18 @@ def _ping_via_ssh_sync(
         return False, str(exc), None, None
 
     try:
-        exit_code = _exec(transport, "ping -c 2 -W 2 8.8.8.8", timeout=10)
+        # On CAPTURE la sortie pour afficher la latence RÉELLE mesurée à l'instant
+        # du test (RTT du DERNIER paquet reçu — la mesure la plus récente), et non
+        # une moyenne. busybox (airOS) comme iputils impriment "time=XX ms".
+        exit_code, out = _exec_capture(transport, "ping -c 3 -W 2 8.8.8.8", timeout=12)
         ok = exit_code == 0
+        if ok:
+            times = _PING_TIME_RE.findall(out)
+            msg = f"Latence {float(times[-1]):.1f} ms" if times else "Joignable"
+        else:
+            msg = "Non joignable"
         logger.debug("Ping-via-SSH %s → %s (exit %d)", host, "OK" if ok else "KO", exit_code)
-        return ok, "Joignable" if ok else "Non joignable", observed, used_pw
+        return ok, msg, observed, used_pw
     except Exception as exc:
         logger.debug("Ping-via-SSH exec failed — %s — %s", host, exc)
         return False, str(exc), observed, used_pw
@@ -821,6 +829,10 @@ _PING_AVG_RE = re.compile(
     r"(?:round-trip|rtt)\s+min/avg/max(?:/mdev)?\s*=\s*"
     r"[\d.]+/([\d.]+)/[\d.]+"
 )
+
+# RTT par paquet : "... time=23.4 ms" (iputils) / "time=23.4 ms" (busybox),
+# parfois "time<1 ms". Sert à afficher la latence instantanée du test ping.
+_PING_TIME_RE = re.compile(r"time[=<]\s*([\d.]+)")
 
 
 def _measure_latency_via_ssh_sync(

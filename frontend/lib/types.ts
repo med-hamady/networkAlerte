@@ -5,6 +5,7 @@ interface DeviceBase {
   ip_address: string | null   // NULLABLE depuis l'identité LR par MAC (IP volatile)
   status: string        // up | down | unknown
   location: string | null
+  site: string | null   // résolu par trigger DB (LR → site du Rocket parent)
   snmp_community: string | null
   notes: string | null
   last_seen: string | null
@@ -609,4 +610,89 @@ export interface DowntimeLogResponse {
   end: string
   merge_gap_seconds: number
   items: DeviceDowntime[]
+}
+
+// ─── RPC-backed page payloads (logique centralisée côté DB) ─────────────────
+// Ces formes sont renvoyées prêtes-à-afficher par des fonctions SQL ; le
+// frontend ne fait QUE les rendre (aucun calcul / groupement / tri).
+
+// Dashboard — fn_dashboard_summary()
+export interface DashboardSummary {
+  total: number
+  up: number
+  down: number
+  sites: number
+  pannes: number
+  clients: number
+  open_incidents: number
+}
+
+// /sites — fn_site_overview()
+export interface SitePowerDevice {
+  id: number
+  name: string
+  status: string
+  power_source: 'mains' | 'battery' | null
+  batteries: { slug: string; pct: number | null }[]
+}
+export interface SiteDownDevice {
+  id: number
+  name: string
+  device_type: string
+  status: string
+  last_seen: string | null
+}
+export interface SiteOverviewItem {
+  name: string
+  infra: number
+  clients_online: number
+  clients_blocked: number
+  pannes: number
+  down_since: string | null
+  down_devices: SiteDownDevice[]
+  power_devices: SitePowerDevice[]
+}
+
+// /access — fn_access_clients(search, filter)
+export interface AccessClientRow {
+  id: number
+  name: string
+  ip_address: string | null
+  status: string
+  topology_mode: TopologyMode
+  client_blocked: boolean
+  block_mode: BlockMode
+  client_blocked_reason: string | null
+  client_blocked_at: string | null
+  client_block_enforced_at: string | null
+}
+export interface AccessClientsResponse {
+  stats: {
+    total: number
+    active: number
+    blocked_full: number
+    blocked_whatsapp: number
+    bridge: number
+  }
+  items: AccessClientRow[]
+}
+
+// "Pannes par site" — fn_site_outage_summary(start, end, merge_gap)
+export interface OutageSiteDevice {
+  device_id: number
+  device_name: string
+  device_type: string
+  current_status: string
+  episodes_count: number
+  total_downtime_seconds: number
+}
+export interface OutageSite {
+  site: string
+  pannes: number
+  downtime_seconds: number
+  devices: OutageSiteDevice[]
+}
+export interface SiteOutageSummary {
+  by_pannes: OutageSite[]
+  by_downtime: OutageSite[]
 }

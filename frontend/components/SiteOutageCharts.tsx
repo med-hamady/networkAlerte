@@ -3,18 +3,13 @@
 import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
-import type { Device, DeviceDowntime, DowntimeLogResponse } from '@/lib/types'
+import type { OutageSite, OutageSiteDevice, SiteOutageSummary } from '@/lib/types'
 import { deviceTypeLabel } from '@/lib/types'
 
-const SITE_FALLBACK = 'Sans site'
 const WINDOW_DAYS = 7
 const REFRESH = 60_000
 
-// Only network infrastructure counts as a site outage. LR clients are excluded —
-// an unreachable client is never an infra incident.
-const INFRA_TYPES = new Set(['rocket', 'uisp_switch', 'uisp_power', 'airfiber'])
-
-// Format a downtime duration (seconds).
+// Format a downtime duration (seconds) — pure display formatting.
 function fmtDuration(secs: number): string {
   if (secs < 60) return `${Math.round(secs)}s`
   if (secs < 3_600) return `${Math.floor(secs / 60)} min`
@@ -23,20 +18,11 @@ function fmtDuration(secs: number): string {
   return m === 0 ? `${h}h` : `${h}h ${m.toString().padStart(2, '0')}min`
 }
 
-interface SiteAgg {
-  name: string
-  pannes: number              // total merged outage episodes over the window
-  downtime: number            // cumulated downtime in seconds over the window
-  devices: DeviceDowntime[]   // equipment that was down at least once
-}
-
 export default function SiteOutageCharts({
-  devices,
   startIso: startProp,
   endIso: endProp,
   periodLabel,
 }: {
-  devices: Device[] | undefined
   // Optional explicit window. When omitted, defaults to the last 7 days
   // (dashboard usage). The /reports page passes its selected date range.
   startIso?: string
@@ -53,54 +39,9 @@ export default function SiteOutageCharts({
 
   const period = periodLabel ?? `${WINDOW_DAYS} derniers jours`
 
-  const { data: log, isLoading } = useSWR<DowntimeLogResponse>(
-    endpoints.downtimeLog(startIso, endIso), fetcher, { refreshInterval: REFRESH },
-  )
-
-  // device_id → site name. Infra by its own location; an LR by its parent rocket.
-  const siteByDeviceId = useMemo(() => {
-    const rocketById = new Map(
-      devices?.filter(d => d.device_type === 'rocket').map(d => [d.id, d]) ?? [],
-    )
-    const map = new Map<number, string>()
-    devices?.forEach(d => {
-      let site: string
-      if (d.device_type === 'lr') {
-        const rk = d.rocket_id != null ? rocketById.get(d.rocket_id) : undefined
-        site = rk?.location?.trim() || SITE_FALLBACK
-      } else {
-        site = d.location?.trim() || SITE_FALLBACK
-      }
-      map.set(d.id, site)
-    })
-    return map
-  }, [devices])
-
-  // Aggregate downtime episodes / cumulated seconds per site, keeping the
-  // list of affected devices so a site can be expanded to its equipment.
-  const sites = useMemo<SiteAgg[]>(() => {
-    const map = new Map<string, SiteAgg>()
-    log?.items.forEach(it => {
-      if (!INFRA_TYPES.has(it.device_type)) return // exclude LR clients
-      const name = siteByDeviceId.get(it.device_id) ?? SITE_FALLBACK
-      const agg = map.get(name) ?? { name, pannes: 0, downtime: 0, devices: [] }
-      agg.pannes += it.episodes_count
-      agg.downtime += it.total_downtime_seconds
-      agg.devices.push(it)
-      map.set(name, agg)
-    })
-    // Inside each site, worst downtime first.
-    map.forEach(s => s.devices.sort((a, b) => b.total_downtime_seconds - a.total_downtime_seconds))
-    return [...map.values()]
-  }, [log, siteByDeviceId])
-
-  const byPannes = useMemo(
-    () => [...sites].filter(s => s.pannes > 0).sort((a, b) => b.pannes - a.pannes),
-    [sites],
-  )
-  const byDowntime = useMemo(
-    () => [...sites].filter(s => s.downtime > 0).sort((a, b) => b.downtime - a.downtime),
-    [sites],
+  // Grouping by site + merge + sort all happen in SQL (fn_site_outage_summary).
+  const { data, isLoading } = useSWR<SiteOutageSummary>(
+    endpoints.siteOutageSummary(startIso, endIso), fetcher, { refreshInterval: REFRESH },
   )
 
   if (isLoading) {
@@ -118,7 +59,7 @@ export default function SiteOutageCharts({
       <SiteOutageCard
         title="Nombre de pannes par site"
         subtitle={`Épisodes de coupure — ${period} · cliquer un site pour le détail`}
-        sites={byPannes}
+        sites={data?.by_pannes ?? []}
         valueOf={s => s.pannes}
         labelOf={s => `${s.pannes}`}
         deviceLabelOf={d => `${d.episodes_count} panne${d.episodes_count > 1 ? 's' : ''}`}
@@ -127,9 +68,9 @@ export default function SiteOutageCharts({
       <SiteOutageCard
         title="Temps de panne par site"
         subtitle={`Downtime cumulé — ${period} · cliquer un site pour le détail`}
-        sites={byDowntime}
-        valueOf={s => s.downtime}
-        labelOf={s => fmtDuration(s.downtime)}
+        sites={data?.by_downtime ?? []}
+        valueOf={s => s.downtime_seconds}
+        labelOf={s => fmtDuration(s.downtime_seconds)}
         deviceLabelOf={d => fmtDuration(d.total_downtime_seconds)}
         barClass="bg-orange-400"
       />
@@ -142,10 +83,10 @@ function SiteOutageCard({
 }: {
   title: string
   subtitle: string
-  sites: SiteAgg[]
-  valueOf: (s: SiteAgg) => number
-  labelOf: (s: SiteAgg) => string
-  deviceLabelOf: (d: DeviceDowntime) => string
+  sites: OutageSite[]
+  valueOf: (s: OutageSite) => number
+  labelOf: (s: OutageSite) => string
+  deviceLabelOf: (d: OutageSiteDevice) => string
   barClass: string
 }) {
   const [openSite, setOpenSite] = useState<string | null>(null)
@@ -165,12 +106,12 @@ function SiteOutageCard({
       ) : (
         <div className="space-y-1.5 max-h-96 overflow-y-auto pr-1">
           {sites.map(s => {
-            const isOpen = openSite === s.name
+            const isOpen = openSite === s.site
             return (
-              <div key={s.name}>
+              <div key={s.site}>
                 <button
                   type="button"
-                  onClick={() => setOpenSite(o => (o === s.name ? null : s.name))}
+                  onClick={() => setOpenSite(o => (o === s.site ? null : s.site))}
                   className="w-full flex items-center gap-3 py-1 group"
                   title="Cliquer pour voir les équipements en panne"
                 >
@@ -180,8 +121,8 @@ function SiteOutageCard({
                   >
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                   </svg>
-                  <div className="w-24 shrink-0 text-xs text-slate-600 truncate text-right group-hover:text-blue-700" title={s.name}>
-                    {s.name}
+                  <div className="w-24 shrink-0 text-xs text-slate-600 truncate text-right group-hover:text-blue-700" title={s.site}>
+                    {s.site}
                   </div>
                   <div className="flex-1 bg-slate-100 rounded h-5 overflow-hidden">
                     <div
@@ -209,8 +150,8 @@ function SiteOutageCard({
 function SiteDeviceList({
   devices, labelOf,
 }: {
-  devices: DeviceDowntime[]
-  labelOf: (d: DeviceDowntime) => string
+  devices: OutageSiteDevice[]
+  labelOf: (d: OutageSiteDevice) => string
 }) {
   return (
     <div className="ml-7 mr-2 mt-1 mb-2 space-y-1 border-l-2 border-blue-100 pl-3">

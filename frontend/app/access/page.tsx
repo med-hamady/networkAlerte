@@ -3,7 +3,7 @@
 import React from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher, type ClientBlockResult } from '@/lib/api'
-import type { Device, Lr } from '@/lib/types'
+import type { AccessClientRow, AccessClientsResponse } from '@/lib/types'
 import ClientAccessActionModal from '@/components/ClientAccessActionModal'
 import IpLink from '@/components/IpLink'
 
@@ -27,65 +27,36 @@ function timeAgo(iso: string | null): string {
 }
 
 export default function AccessPage() {
-  const { data: devices, mutate, isLoading } = useSWR<Device[]>(
-    endpoints.devices,
-    fetcher,
-    { refreshInterval: 30_000 },
-  )
   const [filter, setFilter] = React.useState<Filter>('all')
   const [search, setSearch] = React.useState('')
+  // Debounce the typed search so we don't refetch on every keystroke; the
+  // filtering/sorting itself runs server-side (fn_access_clients).
+  const [debouncedSearch, setDebouncedSearch] = React.useState('')
+  React.useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 250)
+    return () => clearTimeout(t)
+  }, [search])
 
-  // Modal state
-  const [modalLr, setModalLr] = React.useState<Lr | null>(null)
-  const [modalAction, setModalAction] = React.useState<'block' | 'unblock'>('block')
-
-  const lrs = React.useMemo(
-    () => (devices ?? []).filter((d): d is Lr => d.device_type === 'lr' && d.status === 'up'),
-    [devices],
+  // Stats + filtered + sorted list all computed in SQL. The frontend renders it.
+  const { data, mutate, isLoading } = useSWR<AccessClientsResponse>(
+    endpoints.accessClients(debouncedSearch, filter),
+    fetcher,
+    { refreshInterval: 30_000, keepPreviousData: true },
   )
 
-  const stats = React.useMemo(() => {
-    // Total = every LR client whatever its status (UP or down); the other
-    // counters stay scoped to reachable LRs (the actionable ones).
-    const total = (devices ?? []).filter(d => d.device_type === 'lr').length
-    const active = lrs.filter(l => !l.client_blocked).length
-    const blockedFull = lrs.filter(l => l.client_blocked && l.block_mode === 'full').length
-    const blockedWa = lrs.filter(l => l.client_blocked && l.block_mode === 'whatsapp_only').length
-    const bridge = lrs.filter(l => l.topology_mode === 'bridge').length
-    return { total, active, blockedFull, blockedWa, bridge }
-  }, [lrs, devices])
+  const stats = data?.stats ?? {
+    total: 0, active: 0, blocked_full: 0, blocked_whatsapp: 0, bridge: 0,
+  }
+  const sorted = data?.items ?? []
+  const isEmptyFleet = stats.total === 0
 
-  const filtered = React.useMemo(() => {
-    const q = search.trim().toLowerCase()
-    return lrs.filter(lr => {
-      if (q && !lr.name.toLowerCase().includes(q) && !lr.ip_address?.includes(q)) return false
-      switch (filter) {
-        case 'active':           return !lr.client_blocked
-        case 'blocked_full':     return lr.client_blocked && lr.block_mode === 'full'
-        case 'blocked_whatsapp': return lr.client_blocked && lr.block_mode === 'whatsapp_only'
-        case 'bridge':           return lr.topology_mode === 'bridge'
-        case 'all':
-        default:                 return true
-      }
-    })
-  }, [lrs, filter, search])
-
-  // Sort: bridge first, then blocked, then name
-  const sorted = React.useMemo(() => {
-    return [...filtered].sort((a, b) => {
-      const aBridge = a.topology_mode === 'bridge' ? 0 : 1
-      const bBridge = b.topology_mode === 'bridge' ? 0 : 1
-      if (aBridge !== bBridge) return aBridge - bBridge
-      const aBlocked = a.client_blocked ? 0 : 1
-      const bBlocked = b.client_blocked ? 0 : 1
-      if (aBlocked !== bBlocked) return aBlocked - bBlocked
-      return a.name.localeCompare(b.name)
-    })
-  }, [filtered])
+  // Modal state
+  const [modalLr, setModalLr] = React.useState<AccessClientRow | null>(null)
+  const [modalAction, setModalAction] = React.useState<'block' | 'unblock'>('block')
 
   const onActionSuccess = (_result: ClientBlockResult) => {
     setModalLr(null)
-    mutate() // refresh the devices list
+    mutate() // refresh the list
   }
 
   return (
@@ -105,10 +76,10 @@ export default function AccessPage() {
         <StatCard label="Accès actif" value={stats.active} tone="green" />
         <StatCard
           label="Bloqués"
-          value={stats.blockedFull + stats.blockedWa}
+          value={stats.blocked_full + stats.blocked_whatsapp}
           tone="red"
-          sub={stats.blockedFull + stats.blockedWa > 0
-            ? `${stats.blockedFull} total · ${stats.blockedWa} WhatsApp`
+          sub={stats.blocked_full + stats.blocked_whatsapp > 0
+            ? `${stats.blocked_full} total · ${stats.blocked_whatsapp} WhatsApp`
             : undefined}
         />
         <StatCard
@@ -153,7 +124,7 @@ export default function AccessPage() {
       ) : sorted.length === 0 ? (
         <div className="bg-white border border-blue-100 rounded-xl px-6 py-12 text-center shadow-sm">
           <p className="text-blue-400 text-sm">
-            {lrs.length === 0
+            {isEmptyFleet
               ? 'Aucun LR enregistré.'
               : 'Aucun LR ne correspond au filtre / à la recherche.'}
           </p>

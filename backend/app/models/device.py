@@ -13,7 +13,7 @@ instantiate when loading. Use `select(Rocket)` to get rockets only, or
 
 import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -24,6 +24,13 @@ class Device(Base):
 
     __tablename__ = "devices"
 
+    # ix_devices_site is created in raw SQL by migration c0d1e2f3a4b5 (alongside
+    # the `site` column's triggers); declared here so alembic autogenerate knows
+    # it and won't emit a spurious drop_index (same pattern as DeviceMetric).
+    __table_args__ = (
+        Index("ix_devices_site", "site"),
+    )
+
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     # Volatile, NOT an identity: DHCP churn moves an IP between MACs over time.
     # Kept UNIQUE (one device per IP at any instant) but nullable so a stale
@@ -32,6 +39,11 @@ class Device(Base):
     device_type: Mapped[str] = mapped_column(String(20), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="unknown")
     location: Mapped[str | None] = mapped_column(String(255))
+    # Denormalised site name, maintained by DB triggers (migration
+    # c0d1e2f3a4b5). An LR inherits its parent Rocket's location; every other
+    # device uses its own `location`; fallback 'Sans site'. Read-only from the
+    # app's point of view — never assign it in Python, the triggers own it.
+    site: Mapped[str | None] = mapped_column(Text, nullable=True)
     snmp_community: Mapped[str | None] = mapped_column(String(100))
     notes: Mapped[str | None] = mapped_column(Text)
     last_seen: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))

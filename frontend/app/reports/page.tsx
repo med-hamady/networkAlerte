@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
-import type { CapacityBucket, Device, NetworkCapacity } from '@/lib/types'
+import type { CapacityBucket, NetworkCapacity } from '@/lib/types'
 import CapacityDonut from '@/components/CapacityDonut'
 import SiteOutageCharts from '@/components/SiteOutageCharts'
 
@@ -43,7 +43,6 @@ export default function ReportsPage() {
   const { data: capacity, isLoading: capacityLoading } = useSWR<NetworkCapacity>(
     endpoints.networkCapacity, fetcher, { refreshInterval: 30_000 },
   )
-  const { data: devices } = useSWR<Device[]>(endpoints.devices, fetcher)
 
   const sites = capacity?.sites ?? []
   const globalMax = useMemo(
@@ -182,7 +181,6 @@ export default function ReportsPage() {
       />
       <div className="print-card">
         <SiteOutageCharts
-          devices={devices}
           startIso={dayStartIso(applied.from)}
           endIso={dayEndIso(applied.to)}
           periodLabel={`${applied.from} → ${applied.to}`}

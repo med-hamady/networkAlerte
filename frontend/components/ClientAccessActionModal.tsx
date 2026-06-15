@@ -2,11 +2,11 @@
 
 import React from 'react'
 import { setClientBlock, type ClientBlockResult } from '@/lib/api'
-import type { BlockMode, Lr } from '@/lib/types'
+import type { AccessClientRow, BlockMode } from '@/lib/types'
 import IpLink from './IpLink'
 
 interface Props {
-  lr: Lr | null
+  lr: AccessClientRow | null
   action: 'block' | 'unblock'
   onClose: () => void
   onSuccess: (result: ClientBlockResult) => void

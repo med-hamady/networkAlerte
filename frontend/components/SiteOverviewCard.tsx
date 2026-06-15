@@ -1,30 +1,18 @@
 'use client'
 
-import useSWR from 'swr'
-import { endpoints, fetcher } from '@/lib/api'
 import { formatUptime } from '@/lib/types'
-import type { Device, DeviceMetrics } from '@/lib/types'
-
-export interface SiteOverview {
-  name: string
-  infra: number           // network infra devices (rocket / switch / power)
-  clientsOnline: number   // LR clients with status up
-  clientsBlocked: number  // LR clients with client_blocked = true
-  pannes: number          // infra devices currently down
-  downSince: string | null // last_seen of the device down the longest
-}
+import type { SiteOverviewItem, SitePowerDevice } from '@/lib/types'
 
 interface Props {
-  site: SiteOverview
-  powerDevices?: Device[]  // UISP Power devices of this site (energy + battery)
+  site: SiteOverviewItem
   onShowPannes: (name: string) => void
   onShowEquipment: (name: string, filter?: 'all' | 'infra') => void
 }
 
-export default function SiteOverviewCard({ site, powerDevices = [], onShowPannes, onShowEquipment }: Props) {
+export default function SiteOverviewCard({ site, onShowPannes, onShowEquipment }: Props) {
   const hasPannes = site.pannes > 0
-  const downFor = site.downSince
-    ? formatUptime(Math.max(0, Math.floor((Date.now() - new Date(site.downSince).getTime()) / 1000)))
+  const downFor = site.down_since
+    ? formatUptime(Math.max(0, Math.floor((Date.now() - new Date(site.down_since).getTime()) / 1000)))
     : null
 
   return (
@@ -60,15 +48,15 @@ export default function SiteOverviewCard({ site, powerDevices = [], onShowPannes
             tone="blue"
             onClick={site.infra > 0 ? () => onShowEquipment(site.name, 'infra') : undefined}
           />
-          <Stat value={site.clientsOnline}   label="Clients en ligne"  tone="green" />
-          <Stat value={site.clientsBlocked}  label="Clients bloqués"   tone={site.clientsBlocked > 0 ? 'amber' : 'slate'} />
-          <Stat value={site.pannes}          label="Pannes"            tone={hasPannes ? 'red' : 'slate'} />
+          <Stat value={site.clients_online}   label="Clients en ligne"  tone="green" />
+          <Stat value={site.clients_blocked}  label="Clients bloqués"   tone={site.clients_blocked > 0 ? 'amber' : 'slate'} />
+          <Stat value={site.pannes}           label="Pannes"            tone={hasPannes ? 'red' : 'slate'} />
         </div>
 
-        {powerDevices.length > 0 && (
+        {site.power_devices.length > 0 && (
           <div className="space-y-1.5 pt-1 border-t border-blue-50">
-            {powerDevices.map(d => (
-              <SitePowerStats key={d.id} device={d} showName={powerDevices.length > 1} />
+            {site.power_devices.map(d => (
+              <SitePowerStats key={d.id} device={d} showName={site.power_devices.length > 1} />
             ))}
           </div>
         )}
@@ -98,12 +86,13 @@ export default function SiteOverviewCard({ site, powerDevices = [], onShowPannes
   )
 }
 
-// Friendly labels + order for each battery a UISP Power reports.
+// Friendly labels + colour for each battery a UISP Power reports. The slug,
+// ordering, AC source and battery percentages are all resolved server-side
+// (fn_site_overview); this only maps them to labels/colours for display.
 const BATTERY_LABELS: Record<string, string> = {
   li_ion:    'Batterie interne (Li-Ion)',
   lead_acid: 'Batterie externe (plomb)',
 }
-const BATTERY_ORDER: Record<string, number> = { li_ion: 0, lead_acid: 1 }
 
 function battColor(pct: number | null | undefined): string {
   if (pct == null) return 'text-blue-300'
@@ -112,24 +101,11 @@ function battColor(pct: number | null | undefined): string {
   return 'text-green-600'
 }
 
-// Explicit power-source + per-battery readout for one UISP Power of the site.
-// Shows the live source in clear (Secteur SOMELEC / Batterie) and the charge of
-// EACH battery (internal Li-Ion + external lead-acid), from per-battery metrics.
-function SitePowerStats({ device, showName }: { device: Device; showName: boolean }) {
+// Power-source + per-battery readout for one UISP Power of the site. All values
+// come pre-computed from the site overview payload.
+function SitePowerStats({ device, showName }: { device: SitePowerDevice; showName: boolean }) {
   const isUp = device.status === 'up'
-  const { data: metrics } = useSWR<DeviceMetrics>(
-    isUp ? endpoints.deviceMetrics(device.id) : null,
-    fetcher,
-    { refreshInterval: 30_000 },
-  )
-
-  const ac = metrics?.ac_connected?.value
-
-  const batteries = Object.keys(metrics ?? {})
-    .map(k => /^battery_(.+)_pct$/.exec(k))
-    .filter((m): m is RegExpExecArray => m != null)
-    .map(m => ({ slug: m[1], pct: metrics?.[m[0]]?.value }))
-    .sort((a, b) => (BATTERY_ORDER[a.slug] ?? 99) - (BATTERY_ORDER[b.slug] ?? 99))
+  const source = device.power_source
 
   return (
     <div className="space-y-1 text-xs">
@@ -148,15 +124,15 @@ function SitePowerStats({ device, showName }: { device: Device; showName: boolea
             <span className="text-blue-400">Source d'alimentation</span>
             <span
               className={
-                ac == null ? 'text-blue-300'
-                : ac >= 1 ? 'text-green-600 font-semibold'
+                source == null ? 'text-blue-300'
+                : source === 'mains' ? 'text-green-600 font-semibold'
                 : 'text-orange-500 font-semibold'
               }
             >
-              {ac == null ? '—' : ac >= 1 ? '⚡ Secteur (SOMELEC)' : '🔋 Batterie'}
+              {source == null ? '—' : source === 'mains' ? '⚡ Secteur (SOMELEC)' : '🔋 Batterie'}
             </span>
           </div>
-          {batteries.map(b => (
+          {device.batteries.map(b => (
             <div key={b.slug} className="flex items-center justify-between gap-2">
               <span className="text-blue-400">{BATTERY_LABELS[b.slug] ?? `Batterie ${b.slug}`}</span>
               <span className={`font-semibold tabular-nums ${battColor(b.pct)}`}>

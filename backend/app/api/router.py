@@ -2,15 +2,18 @@ from fastapi import APIRouter, Depends
 
 from app.api.deps import require_user_or_api_key
 from app.api.endpoints import (
+    access,
     auth,
     client_signal,
     clients,
+    dashboard,
     devices,
     health,
     incidents,
     lr_health,
     network_capacity,
     network_uptime,
+    sites,
     system,
     uisp,
 )
@@ -28,6 +31,9 @@ api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 # Next.js proxy) OR a valid X-API-Key header (direct admin / integration use).
 _auth = [Depends(require_user_or_api_key)]
 api_router.include_router(devices.router, prefix="/devices", tags=["devices"], dependencies=_auth)
+api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"], dependencies=_auth)
+api_router.include_router(sites.router, prefix="/sites", tags=["sites"], dependencies=_auth)
+api_router.include_router(access.router, prefix="/access", tags=["access"], dependencies=_auth)
 api_router.include_router(incidents.router, prefix="/incidents", tags=["incidents"], dependencies=_auth)
 api_router.include_router(lr_health.router, prefix="/lr-health", tags=["lr-health"], dependencies=_auth)
 api_router.include_router(client_signal.router, prefix="/client-signal", tags=["client-signal"], dependencies=_auth)

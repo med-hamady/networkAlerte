@@ -4,16 +4,15 @@ import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
-import type { Device } from '@/lib/types'
-import SiteOverviewCard, { type SiteOverview } from '@/components/SiteOverviewCard'
+import type { Device, SiteOverviewItem } from '@/lib/types'
+import SiteOverviewCard from '@/components/SiteOverviewCard'
 import PanneDetailsModal from '@/components/PanneDetailsModal'
 import DeviceDetailModal from '@/components/DeviceDetailModal'
 import DeviceCard from '@/components/DeviceCard'
 
 const SITE_FALLBACK = 'Sans site'
 
-// Network infrastructure — these count as a site outage when down. LR clients
-// are excluded (an unreachable client is never treated as an incident).
+// Network infrastructure — used only to filter the per-site equipment grid.
 const INFRA_TYPES = new Set(['rocket', 'uisp_switch', 'uisp_power', 'airfiber'])
 
 function SitesPage() {
@@ -30,32 +29,23 @@ function SitesPage() {
     setSelectedSite(name)
   }
 
-  const { data: devices, isLoading, mutate } = useSWR<Device[]>(
-    endpoints.devices,
-    fetcher,
-    { refreshInterval: 30_000 },
+  // Site cards (grouping, counts, down_since, down/power device lists) are built
+  // entirely in SQL — fn_site_overview(). The frontend only renders them.
+  const { data: overview, isLoading: overviewLoading, mutate } = useSWR<SiteOverviewItem[]>(
+    endpoints.sitesOverview, fetcher, { refreshInterval: 30_000 },
   )
 
-  // Rocket lookup — used to attach an LR client to the site of its parent rocket.
-  const rocketById = useMemo(
-    () => new Map(devices?.filter(d => d.device_type === 'rocket').map(d => [d.id, d]) ?? []),
-    [devices],
+  // The full device list is still loaded for the drill-down equipment grid and
+  // the device/pannes modals (which need complete device objects). It is NO
+  // longer aggregated client-side — each device carries its resolved `site`.
+  const { data: devices } = useSWR<Device[]>(
+    endpoints.devices, fetcher, { refreshInterval: 30_000 },
   )
-
-  // Site of a device: infra by its own location; an LR by its parent rocket's site.
-  const siteOf = (d: Device): string => {
-    if (d.device_type === 'lr') {
-      const rk = d.rocket_id != null ? rocketById.get(d.rocket_id) : undefined
-      return rk?.location?.trim() || SITE_FALLBACK
-    }
-    return d.location?.trim() || SITE_FALLBACK
-  }
 
   // Deep-link from /lr-health "Voir l'équipement →": /sites?device=<id> opens
   // that device's detail modal (and its site context). Each distinct device
   // param is handled once (so closing the modal doesn't re-open it), but a new
-  // param value still fires — the app router updates searchParams without
-  // remounting, so a boolean "handled" flag would swallow the second click.
+  // param value still fires.
   const deviceParam = searchParams.get('device')
   const lastHandledDevice = useRef<string | null>(null)
   useEffect(() => {
@@ -64,55 +54,27 @@ function SitesPage() {
     const dev = devices.find(d => d.id === Number(deviceParam))
     if (dev) {
       setSelected(dev)
-      setSelectedSite(siteOf(dev))
+      setSelectedSite(dev.site?.trim() || SITE_FALLBACK)
       lastHandledDevice.current = deviceParam
     }
-    // siteOf is stable enough here; we only want to react to data/param changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceParam, devices])
 
-  // Group devices into per-site summaries.
-  const sites = useMemo<(SiteOverview & { downDevices: Device[]; powerDevices: Device[] })[]>(() => {
-    const map = new Map<string, Device[]>()
-    devices?.forEach(d => {
-      const key = siteOf(d)
-      if (!map.has(key)) map.set(key, [])
-      map.get(key)!.push(d)
-    })
-    return [...map.entries()]
-      .map(([name, list]) => {
-        const infra = list.filter(d => INFRA_TYPES.has(d.device_type))
-        const downInfra = infra.filter(d => d.status === 'down')
-        const lrs = list.filter(d => d.device_type === 'lr')
-        const downSince = downInfra.reduce<string | null>((oldest, d) => {
-          if (!d.last_seen) return oldest
-          if (!oldest) return d.last_seen
-          return new Date(d.last_seen) < new Date(oldest) ? d.last_seen : oldest
-        }, null)
-        return {
-          name,
-          infra: infra.length,
-          clientsOnline: lrs.filter(d => d.status === 'up').length,
-          clientsBlocked: lrs.filter(d => d.device_type === 'lr' && d.client_blocked).length,
-          pannes: downInfra.length,
-          downSince,
-          downDevices: downInfra,
-          powerDevices: list.filter(d => d.device_type === 'uisp_power'),
-        }
-      })
-      .sort((a, b) => a.name.localeCompare(b.name, 'fr'))
-  }, [devices, rocketById])
-
-  const pannesDevices = pannesSite != null
-    ? (sites.find(s => s.name === pannesSite)?.downDevices ?? [])
-    : []
-
+  const sites = overview ?? []
   const totalPannes = sites.reduce((s, x) => s + x.pannes, 0)
 
-  // Drill-down: equipment of the selected site (optionally infra-only).
+  // Pannes modal: resolve the site's down devices to full device objects.
+  const pannesItem = pannesSite != null ? sites.find(s => s.name === pannesSite) : undefined
+  const pannesIds = useMemo(
+    () => new Set(pannesItem?.down_devices.map(d => d.id) ?? []),
+    [pannesItem],
+  )
+  const pannesDevices = (devices ?? []).filter(d => pannesIds.has(d.id))
+
+  // Drill-down: equipment of the selected site (optionally infra-only). Uses the
+  // backend-resolved `site` field — no client-side hierarchy resolution.
   const siteDevices = selectedSite != null
     ? (devices?.filter(d =>
-        siteOf(d) === selectedSite &&
+        (d.site?.trim() || SITE_FALLBACK) === selectedSite &&
         (drillFilter === 'all' || INFRA_TYPES.has(d.device_type)),
       ) ?? [])
     : []
@@ -134,7 +96,7 @@ function SitesPage() {
             <div>
               <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Sites</h1>
               <p className="text-blue-400 text-sm mt-1">
-                {devices ? (
+                {overview ? (
                   <span>
                     {sites.length} site{sites.length > 1 ? 's' : ''}
                     {totalPannes > 0 && (
@@ -171,13 +133,13 @@ function SitesPage() {
         </div>
 
         {/* Sites grid OR equipment grid */}
-        {isLoading ? (
+        {overviewLoading ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {Array.from({ length: 3 }, (_, i) => (
               <div key={i} className="rounded-xl bg-white border border-blue-100 h-56 animate-pulse" />
             ))}
           </div>
-        ) : !devices?.length ? (
+        ) : sites.length === 0 ? (
           <div className="bg-white border border-blue-100 rounded-xl px-6 py-12 text-center shadow-sm space-y-2">
             <p className="text-blue-700 font-medium">Aucun équipement enregistré</p>
             <p className="text-blue-400 text-sm">Les sites apparaîtront ici dès que des équipements seront supervisés.</p>
@@ -188,7 +150,6 @@ function SitesPage() {
               <SiteOverviewCard
                 key={s.name}
                 site={s}
-                powerDevices={s.powerDevices}
                 onShowPannes={setPannesSite}
                 onShowEquipment={openEquipment}
               />

@@ -1,55 +1,19 @@
 'use client'
 
-import React, { useMemo } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
-import type { Device, Incident } from '@/lib/types'
+import type { DashboardSummary } from '@/lib/types'
 import StatsBar from '@/components/StatsBar'
 import SiteOutageCharts from '@/components/SiteOutageCharts'
 
 const REFRESH = 15_000
-const SITE_FALLBACK = 'Sans site'
-
-// Equipment that counts as a site outage when down. LR clients are excluded —
-// an unreachable LR is never treated as an incident (client-side problem).
-const INFRA_TYPES = new Set(['rocket', 'uisp_switch', 'uisp_power'])
 
 export default function DashboardPage() {
-  const { data: devices } = useSWR<Device[]>(
-    endpoints.devices, fetcher, { refreshInterval: REFRESH },
+  // All counting (total/up/down/sites/pannes/clients/open incidents) is done in
+  // SQL — fn_dashboard_summary(). This page only renders the returned values.
+  const { data: summary } = useSWR<DashboardSummary>(
+    endpoints.dashboardSummary, fetcher, { refreshInterval: REFRESH },
   )
-  const { data: incidents } = useSWR<Incident[]>(
-    `${endpoints.incidents}?status=open&limit=500`, fetcher, { refreshInterval: REFRESH },
-  )
-
-  const total   = devices?.length ?? 0
-  const up      = devices?.filter(d => d.status === 'up').length   ?? 0
-  const down    = devices?.filter(d => d.status === 'down').length ?? 0
-  const openInc = incidents?.length ?? 0
-
-  // Rocket lookup — used to attach an LR client to the site of its parent rocket.
-  const rocketById = useMemo(
-    () => new Map(devices?.filter(d => d.device_type === 'rocket').map(d => [d.id, d]) ?? []),
-    [devices],
-  )
-
-  // Site of a device: infra by its own location; an LR by its parent rocket's site.
-  const siteOf = (d: Device): string => {
-    if (d.device_type === 'lr') {
-      const rk = d.rocket_id != null ? rocketById.get(d.rocket_id) : undefined
-      return rk?.location?.trim() || SITE_FALLBACK
-    }
-    return d.location?.trim() || SITE_FALLBACK
-  }
-
-  // KPI counts: distinct sites, live infra outages, client (LR) count.
-  const siteCount = useMemo(() => {
-    const set = new Set<string>()
-    devices?.forEach(d => set.add(siteOf(d)))
-    return set.size
-  }, [devices, rocketById])
-  const livePannes = devices?.filter(d => INFRA_TYPES.has(d.device_type) && d.status === 'down').length ?? 0
-  const clientCount = devices?.filter(d => d.device_type === 'lr').length ?? 0
 
   return (
     <>
@@ -72,13 +36,13 @@ export default function DashboardPage() {
 
         {/* KPI bar */}
         <StatsBar
-          sites={siteCount}
-          pannes={livePannes}
-          clients={clientCount}
-          total={total}
-          up={up}
-          down={down}
-          openIncidents={openInc}
+          sites={summary?.sites ?? 0}
+          pannes={summary?.pannes ?? 0}
+          clients={summary?.clients ?? 0}
+          total={summary?.total ?? 0}
+          up={summary?.up ?? 0}
+          down={summary?.down ?? 0}
+          openIncidents={summary?.open_incidents ?? 0}
         />
 
         {/* Outage charts per site */}
@@ -87,7 +51,7 @@ export default function DashboardPage() {
             <h2 className="font-semibold text-blue-900 text-lg">Pannes par site</h2>
           </div>
 
-          {!devices?.length ? (
+          {summary && summary.total === 0 ? (
             <div className="bg-white border border-blue-100 rounded-xl px-6 py-12 text-center shadow-sm space-y-2">
               <p className="text-blue-700 font-medium">Aucun équipement enregistré</p>
               <p className="text-blue-400 text-sm">
@@ -95,7 +59,7 @@ export default function DashboardPage() {
               </p>
             </div>
           ) : (
-            <SiteOutageCharts devices={devices} />
+            <SiteOutageCharts />
           )}
         </section>
       </div>

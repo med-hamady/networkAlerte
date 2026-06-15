@@ -284,6 +284,10 @@ class _DeviceBaseRead(BaseModel):
     ip_address: str | None
     status: str
     location: str | None
+    # Denormalised site (parent Rocket's location for an LR, own location
+    # otherwise) maintained by DB triggers — lets the /sites drill-down filter
+    # by site without re-resolving the hierarchy client-side.
+    site: str | None = None
     snmp_community: str | None
     notes: str | None
     last_seen: datetime.datetime | None

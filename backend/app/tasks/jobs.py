@@ -1620,6 +1620,11 @@ async def lr_internet_probe_job() -> None:
         )
 
     # ── Phase 2 : traitement DB séquentiel des résultats récupérés ──
+    # LR "up" (ping OK) mais dont la poignée SSH échoue : creds erronés, SSH
+    # désactivé sur le LR, port 22 filtré, banner non lu… On les collecte pour
+    # un récap actionnable en fin de cycle (paramiko lui-même est mis en sourdine
+    # dans core/logging.py).
+    ssh_failures: list[tuple[str, str, str]] = []
     async with async_session_factory() as session:
         for dev_id, (ssh_ok, ping_ok, avg_rtt, msg, observed_fp, used_pw) in results.items():
             dev = await session.get(Lr, dev_id)
@@ -1638,6 +1643,7 @@ async def lr_internet_probe_job() -> None:
 
             if not ssh_ok:
                 # Géré par device_ping_job (le LR est down). Pas d'alerte ici.
+                ssh_failures.append((dev.name, dev.ip_address, msg or "—"))
                 logger.debug(
                     "lr_internet_probe: %s (%s) SSH KO — %s (skip, géré par device_ping_job)",
                     dev.name, dev.ip_address, msg,
@@ -1664,6 +1670,18 @@ async def lr_internet_probe_job() -> None:
                 )
 
             await session.commit()
+
+    # Récap actionnable : quels LR sont up (ping OK) mais injoignables en SSH.
+    # Une seule ligne WARNING par cycle (pas un flood par device), capée pour
+    # rester lisible. À investiguer : creds SSH erronés / SSH désactivé / port 22.
+    if ssh_failures:
+        shown = ssh_failures[:80]
+        listing = ", ".join(f"{name} ({ip}) [{reason}]" for name, ip, reason in shown)
+        extra = f" … +{len(ssh_failures) - len(shown)} autre(s)" if len(ssh_failures) > len(shown) else ""
+        logger.warning(
+            "lr_internet_probe: %d/%d LR up mais SSH KO — %s%s",
+            len(ssh_failures), len(results), listing, extra,
+        )
 
 
 async def warning_digest_job() -> None:

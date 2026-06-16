@@ -32,7 +32,6 @@ from app.models.device import Device
 from app.models.incident import Incident
 from app.services import (
     alert_formatter,
-    email_service,
     whatsapp_service,
 )
 from app.services.alert_policy import get_policy_for_device, should_notify
@@ -118,11 +117,6 @@ async def _deliver(
     if target.kind == AlertChannel.WHATSAPP:
         text = alert_formatter.format_for_whatsapp(device, incident, event)
         return await whatsapp_service.send_whatsapp(text)
-    if target.kind == AlertChannel.EMAIL:
-        subject, text_body, html_body = alert_formatter.format_for_email(
-            device, incident, event,
-        )
-        return await email_service.send_email(target.recipients, subject, text_body, html_body)
     logger.warning("Unknown channel kind %r — skipping", target.kind)
     return False
 

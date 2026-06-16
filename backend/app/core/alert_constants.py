@@ -37,11 +37,10 @@ SEVERITY_VALUES: frozenset[str] = frozenset({
 class AlertChannel:
     """Notification channel identifiers used by alert policies."""
 
-    EMAIL = "email"
-    WHATSAPP = "whatsapp"  # Ultramsg — current transport (replaces email)
+    WHATSAPP = "whatsapp"  # Ultramsg — the only notification transport
 
 
-CHANNEL_VALUES: frozenset[str] = frozenset({AlertChannel.EMAIL, AlertChannel.WHATSAPP})
+CHANNEL_VALUES: frozenset[str] = frozenset({AlertChannel.WHATSAPP})
 
 
 # ---------------------------------------------------------------------------
@@ -122,9 +121,6 @@ AT_LR_REASSIGNED   = "lr_reassigned"   # LR vu sur un autre Rocket que son paren
 # Levé par le poll HTTP de chaque LR (airMAX netrole / LTU netMode), résolu automatiquement si le LR repasse en routeur.
 AT_LR_BRIDGE_MODE_MISCONFIG = "lr_bridge_mode_misconfig"
 
-# Ping quality — instabilité ponctuelle (pas d'incident, info email).
-AT_PING_INSTABILITY = "ping_instability"
-
 # Latence LR → internet (Google) mesurée par SSH depuis le LR : on ping
 # 8.8.8.8 depuis le LR et on ouvre un incident critique si la moyenne RTT
 # est ≥ seuil pendant K cycles consécutifs. Seul signal de latence du
@@ -139,7 +135,7 @@ AT_AF60_LINK_SUBSTANDARD = "af60_link_substandard" # consolidé : potentiel / ca
 
 # Sécurité — volume anormal d'écritures API détecté par
 # security_anomaly_detection_job sur la base de la table audit_log. N'est PAS
-# attaché à un device (événement système) — envoyé directement par email via
+# attaché à un device (événement système) — routé directement via WhatsApp par
 # notification_service.notify_security_event.
 AT_SECURITY_ANOMALY = "security_anomaly"
 
@@ -183,7 +179,7 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_AIRMAX_DOWN,
     AT_LR_DISCOVERED, AT_LR_IP_CHANGED, AT_LR_REASSIGNED,
     AT_LR_BRIDGE_MODE_MISCONFIG,
-    AT_PING_INSTABILITY, AT_LR_LATENCY_HIGH,
+    AT_LR_LATENCY_HIGH,
     AT_AF60_LINK_DOWN, AT_AF60_SIGNAL_LOW, AT_AF60_SNR_LOW, AT_AF60_LINK_SUBSTANDARD,
     AT_SECURITY_ANOMALY,
     AT_ROCKET_CLIENT_OVERLOAD,

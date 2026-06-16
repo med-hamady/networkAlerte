@@ -45,8 +45,8 @@ def test_merge_overrides_notify_immediately():
 
 def test_merge_overrides_channels_filters_unknown():
     base = get_policy(AT_SIGNAL_LOW)
-    merged = merge_overrides(base, {"channels": ["email", "carrier-pigeon"]})
-    assert AlertChannel.EMAIL in merged.channels
+    merged = merge_overrides(base, {"channels": ["whatsapp", "carrier-pigeon"]})
+    assert AlertChannel.WHATSAPP in merged.channels
     assert "carrier-pigeon" not in merged.channels
 
 
@@ -79,7 +79,7 @@ def test_merge_overrides_does_not_change_severity():
 
 def test_merge_overrides_channels_must_be_list_or_tuple():
     base = get_policy(AT_SIGNAL_LOW)
-    merged = merge_overrides(base, {"channels": "email"})
+    merged = merge_overrides(base, {"channels": "whatsapp"})
     # String coerced as channels argument is wrong → ignored, base channels kept
     assert merged.channels == base.channels
 

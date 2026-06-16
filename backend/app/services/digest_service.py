@@ -28,7 +28,6 @@ from app.models.device import Device
 from app.models.incident import Incident
 from app.services import (
     alert_formatter,
-    email_service,
     notification_service,
     whatsapp_service,
 )
@@ -104,11 +103,6 @@ async def _deliver_digest(target, items: list[tuple[Device, Incident]]) -> bool:
     if target.kind == AlertChannel.WHATSAPP:
         text = alert_formatter.format_digest_for_whatsapp(items)
         return await whatsapp_service.send_whatsapp(text)
-    if target.kind == AlertChannel.EMAIL:
-        subject, text_body, html_body = alert_formatter.format_digest_for_email(items)
-        return await email_service.send_email(
-            target.recipients, subject, text_body, html_body,
-        )
     logger.warning("Unknown channel kind for digest: %s", target.kind)
     return False
 

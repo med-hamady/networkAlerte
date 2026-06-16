@@ -40,7 +40,6 @@ from app.core.alert_constants import (
     AT_LR_NO_TRANSIT,
     AT_LR_REASSIGNED,
     AT_MAINS_POWER_LOST,
-    AT_PING_INSTABILITY,
     AT_RADIO_INTERFACE_DOWN,
     AT_RADIO_LINK_DEGRADED,
     AT_ROCKET_CLIENT_OVERLOAD,
@@ -114,9 +113,6 @@ ALERT_TYPE_LABELS: dict[str, str] = {
     AT_TRANSIT_UNAVAILABLE:  "Transit Internet indisponible",
     AT_LR_NO_TRANSIT:        "Client (LR) sans accès Internet",
     AT_LR_LATENCY_HIGH:      "Latence élevée du LR vers Internet",
-
-    # Ping quality
-    AT_PING_INSTABILITY:     "Ping instable",
 
     # Configuration
     AT_LR_BRIDGE_MODE_MISCONFIG: "LR en mode bridge (blocage client inopérant)",

@@ -48,7 +48,7 @@ backend/app/
 │       ├── health.py              # GET /health (public — test DB inclus)
 │       ├── devices.py             # CRUD + diagnostics SSH/ping sur /devices
 │       ├── incidents.py           # GET/PATCH /incidents
-│       ├── system.py              # GET/POST /system (infos système, /system/test-email)
+│       ├── system.py              # GET/POST /system (infos système, /system/test-whatsapp)
 │       └── uisp.py                # POST /uisp/sync (import infra depuis le contrôleur UISP, ?dry_run=true pour prévisualiser)
 ├── models/                  # SQLAlchemy ORM (Base avec id, created_at, updated_at)
 │   ├── device.py            # Équipements supervisés (+ parent_id hiérarchie, policy_overrides JSON)
@@ -63,9 +63,8 @@ backend/app/
 │   ├── device_service.py           # CRUD devices
 │   ├── poller.py                   # Ping ICMP async (asyncio subprocess)
 │   ├── incident_service.py         # Création/résolution/déduplication d'incidents
-│   ├── notification_service.py     # Dispatch des notifications — canal résolu depuis l'env : **WhatsApp (Ultramsg) REMPLACE l'email**. _deliver / digest / security routent vers WhatsApp. **Liste blanche `WHATSAPP_ALERT_TYPES`** (chokepoint dans `_dispatch`) : seules 5 anomalies sont poussées, tout le reste ouvre l'incident en DB mais n'est notifié nulle part
+│   ├── notification_service.py     # Dispatch des notifications — **WhatsApp (Ultramsg) est l'UNIQUE transport** (l'envoi d'email a été retiré du projet). _deliver / digest / security routent vers WhatsApp. **Liste blanche `WHATSAPP_ALERT_TYPES`** (chokepoint dans `_dispatch`) : seules 5 anomalies sont poussées, tout le reste ouvre l'incident en DB mais n'est notifié nulle part
 │   ├── whatsapp_service.py         # Envoi WhatsApp via Ultramsg (POST /{instance}/messages/chat → groupe WHATSAPP_GROUP_ID). httpx async, jamais raise (False sur échec)
-│   ├── email_service.py            # Envoi SMTP HTML + plain text — gardé UNIQUEMENT pour le diagnostic /system/test-email (hors pipeline d'alerting)
 │   ├── snmp_service.py             # SNMP : LTU radio (ath0/eth0) + Switch (ports 1..N)
 │   ├── uisp_power_service.py       # API REST UISP Power (voltage, current, batterie)
 │   ├── ltu_api_service.py          # API HTTP LTU Rocket (signal, CCQ, CINR, CPE peers)
@@ -73,7 +72,7 @@ backend/app/
 │   ├── client_block_service.py     # Blocage client 2 modes (full / whatsapp_only) + enforcement
 │   ├── alert_engine.py             # Orchestrateur : évalue règles, gère AlertState, ouvre/résout incidents
 │   ├── alert_rules.py              # Règles d'alerte pure Python (sans DB) — 10+ règles
-│   ├── alert_formatter.py          # Formatage messages Slack/email par type d'alerte
+│   ├── alert_formatter.py          # Formatage messages WhatsApp/log par type d'alerte
 │   ├── alert_policy.py             # Registre interne : politique (canal/groupable/recovery/immédiat) par alert_type — plus exposé en API
 │   ├── digest_service.py           # Regroupement des warnings en digest 15 min
 │   ├── uisp_service.py             # Client REST contrôleur UISP/UNMS (login → token, GET /devices) — read-only
@@ -144,13 +143,7 @@ backend/app/
 | `TRANSIT_PROBE_THRESHOLD` | Cycles consécutifs sans transit avant ouverture de `lr_no_transit` (défaut 2) |
 | `SLACK_WEBHOOK_URL` | Webhook Slack pour les notifications |
 | `WEBHOOK_URL` | Webhook générique (JSON POST) |
-| `SMTP_HOST` | Serveur SMTP pour les emails |
-| `SMTP_PORT` | Port SMTP |
-| `SMTP_USERNAME` | Identifiant SMTP |
-| `SMTP_PASSWORD` | Mot de passe SMTP |
-| `SMTP_FROM` | Adresse expéditeur |
-| `SMTP_TO` | Destinataire(s) emails |
-| `WHATSAPP_ENABLED` | Active le canal WhatsApp (Ultramsg) qui **remplace l'email** comme transport d'alerting (défaut `false`) |
+| `WHATSAPP_ENABLED` | Active le canal WhatsApp (Ultramsg) — **unique transport d'alerting** (l'envoi d'email a été retiré du projet) (défaut `false`) |
 | `WHATSAPP_BASE_URL` | URL de base Ultramsg (défaut `https://api.ultramsg.com`) |
 | `WHATSAPP_INSTANCE_ID` | Id d'instance Ultramsg (ex. `instance12345`) |
 | `WHATSAPP_TOKEN` | Token de l'instance Ultramsg |
@@ -217,7 +210,7 @@ backend/app/
 - [x] Ruff + pre-commit
 - [x] **Ping ICMP async** — `app/services/poller.py`
 - [x] **Incidents automatiques** avec déduplication — `app/services/incident_service.py`
-- [x] **Notifications** (Slack webhook + webhook générique + email SMTP HTML) — `notification_service.py` + `email_service.py`
+- [x] **Notifications** (WhatsApp Ultramsg — unique transport ; envoi email retiré du projet) — `notification_service.py` + `whatsapp_service.py`
 - [x] **SNMP Ubiquiti** — `snmp_service.py` (radio ath0/eth0 + switch ports 1..N)
 - [x] **UISP Power polling** — `uisp_power_service.py` (voltage, current, power, batterie)
 - [x] **API HTTP LTU Rocket** — `ltu_api_service.py` (signal, CCQ, CINR, TX/RX rates, CPE peers, distance)
@@ -232,8 +225,8 @@ backend/app/
 - [x] **Digest warnings** — `digest_service.py` + `warning_digest_job` (regroupement 15 min)
 - [x] **Auto-découverte LTU LR** — le job LTU API lit les CPE peers du Rocket et établit la hiérarchie parent/enfant automatiquement
 - [x] **Authentification API** — API key via header `X-API-Key` (`app/api/deps.py`)
-- [x] **Notifications — WhatsApp (Ultramsg) remplace l'email** — depuis le 2026-06-11 le canal résolu depuis l'env est **WhatsApp** (`WHATSAPP_ENABLED` + `WHATSAPP_INSTANCE_ID` + `WHATSAPP_TOKEN` + `WHATSAPP_GROUP_ID`) : tout le pipeline d'incidents (immédiat + digest + sécurité) part vers le **groupe WhatsApp** via `whatsapp_service` (`POST /{instance}/messages/chat` Ultramsg). `email_service` n'est plus dans le pipeline — gardé **uniquement** pour le diagnostic `POST /api/v1/system/test-email`. Diagnostic WhatsApp : `POST /api/v1/system/test-whatsapp`. Le registre `alert_policy.py` reste interne ; ses jeux de canaux pointent tous sur `AlertChannel.WHATSAPP`. **Restriction (2026-06-11)** : WhatsApp ne pousse QUE les alert_types de la liste blanche `WHATSAPP_ALERT_TYPES` (`alert_constants`) : `switch_port_speed_low`+`switch_port_down`, `device_flapping`, **`battery_internal_low` (Li-Ion UPS < 50%) + `battery_external_low` (banc plomb < 30%)**, `af60_link_substandard`+`af60_link_down` (lien P2P dégradé = capacité < **1.95 Gb/s**, cf. `af60_total_capacity_min_mbps`), **équipement injoignable** `rocket_down`+`switch_down`+`device_unreachable`+`airmax_down` (un UISP Power down est couvert par `device_unreachable` ; `uisp_power_unreachable` plus émis, pour éviter le doublon), plus la latence réseau (envoi direct du `network_latency_aggregate_job`). **UISP Power notifie = 2 alertes batterie + down** (voltage / ancienne alerte batterie unique retirés ; **coupure secteur `mains_power_lost` conservée et affichée dans /incidents mais NON notifiée**). Toute autre anomalie (qualité radio, voltage, coupure secteur, **sécurité**, découverte LR…) ouvre/résout son incident en DB mais **n'est notifiée nulle part**. Le chokepoint est `notification_service._dispatch` (+ `notify_security_event` + collecte du digest). (Historique 2026-06-09 : avant WhatsApp, l'email était env-only `SMTP_ENABLED`+`NOTIFICATION_EMAILS` ; `notification_channels`/`/notification-channels` et `/alert-policies` supprimés.)
-- [x] **Formatage des alertes** — `alert_formatter.py` (messages email contextualisés par type)
+- [x] **Notifications — WhatsApp (Ultramsg) remplace l'email** — depuis le 2026-06-11 le canal résolu depuis l'env est **WhatsApp** (`WHATSAPP_ENABLED` + `WHATSAPP_INSTANCE_ID` + `WHATSAPP_TOKEN` + `WHATSAPP_GROUP_ID`) : tout le pipeline d'incidents (immédiat + digest + sécurité) part vers le **groupe WhatsApp** via `whatsapp_service` (`POST /{instance}/messages/chat` Ultramsg). **L'envoi d'email a été entièrement retiré du projet (2026-06-16)** : `email_service`, l'endpoint `/system/test-email`, le job d'instabilité ping (`ping_instability` + son email), la config SMTP et la dépendance `aiosmtplib` sont supprimés. Diagnostic restant : `POST /api/v1/system/test-whatsapp`. Le registre `alert_policy.py` reste interne ; ses jeux de canaux pointent tous sur `AlertChannel.WHATSAPP`. **Restriction (2026-06-11)** : WhatsApp ne pousse QUE les alert_types de la liste blanche `WHATSAPP_ALERT_TYPES` (`alert_constants`) : `switch_port_speed_low`+`switch_port_down`, `device_flapping`, **`battery_internal_low` (Li-Ion UPS < 50%) + `battery_external_low` (banc plomb < 30%)**, `af60_link_substandard`+`af60_link_down` (lien P2P dégradé = capacité < **1.95 Gb/s**, cf. `af60_total_capacity_min_mbps`), **équipement injoignable** `rocket_down`+`switch_down`+`device_unreachable`+`airmax_down` (un UISP Power down est couvert par `device_unreachable` ; `uisp_power_unreachable` plus émis, pour éviter le doublon), plus la latence réseau (envoi direct du `network_latency_aggregate_job`). **UISP Power notifie = 2 alertes batterie + down** (voltage / ancienne alerte batterie unique retirés ; **coupure secteur `mains_power_lost` conservée et affichée dans /incidents mais NON notifiée**). Toute autre anomalie (qualité radio, voltage, coupure secteur, **sécurité**, découverte LR…) ouvre/résout son incident en DB mais **n'est notifiée nulle part**. Le chokepoint est `notification_service._dispatch` (+ `notify_security_event` + collecte du digest). (Historique 2026-06-09 : avant WhatsApp, l'email était env-only `SMTP_ENABLED`+`NOTIFICATION_EMAILS` ; `notification_channels`/`/notification-channels` et `/alert-policies` supprimés.)
+- [x] **Formatage des alertes** — `alert_formatter.py` (messages WhatsApp contextualisés par type)
 - [x] **API incidents** — `GET/PATCH /api/v1/incidents` (filtres status/severity/device_id/alert_type)
 - [x] **Résolution = suppression** — pas d'archive : à la résolution, `incident_service.resolve_incidents` **hard-delete** l'incident. **Exception** : les types de **disponibilité** (`AVAILABILITY_ALERT_TYPES` dans `alert_constants` = `rocket_down`, `switch_down`, `device_unreachable`, `uisp_power_unreachable`, `airmax_down`) sont conservés en `status=resolved` car le **Journal des coupures** (`network_uptime_service`) reconstruit l'historique + la dispo % depuis leur `resolved_at`. La notification de résolution part quand même pour les incidents purgés (objets encore en mémoire). La page `/incidents/archive` et le lien sidebar ont été supprimés.
 - [x] **Pas d'audit trail des notifications** — la table `alerts` et la page `/notifications` ont été **supprimées** (2026-06-09, migration `a8b9c0d1e2f3`). Les notifications sont toujours **envoyées** mais aucune ligne d'audit n'est persistée.
@@ -329,7 +322,6 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | GET | `/api/v1/incidents` | Oui | Liste incidents (filtres: status, severity, device_id, alert_type) — lecture seule |
 | GET | `/api/v1/incidents/{id}` | Oui | Détail incident — lecture seule |
 | GET | `/api/v1/system` | Oui | Infos système (version, uptime scheduler) |
-| POST | `/api/v1/system/test-email` | Oui | Diagnostic SMTP — envoie un email de test aux `NOTIFICATION_EMAILS` |
 | POST | `/api/v1/system/test-whatsapp` | Oui | Diagnostic WhatsApp (Ultramsg) — envoie un message de test au groupe `WHATSAPP_GROUP_ID` |
 | POST | `/api/v1/uisp/sync` | Oui | Import des équipements d'infra depuis le contrôleur UISP (`?dry_run=true` = prévisualisation sans écriture). Renvoie un résumé (créés/màj/ignorés + échantillon) |
 | GET | `/api/v1/network-capacity` | Oui | Capacité clients : par famille (LTU/airMAX) et par site, clients connectés (`peer_count`) vs max (seuil `rocket_client_overload`). Rockets sans largeur connue exclus des totaux (`unknown`). `network_capacity_service` |

@@ -69,8 +69,13 @@ class Settings(BaseSettings):
     # était SÉRIE (une session SSH à la fois) → ~1 h par tour à 500 LR (chaque LR
     # n'était sondé qu'une fois/heure). On parallélise sur un pool de threads
     # dédié de cette taille (chaque sonde = paramiko sync borné par ses timeouts).
-    # ceil(parc_LR / concurrence) × ~8 s ≈ durée d'un tour (ex. 500/60 ≈ 70 s).
-    lr_probe_concurrency: int = 60
+    # ceil(parc_LR / concurrence) × ~8 s ≈ durée d'un tour (ex. 900/150 ≈ 48 s).
+    # Doit rester < lr_latency_interval, sinon le tour déborde et chaque tick
+    # planifié est « skipped: maximum number of running instances reached » (le
+    # job tourne quand même, mais à cadence dégradée). À 60, un parc de plusieurs
+    # centaines de LR débordait l'intervalle de 60–180 s en continu ; 150 tient
+    # le tour sous l'intervalle. Augmenter encore (env) pour un parc plus grand.
+    lr_probe_concurrency: int = 150
 
     # Concurrence max du device_ping_job. Le job lançait TOUS les pings d'un coup
     # (asyncio.gather sur tout le parc) — à 600+ devices ça spawn 600 sous-process
@@ -79,10 +84,6 @@ class Settings(BaseSettings):
     # On borne le nombre de pings en vol via un sémaphore. ceil(parc/concurrence)
     # batchs × ~2 s/ping doit tenir sous ping_interval_seconds (ex. 600/100 ≈ 12 s).
     ping_concurrency: int = 100
-
-    # Instabilité ping — N échecs suivis d'un succès (sans atteindre ping_down_threshold)
-    # déclenche un email INFO. 0 = désactivé.
-    ping_instability_threshold: int = 2
 
     # Sonde LR → Internet — un seul job (`lr_internet_probe_job`) ouvre une
     # session SSH par LR par cycle et exécute `ping -c N` vers la cible
@@ -104,30 +105,11 @@ class Settings(BaseSettings):
     lr_latency_failure_threshold: int = 3
     lr_latency_interval: int = 60
 
-    # Notifications — SMTP email
-    smtp_enabled: bool = False
-    smtp_host: str = "smtp.gmail.com"
-    smtp_port: int = 587
-    smtp_username: str = ""
-    smtp_password: str = ""
-    smtp_from_email: str = ""
-    smtp_from_name: str = "Network Supervisor"
-    smtp_use_tls: bool = True       # STARTTLS (port 587)
-    smtp_use_ssl: bool = False      # SSL direct (port 465)
-    # Comma-separated list of recipient emails
-    notification_emails: str = ""   # ex: "admin@company.com,ops@company.com"
-
-    @property
-    def notification_email_list(self) -> list[str]:
-        """Parse comma-separated notification_emails into a list."""
-        return [e.strip() for e in self.notification_emails.split(",") if e.strip()]
-
     # Notifications — WhatsApp via Ultramsg (https://ultramsg.com).
-    # WhatsApp REPLACES email as the notification transport: when enabled, the
-    # notification pipeline resolves a single WhatsApp target (the group below)
-    # instead of the SMTP target, and every infra incident lands there. The
-    # group id is a WhatsApp group chat id of the form "1203630xxxxxxx@g.us".
-    # email_service stays available only for the /system/test-email diagnostic.
+    # WhatsApp is the ONLY notification transport (email sending was removed from
+    # the project): the pipeline resolves a single WhatsApp target (the group
+    # below) and every notified infra incident lands there. The group id is a
+    # WhatsApp group chat id of the form "1203630xxxxxxx@g.us".
     whatsapp_enabled: bool = False
     whatsapp_base_url: str = "https://api.ultramsg.com"
     whatsapp_instance_id: str = ""   # ex: instance12345

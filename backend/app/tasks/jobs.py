@@ -19,7 +19,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import DBAPIError
 
 from app.core.alert_constants import (
@@ -57,7 +57,6 @@ from app.services import (
     client_block_service,
     digest_service,
     discovery_service,
-    email_service,
     incident_service,
     lr_health_service,
     lr_plan_service,
@@ -200,6 +199,19 @@ async def persist_device_metrics(
         now = datetime.datetime.now(datetime.UTC)
     units = unit_map or {}
 
+    # Serialize concurrent writers of THIS device's metrics. A Rocket is persisted
+    # every cycle by BOTH snmp_poll_job (IF-MIB) and ltu_api_poll_job (HTTP API);
+    # their collapse DELETE+INSERT on the same (device_id, metric_name) rows raced
+    # and Postgres killed one with `deadlock detected` (40P01) — the SNMP/LTU jobs
+    # failed a whole cycle each time. A per-device transaction-level advisory lock
+    # makes the two passes serialize on the device instead of deadlocking; it is
+    # released automatically at COMMIT/ROLLBACK. No new cycle is possible: every
+    # writer holds the Rocket's key first (ltu before its LR fan-out), so two
+    # transactions never grab a shared pair of keys in opposite order.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:k)"), {"k": int(device_id)},
+    )
+
     collapse_names = [
         name for name, value in metrics.items()
         if value is not None and name not in HISTORY_METRICS
@@ -223,36 +235,6 @@ async def persist_device_metrics(
             unit=units.get(metric_name),
             collected_at=now,
         ))
-
-
-async def _send_ping_instability_email(
-    device: Device, failures: int, threshold: int,
-) -> bool:
-    """
-    Send an INFO email when a device recovered from N consecutive ping failures
-    without ever reaching ping_down_threshold (no incident was opened).
-    """
-    settings = get_settings()
-    recipients = settings.notification_email_list
-    if not recipients:
-        return False
-
-    subject = f"[INFO] Instabilité ping — {device.name}"
-    body_text = (
-        f"Information : {device.name} ({device.ip_address}) a eu {failures} ping(s) "
-        f"consécutif(s) raté(s) avant de redevenir joignable.\n\n"
-        f"Aucun incident n'a été ouvert (seuil critique = {threshold} cycles).\n\n"
-        f"À surveiller : possible dégradation latente du lien."
-    )
-    body_html = (
-        f"<h3>Instabilité ping détectée</h3>"
-        f"<p><strong>{device.name}</strong> ({device.ip_address}) a eu "
-        f"<strong>{failures} ping(s) consécutif(s) raté(s)</strong> avant de redevenir "
-        f"joignable.</p>"
-        f"<p>Aucun incident ouvert (seuil critique = {threshold} cycles).</p>"
-        f"<p><em>À surveiller : possible dégradation latente du lien.</em></p>"
-    )
-    return await email_service.send_email(recipients, subject, body_text, body_html)
 
 
 # rule_category buckets used to pick SNMP poll variants.
@@ -591,21 +573,6 @@ async def device_ping_job() -> None:
                 if device.id in open_down:
                     recovery_title = f"RECOVERY : {device.name} de nouveau disponible"
                     await _resolve_and_notify(session, device, recovery_title, alert_type=at)
-                # Instabilité ping : recovery après N échecs partiels sans atteindre
-                # le seuil down (signal info-only).
-                if (
-                    settings.ping_instability_threshold > 0
-                    and prev_failures >= settings.ping_instability_threshold
-                    and prev_failures < settings.ping_down_threshold
-                ):
-                    sent = await _send_ping_instability_email(
-                        device, prev_failures, settings.ping_down_threshold,
-                    )
-                    logger.info(
-                        "PING INSTABILITY %s (%s) — %d échec(s) puis recovery, email %s",
-                        device.name, device.ip_address, prev_failures,
-                        "envoyé" if sent else "non envoyé",
-                    )
                 logger.info("UP   %s (%s)", device.name, device.ip_address)
             else:
                 failures = prev_failures + 1
@@ -1229,6 +1196,14 @@ async def ltu_api_poll_job() -> None:
             dev = await session.get(Device, dev_id)
             if dev is None:
                 continue
+
+            # Take the Rocket's per-device advisory lock UP FRONT (before reconcile
+            # writes any device row) so this transaction serializes with the
+            # concurrent snmp_poll_job pass on the same Rocket from the very first
+            # write — see persist_device_metrics for the deadlock rationale.
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(:k)"), {"k": int(dev.id)},
+            )
 
             # Auto-discovery: create / update / link LR devices from the Rocket's peer list.
             # MAC-based identity → IP changes and Rocket reassignments are detected reliably.

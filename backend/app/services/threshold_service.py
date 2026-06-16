@@ -279,15 +279,6 @@ THRESHOLD_SCHEMA: dict[str, dict[str, Any]] = {
         "max": 10,
         "step": 1,
     },
-    "ping_instability_threshold": {
-        "label": "Ping instabilité — échecs avant email info (0 = désactivé)",
-        "category": "antiflap",
-        "unit": "cycles",
-        "type": int,
-        "min": 0,
-        "max": 10,
-        "step": 1,
-    },
     "signal_failure_threshold": {
         "label": "Signal — cycles consécutifs avant incident",
         "category": "antiflap",

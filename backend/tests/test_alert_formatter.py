@@ -3,7 +3,7 @@ Unit tests for alert_formatter.py — pure Python, no DB required.
 
 Validates:
   - human-readable text contains all the operationally critical fields
-  - email returns subject + plain body + html body, all non-empty
+  - WhatsApp format bolds the headline and keeps the body
   - recovery format includes the duration
 """
 
@@ -109,29 +109,26 @@ def test_human_readable_resolved_handles_missing_dates():
 
 
 # ---------------------------------------------------------------------------
-# format_for_email
+# format_for_whatsapp
 # ---------------------------------------------------------------------------
 
-def test_email_opened_returns_subject_text_and_html():
-    subject, text, html = alert_formatter.format_for_email(
+def test_whatsapp_opened_bolds_headline_and_keeps_body():
+    out = alert_formatter.format_for_whatsapp(
         _device(), _incident(), NotificationEvent.OPENED,
     )
-    assert subject
-    assert "CRITICAL" in subject
-    assert "LTU Rocket" in subject
-    assert text
-    assert html
-    assert "<html>" in html
+    # First line is the bold headline (*...*), the rest is the body.
+    head, _, rest = out.partition("\n")
+    assert head.startswith("*") and head.endswith("*")
+    assert "LTU Rocket" in rest
 
 
-def test_email_resolved_subject_and_duration_in_html():
+def test_whatsapp_resolved_includes_duration():
     inc = _incident(
         status="resolved",
         resolved_at=datetime.datetime(2026, 4, 22, 14, 12, 3, tzinfo=UTC),
     )
-    subject, text, html = alert_formatter.format_for_email(
+    out = alert_formatter.format_for_whatsapp(
         _device(), inc, NotificationEvent.RESOLVED,
     )
-    assert "RÉSOLU" in subject
-    assert "6 min" in html
-    assert "RÉTABLI" in text
+    assert "RÉTABLI" in out
+    assert "6 min" in out

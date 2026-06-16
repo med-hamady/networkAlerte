@@ -3,11 +3,11 @@ Alert formatter — uniform message generation for every notification channel.
 
 Every alert message produced by the system goes through this module so that
 operators see the same fields rendered the same way whether the alert lands
-in an email or in a log line.
+in a WhatsApp message or in a log line.
 
 Public functions (all take a Device + Incident + lifecycle event):
     format_human_readable(device, incident, event)  -> str
-    format_for_email(device, incident, event)       -> tuple[subject, text, html]
+    format_for_whatsapp(device, incident, event)    -> str
 
 `event` is one of NotificationEvent.OPENED / NotificationEvent.RESOLVED.
 """
@@ -38,13 +38,7 @@ _SEVERITY_LABEL = {
     Severity.WARNING:  "WARNING",
     Severity.CRITICAL: "CRITICAL",
 }
-_SEVERITY_COLOR = {
-    Severity.INFO:     "#3498db",
-    Severity.WARNING:  "#f39c12",
-    Severity.CRITICAL: "#e74c3c",
-}
 _RECOVERY_EMOJI = "✅"
-_RECOVERY_COLOR = "#27ae60"
 
 
 def _severity_label(severity: str | None) -> str:
@@ -126,108 +120,6 @@ def format_human_readable(
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Email — subject + html body
-# ---------------------------------------------------------------------------
-
-def _email_subject(device: Device, incident: Incident, event: str) -> str:
-    alert_label = alert_type_label(incident.alert_type)
-    if event == NotificationEvent.RESOLVED:
-        return f"[RÉSOLU] {device.name} — {alert_label}"
-    label = _severity_label(incident.severity)
-    return f"[{label}] {alert_label} — {device.name}"
-
-
-def _email_html_opened(device: Device, incident: Incident) -> str:
-    severity = incident.severity or Severity.WARNING
-    color = _SEVERITY_COLOR.get(severity, "#95a5a6")
-    label = _severity_label(severity)
-    alert_label = alert_type_label(incident.alert_type)
-
-    metric = _metric_line(incident)
-    metric_row = (
-        f"<tr><td style='padding:6px 0;color:#555;'>Métrique</td>"
-        f"<td style='padding:6px 0;'>{metric}</td></tr>"
-        if metric else ""
-    )
-    desc_row = (
-        f"<tr><td style='padding:6px 0;color:#555;'>Description</td>"
-        f"<td style='padding:6px 0;'>{incident.description}</td></tr>"
-        if incident.description else ""
-    )
-
-    return f"""
-<!DOCTYPE html>
-<html>
-<body style="font-family:Arial,sans-serif;background:#f4f4f4;padding:20px;">
-  <div style="max-width:640px;margin:auto;background:#fff;border-radius:8px;overflow:hidden;
-              box-shadow:0 2px 8px rgba(0,0,0,0.1);">
-    <div style="background:{color};padding:20px 30px;">
-      <h2 style="color:#fff;margin:0;">{_severity_emoji(severity)} {label} — {alert_label}</h2>
-    </div>
-    <div style="padding:30px;">
-      <table style="width:100%;border-collapse:collapse;font-size:14px;">
-        <tr><td style="padding:6px 0;color:#555;width:160px;">Équipement</td>
-            <td style="padding:6px 0;"><strong>{device.name}</strong></td></tr>
-        <tr><td style="padding:6px 0;color:#555;">Adresse IP</td>
-            <td style="padding:6px 0;">{device.ip_address}</td></tr>
-        <tr><td style="padding:6px 0;color:#555;">Type</td>
-            <td style="padding:6px 0;">{device.device_type}</td></tr>
-        <tr><td style="padding:6px 0;color:#555;">Sévérité</td>
-            <td style="padding:6px 0;">
-              <span style="background:{color};color:#fff;padding:2px 8px;
-                           border-radius:4px;font-size:12px;">{label}</span>
-            </td></tr>
-        {metric_row}
-        {desc_row}
-        <tr><td style="padding:6px 0;color:#555;">Détecté le</td>
-            <td style="padding:6px 0;">{_fmt_dt(incident.detected_at)}</td></tr>
-      </table>
-
-      <hr style="border:none;border-top:1px solid #eee;margin:20px 0;">
-      <p style="color:#888;font-size:12px;margin:0;">
-        Ce message est généré automatiquement par Network Supervisor.<br>
-        Connectez-vous au dashboard pour gérer cet incident.
-      </p>
-    </div>
-  </div>
-</body>
-</html>"""
-
-
-def _email_html_resolved(device: Device, incident: Incident) -> str:
-    alert_label = alert_type_label(incident.alert_type)
-    duration = _fmt_duration(incident.detected_at, incident.resolved_at)
-    return f"""
-<!DOCTYPE html>
-<html>
-<body style="font-family:Arial,sans-serif;background:#f4f4f4;padding:20px;">
-  <div style="max-width:640px;margin:auto;background:#fff;border-radius:8px;overflow:hidden;
-              box-shadow:0 2px 8px rgba(0,0,0,0.1);">
-    <div style="background:{_RECOVERY_COLOR};padding:20px 30px;">
-      <h2 style="color:#fff;margin:0;">{_RECOVERY_EMOJI} RÉTABLI — {alert_label}</h2>
-    </div>
-    <div style="padding:30px;">
-      <table style="width:100%;border-collapse:collapse;font-size:14px;">
-        <tr><td style="padding:6px 0;color:#555;width:160px;">Équipement</td>
-            <td style="padding:6px 0;"><strong>{device.name}</strong></td></tr>
-        <tr><td style="padding:6px 0;color:#555;">Adresse IP</td>
-            <td style="padding:6px 0;">{device.ip_address}</td></tr>
-        <tr><td style="padding:6px 0;color:#555;">Résolu le</td>
-            <td style="padding:6px 0;">{_fmt_dt(incident.resolved_at)}</td></tr>
-        <tr><td style="padding:6px 0;color:#555;">Durée</td>
-            <td style="padding:6px 0;">{duration}</td></tr>
-      </table>
-      <hr style="border:none;border-top:1px solid #eee;margin:20px 0;">
-      <p style="color:#888;font-size:12px;margin:0;">
-        Ce message est généré automatiquement par Network Supervisor.
-      </p>
-    </div>
-  </div>
-</body>
-</html>"""
-
-
 def format_for_whatsapp(
     device: Device,
     incident: Incident,
@@ -244,26 +136,6 @@ def format_for_whatsapp(
     head, _, rest = body.partition("\n")
     head = f"*{head}*"
     return f"{head}\n{rest}" if rest else head
-
-
-def format_for_email(
-    device: Device,
-    incident: Incident,
-    event: str = NotificationEvent.OPENED,
-) -> tuple[str, str, str]:
-    """
-    Return (subject, plain_text_body, html_body) for the email channel.
-
-    plain_text_body falls back to the same content as format_human_readable so
-    that mail clients without HTML rendering still get a readable message.
-    """
-    subject = _email_subject(device, incident, event)
-    text_body = format_human_readable(device, incident, event)
-    if event == NotificationEvent.RESOLVED:
-        html_body = _email_html_resolved(device, incident)
-    else:
-        html_body = _email_html_opened(device, incident)
-    return subject, text_body, html_body
 
 
 # ---------------------------------------------------------------------------
@@ -298,56 +170,6 @@ def _digest_text_body(items: list[tuple[Device, Incident]]) -> str:
             lines.append(_digest_line(dev, inc))
         lines.append("")
     return "\n".join(lines).rstrip()
-
-
-def _digest_html_body(items: list[tuple[Device, Incident]]) -> str:
-    by_type: dict[str, list[tuple[Device, Incident]]] = {}
-    for dev, inc in items:
-        by_type.setdefault(inc.alert_type or "unknown", []).append((dev, inc))
-
-    sections = []
-    for alert_type, group in sorted(by_type.items()):
-        rows = "".join(
-            f"<tr><td style='padding:4px 0;color:#555;'>{dev.name}</td>"
-            f"<td style='padding:4px 8px;'>{dev.ip_address}</td>"
-            f"<td style='padding:4px 0;'>{_metric_line(inc) or '—'}</td></tr>"
-            for dev, inc in group
-        )
-        sections.append(f"""
-        <h3 style="color:#333;margin-top:20px;margin-bottom:8px;">
-          {alert_type_label(alert_type)} <span style="color:#888;font-size:13px;">({len(group)})</span>
-        </h3>
-        <table style="width:100%;border-collapse:collapse;font-size:13px;">{rows}</table>
-        """)
-    body_sections = "".join(sections)
-
-    return f"""
-<!DOCTYPE html>
-<html>
-<body style="font-family:Arial,sans-serif;background:#f4f4f4;padding:20px;">
-  <div style="max-width:680px;margin:auto;background:#fff;border-radius:8px;overflow:hidden;
-              box-shadow:0 2px 8px rgba(0,0,0,0.1);">
-    <div style="background:#f39c12;padding:20px 30px;">
-      <h2 style="color:#fff;margin:0;">🟡 Warnings digest — {len(items)} alerte(s)</h2>
-    </div>
-    <div style="padding:30px;">
-      {body_sections}
-      <hr style="border:none;border-top:1px solid #eee;margin:20px 0;">
-      <p style="color:#888;font-size:12px;margin:0;">
-        Récap groupé des alertes warning persistantes — Network Supervisor.
-      </p>
-    </div>
-  </div>
-</body>
-</html>"""
-
-
-def format_digest_for_email(
-    items: list[tuple[Device, Incident]],
-) -> tuple[str, str, str]:
-    """Return (subject, plain_text_body, html_body) for a warning digest email."""
-    subject = f"[WARNINGS] {len(items)} alerte(s) actives — Network Supervisor"
-    return subject, _digest_text_body(items), _digest_html_body(items)
 
 
 def format_digest_for_whatsapp(items: list[tuple[Device, Incident]]) -> str:

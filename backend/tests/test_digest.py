@@ -2,7 +2,7 @@
 Tests for warning digest formatting and dispatch deferral.
 
 Two angles:
-  - alert_formatter.format_digest_for_email renders well-shaped payloads
+  - alert_formatter._digest_text_body renders well-shaped payloads
   - notification_service._dispatch defers groupable warnings on opened
 """
 
@@ -48,21 +48,8 @@ def _incident(alert_type, severity=Severity.WARNING, **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# format_digest_for_email
+# digest text body
 # ---------------------------------------------------------------------------
-
-def test_digest_email_returns_subject_text_html():
-    items = [
-        (_device(), _incident(AT_CCQ_LOW)),
-        (_device("LR"),  _incident(AT_SIGNAL_LOW)),
-    ]
-    subject, text, html = alert_formatter.format_digest_for_email(items)
-    assert "WARNINGS" in subject
-    assert "2 alerte" in subject
-    assert alert_type_label(AT_CCQ_LOW) in text
-    assert alert_type_label(AT_SIGNAL_LOW) in text
-    assert "<html>" in html
-
 
 def test_digest_groups_by_alert_type_in_text():
     items = [
@@ -90,7 +77,7 @@ def test_digest_handles_empty_list():
 async def test_dispatch_defers_groupable_warning_on_open():
     """ccq_low (warning, groupable) opened → no immediate notification."""
     async def fake_resolve():
-        return [_ChannelTarget("email", "db:opsmail", recipients=["a@x"])]
+        return [_ChannelTarget("whatsapp", "env:Ultramsg", recipients=[])]
 
     delivered = []
 
@@ -112,10 +99,11 @@ async def test_dispatch_defers_groupable_warning_on_open():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_critical_with_dynamic_severity_not_deferred():
-    """radio_link_degraded with critical severity must still notify immediately."""
+async def test_dispatch_non_allowlisted_critical_not_notified():
+    """A critical type NOT in the WhatsApp allowlist opens its incident but is
+    never notified (chokepoint in _dispatch)."""
     async def fake_resolve():
-        return [_ChannelTarget("email", "db:opsmail", recipients=["a@x"])]
+        return [_ChannelTarget("whatsapp", "env:Ultramsg", recipients=[])]
 
     delivered = []
 
@@ -132,15 +120,15 @@ async def test_dispatch_critical_with_dynamic_severity_not_deferred():
             _incident("radio_link_degraded", severity=Severity.CRITICAL),
         )
 
-    assert ok is True
-    assert delivered == ["email"]
+    assert ok is False
+    assert delivered == []
 
 
 @pytest.mark.asyncio
-async def test_dispatch_resolved_for_groupable_not_deferred():
-    """Recovery messages for groupable warnings still go out — not digested."""
+async def test_dispatch_resolved_allowlisted_notified():
+    """Recovery messages for an allowlisted type still go out — not digested."""
     async def fake_resolve():
-        return [_ChannelTarget("email", "db:opsmail", recipients=["a@x"])]
+        return [_ChannelTarget("whatsapp", "env:Ultramsg", recipients=[])]
 
     delivered = []
 
@@ -154,18 +142,18 @@ async def test_dispatch_resolved_for_groupable_not_deferred():
     ):
         ok = await notification_service.notify_incident_resolved(
             _device(),
-            _incident(AT_CCQ_LOW, severity=Severity.WARNING, status="resolved"),
+            _incident(AT_ROCKET_DOWN, severity=Severity.CRITICAL, status="resolved"),
         )
 
     assert ok is True
-    assert delivered == [("email", NotificationEvent.RESOLVED)]
+    assert delivered == [("whatsapp", NotificationEvent.RESOLVED)]
 
 
 @pytest.mark.asyncio
 async def test_dispatch_critical_rocket_down_not_deferred():
-    """rocket_down (critical, not groupable) → immediate notify."""
+    """rocket_down (critical, allowlisted) → immediate WhatsApp notify."""
     async def fake_resolve():
-        return [_ChannelTarget("email", "db:opsmail", recipients=["a@x"])]
+        return [_ChannelTarget("whatsapp", "env:Ultramsg", recipients=[])]
 
     delivered = []
 
@@ -183,4 +171,4 @@ async def test_dispatch_critical_rocket_down_not_deferred():
         )
 
     assert ok is True
-    assert delivered == ["email"]
+    assert delivered == ["whatsapp"]

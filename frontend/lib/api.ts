@@ -49,7 +49,6 @@ export const endpoints = {
   blockClient:          (lrId: number) => `${API_BASE}/devices/${lrId}/block-client`,
   unblockClient:        (lrId: number) => `${API_BASE}/devices/${lrId}/unblock-client`,
   systemInfo:           `${API_BASE}/system/info`,
-  testEmail:            `${API_BASE}/system/test-email`,
   thresholds:           `${API_BASE}/system/thresholds`,
   badInstallations:     `${API_BASE}/lr-health/bad-installations`,
   siteLinks:            `${API_BASE}/lr-health/site-links`,
@@ -220,17 +219,6 @@ export async function resetThreshold(key: string): Promise<void> {
     const err = await res.json().catch(() => ({}))
     throw new Error(err.detail ?? `HTTP ${res.status}`)
   }
-}
-
-export interface TestEmailResult {
-  status: string
-  recipients: string[]
-  smtp_host: string
-}
-
-export async function sendTestEmail(): Promise<TestEmailResult> {
-  const res = await fetch(endpoints.testEmail, { method: 'POST' })
-  return jsonOrThrow<TestEmailResult>(res)
 }
 
 export interface LanNeighbor {

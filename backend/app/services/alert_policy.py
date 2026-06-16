@@ -46,7 +46,6 @@ from app.core.alert_constants import (
     AT_LR_NO_TRANSIT,
     AT_LR_REASSIGNED,
     AT_MAINS_POWER_LOST,
-    AT_PING_INSTABILITY,
     AT_RADIO_INTERFACE_DOWN,
     AT_RADIO_LINK_DEGRADED,
     AT_ROCKET_CLIENT_OVERLOAD,
@@ -86,7 +85,6 @@ class AlertPolicy:
 
 _CHANNELS_CRITICAL: tuple[str, ...] = (AlertChannel.WHATSAPP,)
 _CHANNELS_WARNING: tuple[str, ...] = (AlertChannel.WHATSAPP,)
-_CHANNELS_INFO: tuple[str, ...] = (AlertChannel.WHATSAPP,)
 
 
 # ---------------------------------------------------------------------------
@@ -366,17 +364,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
         channels=_CHANNELS_WARNING,
         groupable=False,
         recovery_notification=True,
-    ),
-
-    # --- Ping quality (informational, no recovery) ---------------------------
-
-    AT_PING_INSTABILITY: AlertPolicy(
-        alert_type=AT_PING_INSTABILITY,
-        severity=Severity.INFO,
-        notify_immediately=False,
-        channels=_CHANNELS_INFO,
-        groupable=True,
-        recovery_notification=False,
     ),
 
     # --- Equipment flapping (critical, immediate) ----------------------------

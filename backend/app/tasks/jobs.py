@@ -1529,6 +1529,21 @@ async def _evaluate_lr_transit(
     )
 
 
+# ── Backoff SSH par LR (in-memory, comme les compteurs de ping) ──────────────
+# Diagnostic terrain 2026-06-16 : les LR au SSH sain (connexion solo < 1,5 s)
+# échouaient sous concurrence (« No existing session ») car 150 poignées SSH
+# simultanées saturent le médium radio partagé → pertes pendant le kex. On ne
+# RÉPARE pas un LR cassé ici : on arrête de RE-MARTELER à chaque cycle ceux qui
+# enchaînent les échecs SSH, ce qui réduit la charge radio simultanée (et donc
+# les échecs des LR sains restés dans le lot). Un LR chroniquement KO n'est plus
+# sondé qu'1 cycle sur _LR_SSH_BACKOFF_DIVISOR (étalé par dev_id pour lisser),
+# et revient immédiatement dans le pool dès qu'un sondage réussit.
+_LR_SSH_FAIL_THRESHOLD = 3          # échecs SSH consécutifs avant mise en backoff
+_LR_SSH_BACKOFF_DIVISOR = 10        # un LR en backoff sondé ~1 cycle sur 10
+_lr_ssh_fail_streak: dict[int, int] = {}
+_lr_probe_cycle = 0
+
+
 @_timed_job
 async def lr_internet_probe_job() -> None:
     """Sonde par LR : accès Internet (transit) + latence vers Google.
@@ -1584,7 +1599,31 @@ async def lr_internet_probe_job() -> None:
         logger.debug("lr_internet_probe: aucun LR up avec credentials SSH — ignoré")
         return
 
-    logger.info("lr_internet_probe — sonde sur %d LR(s)", len(targets))
+    # Backoff : on saute ce cycle-ci les LR qui enchaînent ≥ _LR_SSH_FAIL_THRESHOLD
+    # échecs SSH, sauf 1 cycle sur _LR_SSH_BACKOFF_DIVISOR (étalé par dev_id).
+    # Réduit le nombre de poignées SSH simultanées sur la radio → moins d'échecs
+    # pour les LR sains. Les LR sondés normalement (streak < seuil) passent tous.
+    global _lr_probe_cycle
+    _lr_probe_cycle += 1
+    cycle = _lr_probe_cycle
+
+    def _is_due(dev_id: int) -> bool:
+        streak = _lr_ssh_fail_streak.get(dev_id, 0)
+        if streak < _LR_SSH_FAIL_THRESHOLD:
+            return True
+        return (cycle + dev_id) % _LR_SSH_BACKOFF_DIVISOR == 0
+
+    total = len(targets)
+    targets = [t for t in targets if _is_due(t[0])]
+    backed_off = total - len(targets)
+    if not targets:
+        logger.debug("lr_internet_probe: tous les LR en backoff ce cycle — ignoré")
+        return
+
+    logger.info(
+        "lr_internet_probe — sonde sur %d/%d LR(s) (%d en backoff SSH)",
+        len(targets), total, backed_off,
+    )
 
     # ── Phase 1 : sonder tous les LR EN PARALLÈLE (borné par le pool) ──
     # Le job était série (1 SSH à la fois) → ~1 h/tour à 500 LR. On exécute la
@@ -1643,6 +1682,8 @@ async def lr_internet_probe_job() -> None:
 
             if not ssh_ok:
                 # Géré par device_ping_job (le LR est down). Pas d'alerte ici.
+                # Incrémente le streak d'échec SSH → backoff si chronique.
+                _lr_ssh_fail_streak[dev_id] = _lr_ssh_fail_streak.get(dev_id, 0) + 1
                 ssh_failures.append((dev.name, dev.ip_address, msg or "—"))
                 logger.debug(
                     "lr_internet_probe: %s (%s) SSH KO — %s (skip, géré par device_ping_job)",
@@ -1651,7 +1692,10 @@ async def lr_internet_probe_job() -> None:
                 await session.commit()
                 continue
 
-            # SSH OK — d'abord évaluer le transit (binary OK/KO).
+            # SSH OK — sort du backoff immédiatement.
+            _lr_ssh_fail_streak.pop(dev_id, None)
+
+            # D'abord évaluer le transit (binary OK/KO).
             await _evaluate_lr_transit(session, dev, ping_ok, settings)
 
             # Si transit OK et RTT mesuré → métrique + évaluation latence.

@@ -69,13 +69,15 @@ class Settings(BaseSettings):
     # était SÉRIE (une session SSH à la fois) → ~1 h par tour à 500 LR (chaque LR
     # n'était sondé qu'une fois/heure). On parallélise sur un pool de threads
     # dédié de cette taille (chaque sonde = paramiko sync borné par ses timeouts).
-    # ceil(parc_LR / concurrence) × ~8 s ≈ durée d'un tour (ex. 900/150 ≈ 48 s).
-    # Doit rester < lr_latency_interval, sinon le tour déborde et chaque tick
-    # planifié est « skipped: maximum number of running instances reached » (le
-    # job tourne quand même, mais à cadence dégradée). À 60, un parc de plusieurs
-    # centaines de LR débordait l'intervalle de 60–180 s en continu ; 150 tient
-    # le tour sous l'intervalle. Augmenter encore (env) pour un parc plus grand.
-    lr_probe_concurrency: int = 150
+    # ARBITRAGE : trop bas → le tour déborde l'intervalle (« skipped: maximum
+    # instances ») ; trop haut → N poignées SSH simultanées saturent le médium
+    # radio partagé → pertes pendant le kex → « No existing session » sur des LR
+    # pourtant sains (mesuré 2026-06-16 : ces LR se connectent en < 1,5 s en solo,
+    # échouent à 150 en parallèle). Le backoff par LR (jobs.py) retire les LR
+    # chroniquement KO du lot, ce qui permet de tenir une concurrence MODÉRÉE
+    # sans déborder. ~80 est un bon point de départ ; ajuster en surveillant à la
+    # fois les « skipped » (§ trop bas) et les « No existing session » (trop haut).
+    lr_probe_concurrency: int = 80
 
     # Concurrence max du device_ping_job. Le job lançait TOUS les pings d'un coup
     # (asyncio.gather sur tout le parc) — à 600+ devices ça spawn 600 sous-process

@@ -860,8 +860,13 @@ def _measure_latency_via_ssh_sync(
         line couldn't be parsed (defensive, shouldn't normally happen).
     """
     try:
+        # 12 s (vs 6 s par défaut) : sur les liens radio avec perte, le kex SSH
+        # peut dépasser 6 s — un solo sur un LR à 60 % de perte mesuré à 6,0 s,
+        # pile à la limite. Le timeout serré coupait des poignées de main qui
+        # auraient abouti, d'où des « No existing session » sous concurrence.
         transport, observed, used_pw = _open_transport(
             host, port, username, password, expected_fingerprint,
+            timeout=12,
             fallback_passwords=fallback_passwords,
         )
     except _FingerprintMismatchError as exc:

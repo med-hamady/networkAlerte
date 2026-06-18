@@ -352,6 +352,12 @@ function gbps(mbps: number | null): string {
   return `${(mbps / 1000).toFixed(2)} Gb/s`
 }
 
+// AF60 se lit en Gb/s ; un backhaul airMAX (capacité bien plus faible) en Mb/s.
+function capDisplay(mbps: number | null, linkType: string): string {
+  if (mbps === null) return '—'
+  return linkType === 'af60' ? gbps(mbps) : `${mbps.toFixed(0)} Mb/s`
+}
+
 function SiteLinksSection() {
   const { data, isLoading } = useSWR<SiteLinkHealthResponse>(
     endpoints.siteLinks,
@@ -367,13 +373,14 @@ function SiteLinksSection() {
       <div>
         <h2 className="text-lg font-bold text-blue-900 tracking-tight">Liaisons entre sites (Point-à-Point)</h2>
         <p className="text-blue-400 text-sm mt-1">
-          Backhauls <strong>airFiber 60</strong>. Un lien est surfacé dès que sa
-          <strong> dernière capacité totale</strong> passe sous <strong>1,95 Gb/s</strong>
-          (dernière valeur en base, sans interrogation live).
+          Backhauls <strong>airFiber 60</strong> et <strong>liaisons P2P airMAX</strong>.
+          Un lien est surfacé dès que sa <strong>dernière capacité totale</strong> passe
+          sous son plancher (1,95 Gb/s pour l'AF60, plancher dédié pour l'airMAX ;
+          dernière valeur en base, sans interrogation live).
         </p>
         {noData > 0 && (
           <p className="text-blue-300 text-xs mt-1">
-            {noData} AF60 sans relevé de capacité — non évalué{noData > 1 ? 's' : ''}.
+            {noData} lien{noData > 1 ? 's' : ''} sans relevé de capacité — non évalué{noData > 1 ? 's' : ''}.
           </p>
         )}
       </div>
@@ -384,8 +391,8 @@ function SiteLinksSection() {
         </div>
       ) : items.length === 0 ? (
         <div className="bg-white border border-blue-100 rounded-xl px-6 py-12 text-center shadow-sm">
-          <p className="text-green-600 font-semibold text-sm">✓ Toutes les liaisons entre sites sont au-dessus de 1,95 Gb/s</p>
-          <p className="text-blue-400 text-xs mt-1">Aucun lien AF60 sous le plancher de capacité en ce moment</p>
+          <p className="text-green-600 font-semibold text-sm">✓ Toutes les liaisons entre sites sont au-dessus de leur plancher de capacité</p>
+          <p className="text-blue-400 text-xs mt-1">Aucun lien P2P (AF60 ou airMAX) dégradé en ce moment</p>
         </div>
       ) : (
         <div className="bg-white border border-blue-100 rounded-xl overflow-hidden shadow-sm">
@@ -413,7 +420,9 @@ function SiteLinksSection() {
                     <td className="px-4 py-3">
                       <div className="text-slate-800 font-medium">{row.name}</div>
                       <div className="text-blue-300 font-mono text-[11px]">{row.ip ?? '—'}</div>
-                      <div className="text-blue-400 text-[11px]">airFiber 60</div>
+                      <div className="text-blue-400 text-[11px]">
+                        {row.link_type === 'af60' ? 'airFiber 60' : 'Liaison P2P (airMAX)'}
+                      </div>
                     </td>
 
                     <td className="px-4 py-3 text-xs whitespace-nowrap text-blue-400">
@@ -422,10 +431,10 @@ function SiteLinksSection() {
 
                     <td className="px-4 py-3 whitespace-nowrap">
                       <span className="text-red-600 font-semibold"
-                            title={`Plancher : ${gbps(row.capacity_floor_mbps)}`}>
-                        {gbps(row.latest_total_capacity_mbps)}
+                            title={`Plancher : ${capDisplay(row.capacity_floor_mbps, row.link_type)}`}>
+                        {capDisplay(row.latest_total_capacity_mbps, row.link_type)}
                       </span>
-                      <div className="text-blue-300 text-[11px]">plancher {gbps(row.capacity_floor_mbps)}</div>
+                      <div className="text-blue-300 text-[11px]">plancher {capDisplay(row.capacity_floor_mbps, row.link_type)}</div>
                     </td>
 
                     <td className="px-4 py-3 text-xs whitespace-nowrap text-slate-700">

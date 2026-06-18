@@ -674,6 +674,9 @@ async def snmp_poll_job() -> None:
             # Rockets, to read the channel width (chanbw) via status.cgi.
             d.ssh_username if is_airmax else None,
             d.ssh_password if is_airmax else None,
+            # P2P backhaul flag (airMAX Rockets only) — backhauls fetch full link
+            # metrics (total_capacity) instead of just channel width.
+            bool(getattr(d, "is_backhaul", False)) if is_airmax else False,
         )
 
     targets = [_snap(d) for d in devices]
@@ -690,7 +693,8 @@ async def snmp_poll_job() -> None:
     fetched: dict[int, tuple] = {}
 
     async def _fetch(snap: tuple) -> None:
-        dev_id, name, ip, community, category, max_ports, _pidx, _pmin, airos_user, airos_pwd = snap
+        (dev_id, name, ip, community, category, max_ports, _pidx, _pmin,
+         airos_user, airos_pwd, is_backhaul) = snap
         async with sem:
             if category in AIRMAX_RULE_CATEGORIES:
                 metrics = await snmp_service.collect_airmax_metrics(
@@ -722,26 +726,39 @@ async def snmp_poll_job() -> None:
             # airMAX peer discovery — also an SNMP walk → done here in Phase 1.
             airmax_peers = None
             channel_width_mhz = None
+            backhaul_link_metrics = None
             if category in AIRMAX_RULE_CATEGORIES:
                 airmax_peers = await snmp_service.discover_airmax_peers(
                     host=ip, community=community, port=snmp_port, timeout=snmp_timeout,
                 )
-                # Channel width (chanbw) is NOT in SNMP — read it from airOS
-                # status.cgi for the rocket_client_overload rule. Needs airOS
-                # creds on the device; None (missing/unreachable) → rule skips.
                 if airos_user and airos_pwd:
-                    channel_width_mhz = await airos_api_service.collect_airos_channel_width(
-                        host=ip, username=airos_user, password=airos_pwd, port=443,
-                    )
-        fetched[dev_id] = (metrics, airmax_peers, channel_width_mhz)
+                    if is_backhaul:
+                        # P2P backhaul: read the FULL link metrics (total_capacity
+                        # via wireless.sta[0].airmax.cb_capacity, + signal/cinr)
+                        # from airOS — the AP end reports the far end as its single
+                        # station. Feeds p2p_link_substandard + the inter-site P2P
+                        # section. No channel width (overload rule is skipped).
+                        link = await airos_api_service.collect_airos_link_metrics(
+                            host=ip, username=airos_user, password=airos_pwd, port=443,
+                        )
+                        if link is not None:
+                            backhaul_link_metrics = link[0]
+                    else:
+                        # Channel width (chanbw) is NOT in SNMP — read it from airOS
+                        # status.cgi for the rocket_client_overload rule. Needs airOS
+                        # creds on the device; None (missing/unreachable) → rule skips.
+                        channel_width_mhz = await airos_api_service.collect_airos_channel_width(
+                            host=ip, username=airos_user, password=airos_pwd, port=443,
+                        )
+        fetched[dev_id] = (metrics, airmax_peers, channel_width_mhz, backhaul_link_metrics)
 
     await asyncio.gather(*[_fetch(s) for s in targets], return_exceptions=True)
 
     # ── Phase 2 : persist + alert engine + découverte + ports switch (série DB) ──
     snap_by_id = {s[0]: s for s in targets}
-    for dev_id, (metrics, airmax_peers, channel_width_mhz) in fetched.items():
+    for dev_id, (metrics, airmax_peers, channel_width_mhz, backhaul_link_metrics) in fetched.items():
         (_id, _name, _ip, _community, category, _mp, rocket_port_index,
-         port_min_speed, _airos_user, _airos_pwd) = snap_by_id[dev_id]
+         port_min_speed, _airos_user, _airos_pwd, _is_backhaul) = snap_by_id[dev_id]
         async with async_session_factory() as session:
             dev = await session.get(Device, dev_id)
             if dev is None:
@@ -769,6 +786,15 @@ async def snmp_poll_job() -> None:
                 metrics["peer_count"] = len(airmax_peers)
                 if channel_width_mhz is not None:
                     metrics["channel_width_mhz"] = channel_width_mhz
+
+            # P2P backhaul: merge the airOS link metrics (total_capacity_mbps +
+            # signal/cinr/link_potential) so p2p_link_substandard can evaluate and
+            # the inter-site P2P section reads the latest total_capacity from the DB.
+            if backhaul_link_metrics:
+                metrics = dict(metrics)
+                for k, v in backhaul_link_metrics.items():
+                    if v is not None:
+                        metrics[k] = v
 
             for key in metrics:
                 if key not in unit_map:

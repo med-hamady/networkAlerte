@@ -133,6 +133,11 @@ AT_AF60_SIGNAL_LOW       = "af60_signal_low"       # signal local sous seuil 60 
 AT_AF60_SNR_LOW          = "af60_snr_low"          # SNR local sous seuil (pas de CINR en 60 GHz)
 AT_AF60_LINK_SUBSTANDARD = "af60_link_substandard" # consolidé : potentiel / capacité sous plancher
 
+# Lien P2P airMAX (Rocket/LiteBeam marqué is_backhaul) dégradé — capacité totale
+# sous le plancher dédié (airmax_backhaul_capacity_min_mbps). Équivalent airMAX
+# de af60_link_substandard : ces radios font un backhaul inter-sites, pas un AP.
+AT_P2P_LINK_SUBSTANDARD  = "p2p_link_substandard"
+
 # Sécurité — volume anormal d'écritures API détecté par
 # security_anomaly_detection_job sur la base de la table audit_log. N'est PAS
 # attaché à un device (événement système) — routé directement via WhatsApp par
@@ -181,6 +186,7 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_LR_BRIDGE_MODE_MISCONFIG,
     AT_LR_LATENCY_HIGH,
     AT_AF60_LINK_DOWN, AT_AF60_SIGNAL_LOW, AT_AF60_SNR_LOW, AT_AF60_LINK_SUBSTANDARD,
+    AT_P2P_LINK_SUBSTANDARD,
     AT_SECURITY_ANOMALY,
     AT_ROCKET_CLIENT_OVERLOAD,
     AT_DEVICE_FLAPPING,
@@ -205,6 +211,7 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
 #   4. > 20 % clients en latence .... network_latency_aggregate_job (envoi
 #      DIRECT, pas un incident → toujours actif, pas concerné par cette liste)
 #   5. Liaison P2P dégradée ......... af60_link_substandard + af60_link_down
+#      + p2p_link_substandard (backhaul airMAX inter-sites < plancher capacité)
 #   6. Équipement injoignable (down)  rocket_down + switch_down +
 #      device_unreachable + airmax_down (couvre aussi un UISP Power down, via
 #      device_unreachable du ping job → uisp_power_unreachable HORS liste, plus
@@ -214,6 +221,7 @@ WHATSAPP_ALERT_TYPES: frozenset[str] = frozenset({
     AT_DEVICE_FLAPPING,
     AT_BATTERY_INTERNAL_LOW, AT_BATTERY_EXTERNAL_LOW,
     AT_AF60_LINK_SUBSTANDARD, AT_AF60_LINK_DOWN,
+    AT_P2P_LINK_SUBSTANDARD,
     AT_ROCKET_DOWN, AT_SWITCH_DOWN, AT_DEVICE_UNREACHABLE, AT_AIRMAX_DOWN,
 })
 

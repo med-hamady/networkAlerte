@@ -612,42 +612,74 @@ _AF60_DISPLAY_METRICS: tuple[str, ...] = (_M_TOTAL_CAP, _M_SIGNAL, _M_SNR)
 
 
 async def get_site_link_health(db: AsyncSession) -> SiteLinkHealthResponse:
-    """Lister les liens backhaul AF60 dont la dernière capacité est sous le plancher.
+    """Lister les liens P2P inter-sites dont la dernière capacité est sous le plancher.
 
-    Critère unique : ``total_capacity_mbps`` (dernière valeur en base) <
-    ``af60_capacity_display_min_mbps`` (1.95 Gb/s). Aucune interrogation live."""
+    Deux technos, même critère (dernière ``total_capacity_mbps`` en base, pas de
+    fetch live) mais plancher distinct :
+      - AF60 (airFiber 60) ........ ``af60_capacity_display_min_mbps`` (1.95 Gb/s)
+      - backhaul airMAX (is_backhaul) ``airmax_backhaul_capacity_min_mbps`` (150 Mbps)
+    """
     now = datetime.datetime.now(datetime.UTC)
-
-    afs = (await db.execute(select(AirFiber))).scalars().all()
-    if not afs:
-        return SiteLinkHealthResponse(generated_at=now, no_data_count=0, items=[])
-
     settings = get_settings()
-    floor = float(settings.af60_capacity_display_min_mbps)
-    latest = await _fetch_latest_af60_metrics(db, [af.id for af in afs])
-
     items: list[SiteLinkRow] = []
     no_data = 0
-    for af in afs:
-        metrics = latest.get(af.id, {})
-        cap = metrics.get(_M_TOTAL_CAP)
-        if cap is None:
-            no_data += 1
-            continue  # aucun relevé de capacité → pas évaluable
-        if cap >= floor:
-            continue  # lien sain → non surfacé
-        items.append(
-            SiteLinkRow(
-                device_id=af.id,
-                name=af.name,
-                ip=af.ip_address,
-                distance_m=af.distance_m,
-                latest_total_capacity_mbps=cap,
-                capacity_floor_mbps=floor,
-                latest_signal_dbm=metrics.get(_M_SIGNAL),
-                latest_snr_db=metrics.get(_M_SNR),
+
+    # ── AF60 (airFiber 60) ──
+    afs = (await db.execute(select(AirFiber))).scalars().all()
+    if afs:
+        af_floor = float(settings.af60_capacity_display_min_mbps)
+        latest = await _fetch_latest_af60_metrics(db, [af.id for af in afs])
+        for af in afs:
+            metrics = latest.get(af.id, {})
+            cap = metrics.get(_M_TOTAL_CAP)
+            if cap is None:
+                no_data += 1
+                continue  # aucun relevé de capacité → pas évaluable
+            if cap >= af_floor:
+                continue  # lien sain → non surfacé
+            items.append(
+                SiteLinkRow(
+                    device_id=af.id,
+                    name=af.name,
+                    ip=af.ip_address,
+                    distance_m=af.distance_m,
+                    link_type="af60",
+                    latest_total_capacity_mbps=cap,
+                    capacity_floor_mbps=af_floor,
+                    latest_signal_dbm=metrics.get(_M_SIGNAL),
+                    latest_snr_db=metrics.get(_M_SNR),
+                )
             )
-        )
+
+    # ── Backhauls airMAX (Rocket/LiteBeam marqués is_backhaul) ──
+    # cinr_db sert d'équivalent SNR ; pas de distance (colonne absente sur Rocket).
+    backhauls = (
+        await db.execute(select(Rocket).where(Rocket.is_backhaul.is_(True)))
+    ).scalars().all()
+    if backhauls:
+        bh_floor = float(settings.airmax_backhaul_capacity_min_mbps)
+        bh_latest = await _fetch_latest_af60_metrics(db, [r.id for r in backhauls])
+        for r in backhauls:
+            metrics = bh_latest.get(r.id, {})
+            cap = metrics.get(_M_TOTAL_CAP)
+            if cap is None:
+                no_data += 1
+                continue
+            if cap >= bh_floor:
+                continue
+            items.append(
+                SiteLinkRow(
+                    device_id=r.id,
+                    name=r.name,
+                    ip=r.ip_address,
+                    distance_m=None,
+                    link_type="airmax",
+                    latest_total_capacity_mbps=cap,
+                    capacity_floor_mbps=bh_floor,
+                    latest_signal_dbm=metrics.get(_M_SIGNAL),
+                    latest_snr_db=None,
+                )
+            )
 
     items.sort(key=lambda r: r.latest_total_capacity_mbps or 0.0)  # pires d'abord
     return SiteLinkHealthResponse(

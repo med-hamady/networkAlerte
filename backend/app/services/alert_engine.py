@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.models.alert_state import AlertState
-from app.models.device import Device, Lr
+from app.models.device import Device, Lr, Rocket
 from app.models.incident import Incident
 from app.services import incident_service, notification_service
 from app.services.alert_rules import AlertEvalResult, get_failure_threshold, get_rules_for_device
@@ -257,6 +257,12 @@ async def evaluate_device_metrics(
     if device.rule_category in ("ltu_rocket", "airmax_rocket") and "is_airmax_rocket" not in metrics:
         metrics = dict(metrics)
         metrics["is_airmax_rocket"] = device.rule_category == "airmax_rocket"
+    # Surface the P2P-backhaul flag so the overload rule skips these (they serve
+    # no clients) and the link-capacity rule (p2p_link_substandard) only fires on
+    # them. They keep rule_category "airmax_rocket" (so airOS polling still runs).
+    if isinstance(device, Rocket) and "is_backhaul" not in metrics:
+        metrics = dict(metrics)
+        metrics["is_backhaul"] = bool(device.is_backhaul)
 
     for rule in rules:
         eval_result: AlertEvalResult = rule.evaluate(device.name, metrics, settings)

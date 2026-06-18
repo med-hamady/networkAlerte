@@ -40,6 +40,7 @@ from app.core.alert_constants import (
     AT_LR_NO_TRANSIT,
     AT_LR_REASSIGNED,
     AT_MAINS_POWER_LOST,
+    AT_P2P_LINK_SUBSTANDARD,
     AT_RADIO_INTERFACE_DOWN,
     AT_RADIO_LINK_DEGRADED,
     AT_ROCKET_CLIENT_OVERLOAD,
@@ -108,6 +109,7 @@ ALERT_TYPE_LABELS: dict[str, str] = {
     AT_AF60_SIGNAL_LOW:       "Signal AF60 faible",
     AT_AF60_SNR_LOW:          "SNR AF60 faible",
     AT_AF60_LINK_SUBSTANDARD: "Lien backhaul AF60 dégradé",
+    AT_P2P_LINK_SUBSTANDARD:  "Lien P2P (backhaul airMAX) dégradé",
 
     # Transit
     AT_TRANSIT_UNAVAILABLE:  "Transit Internet indisponible",

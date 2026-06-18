@@ -131,6 +131,8 @@ class RocketCreate(_DeviceBaseCreate):
     ssh_username: str | None = None
     ssh_password: str | None = None
     ssh_port: int = 443
+    # True = airMAX P2P inter-site backhaul (treated like an AF60), not an AP.
+    is_backhaul: bool = False
 
 
 class RocketUpdate(_DeviceBaseUpdate):
@@ -138,6 +140,9 @@ class RocketUpdate(_DeviceBaseUpdate):
     ssh_username: str | None = None
     ssh_password: str | None = None
     ssh_port: int | None = None
+    # Operator toggles a Rocket as a P2P backhaul (or back to an AP). Omitted =
+    # keep existing (the UISP sync never sends it, so it survives re-syncs).
+    is_backhaul: bool | None = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -305,6 +310,7 @@ class _DeviceBaseRead(BaseModel):
 class RocketRead(_DeviceBaseRead):
     device_type: Literal["rocket"] = "rocket"
     radio_tech: str
+    is_backhaul: bool = False
     ssh_username: str | None = None
     ssh_port: int = 443
     ssh_host_fingerprint: str | None = None

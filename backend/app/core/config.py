@@ -381,6 +381,13 @@ class Settings(BaseSettings):
     af60_link_potential_min_pct: float = 30.0
     af60_total_capacity_min_mbps: float = 1950.0
 
+    # Liens P2P airMAX (Rocket/LiteBeam/PowerBeam marqués is_backhaul) : plancher
+    # de capacité totale (Mbps) sous lequel le lien inter-site est jugé dégradé
+    # (p2p_link_substandard, notifié WhatsApp). Équivalent airMAX du plancher AF60
+    # 1.95 Gb/s — un backhaul airMAX porte beaucoup moins, d'où un seuil dédié.
+    # Sert à la fois à l'alerte ET à l'affichage de la section liens inter-sites.
+    airmax_backhaul_capacity_min_mbps: float = 150.0
+
     # Seuil d'AFFICHAGE de la section « Liaisons entre sites » de /lr-health :
     # un AF60 dont la dernière capacité totale est < ce plancher y est surfacé
     # (critère unique, sur la dernière valeur en base — pas de fetch live).
@@ -408,6 +415,8 @@ class Settings(BaseSettings):
     af60_snr_failure_threshold: int = 2
     af60_link_down_failure_threshold: int = 2
     af60_link_substandard_failure_threshold: int = 3
+    # Lien P2P airMAX dégradé : capacité volatile → débounce sur 4e cycle (count>3).
+    p2p_link_substandard_failure_threshold: int = 3
     # Le nombre de clients fluctue (associations/désassociations transitoires) →
     # ouvre l'incident sur le 4e cycle saturé consécutif (count > 3).
     rocket_overload_failure_threshold: int = 3

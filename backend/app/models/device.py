@@ -112,6 +112,19 @@ class Rocket(Device):
     # Rockets (Litebeam peers). Polling routines branch on this.
     radio_tech: Mapped[str] = mapped_column(String(20), nullable=False)
 
+    # Point-to-point backhaul flag. Some airMAX radios (Rocket/LiteBeam/PowerBeam)
+    # are NOT base stations serving subscribers — they form a P2P link between two
+    # sites, exactly like an AF60. They still speak airOS (so they stay Rockets,
+    # polled by airos_api_poll_job — NEVER change their rule_category, that would
+    # drop them from the airMAX poll). When True they are: excluded from the
+    # client-capacity page + the rocket_client_overload rule, supervised on link
+    # capacity (p2p_link_substandard) and surfaced in the inter-site P2P section
+    # like an AF60. Set by hand (operator-provided list), preserved by the UISP
+    # sync (it only updates name/ip/location/mac).
+    is_backhaul: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false",
+    )
+
     # HTTPS API credentials (used by ltu_api_service)
     ssh_username: Mapped[str | None] = mapped_column(String(100), nullable=True)
     ssh_password: Mapped[str | None] = mapped_column(String(255), nullable=True)

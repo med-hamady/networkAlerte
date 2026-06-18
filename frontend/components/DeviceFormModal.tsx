@@ -85,7 +85,7 @@ function emptyForm(type: DeviceFormData['device_type']): DeviceFormData {
   }
   switch (type) {
     case 'rocket':
-      return { ...base, device_type: 'rocket', radio_tech: 'ltu', ssh_username: '', ssh_password: '', ssh_port: 443 }
+      return { ...base, device_type: 'rocket', radio_tech: 'ltu', is_backhaul: false, ssh_username: '', ssh_password: '', ssh_port: 443 }
     case 'lr':
       return { ...base, device_type: 'lr', model_variant: 'ltu_lr', rocket_id: null, ssh_username: '', ssh_password: '', ssh_port: 22 }
     case 'uisp_power':
@@ -113,6 +113,7 @@ function deviceToForm(device: Device): DeviceFormData {
         ...base,
         device_type: 'rocket',
         radio_tech: device.radio_tech,
+        is_backhaul: device.is_backhaul ?? false,
         ssh_username: device.ssh_username ?? '',
         ssh_password: '',
         ssh_port: device.ssh_port,
@@ -411,6 +412,22 @@ function RocketFields({
           {ROCKET_RADIO_TECHS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
         </select>
       </Field>
+      <label className="flex items-start gap-2 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={form.is_backhaul}
+          onChange={e => update('is_backhaul', e.target.checked)}
+          className="mt-0.5"
+        />
+        <span className="text-sm text-slate-700">
+          Liaison P2P inter-sites
+          <span className="block text-xs text-slate-500">
+            Cet airMAX fait un lien point-à-point entre deux sites (comme un AF60),
+            pas une station de base. Supervisé sur sa capacité de lien, exclu de la
+            capacité clients.
+          </span>
+        </span>
+      </label>
       <div className="grid grid-cols-3 gap-3">
         <div className="col-span-2">
           <Field label="Utilisateur API">

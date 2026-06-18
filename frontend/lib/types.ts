@@ -23,6 +23,8 @@ interface DeviceBase {
 export interface Rocket extends DeviceBase {
   device_type: 'rocket'
   radio_tech: 'ltu' | 'airmax'
+  // true = lien P2P inter-sites (traité comme un AF60), pas une station de base.
+  is_backhaul: boolean
   ssh_username: string | null
   ssh_port: number
   ssh_host_fingerprint: string | null
@@ -112,6 +114,7 @@ interface DeviceFormBase {
 export type RocketFormData = DeviceFormBase & {
   device_type: 'rocket'
   radio_tech: 'ltu' | 'airmax'
+  is_backhaul: boolean
   ssh_username: string
   ssh_password: string   // write-only — empty = keep existing
   ssh_port: number
@@ -380,6 +383,8 @@ export function parentRocketId(device: Device): number | null {
 /** Specific human label for a device — narrows Rockets by radio_tech and LRs by model_variant. */
 export function deviceLabel(device: Device): string {
   if (device.device_type === 'rocket') {
+    // Un Rocket airMAX marqué backhaul est un lien P2P inter-sites, pas un AP.
+    if (device.is_backhaul) return 'Liaison P2P (airMAX)'
     return device.radio_tech === 'airmax' ? 'Rocket airMAX' : 'LTU Rocket'
   }
   if (device.device_type === 'lr') {
@@ -502,6 +507,9 @@ export interface SiteLinkRow {
   name: string
   ip: string | null
   distance_m: number | null
+
+  // "af60" (airFiber 60) ou "airmax" (Rocket/LiteBeam backhaul).
+  link_type: 'af60' | 'airmax'
 
   latest_total_capacity_mbps: number | null
   capacity_floor_mbps: number

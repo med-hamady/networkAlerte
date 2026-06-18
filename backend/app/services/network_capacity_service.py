@@ -82,9 +82,13 @@ async def get_network_capacity(db: AsyncSession) -> dict:
     # objects would eager-load the `lrs` relationship (lazy="selectin") for every
     # Rocket — materialising the whole ~600-LR subscriber tree just to read 4
     # scalar columns per AP. Rows carry no relationships → no extra query.
+    # is_backhaul Rockets are P2P inter-site links, not APs serving subscribers —
+    # they have no client capacity. Excluded at the source so they never appear in
+    # the consumed/capacity totals nor the per-site drill-down.
     rockets = (
         await db.execute(
             select(Rocket.id, Rocket.name, Rocket.location, Rocket.radio_tech)
+            .where(Rocket.is_backhaul.is_(False))
         )
     ).all()
     latest = await _fetch_latest_capacity_metrics(db, [r.id for r in rockets])

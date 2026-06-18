@@ -1115,6 +1115,12 @@ async def power_poll_job() -> None:
 _LTU_POLL_CONCURRENCY = 10
 _LTU_POLL_DEADLINE_S = 40.0
 
+# airOS poll Phase 1 (fetch) global deadline — bounds the job well under its
+# interval (3 min) so it never overruns and cascades "max instances reached"
+# onto the other heavy jobs. Stragglers (slow/unreachable airOS) are cancelled
+# and retried next cycle. Concurrency is settings.airos_concurrency.
+_AIROS_POLL_DEADLINE_S = 90.0
+
 
 @_timed_job
 async def ltu_api_poll_job() -> None:
@@ -1372,7 +1378,20 @@ async def airos_api_poll_job() -> None:
         )
         fetched[dev_id] = (metrics, hostname, netrole)
 
-    await asyncio.gather(*[_fetch(*t) for t in targets], return_exceptions=True)
+    tasks = [asyncio.ensure_future(_fetch(*t)) for t in targets]
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True),
+            timeout=_AIROS_POLL_DEADLINE_S,
+        )
+    except TimeoutError:  # asyncio.TimeoutError is an alias of builtin on 3.11+
+        for t in tasks:
+            t.cancel()
+        logger.warning(
+            "airOS API poll : deadline %.0fs atteinte — %d/%d device(s) "
+            "récupéré(s), le reste sera repris au prochain cycle.",
+            _AIROS_POLL_DEADLINE_S, len(fetched), len(tasks),
+        )
 
     # ── Phase 2 : persist + alert engine + topologie en série DB ──
     for dev_id, (metrics, hostname, netrole) in fetched.items():

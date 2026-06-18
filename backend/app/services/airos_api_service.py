@@ -82,15 +82,19 @@ class AirOsApiClient:
         airOS login.cgi decodes correctly (confirmed on fw v8.7.22).
         """
         try:
+            # LAN devices answer in <2 s; tight timeouts keep slow/half-open
+            # airOS from hogging a concurrency slot (a hung device must not stall
+            # the whole poll — the job deadline + these per-request caps bound it).
             async with httpx.AsyncClient(
-                timeout=8, verify=get_settings().tls_verify_devices
+                timeout=httpx.Timeout(4.0, connect=3.0),
+                verify=get_settings().tls_verify_devices,
             ) as client:
                 # Warm the session (airOS sets an initial cookie on the GET).
-                await client.get(f"{self._base}/login.cgi", timeout=5)
+                await client.get(f"{self._base}/login.cgi", timeout=3)
                 login = await client.post(
                     f"{self._base}/login.cgi",
                     data={"username": self._username, "password": self._password},
-                    timeout=5,
+                    timeout=4,
                 )
                 # 302 = redirect to dashboard on success; some firmwares return 200.
                 if login.status_code not in (200, 302):
@@ -98,7 +102,7 @@ class AirOsApiClient:
                         "airOS login failed (%s): HTTP %d", self._base, login.status_code
                     )
                     return None
-                resp = await client.get(f"{self._base}/status.cgi", timeout=5)
+                resp = await client.get(f"{self._base}/status.cgi", timeout=4)
                 if resp.status_code == 200:
                     data = resp.json()
                     logger.debug(

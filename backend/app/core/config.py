@@ -65,10 +65,12 @@ class Settings(BaseSettings):
     ping_down_threshold: int = 3
 
     # Concurrence de l'airos_api_poll_job (fetch status.cgi des LiteBeam airMAX).
-    # Le job était série → à beaucoup de LR airMAX (découverts dès que le SNMP du
-    # Rocket parent est activé), un tour dépassait 250 s. Le fetch HTTP (login +
-    # status.cgi) est async → gather + sémaphore.
-    airos_concurrency: int = 12
+    # Le fetch HTTP (login + status.cgi) est I/O-bound → on parallélise fort. À
+    # ~290 devices, une concurrence de 12 étalait la Phase 1 sur ~4 min et le job
+    # débordait son intervalle (3 min) → cascade de "maximum instances reached"
+    # sur TOUS les jobs heavy. 50 ramène la Phase 1 à ~20-40 s. Combiné à la
+    # deadline globale (_AIROS_POLL_DEADLINE_S), le job ne déborde plus jamais.
+    airos_concurrency: int = 50
 
     # Concurrence du snmp_poll_job. Le job était série (un walk SNMP à la fois)
     # → à 78 rockets/switches, aggravé par les timeouts des airMAX SNMP-off qui

@@ -68,6 +68,9 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
   const isUp     = device.status === 'up'
   const isDown   = device.status === 'down'
   const isRocket = device.device_type === 'rocket'
+  // airMAX P2P backhaul: surveillé sur sa capacité de lien (comme un AF60),
+  // pas sur des clients — d'où une section dédiée et pas de "LR associés".
+  const isBackhaul = device.device_type === 'rocket' && device.is_backhaul
 
   const thresholds = useThresholds()
 
@@ -158,15 +161,27 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
       {/* Content */}
       <div className="flex-1 px-6 py-5 space-y-6">
 
-        {/* Capacité clients (Rocket only) */}
-        {isRocket && rocketCap && (
+        {/* Capacité du lien (backhaul P2P airMAX) — la métrique clé d'un lien
+            inter-sites, remontée en tête comme pour un AF60. */}
+        {isBackhaul && (
+          <Section title="Capacité du lien">
+            <BackhaulLinkContent
+              current={metrics?.total_capacity_mbps?.value ?? null}
+              floor={thresholds.airmax_backhaul_capacity_min_mbps}
+              signal={metrics?.signal_dbm?.value ?? null}
+            />
+          </Section>
+        )}
+
+        {/* Capacité clients (Rocket AP only — jamais pour un backhaul) */}
+        {isRocket && !isBackhaul && rocketCap && (
           <Section title="Capacité clients">
             <RocketCapacityContent cap={rocketCap} />
           </Section>
         )}
 
-        {/* LR associés (Rocket only) */}
-        {isRocket && (
+        {/* LR associés (Rocket AP only — un backhaul n'a pas de clients) */}
+        {isRocket && !isBackhaul && (
           <div className="space-y-2.5">
             <p className="text-blue-400 text-xs uppercase tracking-widest font-semibold">
               LR associés
@@ -589,6 +604,44 @@ function LRMiniCard({ lr, onClick }: { lr: Device; onClick: () => void }) {
         <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
       </svg>
     </button>
+  )
+}
+
+/* ─── Backhaul P2P link capacity ─── */
+
+function BackhaulLinkContent({ current, floor, signal }: {
+  current: number | null
+  floor: number
+  signal: number | null
+}) {
+  const below = current != null && current < floor
+  const pct = current != null && floor > 0 ? Math.min(100, (current / floor) * 100) : null
+  return (
+    <>
+      <MetricRow
+        label="Capacité actuelle"
+        value={
+          current != null
+            ? <span className={`font-semibold ${below ? 'text-red-500' : 'text-green-600'}`}>{current.toFixed(0)} Mbps</span>
+            : <span className="text-blue-300">en attente de collecte…</span>
+        }
+      />
+      <MetricRow label="Plancher" value={<span className="text-slate-600">{floor.toFixed(0)} Mbps</span>} />
+      {signal != null && (
+        <MetricRow label="Signal" value={<span className="text-slate-600">{signal.toFixed(0)} dBm</span>} />
+      )}
+      {pct != null && (
+        <div className="bg-slate-100 rounded h-2.5 overflow-hidden">
+          <div
+            className={`h-full rounded transition-all ${below ? 'bg-red-500' : 'bg-green-500'}`}
+            style={{ width: `${Math.max(2, pct)}%` }}
+          />
+        </div>
+      )}
+      {below && (
+        <p className="text-red-500 text-xs">Lien sous le plancher — capacité dégradée.</p>
+      )}
+    </>
   )
 }
 

@@ -26,6 +26,7 @@ const DEFAULTS: ThresholdMap = {
   lr_latency_critical_ms: 100,
   battery_warning_pct: 25,
   battery_critical_pct: 10,
+  airmax_backhaul_capacity_min_mbps: 150,
 }
 
 /**

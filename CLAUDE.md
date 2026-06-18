@@ -348,25 +348,37 @@ Le système est prévu pour être déployé sur un serveur physique après valid
 - Mettre en place un reverse proxy (nginx ou Caddy) devant uvicorn.
 - Remplacer les mots de passe et l'`API_KEY` par des valeurs fortes dans `.env`.
 - Logs : rediriger stdout vers un aggregateur (Loki, ELK, ou simple fichier rotatif).
-- **Auth UI** : le dashboard est protégé par login + sessions serveur (`auth_service.py`, cookie `supervisor_session` HttpOnly+Secure+SameSite=Lax, toutes les routes derrière `require_user_or_api_key`). Créer le premier compte admin après le 1er déploiement : `docker compose -f docker-compose.yml -f docker-compose.prod.yml exec backend python scripts/create_admin.py`.
+- **Auth UI** : le dashboard est protégé par login + sessions serveur (`auth_service.py`, cookie `supervisor_session` HttpOnly+Secure+SameSite=Lax, toutes les routes derrière `require_user_or_api_key`). Créer le premier compte admin après le 1er déploiement : `LAN_BIND_IP=10.135.3.25 docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.lan.yml exec backend python scripts/create_admin.py` (cf. **Commandes de déploiement type** — toujours les 3 `-f` + `LAN_BIND_IP`).
 - **Exposition réseau** : nginx est bindé `127.0.0.1` uniquement → l'IP publique reste accessible **seulement par tunnel SSH** (`ssh -L 8443:127.0.0.1:443 a2@<serveur>` → `https://localhost:8443/`). Pour un **accès LAN direct** (réseau interne d'entreprise, pas de tunnel), composer en plus `docker-compose.lan.yml` avec `LAN_BIND_IP` = l'IP LAN du serveur : nginx ajoute alors un binding sur cette IP **seulement** (jamais `0.0.0.0`), donc l'interface publique reste non-exposée. L'accès LAN se fait en HTTPS (`https://<LAN_BIND_IP>/`, avertissement de certificat à accepter une fois). **Ne jamais binder `0.0.0.0`** (incident 2026-05-17).
 
 ### Commandes de déploiement type
-```bash
-# Sur le serveur
-git pull
-cp .env.example .env  # puis éditer avec les vraies valeurs
-APP_ENV=production docker compose up -d --build
-docker compose logs -f backend
 
-# Variante avec accès LAN direct (en plus du tunnel SSH pour l'IP publique)
-LAN_BIND_IP=10.135.3.25 docker compose \
-  -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.lan.yml \
-  up -d --build
+> **Serveur de prod = `10.135.3.25` (sur le LAN, derrière le FortiGate 40F).**
+> Le déploiement STANDARD compose **3 fichiers** (`docker-compose.yml` +
+> `.prod.yml` + `.lan.yml`) avec **`LAN_BIND_IP=10.135.3.25`** — c'est ce qui
+> donne l'accès LAN direct `https://10.135.3.25/` (l'IP publique reste
+> tunnel-only). `docker-compose.lan.yml` impose `LAN_BIND_IP` (`:?`) : sans lui
+> le `up` échoue. ⚠️ **TOUTE** commande `docker compose` sur cette stack (`up`,
+> `logs`, `exec`, `restart`, `down`…) doit reprendre les **3 `-f` + `LAN_BIND_IP`**,
+> sinon le binding LAN saute. Astuce : `export LAN_BIND_IP=10.135.3.25` puis un
+> alias `dc='docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.lan.yml'`.
+
+```bash
+# Sur le serveur (10.135.3.25)
+git pull
+cp .env.example .env  # 1re fois seulement, puis éditer (APP_ENV=production, secrets…)
+
+export LAN_BIND_IP=10.135.3.25
+alias dc='docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.lan.yml'
+
+# Déploiement standard (5 conteneurs : postgres + backend + frontend +
+# scheduler[fast] + scheduler-heavy). Le backend (RUN_MODE=api) applique les
+# migrations Alembic au démarrage.
+dc up -d --build
+dc logs -f backend            # suivre les migrations + le démarrage
 
 # Créer le premier compte admin (une fois)
-docker compose -f docker-compose.yml -f docker-compose.prod.yml \
-  exec backend python scripts/create_admin.py
+dc exec backend python scripts/create_admin.py
 ```
 
 ## Commandes utiles

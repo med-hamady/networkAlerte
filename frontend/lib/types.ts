@@ -25,6 +25,8 @@ export interface Rocket extends DeviceBase {
   radio_tech: 'ltu' | 'airmax'
   // true = lien P2P inter-sites (traité comme un AF60), pas une station de base.
   is_backhaul: boolean
+  // ceiling manuel de saturation clients (null = formule auto par famille/largeur).
+  max_clients_override: number | null
   ssh_username: string | null
   ssh_port: number
   ssh_host_fingerprint: string | null
@@ -562,7 +564,9 @@ export interface RocketCapacity {
   name: string
   family: 'ltu' | 'airmax'
   current_clients: number
-  max_clients: number | null      // null = largeur inconnue → indéterminé
+  max_clients: number | null            // ceiling effectif (override si défini, sinon formule)
+  max_clients_auto: number | null       // valeur calculée par la formule (null = largeur inconnue)
+  max_clients_override: number | null   // ceiling manuel posé par l'opérateur (null = auto)
   channel_width_mhz: number | null
 }
 

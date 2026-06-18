@@ -47,12 +47,23 @@ def _is_airmax_lr(metrics: dict) -> bool:
     return variant in _AIRMAX_LR_VARIANTS
 
 
-def _rocket_overload_threshold(settings, airmax: bool, width_mhz: float) -> int | None:
-    """Client-count ceiling for a base-station Rocket given its radio family and
-    channel width. The ceiling is a formula: a per-family base at 10 MHz, then
-    ``+rocket_overload_clients_per_10mhz`` clients for every additional 10 MHz of
-    channel width. The live width is rounded to the nearest 10 MHz step. Returns
-    None for widths below 10 MHz (no defined ceiling → the rule does not fire)."""
+def _rocket_overload_threshold(
+    settings, airmax: bool, width_mhz: float | None, override: int | None = None,
+) -> int | None:
+    """Client-count ceiling for a base-station Rocket.
+
+    A manual ``override`` (operator-set on the Rocket) REPLACES the formula
+    entirely and applies even when the channel width is unknown — that's the
+    whole point of a manual ceiling. With no override, the ceiling is a formula:
+    a per-family base at 10 MHz, then ``+rocket_overload_clients_per_10mhz``
+    clients for every additional 10 MHz of channel width (live width rounded to
+    the nearest 10 MHz step). Returns None when there is no override and the
+    width is unknown or below 10 MHz (no defined ceiling → the rule does not
+    fire)."""
+    if override is not None:
+        return int(override)
+    if width_mhz is None:
+        return None
     w10 = round(width_mhz / 10.0) * 10
     if w10 < 10:
         return None
@@ -924,9 +935,12 @@ class RocketClientOverloadRule(AlertRule):
     def evaluate(self, device_name: str, metrics: dict, settings) -> AlertEvalResult:
         clients = metrics.get("peer_count")
         width = metrics.get("channel_width_mhz")
+        # A manual per-Rocket ceiling (operator-set) overrides the formula and
+        # applies even when the channel width is unknown.
+        override = metrics.get("max_clients_override")
         # P2P backhaul (airMAX inter-site link) serves no subscribers — its single
         # peer is the far end, never an overload. Never evaluate this rule for it.
-        if metrics.get("is_backhaul") or clients is None or width is None:
+        if metrics.get("is_backhaul") or clients is None:
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity=None,
@@ -938,9 +952,10 @@ class RocketClientOverloadRule(AlertRule):
             )
 
         airmax = bool(metrics.get("is_airmax_rocket"))
-        threshold = _rocket_overload_threshold(settings, airmax, width)
+        threshold = _rocket_overload_threshold(settings, airmax, width, override)
         if threshold is None:
-            # Channel width below 10 MHz — no defined ceiling, no rule.
+            # No manual override and width unknown/below 10 MHz — no defined
+            # ceiling, no rule.
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity=None,
@@ -952,6 +967,7 @@ class RocketClientOverloadRule(AlertRule):
             )
 
         family = "airMAX" if airmax else "LTU"
+        width_str = f"{width:.0f} MHz" if width is not None else "largeur inconnue"
         if clients >= threshold:
             return AlertEvalResult(
                 alert_type=self.alert_type,
@@ -961,7 +977,7 @@ class RocketClientOverloadRule(AlertRule):
                 threshold_value=float(threshold),
                 message=(
                     f"ALERTE CRITIQUE : Rocket {device_name} saturé — "
-                    f"{clients} clients connectés en {width:.0f} MHz ({family}), "
+                    f"{clients} clients connectés en {width_str} ({family}), "
                     f"seuil {threshold}. Capacité de l'AP dépassée."
                 ),
             )
@@ -973,7 +989,7 @@ class RocketClientOverloadRule(AlertRule):
             threshold_value=float(threshold),
             message=(
                 f"RECOVERY : charge clients de {device_name} repassée sous le "
-                f"seuil ({clients}/{threshold} clients en {width:.0f} MHz)"
+                f"seuil ({clients}/{threshold} clients en {width_str})"
             ),
         )
 

@@ -1,8 +1,8 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import useSWR from 'swr'
-import { endpoints, fetcher } from '@/lib/api'
+import useSWR, { type KeyedMutator } from 'swr'
+import { endpoints, fetcher, updateDevice } from '@/lib/api'
 import type { CapacityBucket, NetworkCapacity, RocketCapacity, SiteCapacity } from '@/lib/types'
 import CapacityDonut from '@/components/CapacityDonut'
 
@@ -19,7 +19,7 @@ const FAMILY = {
 type Family = keyof typeof FAMILY
 
 export default function CapacityPage() {
-  const { data, error, isLoading } = useSWR<NetworkCapacity>(
+  const { data, error, isLoading, mutate } = useSWR<NetworkCapacity>(
     endpoints.networkCapacity, fetcher, { refreshInterval: 30_000 },
   )
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
@@ -154,7 +154,7 @@ export default function CapacityPage() {
       )}
 
       {/* Drill-down : Rockets du site */}
-      {siteObj != null && <SiteRocketsTable site={siteObj} />}
+      {siteObj != null && <SiteRocketsTable site={siteObj} onSaved={mutate} />}
     </div>
   )
 }
@@ -252,16 +252,26 @@ function SiteFamilyBar({
   )
 }
 
-function SiteRocketsTable({ site }: { site: SiteCapacity }) {
+function SiteRocketsTable({
+  site, onSaved,
+}: { site: SiteCapacity; onSaved: KeyedMutator<NetworkCapacity> }) {
   return (
     <div className="bg-white border border-blue-100 rounded-xl shadow-sm overflow-hidden">
+      <div className="px-4 pt-4 pb-2">
+        <p className="text-xs text-blue-400">
+          La <strong className="text-slate-600">capacité max</strong> est calculée automatiquement
+          (famille radio + largeur de canal). Clique « modifier » pour la fixer manuellement sur une
+          Rocket — la valeur saisie remplace alors le calcul auto.
+        </p>
+      </div>
       <table className="w-full text-sm">
         <thead>
           <tr className="bg-blue-50 text-blue-700 text-xs uppercase tracking-wide">
             <th className="text-left font-semibold px-4 py-2.5">Rocket</th>
             <th className="text-left font-semibold px-4 py-2.5">Famille</th>
             <th className="text-right font-semibold px-4 py-2.5">Largeur</th>
-            <th className="text-right font-semibold px-4 py-2.5">Connectés / Max</th>
+            <th className="text-right font-semibold px-4 py-2.5">Connectés</th>
+            <th className="text-right font-semibold px-4 py-2.5 w-56">Capacité max</th>
             <th className="text-left font-semibold px-4 py-2.5 w-40">Charge</th>
           </tr>
         </thead>
@@ -285,13 +295,12 @@ function SiteRocketsTable({ site }: { site: SiteCapacity }) {
                   {r.channel_width_mhz != null ? `${Math.round(r.channel_width_mhz)} MHz` : '—'}
                 </td>
                 <td className="px-4 py-2.5 text-right tabular-nums">
-                  {r.max_clients != null ? (
-                    <span className={over ? 'font-bold text-red-600' : 'text-slate-800'}>
-                      {r.current_clients} / {r.max_clients}
-                    </span>
-                  ) : (
-                    <span className="text-amber-600">{r.current_clients} / indéterminé</span>
-                  )}
+                  <span className={over ? 'font-bold text-red-600' : 'text-slate-800'}>
+                    {r.current_clients}
+                  </span>
+                </td>
+                <td className="px-4 py-2.5">
+                  <MaxClientsCell rocket={r} onSaved={onSaved} />
                 </td>
                 <td className="px-4 py-2.5">
                   {pct != null ? (
@@ -313,6 +322,121 @@ function SiteRocketsTable({ site }: { site: SiteCapacity }) {
           })}
         </tbody>
       </table>
+    </div>
+  )
+}
+
+// Cellule « capacité max » éditable. Affiche la valeur effective (override si
+// posé, sinon formule) + un badge « manuel » ; en mode édition, saisie d'un
+// nombre qui remplace la formule, bouton « Auto » pour revenir au calcul.
+function MaxClientsCell({
+  rocket, onSaved,
+}: { rocket: RocketCapacity; onSaved: KeyedMutator<NetworkCapacity> }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const isManual = rocket.max_clients_override != null
+  const autoLabel = rocket.max_clients_auto != null ? `${rocket.max_clients_auto}` : 'indéterminé'
+
+  function startEdit() {
+    setDraft(rocket.max_clients_override != null ? String(rocket.max_clients_override) : '')
+    setErr(null)
+    setEditing(true)
+  }
+
+  async function commit(value: number | null) {
+    setSaving(true)
+    setErr(null)
+    try {
+      await updateDevice(rocket.id, {
+        device_type: 'rocket',
+        radio_tech: rocket.family,
+        max_clients_override: value,
+      })
+      await onSaved()
+      setEditing(false)
+    } catch {
+      setErr('Échec de l’enregistrement')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function save() {
+    const trimmed = draft.trim()
+    if (trimmed === '') {
+      void commit(null) // vide = repasse en automatique
+      return
+    }
+    const n = Number(trimmed)
+    if (!Number.isInteger(n) || n <= 0) {
+      setErr('Entier > 0 attendu')
+      return
+    }
+    void commit(n)
+  }
+
+  if (editing) {
+    return (
+      <div className="flex items-center justify-end gap-1.5">
+        <input
+          type="number"
+          min={1}
+          autoFocus
+          value={draft}
+          disabled={saving}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter') save()
+            if (e.key === 'Escape') setEditing(false)
+          }}
+          placeholder={autoLabel}
+          className="w-20 rounded border border-blue-300 px-2 py-1 text-right text-sm tabular-nums focus:outline-none focus:ring-1 focus:ring-blue-400"
+        />
+        <button
+          onClick={save}
+          disabled={saving}
+          className="rounded bg-blue-600 px-2 py-1 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+          title="Enregistrer"
+        >
+          ✓
+        </button>
+        <button
+          onClick={() => setEditing(false)}
+          disabled={saving}
+          className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-slate-50 disabled:opacity-50"
+          title="Annuler"
+        >
+          ✗
+        </button>
+        {err != null && <span className="text-[10px] text-red-600">{err}</span>}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex items-center justify-end gap-2">
+      <span className="tabular-nums text-slate-800">
+        {rocket.max_clients != null ? rocket.max_clients : <span className="text-amber-600">indéterminé</span>}
+      </span>
+      {isManual ? (
+        <span
+          className="shrink-0 text-[10px] font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5"
+          title={`Valeur manuelle — la formule automatique donnerait ${autoLabel}`}
+        >
+          manuel
+        </span>
+      ) : (
+        <span className="shrink-0 text-[10px] text-slate-400">auto</span>
+      )}
+      <button
+        onClick={startEdit}
+        className="shrink-0 text-[11px] font-medium text-blue-500 hover:text-blue-700 hover:underline"
+      >
+        modifier
+      </button>
     </div>
   )
 }

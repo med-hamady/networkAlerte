@@ -125,6 +125,14 @@ class Rocket(Device):
         Boolean, default=False, nullable=False, server_default="false",
     )
 
+    # Manual override of the rocket_client_overload ceiling. When set (not None)
+    # it REPLACES the per-family/channel-width formula entirely — the operator
+    # pins the maximum client count this AP may serve before it is flagged
+    # saturated. NULL = use the auto formula (_rocket_overload_threshold). Useful
+    # for APs whose channel width can't be auto-detected (no airOS creds) or when
+    # field experience disagrees with the formula. Preserved by the UISP sync.
+    max_clients_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # HTTPS API credentials (used by ltu_api_service)
     ssh_username: Mapped[str | None] = mapped_column(String(100), nullable=True)
     ssh_password: Mapped[str | None] = mapped_column(String(255), nullable=True)

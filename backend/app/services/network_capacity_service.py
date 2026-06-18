@@ -87,7 +87,13 @@ async def get_network_capacity(db: AsyncSession) -> dict:
     # the consumed/capacity totals nor the per-site drill-down.
     rockets = (
         await db.execute(
-            select(Rocket.id, Rocket.name, Rocket.location, Rocket.radio_tech)
+            select(
+                Rocket.id,
+                Rocket.name,
+                Rocket.location,
+                Rocket.radio_tech,
+                Rocket.max_clients_override,
+            )
             .where(Rocket.is_backhaul.is_(False))
         )
     ).all()
@@ -102,11 +108,13 @@ async def get_network_capacity(db: AsyncSession) -> dict:
         metrics = latest.get(rocket.id, {})
         width = metrics.get("channel_width_mhz")
         current = int(metrics.get("peer_count") or 0)
-        max_clients = (
-            _rocket_overload_threshold(settings, airmax, width)
-            if width is not None
-            else None
-        )
+        override = rocket.max_clients_override
+        # Auto formula value (None if width unknown) — surfaced separately so the
+        # UI can show it as the "automatic" reference even when an override is set.
+        max_clients_auto = _rocket_overload_threshold(settings, airmax, width)
+        # Effective ceiling: a manual override replaces the formula entirely and
+        # applies even without a known width.
+        max_clients = _rocket_overload_threshold(settings, airmax, width, override)
 
         site_name = (rocket.location or "").strip() or _SITE_FALLBACK
         site = sites.setdefault(
@@ -125,6 +133,8 @@ async def get_network_capacity(db: AsyncSession) -> dict:
                 "family": family,
                 "current_clients": current,
                 "max_clients": max_clients,
+                "max_clients_auto": max_clients_auto,
+                "max_clients_override": override,
                 "channel_width_mhz": width,
             }
         )

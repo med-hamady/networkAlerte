@@ -263,6 +263,11 @@ async def evaluate_device_metrics(
     if isinstance(device, Rocket) and "is_backhaul" not in metrics:
         metrics = dict(metrics)
         metrics["is_backhaul"] = bool(device.is_backhaul)
+    # Surface the manual client-capacity ceiling (operator-set) so the overload
+    # rule uses it instead of the per-family/width formula. None = auto formula.
+    if isinstance(device, Rocket) and "max_clients_override" not in metrics:
+        metrics = dict(metrics)
+        metrics["max_clients_override"] = device.max_clients_override
 
     for rule in rules:
         eval_result: AlertEvalResult = rule.evaluate(device.name, metrics, settings)

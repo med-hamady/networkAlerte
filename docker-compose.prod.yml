@@ -27,6 +27,10 @@ services:
         limits:
           memory: 512m
 
+  # Scheduler "fast" : disponibilité (device_ping) + maintenance, tout async
+  # léger. Isolé du container "heavy" ci-dessous pour que le heartbeat de
+  # disponibilité ne soit JAMAIS affamé par la fan-out SSH (GIL). À ~1000+
+  # devices, un scheduler unique gelait le device_ping ~20 min (last_seen figé).
   scheduler:
     build:
       context: ./backend
@@ -38,6 +42,7 @@ services:
       # Force-on même si le .env l'a désactivé : ce container n'existe que pour ça.
       SCHEDULER_ENABLED: "true"
       RUN_MODE: "scheduler"
+      SCHEDULER_GROUP: "fast"
     depends_on:
       postgres:
         condition: service_healthy
@@ -48,6 +53,37 @@ services:
       resources:
         limits:
           memory: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # Scheduler "heavy" : SSH (sonde transit/latence LR, lr_plan, client_block) +
+  # gros fan-outs API (snmp/ltu/airos/af60/power/uisp_sync). Sa pression
+  # GIL/threads reste confinée ici → n'impacte plus la disponibilité.
+  scheduler-heavy:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SCHEDULER_ENABLED: "true"
+      RUN_MODE: "scheduler"
+      SCHEDULER_GROUP: "heavy"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          # Plus de RAM que le "fast" : pool de threads SSH (lr_probe_concurrency)
+          # + fan-outs API sur tout le parc.
+          memory: 1g
     logging:
       driver: json-file
       options:

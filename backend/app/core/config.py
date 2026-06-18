@@ -41,6 +41,17 @@ class Settings(BaseSettings):
 
     # Scheduler
     scheduler_enabled: bool = True
+    # Groupe de jobs enregistré par ce process scheduler. Permet d'isoler la
+    # charge SSH/poll lourde du heartbeat de disponibilité (device_ping) sur des
+    # PROCESS séparés (un seul GIL/event-loop par process). À ~1000+ devices, la
+    # sonde SSH (ThreadPoolExecutor) saturait le GIL et affamait le device_ping
+    # → last_seen figé pendant ~20 min. Voir register_jobs().
+    #   - "all"   : tous les jobs (dev, process unique — défaut, comportement legacy)
+    #   - "fast"  : disponibilité + maintenance, tout async léger (ping, digest,
+    #               flap, latency-aggregate, matviews, rétention)
+    #   - "heavy" : SSH + gros fan-outs API (lr_probe, lr_plan, client_block,
+    #               snmp, ltu, airos, af60, power, uisp_sync)
+    scheduler_group: str = "all"
 
     # Polling intervals (seconds)
     ping_interval_seconds: int = 30
@@ -98,14 +109,18 @@ class Settings(BaseSettings):
     #     100 ms) pendant `lr_latency_failure_threshold` cycles consécutifs
     #     (défaut 3 cycles ≈ 3 min) → incident critique `lr_latency_high`.
     #
-    # Cadence pilotée par `lr_latency_interval` (secondes, défaut 60).
+    # Cadence pilotée par `lr_latency_interval` (secondes, défaut 300).
     transit_probe_threshold: int = 2
 
     lr_latency_target: str = "8.8.8.8"
     lr_latency_ping_count: int = 5
     lr_latency_critical_ms: float = 100.0
     lr_latency_failure_threshold: int = 3
-    lr_latency_interval: int = 60
+    # Intervalle de la sonde SSH transit/latence. Porté de 60 → 300 s : à 800+ LR
+    # la fan-out SSH toutes les 60 s était la principale source de pression GIL.
+    # Transit/latence n'ont pas besoin d'une granularité 60 s (anti-flap en
+    # cycles). 5 min décharge massivement la boucle. Ajustable par .env.
+    lr_latency_interval: int = 300
 
     # Notifications — WhatsApp via Ultramsg (https://ultramsg.com).
     # WhatsApp is the ONLY notification transport (email sending was removed from

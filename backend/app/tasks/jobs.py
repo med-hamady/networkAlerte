@@ -1543,6 +1543,21 @@ _LR_SSH_BACKOFF_DIVISOR = 10        # un LR en backoff sondé ~1 cycle sur 10
 _lr_ssh_fail_streak: dict[int, int] = {}
 _lr_probe_cycle = 0
 
+# Pool de threads SSH partagé sur toute la vie du process scheduler. Avant il
+# était recréé (puis join) à CHAQUE cycle → churn de N threads/cycle. Singleton :
+# les workers sont créés une fois et réutilisés. La taille est figée au 1er appel
+# (lr_probe_concurrency, réglage infra non surchargeable au runtime).
+_lr_probe_pool: ThreadPoolExecutor | None = None
+
+
+def _get_lr_probe_pool(max_workers: int) -> ThreadPoolExecutor:
+    global _lr_probe_pool
+    if _lr_probe_pool is None:
+        _lr_probe_pool = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="lr-probe",
+        )
+    return _lr_probe_pool
+
 
 @_timed_job
 async def lr_internet_probe_job() -> None:
@@ -1651,12 +1666,10 @@ async def lr_internet_probe_job() -> None:
         except Exception:
             logger.exception("lr_internet_probe: sonde %s (%s) a crashé", name, ip)
 
-    with ThreadPoolExecutor(
-        max_workers=settings.lr_probe_concurrency, thread_name_prefix="lr-probe",
-    ) as pool:
-        await asyncio.gather(
-            *[_probe(t, pool) for t in targets], return_exceptions=True,
-        )
+    pool = _get_lr_probe_pool(settings.lr_probe_concurrency)
+    await asyncio.gather(
+        *[_probe(t, pool) for t in targets], return_exceptions=True,
+    )
 
     # ── Phase 2 : traitement DB séquentiel des résultats récupérés ──
     # LR "up" (ping OK) mais dont la poignée SSH échoue : creds erronés, SSH
@@ -2255,6 +2268,27 @@ async def lr_plan_sync_job() -> None:
         logger.error("lr_plan_sync_job cycle failed: %s", exc)
 
 
+# ── Classification des jobs par groupe de process (scheduler_group) ───────────
+# À ~1000+ devices, faire tourner TOUS les jobs dans un seul process saturait le
+# GIL : la sonde SSH (ThreadPoolExecutor) affamait le device_ping → last_seen
+# figé ~20 min. On scinde la charge sur 2 process (containers) : "fast" porte la
+# disponibilité + la maintenance (tout async léger, latence-critique) ; "heavy"
+# porte le SSH et les gros fan-outs API. Le heartbeat tourne dans CHAQUE process
+# (liveness). En "all" (dev, process unique) rien n'est élagué.
+_ALWAYS_JOB_IDS = {"heartbeat"}
+_FAST_JOB_IDS = {
+    "device_ping", "warning_digest", "flap_detection",
+    "network_latency_aggregate", "client_consumption_matview_refresh",
+    "client_consumption_7d_refresh", "device_metrics_retention",
+    "security_anomaly_detection",
+}
+_HEAVY_JOB_IDS = {
+    "snmp_poll", "power_poll", "lr_internet_probe", "ltu_api_poll",
+    "airos_api_poll", "af60_api_poll", "lr_plan_sync",
+    "client_block_enforcement", "uisp_sync",
+}
+
+
 def register_jobs(scheduler: AsyncIOScheduler) -> None:
     """Register all scheduled jobs. Intervals are read from settings.
 
@@ -2262,6 +2296,10 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
       - max_instances=1     : never run a second copy if the previous one is still running
       - coalesce=True       : if the scheduler missed several runs, only fire once
       - misfire_grace_time  : ignore runs older than this when catching up
+
+    ``settings.scheduler_group`` ("all" | "fast" | "heavy") sélectionne le
+    sous-ensemble effectif : tous les jobs sont d'abord enregistrés, puis ceux
+    hors groupe sont retirés (élagage robuste aux jobs conditionnels).
     """
     settings = get_settings()
     safety = {"max_instances": 1, "coalesce": True, "misfire_grace_time": 15}
@@ -2425,5 +2463,40 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
             max_instances=1, coalesce=True, misfire_grace_time=120,
         )
 
+    # ── Élagage par groupe de process ────────────────────────────────────────
+    # "all" → on garde tout (dev, process unique). "fast"/"heavy" → on retire les
+    # jobs hors groupe. Un job non classé est conservé en "fast" par défaut (plus
+    # sûr que de le perdre silencieusement dans les deux process).
+    group = (settings.scheduler_group or "all").lower()
+    if group in ("fast", "heavy"):
+        classified = _ALWAYS_JOB_IDS | _FAST_JOB_IDS | _HEAVY_JOB_IDS
+        active = _FAST_JOB_IDS if group == "fast" else _HEAVY_JOB_IDS
+
+        def _drop(job_id: str) -> None:
+            # remove_job sur un job pending (avant start) est supporté ; on blinde
+            # quand même pour qu'un échec n'empêche pas le scheduler de démarrer.
+            try:
+                scheduler.remove_job(job_id)
+            except Exception as exc:  # noqa: BLE001 — boot must never crash here
+                logger.warning("Élagage job '%s' échoué (%s) — ignoré", job_id, exc)
+
+        for job in list(scheduler.get_jobs()):
+            if job.id in _ALWAYS_JOB_IDS:
+                continue
+            if job.id not in classified:
+                logger.warning(
+                    "Job '%s' non classé en groupe scheduler — conservé en 'fast'", job.id
+                )
+                if group != "fast":
+                    _drop(job.id)
+                continue
+            if job.id not in active:
+                _drop(job.id)
+        logger.info(
+            "Scheduler group '%s' — %d job(s) actifs : %s",
+            group,
+            len(scheduler.get_jobs()),
+            ", ".join(sorted(j.id for j in scheduler.get_jobs())),
+        )
 
 

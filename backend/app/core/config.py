@@ -78,6 +78,12 @@ class Settings(BaseSettings):
     # → gather + sémaphore : les timeouts s'exécutent en parallèle.
     snmp_concurrency: int = 30
 
+    # Concurrence du power_poll_job (REST API des UISP Power). Le job était série
+    # → avec beaucoup de UISP Power (ou des injoignables qui timeout), un tour
+    # dépassait l'intervalle de 30 s → APScheduler skippait chaque cycle. Fetch
+    # HTTP async → gather + sémaphore, sous deadline globale (_POWER_POLL_DEADLINE_S).
+    power_concurrency: int = 20
+
     # Concurrence de la sonde transit/latence LR (lr_internet_probe_job). Le job
     # était SÉRIE (une session SSH à la fois) → ~1 h par tour à 500 LR (chaque LR
     # n'était sondé qu'une fois/heure). On parallélise sur un pool de threads

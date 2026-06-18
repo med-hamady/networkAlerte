@@ -938,6 +938,11 @@ async def power_poll_job() -> None:
 
     logger.info("Power poll — checking %d UISP Power device(s)", len(devices))
 
+    # ── Phase 1 : fetch REST de tous les UISP Power EN PARALLÈLE (borné + deadline) ──
+    # Le job était série → à beaucoup de UISP Power (ou des injoignables qui
+    # timeout), un tour dépassait l'intervalle 30 s → APScheduler skippait chaque
+    # cycle. Le fetch HTTP est async → gather + sémaphore sous deadline globale.
+    # Phase 2 (persist + détection d'anomalies) reste en série DB.
     for device in devices:
         if not device.api_username or not device.api_password:
             logger.warning(
@@ -946,14 +951,43 @@ async def power_poll_job() -> None:
                 "Configure-les via PUT /api/v1/devices/%d.",
                 device.name, device.ip_address, device.id,
             )
-            continue
 
-        readings = await uisp_power_service.poll_uisp_power(
-            host=device.ip_address,
-            username=device.api_username,
-            password=device.api_password,
-            port=device.api_port or 443,
+    sem = asyncio.Semaphore(settings.power_concurrency)
+    fetched: dict[int, dict | None] = {}
+
+    async def _fetch_power(did: int, ip: str, user: str, pwd: str, port: int) -> None:
+        async with sem:
+            fetched[did] = await uisp_power_service.poll_uisp_power(
+                host=ip, username=user, password=pwd, port=port or 443,
+            )
+
+    ptasks = [
+        asyncio.ensure_future(
+            _fetch_power(d.id, d.ip_address, d.api_username, d.api_password, d.api_port)
         )
+        for d in devices
+        if d.api_username and d.api_password
+    ]
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*ptasks, return_exceptions=True),
+            timeout=_POWER_POLL_DEADLINE_S,
+        )
+    except TimeoutError:  # asyncio.TimeoutError is an alias of builtin on 3.11+
+        for t in ptasks:
+            t.cancel()
+        logger.warning(
+            "Power poll : deadline %.0fs atteinte — %d/%d device(s) récupéré(s), "
+            "le reste sera repris au prochain cycle.",
+            _POWER_POLL_DEADLINE_S, len(fetched), len(ptasks),
+        )
+
+    # ── Phase 2 : persist + détection d'anomalies en série DB ──
+    for device in devices:
+        if device.id not in fetched:
+            # Creds manquants (déjà signalé) ou fetch annulé par la deadline.
+            continue
+        readings = fetched.get(device.id)
 
         async with async_session_factory() as session:
             dev = await session.get(Device, device.id)
@@ -1103,6 +1137,12 @@ async def power_poll_job() -> None:
                 )
 
             await session.commit()
+
+
+# Power poll Phase 1 (fetch) global deadline — keeps the job under its 30 s
+# interval so it never overruns and skips. Stragglers are cancelled and retried
+# next cycle. Concurrency is settings.power_concurrency.
+_POWER_POLL_DEADLINE_S = 25.0
 
 
 # Concurrency controls for the LTU API poll. The job used to be serial (one

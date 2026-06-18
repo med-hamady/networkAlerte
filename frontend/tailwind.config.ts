@@ -8,6 +8,22 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
+        // Brand blue — aligné exactement sur le logo A2 Holding (#263564 = blue-900).
+        // Override de la palette `blue` par défaut de Tailwind : toutes les classes
+        // blue-50…blue-950 de l'app suivent désormais la teinte marine du logo.
+        blue: {
+          50:  '#f0f3f9',
+          100: '#dee3f2',
+          200: '#bdc7e5',
+          300: '#92a2d3',
+          400: '#677dc1',
+          500: '#435dad',
+          600: '#354b8d',
+          700: '#2e417a',
+          800: '#2a3b6f',
+          900: '#263564',
+          950: '#192343',
+        },
         a2: {
           50:  '#eaf4fe',
           100: '#c3e0f9',

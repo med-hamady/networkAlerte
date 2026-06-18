@@ -50,8 +50,9 @@ function LoginForm() {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-blue-50 px-4">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-blue-900 text-white font-black text-xl mb-3">
-            A2
+          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-white border border-blue-100 shadow-sm p-2 mb-3">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/a2-logo.png" alt="A2 Holding" className="w-full h-full object-contain" />
           </div>
           <h1 className="text-2xl font-bold text-blue-900 tracking-tight">
             Network Supervisor

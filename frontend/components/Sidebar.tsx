@@ -192,16 +192,9 @@ function LogoutIcon({ className }: { className?: string }) {
 
 function A2LogoMark() {
   return (
-    <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center shrink-0 relative overflow-hidden">
-      <svg className="absolute inset-0 w-full h-full opacity-10" viewBox="0 0 40 40">
-        <circle cx="8"  cy="8"  r="3" fill="#1d4ed8" />
-        <circle cx="32" cy="8"  r="2" fill="#1d4ed8" />
-        <circle cx="8"  cy="32" r="2" fill="#1d4ed8" />
-        <circle cx="32" cy="32" r="3" fill="#1d4ed8" />
-        <circle cx="20" cy="4"  r="2" fill="#1d4ed8" />
-        <circle cx="36" cy="20" r="2" fill="#1d4ed8" />
-      </svg>
-      <span className="relative text-blue-900 font-black text-base tracking-tight z-10">A2</span>
+    <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center shrink-0 overflow-hidden p-1.5">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/a2-logo.png" alt="A2 Holding" className="w-full h-full object-contain" />
     </div>
   )
 }

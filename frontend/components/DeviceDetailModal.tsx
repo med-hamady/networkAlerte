@@ -88,8 +88,10 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
   // device dashboard. For LR/Rocket, also pull a live reading from the
   // (parent) Rocket API and let it override the DB values key-by-key: the
   // DB shows instantly, live replaces as soon as it lands.
+  // A P2P backhaul has no live Rocket-API path (it's polled into the DB via the
+  // airOS poll) — the live endpoint 409s for it, so skip it and use the DB value.
   const { data: liveMetrics, isValidating: liveValidating } = useSWR<DeviceMetrics>(
-    isRadio ? endpoints.deviceMetricsLive(device.id) : null,
+    isRadio && !isBackhaul ? endpoints.deviceMetricsLive(device.id) : null,
     fetcher,
     { refreshInterval: LIVE_REFRESH, shouldRetryOnError: false },
   )

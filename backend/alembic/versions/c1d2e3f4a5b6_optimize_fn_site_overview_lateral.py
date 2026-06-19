@@ -12,11 +12,16 @@ Rewrite the power_metrics CTE as a LATERAL per uisp_power device with an
 EQUALITY on device_id → forces a per-device index scan on
 ix_device_metrics_lookup (device_id leading column). Measured on a 3.5M-row
 device_metrics: 220 ms → 4.7 ms for the sub-query, and it stays ~constant as the
-table grows (only ~30 power devices × a tiny index scan). The rest of the
-function is unchanged. CREATE OR REPLACE is an instant in-place catalog update.
+table grows (only ~30 power devices × a tiny index scan). CREATE OR REPLACE is an
+instant in-place catalog update.
+
+Chains AFTER g4b5c6d7e8f9 (which added `ip_address` to down_devices) — the two
+were developed in parallel and both redefine fn_site_overview; this keeps a
+single linear head and a final function that has BOTH the LATERAL power_metrics
+and the `ip_address` field in down_devices.
 
 Revision ID: c1d2e3f4a5b6
-Revises: f3a4b5c6d7e8
+Revises: g4b5c6d7e8f9
 Create Date: 2026-06-19 00:00:00.000000
 
 """
@@ -25,7 +30,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "c1d2e3f4a5b6"
-down_revision: str | None = "f3a4b5c6d7e8"
+down_revision: str | None = "g4b5c6d7e8f9"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -84,6 +89,7 @@ site_agg AS (
            COALESCE(
              jsonb_agg(jsonb_build_object(
                  'id', d.id, 'name', d.name, 'device_type', d.device_type,
+                 'ip_address', d.ip_address,
                  'status', d.status, 'last_seen', d.last_seen
              ) ORDER BY d.last_seen)
              FILTER (WHERE d.device_type IN ('rocket','uisp_switch','uisp_power','airfiber') AND d.status = 'down'),

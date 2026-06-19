@@ -2,7 +2,8 @@
 Scheduled supervision jobs.
 
 - heartbeat_job     : sanity check every 60s
-- device_ping_job   : ICMP ping all devices every 30s → opens/resolves incidents
+- infra_ping_job    : ICMP ping des équipements d'infra every 30s → opens/resolves incidents
+- client_ping_job   : ICMP ping des LR clients every 60s (statut seul, pas d'incident infra)
 - snmp_poll_job     : SNMP metrics for LTU/airMAX devices every 60s → alert engine
 - power_poll_job    : UISP Power API polling every 30s → power anomaly detection
 - ltu_api_poll_job  : LTU HTTP API polling every 60s → alert engine (radio quality)
@@ -474,11 +475,19 @@ async def heartbeat_job() -> None:
     logger.info("Scheduler heartbeat — system is alive")
 
 
-@_timed_job
-async def device_ping_job() -> None:
-    """
-    Ping all registered devices via ICMP.
-    Updates status/last_seen, opens or resolves device-down incidents.
+async def _ping_sweep(*, infra: bool) -> None:
+    """Ping un sous-ensemble du parc (INFRA ou LR clients) via ICMP, met à jour
+    status/last_seen, ouvre/résout les incidents *_down.
+
+    Corps partagé par les deux jobs (``infra_ping_job`` / ``client_ping_job``).
+    La séparation infra/LR sert deux buts :
+      - FIABILITÉ : un seul fping sur tout le parc (`-r 1 -t 800 -i 1`) envoyait
+        ~680 paquets en ~0,7 s ; ce burst noyait l'ICMP que le CPU de management
+        des Rockets rate-limite → 2 sondes perdues → faux "down" → le Rocket
+        sortait des polls API/SNMP. Le sweep INFRA utilise des params fiables
+        (plus de retries + timeout large) sur un petit lot.
+      - CHARGE : les LR clients (nombreux ; un LR down = panne côté abonné SANS
+        incident infra) sont sondés moins souvent (client_ping_interval_seconds).
 
     Anti-flapping: an incident is only opened after ping_down_threshold consecutive
     failures (default 3 = 90 s). A single successful ping resolves the incident.
@@ -491,8 +500,8 @@ async def device_ping_job() -> None:
         settings = await threshold_service.get_effective_settings(_ts_session, base_settings)
 
     # Light load (id + ip) only — we must NOT hold a DB session open during the
-    # ~3 s fping network sweep. client_modem rows are skipped: behind an LR's
-    # NAT, unreachable by ICMP from the supervisor (checked via ping-from-LR).
+    # fping network sweep. client_modem rows are skipped: behind an LR's NAT,
+    # unreachable by ICMP from the supervisor (checked via ping-from-LR).
     async with async_session_factory() as session:
         rows = (await session.execute(
             select(Device.id, Device.ip_address).where(
@@ -500,19 +509,30 @@ async def device_ping_job() -> None:
                 # A NULL ip is a stale LR binding freed during DHCP churn,
                 # awaiting rediscovery by its own Rocket — nothing to ping.
                 Device.ip_address.is_not(None),
+                # Sweep séparé : LR clients d'un côté, tout le reste (infra) de l'autre.
+                Device.device_type == "lr" if not infra else Device.device_type != "lr",
             )
         )).all()
 
+    label = "infra" if infra else "LR client"
     if not rows:
-        logger.debug("No devices registered — skipping ping poll")
+        logger.debug("Ping poll %s — aucun device", label)
         return
 
-    logger.info("Ping poll — checking %d device(s)", len(rows))
+    logger.info("Ping poll %s — checking %d device(s)", label, len(rows))
 
-    # One `fping` process pings the WHOLE parc in parallel → {ip: reachable}.
-    # Single process (~3 s), flat cost with parc size; bounded per-host fallback
-    # inside ping_hosts_bulk if fping is unavailable. (RTT superviseur inutilisé.)
-    reachable_by_ip = await poller.ping_hosts_bulk([ip for _id, ip in rows])
+    # Un process `fping` pingue ce lot en parallèle → {ip: reachable}. INFRA =
+    # params fiables (retries + timeout larges, cf. ping_infra_*) ; LR = défauts
+    # tolérants/rapides de ping_hosts_bulk. Fallback ping par hôte si fping absent.
+    ips = [ip for _id, ip in rows]
+    if infra:
+        reachable_by_ip = await poller.ping_hosts_bulk(
+            ips,
+            retries=settings.ping_infra_retries,
+            timeout_ms=settings.ping_infra_timeout_ms,
+        )
+    else:
+        reachable_by_ip = await poller.ping_hosts_bulk(ips)
 
     now = datetime.datetime.now(datetime.UTC)
     ids = [i for i, _ip in rows]
@@ -619,6 +639,24 @@ async def device_ping_job() -> None:
                 await session.commit()
 
         await session.commit()
+
+
+@_timed_job
+async def infra_ping_job() -> None:
+    """Ping ICMP des équipements d'INFRA (Rockets / switches / UISP Power / AF60).
+
+    Sweep rapide (ping_interval_seconds, 30 s) avec params fping fiables — c'est
+    lui qui ouvre/résout les incidents *_down (équipements critiques)."""
+    await _ping_sweep(infra=True)
+
+
+@_timed_job
+async def client_ping_job() -> None:
+    """Ping ICMP des LR CLIENTS (sweep plus lent, client_ping_interval_seconds).
+
+    Un LR down = panne côté abonné → aucun incident infra, juste le statut qui
+    bascule ; inutile de sonder aussi souvent que l'infra."""
+    await _ping_sweep(infra=False)
 
 
 @_timed_job
@@ -2359,7 +2397,7 @@ async def lr_plan_sync_job() -> None:
 # (liveness). En "all" (dev, process unique) rien n'est élagué.
 _ALWAYS_JOB_IDS = {"heartbeat"}
 _FAST_JOB_IDS = {
-    "device_ping", "warning_digest", "flap_detection",
+    "infra_ping", "client_ping", "warning_digest", "flap_detection",
     "network_latency_aggregate", "client_consumption_matview_refresh",
     "client_consumption_7d_refresh", "device_metrics_retention",
     "security_anomaly_detection",
@@ -2394,9 +2432,16 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         **safety,
     )
     scheduler.add_job(
-        device_ping_job,
+        infra_ping_job,
         trigger="interval", seconds=settings.ping_interval_seconds,
-        id="device_ping", name="Device ping poll",
+        id="infra_ping", name="Infra ping poll (Rockets/switches/power/AF60)",
+        replace_existing=True,
+        **safety,
+    )
+    scheduler.add_job(
+        client_ping_job,
+        trigger="interval", seconds=settings.client_ping_interval_seconds,
+        id="client_ping", name="LR client ping poll",
         replace_existing=True,
         **safety,
     )

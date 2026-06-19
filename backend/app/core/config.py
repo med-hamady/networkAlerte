@@ -55,6 +55,10 @@ class Settings(BaseSettings):
 
     # Polling intervals (seconds)
     ping_interval_seconds: int = 30
+    # Intervalle du ping des LR CLIENTS (sweep séparé de l'infra). Plus lent que
+    # l'infra : un LR down ne crée aucun incident (panne côté abonné), inutile de
+    # le sonder aussi souvent — ça allège fping et le médium radio.
+    client_ping_interval_seconds: int = 60
     snmp_interval_seconds: int = 60
     power_interval_seconds: int = 30
 
@@ -105,6 +109,19 @@ class Settings(BaseSettings):
     # On borne le nombre de pings en vol via un sémaphore. ceil(parc/concurrence)
     # batchs × ~2 s/ping doit tenir sous ping_interval_seconds (ex. 600/100 ≈ 12 s).
     ping_concurrency: int = 100
+
+    # Ping INFRA (Rockets base / switches / UISP Power / AF60) — équipements
+    # critiques et PEU nombreux, pingés dans un sweep `fping` SÉPARÉ des ~600 LR
+    # clients. Pourquoi séparer : un seul fping sur tout le parc (`-r 1 -t 800
+    # -i 1`) envoyait ~680 paquets en ~0,7 s ; ce burst noyait l'ICMP que le CPU
+    # de management des Rockets rate-limite → 2 sondes perdues → Rocket compté KO
+    # → après 3 cycles il passait `down` et SORTAIT des polls API/SNMP, alors
+    # qu'il routait le trafic et répondait à son API. Le sweep infra utilise donc
+    # des paramètres FIABLES : plus de retries + timeout plus large. Le lot étant
+    # petit, le surcoût est négligeable. Les LR gardent les défauts tolérants/
+    # rapides de `ping_hosts_bulk` (leur down ne crée même pas d'incident).
+    ping_infra_retries: int = 2        # fping -r : 3 tentatives au total
+    ping_infra_timeout_ms: int = 1200  # fping -t : timeout par sonde (ms)
 
     # Sonde LR → Internet — un seul job (`lr_internet_probe_job`) ouvre une
     # session SSH par LR par cycle et exécute `ping -c N` vers la cible

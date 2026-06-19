@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type { CapacityBucket, NetworkCapacity } from '@/lib/types'
@@ -44,6 +44,32 @@ export default function ReportsPage() {
     endpoints.networkCapacity, fetcher, { refreshInterval: 30_000 },
   )
 
+  // Contenu imprimable (tout sauf l'en-tête/contrôles) → source du PDF.
+  const reportRef = useRef<HTMLDivElement>(null)
+  const [downloading, setDownloading] = useState(false)
+
+  async function downloadPdf() {
+    if (!reportRef.current || downloading) return
+    setDownloading(true)
+    try {
+      // Import dynamique : html2pdf.js dépend de `window`, jamais en SSR.
+      const html2pdf = (await import('html2pdf.js')).default
+      await html2pdf()
+        .set({
+          margin: 10,
+          filename: `rapport-supervision_${applied.from}_${applied.to}.pdf`,
+          image: { type: 'jpeg', quality: 0.98 },
+          html2canvas: { scale: 2, backgroundColor: '#ffffff', useCORS: true },
+          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+          pagebreak: { mode: ['css', 'avoid-all'] },
+        })
+        .from(reportRef.current)
+        .save()
+    } finally {
+      setDownloading(false)
+    }
+  }
+
   const sites = capacity?.sites ?? []
   const globalMax = useMemo(
     () => sites.reduce((m, s) => Math.max(m, s.ltu.capacity, s.airmax.capacity), 0),
@@ -61,11 +87,12 @@ export default function ReportsPage() {
           </p>
         </div>
         <button
-          onClick={() => window.print()}
-          className="bg-blue-900 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-800 transition-colors flex items-center gap-2"
+          onClick={downloadPdf}
+          disabled={downloading || capacity == null}
+          className="bg-blue-900 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-800 transition-colors flex items-center gap-2 disabled:bg-blue-300 disabled:cursor-not-allowed"
         >
-          <PrintIcon />
-          Imprimer / Exporter PDF
+          <DownloadIcon />
+          {downloading ? 'Génération…' : 'Télécharger le rapport'}
         </button>
       </div>
 
@@ -103,6 +130,8 @@ export default function ReportsPage() {
         </div>
       </div>
 
+      {/* Contenu imprimable / exporté en PDF */}
+      <div ref={reportRef} className="space-y-6">
       {/* Bandeau d'en-tête (visible à l'impression) */}
       <div className="print-card bg-blue-900 text-white rounded-xl p-6 shadow-sm">
         <h2 className="text-xl font-bold">Rapport de supervision réseau</h2>
@@ -186,6 +215,7 @@ export default function ReportsPage() {
           periodLabel={`${applied.from} → ${applied.to}`}
         />
       </div>
+      </div>
     </div>
   )
 }
@@ -236,13 +266,13 @@ function SectionHeader({ title, subtitle }: { title: string; subtitle: string })
   )
 }
 
-function PrintIcon() {
+function DownloadIcon() {
   return (
     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path
         strokeLinecap="round"
         strokeLinejoin="round"
-        d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"
+        d="M4 16v1a2 2 0 002 2h12a2 2 0 002-2v-1m-4-5l-4 4m0 0l-4-4m4 4V4"
       />
     </svg>
   )

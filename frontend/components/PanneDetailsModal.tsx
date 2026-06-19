@@ -1,15 +1,15 @@
 'use client'
 
 import React from 'react'
-import type { Device } from '@/lib/types'
-import { deviceLabel, formatUptime, formatDate } from '@/lib/types'
+import type { SiteDownDevice } from '@/lib/types'
+import { deviceTypeLabel, formatUptime, formatDate } from '@/lib/types'
 import IpLink from './IpLink'
 
 interface Props {
-  site: string | null     // site name; null = closed
-  devices: Device[]       // infra devices currently down for this site
+  site: string | null          // site name; null = closed
+  devices: SiteDownDevice[]    // infra devices currently down (from fn_site_overview)
   onClose: () => void
-  onSelect?: (device: Device) => void  // open the full device detail
+  onSelect?: (id: number) => void  // open the full device detail (resolved by parent)
 }
 
 function downForSeconds(lastSeen: string | null): number | null {
@@ -77,7 +77,7 @@ export default function PanneDetailsModal({ site, devices, onClose, onSelect }: 
                 return (
                   <button
                     key={d.id}
-                    onClick={() => onSelect?.(d)}
+                    onClick={() => onSelect?.(d.id)}
                     className="w-full text-left px-6 py-4 flex items-center justify-between gap-4 hover:bg-blue-50/50 transition-colors"
                   >
                     <div className="min-w-0">
@@ -86,7 +86,7 @@ export default function PanneDetailsModal({ site, devices, onClose, onSelect }: 
                         <p className="font-semibold text-slate-800 text-sm truncate">{d.name}</p>
                       </div>
                       <p className="text-blue-400 text-xs mt-0.5 ml-[18px]">
-                        {deviceLabel(d)} · <IpLink ip={d.ip_address} className="font-mono" />
+                        {deviceTypeLabel(d.device_type)} · <IpLink ip={d.ip_address} className="font-mono" />
                       </p>
                     </div>
                     <div className="text-right shrink-0">

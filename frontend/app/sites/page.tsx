@@ -1,6 +1,6 @@
 'use client'
 
-import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
@@ -62,13 +62,13 @@ function SitesPage() {
   const sites = overview ?? []
   const totalPannes = sites.reduce((s, x) => s + x.pannes, 0)
 
-  // Pannes modal: resolve the site's down devices to full device objects.
+  // Pannes modal: render straight from fn_site_overview's down_devices — the
+  // SAME source the card's panne count comes from, so the two can never
+  // disagree (previously this re-joined the down ids against the paginated
+  // /devices list, which silently drops rows once the parc exceeds the page
+  // limit → empty modal while the card still showed "N en panne").
   const pannesItem = pannesSite != null ? sites.find(s => s.name === pannesSite) : undefined
-  const pannesIds = useMemo(
-    () => new Set(pannesItem?.down_devices.map(d => d.id) ?? []),
-    [pannesItem],
-  )
-  const pannesDevices = (devices ?? []).filter(d => pannesIds.has(d.id))
+  const pannesDevices = pannesItem?.down_devices ?? []
 
   // Drill-down: equipment of the selected site (optionally infra-only). Uses the
   // backend-resolved `site` field — no client-side hierarchy resolution.
@@ -173,7 +173,14 @@ function SitesPage() {
         site={pannesSite}
         devices={pannesDevices}
         onClose={() => setPannesSite(null)}
-        onSelect={d => { setPannesSite(null); setSelected(d) }}
+        onSelect={async id => {
+          // Fiche détaillée résolue à la source (lookup par id, jamais tronqué)
+          // plutôt que filtrée dans la liste /devices paginée.
+          setPannesSite(null)
+          try {
+            setSelected(await fetcher(endpoints.device(id)))
+          } catch { /* device introuvable : on n'ouvre pas la fiche */ }
+        }}
       />
 
       <DeviceDetailModal

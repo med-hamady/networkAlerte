@@ -651,6 +651,7 @@ export interface SiteDownDevice {
   id: number
   name: string
   device_type: string
+  ip_address: string | null
   status: string
   last_seen: string | null
 }

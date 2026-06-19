@@ -475,6 +475,37 @@ async def heartbeat_job() -> None:
     logger.info("Scheduler heartbeat — system is alive")
 
 
+async def _reconfirm_unreachable(
+    ips: list[str], settings,
+) -> dict[str, bool]:
+    """Re-pingue chaque IP suspecte ISOLÉMENT (un `ping` dédié par hôte, hors
+    burst) → {ip: reachable}. Sert à dissiper les faux "down" du sweep groupé :
+    une radio Ubiquiti rate-limite tout le burst ICMP d'un coup, mais répond à un
+    ping isolé. Concurrence bornée (réutilise ping_concurrency) pour ne pas
+    re-créer une rafale ; les suspects sont normalement peu nombreux."""
+    sem = asyncio.Semaphore(settings.ping_concurrency)
+
+    async def _one(ip: str) -> tuple[str, bool]:
+        async with sem:
+            reachable, _ = await poller.ping_host(
+                ip,
+                timeout=settings.ping_infra_reconfirm_timeout_s,
+                count=settings.ping_infra_reconfirm_count,
+            )
+        return ip, reachable
+
+    results = await asyncio.gather(
+        *[_one(ip) for ip in ips], return_exceptions=True,
+    )
+    out: dict[str, bool] = {}
+    for r in results:
+        if isinstance(r, BaseException):
+            continue
+        ip, reachable = r
+        out[ip] = reachable
+    return out
+
+
 async def _ping_sweep(*, infra: bool) -> None:
     """Ping un sous-ensemble du parc (INFRA ou LR clients) via ICMP, met à jour
     status/last_seen, ouvre/résout les incidents *_down.
@@ -531,6 +562,18 @@ async def _ping_sweep(*, infra: bool) -> None:
             retries=settings.ping_infra_retries,
             timeout_ms=settings.ping_infra_timeout_ms,
         )
+        # Re-confirmation ISOLÉE des suspects : le faux "down" vient du burst
+        # fping. On re-pingue chaque hôte injoignable TOUT SEUL (hors burst) ;
+        # un équipement sain répond du premier coup → on le re-marque UP. "down"
+        # reste basé sur le ping, mais sur un ping fiable. Coût nul si infra saine.
+        suspects = [ip for ip in ips if not reachable_by_ip.get(ip, False)]
+        if suspects:
+            logger.info(
+                "Ping infra — %d suspect(s) down, re-confirmation isolée", len(suspects)
+            )
+            confirmed = await _reconfirm_unreachable(suspects, settings)
+            for ip in suspects:
+                reachable_by_ip[ip] = confirmed.get(ip, False)
     else:
         reachable_by_ip = await poller.ping_hosts_bulk(ips)
 

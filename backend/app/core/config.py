@@ -123,6 +123,16 @@ class Settings(BaseSettings):
     ping_infra_retries: int = 2        # fping -r : 3 tentatives au total
     ping_infra_timeout_ms: int = 1200  # fping -t : timeout par sonde (ms)
 
+    # Re-confirmation ISOLÉE des infra suspectées down. Le faux "down" d'un
+    # Rocket sain vient du BURST fping (la radio rate-limite TOUS les ICMP du
+    # paquet d'un coup). Avant de compter un échec, on re-pingue chaque hôte
+    # suspect SEUL, hors burst, avec un `ping` dédié : un équipement sain répond
+    # du premier coup. "down" reste 100% basé sur le ping — mais sur un ping
+    # fiable (isolé). Coût NUL quand l'infra est saine (aucun suspect). Ne
+    # s'applique qu'à l'infra (les LR clients gardent le sweep groupé tolérant).
+    ping_infra_reconfirm_count: int = 2      # ping -c : sondes du re-check isolé
+    ping_infra_reconfirm_timeout_s: int = 2  # ping -W : timeout par sonde (s)
+
     # Sonde LR → Internet — un seul job (`lr_internet_probe_job`) ouvre une
     # session SSH par LR par cycle et exécute `ping -c N` vers la cible
     # `lr_latency_target` (par défaut 8.8.8.8). Deux signaux en sortent :

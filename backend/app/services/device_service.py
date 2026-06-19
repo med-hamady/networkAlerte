@@ -41,9 +41,19 @@ _TYPE_TO_MODEL: dict[str, type[Device]] = {
 }
 
 
-async def get_devices(db: AsyncSession, skip: int = 0, limit: int = 100) -> list[Device]:
-    """List all devices with pagination — polymorphic load returns subclass instances."""
-    result = await db.execute(select(Device).offset(skip).limit(limit))
+async def get_devices(
+    db: AsyncSession, skip: int = 0, limit: int = 100, site: str | None = None,
+) -> list[Device]:
+    """List devices with pagination — polymorphic load returns subclass instances.
+
+    Optional `site` filter (matches the trigger-maintained, indexed
+    `devices.site` column) lets the /sites drill-down load only one site's
+    equipment instead of the whole fleet — a small, fast query.
+    """
+    stmt = select(Device)
+    if site is not None:
+        stmt = stmt.where(Device.site == site)
+    result = await db.execute(stmt.offset(skip).limit(limit))
     return list(result.scalars().all())
 
 

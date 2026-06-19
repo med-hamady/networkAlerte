@@ -73,10 +73,18 @@ def _to_read(device: Device) -> DeviceRead:
 async def list_devices(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
+    site: str | None = Query(
+        None,
+        description="Filter by resolved site name (indexed) — used by the /sites drill-down.",
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> list[DeviceRead]:
-    """List all monitored devices — polymorphic read returns subclass-specific fields."""
-    devices = await device_service.get_devices(db, skip=skip, limit=limit)
+    """List monitored devices — polymorphic read returns subclass-specific fields.
+
+    Pass `site` to load only one site's equipment (fast, indexed) instead of the
+    whole fleet.
+    """
+    devices = await device_service.get_devices(db, skip=skip, limit=limit, site=site)
     return [_to_read(d) for d in devices]
 
 

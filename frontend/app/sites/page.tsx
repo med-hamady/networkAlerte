@@ -30,57 +30,59 @@ function SitesPage() {
   }
 
   // Site cards (grouping, counts, down_since, down/power device lists) are built
-  // entirely in SQL — fn_site_overview(). The frontend only renders them.
+  // entirely in SQL — fn_site_overview(). This is the ONLY request the landing
+  // page makes, so it loads fast (no full-fleet /devices fetch anymore).
   const { data: overview, isLoading: overviewLoading, mutate } = useSWR<SiteOverviewItem[]>(
     endpoints.sitesOverview, fetcher, { refreshInterval: 30_000 },
   )
 
-  // The full device list is still loaded for the drill-down equipment grid and
-  // the device/pannes modals (which need complete device objects). It is NO
-  // longer aggregated client-side — each device carries its resolved `site`.
-  const { data: devices } = useSWR<Device[]>(
-    endpoints.devices, fetcher, { refreshInterval: 30_000 },
+  // Equipment of ONE site is loaded lazily — only when a site is drilled into
+  // OR a device detail is open (its linked LRs need the site's devices). Filtered
+  // server-side by the indexed `site` column → a small, fast response (tens of
+  // rows) instead of the whole ~1000-device fleet.
+  const activeSite = selectedSite ?? (selected ? selected.site?.trim() || SITE_FALLBACK : null)
+  const { data: siteDevices } = useSWR<Device[]>(
+    activeSite ? endpoints.devicesBySite(activeSite) : null,
+    fetcher, { refreshInterval: 30_000 },
   )
+  const siteDeviceList = siteDevices ?? []
 
   // Deep-link from /lr-health "Voir l'équipement →": /sites?device=<id> opens
-  // that device's detail modal (and its site context). Each distinct device
-  // param is handled once (so closing the modal doesn't re-open it), but a new
-  // param value still fires.
+  // that device's detail modal in its site context. The device is fetched by id
+  // (no full list to search); setting selectedSite then loads that site's grid.
   const deviceParam = searchParams.get('device')
   const lastHandledDevice = useRef<string | null>(null)
   useEffect(() => {
-    if (!deviceParam || !devices?.length) return
-    if (lastHandledDevice.current === deviceParam) return
-    const dev = devices.find(d => d.id === Number(deviceParam))
-    if (dev) {
-      setSelected(dev)
-      setSelectedSite(dev.site?.trim() || SITE_FALLBACK)
-      lastHandledDevice.current = deviceParam
-    }
-  }, [deviceParam, devices])
+    if (!deviceParam || lastHandledDevice.current === deviceParam) return
+    lastHandledDevice.current = deviceParam
+    let cancelled = false
+    ;(async () => {
+      try {
+        const dev: Device = await fetcher(endpoints.device(Number(deviceParam)))
+        if (cancelled) return
+        setSelected(dev)
+        setSelectedSite(dev.site?.trim() || SITE_FALLBACK)
+      } catch { /* device introuvable : on n'ouvre pas la fiche */ }
+    })()
+    return () => { cancelled = true }
+  }, [deviceParam])
 
   const sites = overview ?? []
   const totalPannes = sites.reduce((s, x) => s + x.pannes, 0)
 
   // Pannes modal: render straight from fn_site_overview's down_devices — the
-  // SAME source the card's panne count comes from, so the two can never
-  // disagree (previously this re-joined the down ids against the paginated
-  // /devices list, which silently drops rows once the parc exceeds the page
-  // limit → empty modal while the card still showed "N en panne").
+  // SAME source the card's panne count comes from, so the two can never disagree.
   const pannesItem = pannesSite != null ? sites.find(s => s.name === pannesSite) : undefined
   const pannesDevices = pannesItem?.down_devices ?? []
 
-  // Drill-down: equipment of the selected site (optionally infra-only). Uses the
-  // backend-resolved `site` field — no client-side hierarchy resolution.
-  const siteDevices = selectedSite != null
-    ? (devices?.filter(d =>
-        (d.site?.trim() || SITE_FALLBACK) === selectedSite &&
-        (drillFilter === 'all' || INFRA_TYPES.has(d.device_type)),
-      ) ?? [])
+  // Drill-down grid: the selected site's equipment (optionally infra-only).
+  // siteDeviceList is already scoped to the active site by the backend.
+  const siteGrid = selectedSite != null
+    ? siteDeviceList.filter(d => drillFilter === 'all' || INFRA_TYPES.has(d.device_type))
     : []
 
   const childrenMap: Record<number, number> = {}
-  devices?.forEach(d => {
+  siteDeviceList.forEach(d => {
     if (d.device_type === 'lr' && d.rocket_id != null) {
       childrenMap[d.rocket_id] = (childrenMap[d.rocket_id] ?? 0) + 1
     }
@@ -118,7 +120,7 @@ function SitesPage() {
               <h1 className="text-2xl font-bold text-blue-900 tracking-tight truncate">
                 {selectedSite}
                 <span className="text-blue-400 font-normal text-sm ml-2">
-                  {siteDevices.length} équipement{siteDevices.length > 1 ? 's' : ''}
+                  {siteGrid.length} équipement{siteGrid.length > 1 ? 's' : ''}
                   {drillFilter === 'infra' ? ' infra' : ''}
                 </span>
               </h1>
@@ -155,9 +157,15 @@ function SitesPage() {
               />
             ))}
           </div>
+        ) : siteDevices == null ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+            {Array.from({ length: 4 }, (_, i) => (
+              <div key={i} className="rounded-xl bg-white border border-blue-100 h-40 animate-pulse" />
+            ))}
+          </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-            {siteDevices.map(d => (
+            {siteGrid.map(d => (
               <DeviceCard
                 key={d.id}
                 device={d}
@@ -185,7 +193,7 @@ function SitesPage() {
 
       <DeviceDetailModal
         device={selected}
-        devices={devices ?? []}
+        devices={siteDeviceList}
         onClose={() => setSelected(null)}
         onNavigate={setSelected}
       />

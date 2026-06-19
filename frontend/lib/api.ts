@@ -36,6 +36,9 @@ export const endpoints = {
   // autorisé par l'API ; à dépasser ce seuil il faudra paginer pour de vrai.
   // (POST createDevice réutilise cette URL : le query param est ignoré.)
   devices:              `${API_BASE}/devices?limit=1000`,
+  // Une seule page (drill-down /sites) : équipements d'un site, filtrés côté
+  // backend par la colonne indexée devices.site → petite réponse rapide.
+  devicesBySite:        (site: string) => `${API_BASE}/devices?site=${encodeURIComponent(site)}&limit=1000`,
   device:               (id: number) => `${API_BASE}/devices/${id}`,
   incidents:            `${API_BASE}/incidents`,
   incident:             (id: number) => `${API_BASE}/incidents/${id}`,

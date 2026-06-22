@@ -236,6 +236,25 @@ class Lr(Device):
         DateTime(timezone=True), nullable=True,
     )
 
+    # ── UISP controller snapshot (resilient to outages) ──────────────────────
+    # Mirror of what the UISP controller knows about this client station,
+    # imported by the daily `sync_uisp_stations`. These survive a Rocket/LR
+    # outage (the controller keeps the last-known state), so /access can show a
+    # client and its bridge/router mode even when our own live poll has nothing.
+    # The sync NEVER writes the live-polled columns (`topology_mode`, IP,
+    # `rocket_id`, block state) — those stay owned by discovery_service / the
+    # live jobs. `topology_mode` (live) wins when known; `uisp_mode` is fallback.
+    # `uisp_status` is the controller's view: "active" | "disconnected".
+    uisp_mode: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    uisp_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    uisp_last_seen: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    uisp_ap_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    uisp_synced_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
     __mapper_args__ = {"polymorphic_identity": "lr", "polymorphic_load": "selectin"}
 
 

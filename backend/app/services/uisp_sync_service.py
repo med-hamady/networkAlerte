@@ -21,13 +21,14 @@ DHCP churn), then by IP, then by (device_type, name). A match of a different
 device_type is treated as a conflict and skipped (never hijack an LR row).
 """
 
+import datetime
 import logging
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.models.device import Device
+from app.models.device import Device, Lr, Rocket
 from app.schemas.device import (
     AirFiberCreate,
     RocketCreate,
@@ -35,7 +36,12 @@ from app.schemas.device import (
     UispSwitchCreate,
     normalize_mac,
 )
-from app.services import device_service, uisp_service
+from app.services import (
+    client_block_service,
+    device_service,
+    discovery_service,
+    uisp_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -291,5 +297,168 @@ async def sync_uisp_devices(session: AsyncSession, *, dry_run: bool = False) -> 
         "UISP sync %s: fetched=%d infra=%d created=%d updated=%d unchanged=%d skipped=%s",
         "(dry-run)" if dry_run else "", summary["fetched"], summary["infra_matched"],
         summary["created"], summary["updated"], summary["unchanged"], summary["skipped"],
+    )
+    return summary
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Client stations (CPE / LR) — UISP snapshot into the `lrs` table
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _parse_iso(value: str | None) -> datetime.datetime | None:
+    """Parse a UISP ISO timestamp ("...Z") to an aware datetime, or None."""
+    if not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) -> dict:
+    """Import the UISP client-station roster into the `lrs` table.
+
+    Unlike `sync_uisp_devices` (infrastructure), this brings in subscriber LRs so
+    /access can show every client — and its bridge/router mode — even when our
+    own live poll has nothing (Rocket down, LR never discovered). It writes ONLY
+    the `uisp_*` snapshot columns (mode/status/last_seen/ap_name) plus name/IP on
+    create; it NEVER touches the live-owned columns (`topology_mode`, `rocket_id`
+    of an existing row, block state) — discovery_service stays the owner of those.
+
+    Reconciliation is MAC-first (same identity discovery uses) so a station that
+    is later discovered over the radio converges onto the same row. AF60 backhaul
+    stations are excluded (already infra); everything else UISP lists is imported
+    (the full roster — UISP already drops de-provisioned stations).
+
+    Returns a summary dict; the caller commits (nothing is written in dry_run).
+    """
+    settings = get_settings()
+    client = uisp_service.UISPClient(
+        settings.uisp_base_url,
+        username=settings.uisp_username,
+        password=settings.uisp_password,
+        api_token=settings.uisp_api_token,
+        verify_tls=settings.uisp_verify_tls,
+        timeout=settings.uisp_request_timeout,
+    )
+    raw = await client.fetch_devices(role="station")
+
+    existing = (await session.execute(select(Device))).scalars().all()
+    by_mac: dict[str, Device] = {d.mac_address: d for d in existing if d.mac_address}
+    by_ip: dict[str, Device] = {d.ip_address: d for d in existing if d.ip_address}
+    rockets_by_name: dict[str, Rocket] = {
+        d.name: d for d in existing if isinstance(d, Rocket)
+    }
+
+    now = datetime.datetime.now(datetime.UTC)
+
+    summary: dict = {
+        "dry_run": dry_run,
+        "fetched": len(raw),
+        "stations": 0,
+        "created": 0,
+        "updated": 0,
+        "skipped": {
+            "af60": 0, "no_mac": 0, "type_conflict": 0,
+        },
+        "samples": {"create": [], "update": []},
+    }
+
+    for dev in raw:
+        ident = dev.get("identification") or {}
+        model = ident.get("model") or ""
+        # AF60 backhaul reports role=station at one end — it is infra, owned by
+        # sync_uisp_devices, never a client LR.
+        if model.upper().startswith("AF60"):
+            summary["skipped"]["af60"] += 1
+            continue
+
+        last_seen = _parse_iso((dev.get("overview") or {}).get("lastSeen"))
+
+        mac_raw = ident.get("mac")
+        try:
+            mac = normalize_mac(mac_raw) if mac_raw else None
+        except ValueError:
+            mac = None
+        if not mac:
+            summary["skipped"]["no_mac"] += 1  # MAC is the identity — can't import
+            continue
+
+        summary["stations"] += 1
+
+        name = ident.get("name") or ident.get("hostname") or ident.get("displayName")
+        ip = _strip_ip(dev.get("ipAddress"))
+        uisp_mode = dev.get("mode")  # 'router' | 'bridge'
+        uisp_status = (dev.get("overview") or {}).get("status")  # 'active'|'disconnected'
+        ap_name = ((dev.get("attributes") or {}).get("apDevice") or {}).get("name")
+        model_name = ident.get("modelName") or model
+
+        match = by_mac.get(mac)
+        if match is not None:
+            if match.device_type != "lr":
+                summary["skipped"]["type_conflict"] += 1
+                continue
+            # Update the UISP snapshot columns + the (CRM) name. Never touch the
+            # live-owned columns or a held IP.
+            if not dry_run:
+                if name and match.name != name:
+                    match.name = name
+                match.uisp_mode = uisp_mode
+                match.uisp_status = uisp_status
+                match.uisp_last_seen = last_seen
+                match.uisp_ap_name = ap_name
+                match.uisp_synced_at = now
+            summary["updated"] += 1
+            if len(summary["samples"]["update"]) < _SAMPLE_CAP:
+                summary["samples"]["update"].append(
+                    {"name": name, "mac": mac, "mode": uisp_mode, "status": uisp_status},
+                )
+            continue
+
+        # ── Create a new LR row from the UISP roster ─────────────────────────
+        parent = rockets_by_name.get(ap_name) if ap_name else None
+        model_variant = discovery_service._infer_model_variant({"model": model_name}, parent)
+        # The IP is taken only if free; an IP held by another device is left to
+        # discovery_service's churn logic (this row keeps NULL until rediscovered).
+        new_ip = ip if ip and ip not in by_ip else None
+
+        if not dry_run:
+            lr = Lr(
+                name=name or f"LR {mac}",
+                ip_address=new_ip,
+                status="unknown",
+                location=parent.location if parent else (ap_name or None),
+                mac_address=mac,
+                model_variant=model_variant,
+                rocket_id=parent.id if parent else None,
+                auto_discovered=True,
+                ssh_username=settings.lr_default_ssh_username or None,
+                ssh_password=settings.lr_default_ssh_password or None,
+                ssh_port=settings.lr_default_ssh_port,
+                lan_interface=client_block_service.default_lan_interface(model_variant),
+                uisp_mode=uisp_mode,
+                uisp_status=uisp_status,
+                uisp_last_seen=last_seen,
+                uisp_ap_name=ap_name,
+                uisp_synced_at=now,
+            )
+            session.add(lr)
+            await session.flush()
+            by_mac[mac] = lr
+            if new_ip:
+                by_ip[new_ip] = lr
+
+        summary["created"] += 1
+        if len(summary["samples"]["create"]) < _SAMPLE_CAP:
+            summary["samples"]["create"].append({
+                "name": name, "mac": mac, "ip": new_ip, "variant": model_variant,
+                "mode": uisp_mode, "status": uisp_status, "ap": ap_name,
+            })
+
+    logger.info(
+        "UISP station sync %s: fetched=%d stations=%d created=%d updated=%d skipped=%s",
+        "(dry-run)" if dry_run else "", summary["fetched"], summary["stations"],
+        summary["created"], summary["updated"], summary["skipped"],
     )
     return summary

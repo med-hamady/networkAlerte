@@ -17,7 +17,9 @@ from app.db.session import get_db
 
 router = APIRouter()
 
-AccessFilter = Literal["all", "active", "blocked_full", "blocked_whatsapp", "bridge"]
+AccessFilter = Literal[
+    "all", "active", "blocked_full", "blocked_whatsapp", "bridge", "disconnected",
+]
 
 
 @router.get("/clients")

@@ -68,17 +68,21 @@ class UISPClient:
             raise UISPAuthError("UISP login succeeded but no x-auth-token header returned")
         return {"x-auth-token": token}
 
-    async def fetch_devices(self) -> list[dict]:
-        """Return the controller's full device list (raw UISP dicts).
+    async def fetch_devices(self, role: str | None = None) -> list[dict]:
+        """Return the controller's device list (raw UISP dicts).
 
-        Raises UISPAuthError on bad credentials, httpx errors on transport/HTTP
-        failures — the caller (sync job) logs and skips the cycle.
+        `role` (e.g. "station" or "ap") narrows the query via the controller's
+        `?role=` filter — the infra sync calls without it (all devices), the
+        station sync passes role="station". Raises UISPAuthError on bad
+        credentials, httpx errors on transport/HTTP failures — the caller (sync
+        job) logs and skips the cycle.
         """
         async with httpx.AsyncClient(verify=self._verify, timeout=self._timeout) as client:
             headers = await self._auth_headers(client)
             resp = await client.get(
                 f"{self._base}/nms/api/v2.1/devices",
                 headers=headers,
+                params={"role": role} if role else None,
                 timeout=self._timeout,
             )
             resp.raise_for_status()

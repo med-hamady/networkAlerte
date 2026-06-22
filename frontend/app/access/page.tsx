@@ -7,7 +7,7 @@ import type { AccessClientRow, AccessClientsResponse } from '@/lib/types'
 import ClientAccessActionModal from '@/components/ClientAccessActionModal'
 import IpLink from '@/components/IpLink'
 
-type Filter = 'all' | 'active' | 'blocked_full' | 'blocked_whatsapp' | 'bridge'
+type Filter = 'all' | 'active' | 'blocked_full' | 'blocked_whatsapp' | 'bridge' | 'disconnected'
 
 const FILTERS: { value: Filter; label: string }[] = [
   { value: 'all',              label: 'Tous'             },
@@ -15,6 +15,7 @@ const FILTERS: { value: Filter; label: string }[] = [
   { value: 'blocked_full',     label: 'Coupure totale'   },
   { value: 'blocked_whatsapp', label: 'WhatsApp autorisé' },
   { value: 'bridge',           label: 'Mode bridge ⚠'    },
+  { value: 'disconnected',     label: 'Hors ligne'       },
 ]
 
 function timeAgo(iso: string | null): string {
@@ -45,7 +46,7 @@ export default function AccessPage() {
   )
 
   const stats = data?.stats ?? {
-    total: 0, active: 0, blocked_full: 0, blocked_whatsapp: 0, bridge: 0,
+    total: 0, active: 0, blocked_full: 0, blocked_whatsapp: 0, bridge: 0, disconnected: 0,
   }
   const sorted = data?.items ?? []
   const isEmptyFleet = stats.total === 0
@@ -72,7 +73,12 @@ export default function AccessPage() {
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard label="Clients (total)" value={stats.total} tone="blue" />
+        <StatCard
+          label="Clients (total)"
+          value={stats.total}
+          tone="blue"
+          sub={stats.disconnected > 0 ? `${stats.disconnected} hors ligne` : undefined}
+        />
         <StatCard label="Accès actif" value={stats.active} tone="green" />
         <StatCard
           label="Bloqués"
@@ -144,17 +150,32 @@ export default function AccessPage() {
               </thead>
               <tbody className="divide-y divide-blue-50">
                 {sorted.map(lr => {
-                  const isBridge = lr.topology_mode === 'bridge'
+                  const isBridge = lr.effective_mode === 'bridge'
                   const isBlocked = lr.client_blocked
                   const pendingEnforcement = isBlocked && lr.client_block_enforced_at == null
                   return (
                     <tr key={lr.id} className="hover:bg-blue-50/60 align-top">
                       <td className="px-4 py-3">
-                        <div className="text-slate-800 font-medium">{lr.name}</div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-800 font-medium">{lr.name}</span>
+                          {!lr.reachable && (
+                            <span
+                              className="inline-flex items-center px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-500 text-[10px] font-semibold"
+                              title={lr.uisp_last_seen
+                                ? `Hors ligne — vu par UISP ${timeAgo(lr.uisp_last_seen)}`
+                                : 'Hors ligne'}
+                            >
+                              ● hors ligne
+                            </span>
+                          )}
+                        </div>
                         <div className="text-blue-300 font-mono text-[11px]"><IpLink ip={lr.ip_address} /></div>
+                        {lr.uisp_ap_name && (
+                          <div className="text-blue-300 text-[10px] mt-0.5">AP : {lr.uisp_ap_name}</div>
+                        )}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">
-                        <TopologyBadge mode={lr.topology_mode} />
+                        <TopologyBadge mode={lr.effective_mode} />
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">
                         {isBlocked ? (
@@ -191,10 +212,12 @@ export default function AccessPage() {
                           >
                             Rétablir
                           </button>
-                        ) : isBridge ? (
+                        ) : isBridge || !lr.reachable ? (
                           <button
                             disabled
-                            title="LR en mode bridge — repasser en routeur via airOS"
+                            title={isBridge
+                              ? 'LR en mode bridge — repasser en routeur via airOS'
+                              : 'LR injoignable — pas de session SSH pour appliquer le blocage'}
                             className="px-3 py-1.5 rounded-lg bg-blue-50 text-blue-300 text-xs font-semibold cursor-not-allowed"
                           >
                             Couper
@@ -218,10 +241,13 @@ export default function AccessPage() {
       )}
 
       <p className="text-[11px] text-blue-400 leading-relaxed">
-        Les blocages sont ré-appliqués automatiquement sur le LR toutes les 120 s (survivent au reboot
-        du LR). Le mode bridge est détecté toutes les 60 min — les LR en bridge ne peuvent pas être
-        bloqués depuis cette page (iptables et dnsmasq sont contournés par leur configuration). Repasse
-        ces LR en mode routeur via leur interface airOS.
+        Cette page est alimentée <strong>uniquement par l'inventaire UISP</strong> : le mode
+        (routeur/bridge) et l'état en ligne/hors ligne proviennent du dernier état connu d'UISP — les
+        clients restent donc visibles avec leur mode même quand leur Rocket est hors ligne. Les blocages
+        sont ré-appliqués automatiquement sur le LR toutes les 120 s (survivent au reboot du LR). Les LR
+        en bridge ne peuvent pas être bloqués depuis cette page (iptables et dnsmasq sont contournés par
+        leur configuration) ; repasse-les en mode routeur via leur interface airOS. Les LR hors ligne ne
+        peuvent pas être coupés (pas de session SSH).
       </p>
 
       <ClientAccessActionModal
@@ -262,12 +288,13 @@ function StatCard({ label, value, tone, sub }: {
 
 /* ─── Badges ─────────────────────────────────────────────────────────── */
 
+// Mode is sourced entirely from the UISP snapshot (uisp_mode).
 function TopologyBadge({ mode }: { mode: 'router' | 'bridge' | 'unknown' }) {
   if (mode === 'bridge') {
     return (
       <span
         className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-[11px] font-semibold"
-        title="Mauvaise configuration — le blocage ne peut pas fonctionner. Repasse le LR en mode routeur."
+        title="Mauvaise configuration (UISP) — le blocage ne peut pas fonctionner. Repasse le LR en mode routeur."
       >
         ⚠ Bridge
       </span>
@@ -275,7 +302,10 @@ function TopologyBadge({ mode }: { mode: 'router' | 'bridge' | 'unknown' }) {
   }
   if (mode === 'router') {
     return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-50 border border-slate-200 text-slate-600 text-[11px] font-semibold">
+      <span
+        className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-50 border border-slate-200 text-slate-600 text-[11px] font-semibold"
+        title="Mode routeur (UISP) — le blocage client fonctionne."
+      >
         Routeur
       </span>
     )
@@ -283,7 +313,7 @@ function TopologyBadge({ mode }: { mode: 'router' | 'bridge' | 'unknown' }) {
   return (
     <span
       className="inline-flex items-center px-2 py-0.5 rounded-md bg-blue-50 border border-blue-200 text-blue-400 text-[11px] font-semibold"
-      title="Topologie pas encore détectée (pas de credentials SSH ou première détection en attente)."
+      title="UISP ne rapporte pas de mode pour ce LR."
     >
       Inconnue
     </span>

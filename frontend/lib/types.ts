@@ -666,18 +666,24 @@ export interface SiteOverviewItem {
   power_devices: SitePowerDevice[]
 }
 
-// /access — fn_access_clients(search, filter)
+// /access — fn_access_clients(search, filter). Sourced ENTIRELY from UISP (no
+// live poll): mode and reachable both come from the controller snapshot.
 export interface AccessClientRow {
   id: number
   name: string
   ip_address: string | null
-  status: string
-  topology_mode: TopologyMode
   client_blocked: boolean
   block_mode: BlockMode
   client_blocked_reason: string | null
   client_blocked_at: string | null
   client_block_enforced_at: string | null
+  // UISP snapshot — last-known status from the controller, survives outages.
+  uisp_status: string | null
+  uisp_last_seen: string | null
+  uisp_ap_name: string | null
+  // effective_mode = uisp_mode (else 'unknown'); reachable = uisp_status active.
+  effective_mode: TopologyMode
+  reachable: boolean
 }
 export interface AccessClientsResponse {
   stats: {
@@ -686,6 +692,7 @@ export interface AccessClientsResponse {
     blocked_full: number
     blocked_whatsapp: number
     bridge: number
+    disconnected: number
   }
   items: AccessClientRow[]
 }

@@ -22,12 +22,15 @@ router = APIRouter()
 @router.post("/sync")
 async def trigger_uisp_sync(
     dry_run: bool = False,
+    stations: bool = False,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Import infrastructure devices from the UISP controller.
+    """Import devices from the UISP controller.
 
-    Returns a summary (counts + sample create/update list). With dry_run=true,
-    computes what would change without writing anything.
+    Default imports infrastructure (Rockets/switches/power/AF60). With
+    stations=true, imports the client-station roster into `lrs` (UISP
+    mode/status snapshot). With dry_run=true, computes what would change without
+    writing anything. Returns a summary (counts + sample list).
     """
     settings = get_settings()
     has_auth = settings.uisp_api_token or (settings.uisp_username and settings.uisp_password)
@@ -38,7 +41,10 @@ async def trigger_uisp_sync(
             "(or UISP_USERNAME/UISP_PASSWORD) in the environment.",
         )
     try:
-        summary = await uisp_sync_service.sync_uisp_devices(db, dry_run=dry_run)
+        if stations:
+            summary = await uisp_sync_service.sync_uisp_stations(db, dry_run=dry_run)
+        else:
+            summary = await uisp_sync_service.sync_uisp_devices(db, dry_run=dry_run)
     except uisp_service.UISPAuthError as exc:
         raise HTTPException(status_code=502, detail=f"UISP authentication failed: {exc}") from exc
     except Exception as exc:

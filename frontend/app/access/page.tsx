@@ -15,7 +15,7 @@ const FILTERS: { value: Filter; label: string }[] = [
   { value: 'blocked_full',     label: 'Coupure totale'   },
   { value: 'blocked_whatsapp', label: 'WhatsApp autorisé' },
   { value: 'bridge',           label: 'Mode bridge ⚠'    },
-  { value: 'disconnected',     label: 'Hors ligne > 1 sem.' },
+  { value: 'disconnected',     label: 'Hors ligne > 1 mois' },
 ]
 
 function timeAgo(iso: string | null): string {
@@ -77,7 +77,7 @@ export default function AccessPage() {
           label="Clients (total)"
           value={stats.total}
           tone="blue"
-          sub={stats.disconnected > 0 ? `${stats.disconnected} hors ligne > 1 sem.` : undefined}
+          sub={stats.disconnected > 0 ? `${stats.disconnected} hors ligne > 1 mois` : undefined}
         />
         <StatCard label="Accès actif" value={stats.active} tone="green" />
         <StatCard

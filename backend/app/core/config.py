@@ -233,11 +233,19 @@ class Settings(BaseSettings):
     uisp_password: str = ""
     uisp_api_token: str = ""         # alternative to username/password
     uisp_verify_tls: bool = False    # controller usually has a self-signed cert
-    # Inventory drifts slowly (new sites/APs are rare) → daily is plenty. The job
-    # also runs ONCE at scheduler startup (next_run_time=now) so a deploy imports
-    # immediately instead of waiting a full interval.
-    uisp_sync_interval_minutes: int = 1440  # 24 h
+    # Inventory drifts slowly (new sites/APs are rare). The job runs ONCE at
+    # scheduler startup (next_run_time=now) so a deploy imports immediately, then
+    # daily at uisp_sync_hour (UTC — Mauritania is GMT/UTC+0, so 7 = 07:00 local).
+    uisp_sync_hour: int = 7  # daily run time, 24h clock, UTC
     uisp_request_timeout: int = 30
+
+    # Client-station import (subscriber LRs) into the `lrs` table, on the same
+    # uisp_sync_job (runs after the infra import). Brings UISP's last-known
+    # bridge/router mode + status for every client so /access stays complete and
+    # accurate even when a Rocket/LR is down. Gated separately from the infra
+    # sync (it pulls ~1000 rows). Imports the FULL roster UISP still lists
+    # (UISP's /devices?role=station already drops de-provisioned stations).
+    uisp_station_sync_enabled: bool = False
 
     # UISP site names to skip entirely. SEMICOLON-separated (not comma — UISP
     # site names themselves contain commas, e.g. "Bureau, A2"), case-insensitive.

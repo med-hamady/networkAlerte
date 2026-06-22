@@ -2407,6 +2407,11 @@ async def uisp_sync_job() -> None:
     try:
         async with async_session_factory() as session:
             await uisp_sync_service.sync_uisp_devices(session)
+            # Client stations run AFTER infra so the just-upserted Rockets exist
+            # to resolve each station's parent AP. Gated separately so the infra
+            # import can run without pulling ~1000 client rows.
+            if settings.uisp_station_sync_enabled:
+                await uisp_sync_service.sync_uisp_stations(session)
             await session.commit()
     except uisp_sync_service.uisp_service.UISPAuthError as exc:
         logger.error("UISP sync auth failed: %s", exc)
@@ -2623,14 +2628,15 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
     if settings.uisp_sync_enabled:
         scheduler.add_job(
             uisp_sync_job,
-            trigger="interval", minutes=settings.uisp_sync_interval_minutes,
+            trigger="cron", hour=settings.uisp_sync_hour, minute=0, timezone="UTC",
             id="uisp_sync",
-            name="UISP controller inventory sync (infra devices)",
+            name="UISP controller inventory sync (infra + client stations)",
             replace_existing=True,
-            # Run once right after the scheduler boots (i.e. at deploy) instead
-            # of waiting a full interval, then every uisp_sync_interval_minutes.
+            # Run once right after the scheduler boots (i.e. at deploy) so the
+            # import happens immediately; the cron then fires daily at
+            # uisp_sync_hour:00 UTC (Mauritania is GMT/UTC+0 → 07:00 local).
             next_run_time=datetime.datetime.now(),
-            max_instances=1, coalesce=True, misfire_grace_time=120,
+            max_instances=1, coalesce=True, misfire_grace_time=3600,
         )
 
     # ── Élagage par groupe de process ────────────────────────────────────────

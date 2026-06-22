@@ -13,7 +13,7 @@ so /access is sourced ENTIRELY from UISP (no live poll):
     stat + filter.
 
 Revision ID: h5c6d7e8f9a0
-Revises: g4b5c6d7e8f9
+Revises: c1d2e3f4a5b6
 Create Date: 2026-06-22
 """
 
@@ -22,7 +22,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "h5c6d7e8f9a0"
-down_revision = "g4b5c6d7e8f9"
+down_revision = "c1d2e3f4a5b6"
 branch_labels = None
 depends_on = None
 

@@ -156,19 +156,7 @@ export default function AccessPage() {
                   return (
                     <tr key={lr.id} className="hover:bg-blue-50/60 align-top">
                       <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <span className="text-slate-800 font-medium">{lr.name}</span>
-                          {!lr.reachable && (
-                            <span
-                              className="inline-flex items-center px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-500 text-[10px] font-semibold"
-                              title={lr.uisp_last_seen
-                                ? `Hors ligne — vu par UISP ${timeAgo(lr.uisp_last_seen)}`
-                                : 'Hors ligne'}
-                            >
-                              ● hors ligne
-                            </span>
-                          )}
-                        </div>
+                        <div className="text-slate-800 font-medium">{lr.name}</div>
                         <div className="text-blue-300 font-mono text-[11px]"><IpLink ip={lr.ip_address} /></div>
                         {lr.uisp_ap_name && (
                           <div className="text-blue-300 text-[10px] mt-0.5">AP : {lr.uisp_ap_name}</div>

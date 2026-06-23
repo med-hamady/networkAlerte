@@ -13,7 +13,7 @@ import DeviceCard from '@/components/DeviceCard'
 const SITE_FALLBACK = 'Sans site'
 
 // Network infrastructure — used only to filter the per-site equipment grid.
-const INFRA_TYPES = new Set(['rocket', 'uisp_switch', 'uisp_power', 'airfiber'])
+const INFRA_TYPES = new Set(['rocket', 'uisp_switch', 'uisp_power', 'airfiber', 'ptp_litebeam'])
 
 function SitesPage() {
   const searchParams = useSearchParams()

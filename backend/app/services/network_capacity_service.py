@@ -18,9 +18,13 @@ count is a single ``GROUP BY rocket_id`` over ``lrs``. The service rolls both up
 by radio **family** (LTU / airMAX) for the whole network and by **site**
 (``Rocket.location``), and lists each site's Rockets for the drill-down.
 
-A Rocket whose channel width is unknown (no airOS creds → no ``chanbw``) has no
+The channel width is read live-first (``device_metrics``) and falls back to the
+UISP-reported width (``Rocket.uisp_channel_width_mhz``, refreshed by the daily
+sync) — so a Rocket merely missed by one live poll still gets a ceiling. A Rocket
+whose width is unknown from BOTH sources and has no manual override has no
 computable ceiling: it is **excluded** from the consumed/capacity totals and
-counted separately under ``unknown`` so the page can surface it.
+counted separately under ``unknown`` so the page can surface it (now rare, since
+UISP reports a width for every AP).
 """
 
 from __future__ import annotations
@@ -116,6 +120,7 @@ async def get_network_capacity(db: AsyncSession) -> dict:
                 Rocket.location,
                 Rocket.radio_tech,
                 Rocket.max_clients_override,
+                Rocket.uisp_channel_width_mhz,
             )
         )
     ).all()
@@ -129,7 +134,12 @@ async def get_network_capacity(db: AsyncSession) -> dict:
         airmax = rocket.radio_tech == "airmax"
         family = "airmax" if airmax else "ltu"
         metrics = latest.get(rocket.id, {})
+        # Live-polled width wins; fall back to the UISP-reported width so a Rocket
+        # missed by a single live poll (unreachable / no airOS creds) still gets a
+        # computable ceiling instead of landing in "indéterminé".
         width = metrics.get("channel_width_mhz")
+        if width is None:
+            width = rocket.uisp_channel_width_mhz
         # Installed (provisioned) clients on this AP — stable to up/down, unlike
         # the old live peer count which collapsed when a CPE went offline.
         current = installed.get(rocket.id, 0)

@@ -256,7 +256,12 @@ async def sync_uisp_devices(session: AsyncSession, *, dry_run: bool = False) -> 
             summary["skipped"]["ignored_site"] += 1
             continue
 
-        wireless_mode = (raw.get("overview") or {}).get("wirelessMode")
+        overview = raw.get("overview") or {}
+        wireless_mode = overview.get("wirelessMode")
+        # Channel width reported by UISP — mirrored onto the Rocket as a capacity
+        # fallback (see Rocket.uisp_channel_width_mhz). Only numeric values count.
+        cw_raw = overview.get("channelWidth")
+        channel_width = float(cw_raw) if isinstance(cw_raw, (int, float)) else None
         mapping = classify_device(
             ident.get("type"), ident.get("role"), ident.get("model"), wireless_mode,
         )
@@ -315,6 +320,13 @@ async def sync_uisp_devices(session: AsyncSession, *, dry_run: bool = False) -> 
             changes = _diff_update(match, name, ip, site_name, mac, by_ip)
             if changes.pop("ip_conflict", None):
                 summary["skipped"]["ip_conflict"] += 1
+            # Mirror the UISP channel width onto the Rocket (capacity fallback) —
+            # UISP is the source for this field, so it always tracks the latest.
+            if (
+                device_type == "rocket" and channel_width is not None
+                and match.uisp_channel_width_mhz != channel_width
+            ):
+                changes["uisp_channel_width_mhz"] = channel_width
             if not changes:
                 summary["unchanged"] += 1
                 continue
@@ -347,6 +359,11 @@ async def sync_uisp_devices(session: AsyncSession, *, dry_run: bool = False) -> 
 
         if not dry_run:
             created = await device_service.create_device(session, schema)
+            # Stamp the UISP channel width on a freshly-created Rocket (capacity
+            # fallback) — not part of the create schema, set directly on the row.
+            if device_type == "rocket" and channel_width is not None:
+                created.uisp_channel_width_mhz = channel_width
+                await session.flush()
             if created.ip_address:
                 by_ip[created.ip_address] = created
             if created.mac_address:

@@ -121,6 +121,14 @@ class Rocket(Device):
     # field experience disagrees with the formula. Preserved by the UISP sync.
     max_clients_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Channel width (MHz) as reported by the UISP controller (overview.channelWidth),
+    # refreshed by the daily UISP sync. Used as a FALLBACK by the capacity page to
+    # compute the client ceiling when the live poll has no width (e.g. the Rocket
+    # was unreachable at poll time, or no airOS creds) — so an AP is no longer
+    # left "indéterminé" just because a single live poll missed it. The live-polled
+    # width (device_metrics) wins when present; this only fills the gap.
+    uisp_channel_width_mhz: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     # HTTPS API credentials (used by ltu_api_service)
     ssh_username: Mapped[str | None] = mapped_column(String(100), nullable=True)
     ssh_password: Mapped[str | None] = mapped_column(String(255), nullable=True)

@@ -24,13 +24,14 @@ device_type is treated as a conflict and skipped (never hijack an LR row).
 import datetime
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models.device import Device, Lr, Rocket
 from app.schemas.device import (
     AirFiberCreate,
+    PtpLiteBeamCreate,
     RocketCreate,
     UispPowerCreate,
     UispSwitchCreate,
@@ -50,13 +51,18 @@ _SAMPLE_CAP = 25  # how many create/update examples to return in the summary
 
 def classify_device(
     uisp_type: str | None, role: str | None, model: str | None,
+    wireless_mode: str | None = None,
 ) -> tuple[str, str | None] | None:
-    """Map a UISP (type, role, model) to (device_type, radio_tech) or None.
+    """Map a UISP (type, role, model, wirelessMode) to (device_type, radio_tech) or None.
 
     Returns None for everything that is NOT supervised infrastructure
     (subscriber stations, airCube home Wi-Fi, blackBox routers, …). The AF60
     check is FIRST because AF60/AF60-LR report type=airFiber with role=ap *or*
     station — they are point-to-point backhaul infra at both ends.
+
+    PTP LiteBeams (airMAX in point-to-point mode, ``overview.wirelessMode`` =
+    ``ap-ptp`` or ``sta-ptp``) are their own infra type at BOTH ends — they are
+    neither base-station Rockets (ap-ptmp) nor subscriber LRs (sta-ptmp).
     """
     m = (model or "").upper()
     if m.startswith("AF60"):
@@ -65,10 +71,14 @@ def classify_device(
         return ("uisp_switch", None)
     if uisp_type == "uispp":
         return ("uisp_power", None)
+    # PTP LiteBeam — detected by wireless mode, BEFORE the role=ap rocket mapping
+    # (a PTP Main has role=ap but is NOT an AP) and covering the role=station end.
+    if uisp_type == "airMax" and (wireless_mode or "").lower() in ("ap-ptp", "sta-ptp"):
+        return ("ptp_litebeam", "airmax")
     if role == "ap":
         if uisp_type == "airFiber":   # LTU-Rocket base station
             return ("rocket", "ltu")
-        if uisp_type == "airMax":     # Rocket Prism / LiteBeam acting as AP
+        if uisp_type == "airMax":     # Rocket Prism / LiteBeam acting as AP (ptmp)
             return ("rocket", "airmax")
     return None
 
@@ -125,6 +135,14 @@ def _build_create_schema(device_type: str, radio_tech: str | None, common: dict,
             ssh_password=settings.uisp_af60_ssh_password or None,
             ssh_port=443,
         )
+    if device_type == "ptp_litebeam":
+        # LiteBeams parlent airOS comme les LR airMAX → mêmes creds par défaut.
+        return PtpLiteBeamCreate(
+            **common,
+            ssh_username=settings.lr_default_ssh_username or None,
+            ssh_password=settings.lr_default_ssh_password or None,
+            ssh_port=443,
+        )
     raise ValueError(f"unmapped device_type {device_type!r}")
 
 
@@ -154,6 +172,40 @@ def _diff_update(
     if mac and not device.mac_address:
         changes["mac_address"] = mac
     return changes
+
+
+async def _convert_to_ptp_litebeam(session: AsyncSession, dev: Device) -> bool:
+    """Reclassify an existing rocket/lr row into a ptp_litebeam (joined-table).
+
+    A device first seen as a base-station Rocket (ap-ptmp wrongly, or before its
+    PTP mode was known) or auto-discovered as an LR can turn out to be a PTP
+    LiteBeam. Move its subtype row to ptp_litebeams (preserving airOS creds),
+    flip the discriminator, and expunge the stale ORM object so the session
+    doesn't try to flush the deleted subtype row. Returns False for other types.
+    """
+    did = dev.id
+    src = dev.device_type
+    if src == "rocket":
+        await session.execute(text(
+            "INSERT INTO ptp_litebeams (id, ssh_username, ssh_password, ssh_port, "
+            "ssh_host_fingerprint, distance_m) SELECT id, ssh_username, ssh_password, "
+            "COALESCE(ssh_port,443), ssh_host_fingerprint, NULL FROM rockets WHERE id=:id"
+        ), {"id": did})
+        await session.execute(text("DELETE FROM rockets WHERE id=:id"), {"id": did})
+    elif src == "lr":
+        await session.execute(text(
+            "INSERT INTO ptp_litebeams (id, ssh_username, ssh_password, ssh_port, "
+            "ssh_host_fingerprint, distance_m) SELECT id, ssh_username, ssh_password, "
+            "COALESCE(ssh_port,443), ssh_host_fingerprint, distance_m FROM lrs WHERE id=:id"
+        ), {"id": did})
+        await session.execute(text("DELETE FROM lrs WHERE id=:id"), {"id": did})
+    else:
+        return False
+    await session.execute(
+        text("UPDATE devices SET device_type='ptp_litebeam' WHERE id=:id"), {"id": did}
+    )
+    session.expunge(dev)
+    return True
 
 
 async def sync_uisp_devices(session: AsyncSession, *, dry_run: bool = False) -> dict:
@@ -204,7 +256,10 @@ async def sync_uisp_devices(session: AsyncSession, *, dry_run: bool = False) -> 
             summary["skipped"]["ignored_site"] += 1
             continue
 
-        mapping = classify_device(ident.get("type"), ident.get("role"), ident.get("model"))
+        wireless_mode = (raw.get("overview") or {}).get("wirelessMode")
+        mapping = classify_device(
+            ident.get("type"), ident.get("role"), ident.get("model"), wireless_mode,
+        )
         if mapping is None:
             continue  # subscriber / out-of-scope — ignored silently (≈1000 rows)
         device_type, radio_tech = mapping
@@ -236,6 +291,19 @@ async def sync_uisp_devices(session: AsyncSession, *, dry_run: bool = False) -> 
 
         if match is not None:
             if match.device_type != device_type:
+                # A rocket/lr that turns out to be a PTP LiteBeam is reclassified
+                # in place (not skipped) — this is the recurring case where a PTP
+                # station was first stored as an LR client, or a PTP Main as a
+                # generic Rocket AP. Any other type mismatch is a real conflict.
+                if device_type == "ptp_litebeam" and match.device_type in ("rocket", "lr"):
+                    if not dry_run and await _convert_to_ptp_litebeam(session, match):
+                        by_mac.pop(match.mac_address, None) if match.mac_address else None
+                        logger.info(
+                            "UISP sync: '%s' (%s) reclassé %s → ptp_litebeam (lien P2P)",
+                            name, ip, match.device_type,
+                        )
+                    summary["updated"] += 1
+                    continue
                 summary["skipped"]["type_conflict"] += 1
                 logger.warning(
                     "UISP sync: '%s' (%s, %s) matches existing '%s' of type %s "
@@ -372,6 +440,11 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
         # sync_uisp_devices, never a client LR.
         if model.upper().startswith("AF60"):
             summary["skipped"]["af60"] += 1
+            continue
+        # PTP LiteBeam station end (sta-ptp) is infra (ptp_litebeam), owned by
+        # sync_uisp_devices — NOT a client LR. Skip so it's never imported here.
+        if ((dev.get("overview") or {}).get("wirelessMode") or "").lower() in ("ap-ptp", "sta-ptp"):
+            summary["skipped"]["ptp"] = summary["skipped"].get("ptp", 0) + 1
             continue
 
         last_seen = _parse_iso((dev.get("overview") or {}).get("lastSeen"))

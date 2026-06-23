@@ -90,14 +90,15 @@ class Device(Base):
         """Coarse-grained category used to pick alert rules and alert types.
 
         Returns one of: 'ltu_rocket', 'airmax_rocket', 'lr', 'uisp_power',
-        'uisp_switch', 'airfiber'. Both LTU and Litebeam subscribers share 'lr'
-        for now — split later if variant-specific thresholds are needed.
+        'uisp_switch', 'airfiber', 'ptp_litebeam'. Both LTU and Litebeam
+        subscribers share 'lr' for now — split later if variant-specific
+        thresholds are needed.
         """
         if isinstance(self, Rocket):
             return "airmax_rocket" if self.radio_tech == "airmax" else "ltu_rocket"
         if isinstance(self, Lr):
             return "lr"
-        # AirFiber + UispSwitch + UispPower : device_type == rule_category.
+        # PtpLiteBeam + AirFiber + UispSwitch + UispPower : device_type == rule_category.
         return self.device_type
 
 
@@ -111,19 +112,6 @@ class Rocket(Device):
     # "ltu" for LTU Rockets (LTU LR/Instant/Lite peers), "airmax" for airMAX
     # Rockets (Litebeam peers). Polling routines branch on this.
     radio_tech: Mapped[str] = mapped_column(String(20), nullable=False)
-
-    # Point-to-point backhaul flag. Some airMAX radios (Rocket/LiteBeam/PowerBeam)
-    # are NOT base stations serving subscribers — they form a P2P link between two
-    # sites, exactly like an AF60. They still speak airOS (so they stay Rockets,
-    # polled by airos_api_poll_job — NEVER change their rule_category, that would
-    # drop them from the airMAX poll). When True they are: excluded from the
-    # client-capacity page + the rocket_client_overload rule, supervised on link
-    # capacity (p2p_link_substandard) and surfaced in the inter-site P2P section
-    # like an AF60. Set by hand (operator-provided list), preserved by the UISP
-    # sync (it only updates name/ip/location/mac).
-    is_backhaul: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False, server_default="false",
-    )
 
     # Manual override of the rocket_client_overload ceiling. When set (not None)
     # it REPLACES the per-family/channel-width formula entirely — the operator
@@ -313,6 +301,34 @@ class AirFiber(Device):
     distance_m: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     __mapper_args__ = {"polymorphic_identity": "airfiber", "polymorphic_load": "selectin"}
+
+
+class PtpLiteBeam(Device):
+    """LiteBeam (airMAX) faisant un lien point-à-point inter-sites.
+
+    Ce N'EST PAS un Rocket (station de base servant des abonnés) ni un LR
+    (abonné). C'est un airMAX en mode PTP (UISP `overview.wirelessMode` =
+    `ap-ptp` ou `sta-ptp`), aux deux bouts du lien. Supervisé EXACTEMENT comme un
+    backhaul : pollé par `airos_api_poll_job` (login.cgi + status.cgi, mêmes creds
+    `ssh_*` que les LR airMAX), capacité de lien évaluée par `p2p_link_substandard`,
+    exclu de la capacité clients, affiché dans la section liens inter-sites.
+    Identité = MAC. Aucune auto-découverte de CPE (lien à un seul peer).
+    """
+
+    __tablename__ = "ptp_litebeams"
+
+    id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True)
+
+    # Creds de l'API airOS locale (consommés par airos_api_service).
+    ssh_username: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    ssh_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ssh_port: Mapped[int] = mapped_column(default=443)
+    ssh_host_fingerprint: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # Distance du lien (m), pour l'affichage UI.
+    distance_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    __mapper_args__ = {"polymorphic_identity": "ptp_litebeam", "polymorphic_load": "selectin"}
 
 
 class ClientModem(Device):

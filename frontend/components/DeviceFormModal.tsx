@@ -9,6 +9,7 @@ import type {
   DeviceFormData,
   Lr,
   LrFormData,
+  PtpLiteBeamFormData,
   RocketFormData,
   UispPowerFormData,
   UispSwitchFormData,
@@ -48,6 +49,7 @@ interface Props {
 const CREATABLE_DEVICE_TYPES: Array<{ value: Exclude<DeviceFormData['device_type'], 'lr'>; label: string }> = [
   { value: 'rocket',        label: 'Rocket (LTU ou airMAX)' },
   { value: 'airfiber',      label: 'airFiber 60 (AF60 backhaul)' },
+  { value: 'ptp_litebeam',  label: 'Liaison P2P (LiteBeam airMAX)' },
   { value: 'uisp_switch',   label: 'UISP Switch' },
   { value: 'uisp_power',    label: 'UISP Power' },
   { value: 'client_modem',  label: 'Modem client (TP-Link, Huawei, ZTE…)' },
@@ -60,6 +62,7 @@ const TYPE_LABEL: Record<DeviceFormData['device_type'], string> = {
   uisp_power:   'UISP Power',
   client_modem: 'Modem client',
   airfiber:     'airFiber 60',
+  ptp_litebeam: 'Liaison P2P (airMAX)',
 }
 
 const ROCKET_RADIO_TECHS: Array<{ value: 'ltu' | 'airmax'; label: string }> = [
@@ -85,7 +88,7 @@ function emptyForm(type: DeviceFormData['device_type']): DeviceFormData {
   }
   switch (type) {
     case 'rocket':
-      return { ...base, device_type: 'rocket', radio_tech: 'ltu', is_backhaul: false, ssh_username: '', ssh_password: '', ssh_port: 443 }
+      return { ...base, device_type: 'rocket', radio_tech: 'ltu', ssh_username: '', ssh_password: '', ssh_port: 443 }
     case 'lr':
       return { ...base, device_type: 'lr', model_variant: 'ltu_lr', rocket_id: null, ssh_username: '', ssh_password: '', ssh_port: 22 }
     case 'uisp_power':
@@ -96,6 +99,8 @@ function emptyForm(type: DeviceFormData['device_type']): DeviceFormData {
       return { ...base, device_type: 'client_modem', lr_id: null, management_protocol: 'ssh', management_port: 22, management_username: '', management_password: '' }
     case 'airfiber':
       return { ...base, device_type: 'airfiber', ssh_username: '', ssh_password: '', ssh_port: 443 }
+    case 'ptp_litebeam':
+      return { ...base, device_type: 'ptp_litebeam', ssh_username: '', ssh_password: '', ssh_port: 443 }
   }
 }
 
@@ -113,7 +118,6 @@ function deviceToForm(device: Device): DeviceFormData {
         ...base,
         device_type: 'rocket',
         radio_tech: device.radio_tech,
-        is_backhaul: device.is_backhaul ?? false,
         ssh_username: device.ssh_username ?? '',
         ssh_password: '',
         ssh_port: device.ssh_port,
@@ -158,6 +162,14 @@ function deviceToForm(device: Device): DeviceFormData {
       return {
         ...base,
         device_type: 'airfiber',
+        ssh_username: device.ssh_username ?? '',
+        ssh_password: '',
+        ssh_port: device.ssh_port,
+      }
+    case 'ptp_litebeam':
+      return {
+        ...base,
+        device_type: 'ptp_litebeam',
         ssh_username: device.ssh_username ?? '',
         ssh_password: '',
         ssh_port: device.ssh_port,
@@ -344,6 +356,7 @@ export default function DeviceFormModal({ open, device, prefill, onClose, onSave
           {/* Type-specific blocks */}
           {form.device_type === 'rocket'        && <RocketFields form={form} update={update} isEdit={isEdit} />}
           {form.device_type === 'airfiber'      && <AirFiberFields form={form} update={update} isEdit={isEdit} />}
+          {form.device_type === 'ptp_litebeam'  && <PtpLiteBeamFields form={form} update={update} isEdit={isEdit} />}
           {form.device_type === 'lr'            && <LrFields form={form} update={update} isEdit={isEdit} />}
           {form.device_type === 'uisp_power'    && <PowerFields form={form} update={update} isEdit={isEdit} hasPwd={device?.device_type === 'uisp_power' && device.has_api_password} />}
           {form.device_type === 'uisp_switch'   && <SwitchFields form={form} update={update} />}
@@ -412,22 +425,38 @@ function RocketFields({
           {ROCKET_RADIO_TECHS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
         </select>
       </Field>
-      <label className="flex items-start gap-2 cursor-pointer">
-        <input
-          type="checkbox"
-          checked={form.is_backhaul}
-          onChange={e => update('is_backhaul', e.target.checked)}
-          className="mt-0.5"
-        />
-        <span className="text-sm text-slate-700">
-          Liaison P2P inter-sites
-          <span className="block text-xs text-slate-500">
-            Cet airMAX fait un lien point-à-point entre deux sites (comme un AF60),
-            pas une station de base. Supervisé sur sa capacité de lien, exclu de la
-            capacité clients.
-          </span>
-        </span>
-      </label>
+      <div className="grid grid-cols-3 gap-3">
+        <div className="col-span-2">
+          <Field label="Utilisateur API">
+            <input type="text" value={form.ssh_username} onChange={e => update('ssh_username', e.target.value)} placeholder="ubnt" className={input} />
+          </Field>
+        </div>
+        <Field label="Port HTTPS">
+          <input type="number" value={form.ssh_port} onChange={e => update('ssh_port', Number(e.target.value))} min={1} max={65535} className={input} />
+        </Field>
+      </div>
+      <Field label="Mot de passe API" hint={isEdit ? "Laisser vide pour conserver le mot de passe existant" : ""}>
+        <input type="password" value={form.ssh_password} onChange={e => update('ssh_password', e.target.value)} placeholder={isEdit ? "••••••••" : "Mot de passe API"} autoComplete="new-password" className={input} />
+      </Field>
+    </div>
+  )
+}
+
+function PtpLiteBeamFields({
+  form, update, isEdit,
+}: {
+  form: PtpLiteBeamFormData
+  update: (field: string, value: unknown) => void
+  isEdit: boolean
+}) {
+  return (
+    <div className="bg-cyan-50 rounded-xl p-4 space-y-3">
+      <p className="text-xs font-semibold text-cyan-700 uppercase tracking-wide">Liaison P2P (LiteBeam airMAX)</p>
+      <p className="text-xs text-cyan-600">
+        LiteBeam en lien point-à-point inter-sites — supervisé via son API airOS
+        (mêmes identifiants que l&apos;interface web). Capacité du lien surveillée
+        comme un backhaul, exclu de la capacité clients.
+      </p>
       <div className="grid grid-cols-3 gap-3">
         <div className="col-span-2">
           <Field label="Utilisateur API">

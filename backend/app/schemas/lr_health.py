@@ -85,8 +85,8 @@ class SiteLinkRow(BaseModel):
     ip: str | None             # ip_address est NULLABLE (identité par MAC)
     distance_m: float | None
 
-    # Technologie du lien P2P : "af60" (airFiber 60) ou "airmax" (Rocket/LiteBeam
-    # marqué is_backhaul). Le frontend affiche un badge ; le plancher de capacité
+    # Technologie du lien P2P : "af60" (airFiber 60) ou "airmax" (LiteBeam
+    # ptp_litebeam). Le frontend affiche un badge ; le plancher de capacité
     # diffère par techno (af60_capacity_display_min_mbps vs
     # airmax_backhaul_capacity_min_mbps).
     link_type: str = "af60"

@@ -10,7 +10,7 @@ import { useThresholds } from '@/lib/useThresholds'
 import DeviceImage from './DeviceImage'
 import IpLink from './IpLink'
 
-const RADIO_TYPES = new Set(['rocket', 'lr', 'airfiber'])
+const RADIO_TYPES = new Set(['rocket', 'lr', 'airfiber', 'ptp_litebeam'])
 const REFRESH      = 15_000
 const LIVE_REFRESH = 10_000
 
@@ -70,7 +70,7 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
   const isRocket = device.device_type === 'rocket'
   // airMAX P2P backhaul: surveillé sur sa capacité de lien (comme un AF60),
   // pas sur des clients — d'où une section dédiée et pas de "LR associés".
-  const isBackhaul = device.device_type === 'rocket' && device.is_backhaul
+  const isBackhaul = device.device_type === 'ptp_litebeam'
 
   const thresholds = useThresholds()
 

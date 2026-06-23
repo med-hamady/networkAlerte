@@ -47,7 +47,7 @@ from app.core.config import get_settings
 from app.db.session import async_session_factory
 from app.models.alert_state import AlertState
 from app.models.audit_log import AuditLog
-from app.models.device import AirFiber, Device, Lr, Rocket, UispPower
+from app.models.device import AirFiber, Device, Lr, PtpLiteBeam, Rocket, UispPower
 from app.models.device_metric import DeviceMetric
 from app.models.incident import Incident
 from app.models.power_status_log import PowerStatusLog
@@ -1414,11 +1414,11 @@ async def airos_api_poll_job() -> None:
     Each LiteBeam is queried directly at its own IP; metrics use the same keys
     as the LTU API so the alert engine / modal work unchanged.
 
-    Also polls airMAX **P2P backhaul Rockets** (is_backhaul): same airOS path
-    yields their total_capacity for p2p_link_substandard + the inter-site P2P
-    section. They are handled here (not snmp_poll_job) because they expose link
-    capacity only via airOS and often have SNMP off. LR-specific steps
-    (distance_m, topology_mode) are skipped for them (no such columns).
+    Also polls **PTP LiteBeams** (device_type ptp_litebeam, both ends of a P2P
+    link): same airOS path yields their total_capacity for p2p_link_substandard +
+    the inter-site P2P section. They are handled here (not snmp_poll_job) because
+    they expose link capacity only via airOS and often have SNMP off. LR-specific
+    steps (distance_m, topology_mode) are skipped for them.
     """
     base_settings = get_settings()
     async with async_session_factory() as _ts_session:
@@ -1433,22 +1433,17 @@ async def airos_api_poll_job() -> None:
                 )
             )
         ).scalars().all()
-        # airMAX P2P backhauls are Rockets (is_backhaul) but, like the LiteBeam
-        # LRs, expose Link Potential / Total Capacity only via airOS status.cgi —
-        # and often have SNMP off — so they are polled HERE, not in snmp_poll_job.
-        bh_rows = (
+        # PTP LiteBeams expose Link Potential / Total Capacity only via airOS
+        # status.cgi (and often have SNMP off) → polled HERE, not snmp_poll_job.
+        ptp_rows = (
             await session.execute(
-                select(Rocket).where(
-                    Rocket.status == "up",
-                    Rocket.is_backhaul.is_(True),
-                    Rocket.radio_tech == "airmax",
-                )
+                select(PtpLiteBeam).where(PtpLiteBeam.status == "up")
             )
         ).scalars().all()
         # Snapshot creds/ip for the concurrent fetch (no session held during HTTP).
         targets = [
             (d.id, d.name, d.ip_address, d.ssh_username, d.ssh_password)
-            for d in [*lr_rows, *bh_rows]
+            for d in [*lr_rows, *ptp_rows]
         ]
 
     if not targets:
@@ -1521,10 +1516,10 @@ async def airos_api_poll_job() -> None:
             if dev is None:
                 continue
 
-            # Sync the stable distance_m column for quick UI display (LR only —
-            # the Rocket model has no distance_m column).
+            # Sync the stable distance_m column for quick UI display (LR + PTP
+            # LiteBeam both carry it; a generic Device does not).
             distance = metrics.get("distance_m")
-            if distance is not None and isinstance(dev, Lr):
+            if distance is not None and isinstance(dev, (Lr, PtpLiteBeam)):
                 dev.distance_m = distance
 
             # Name always tracks the airOS-configured hostname for airMAX LRs:

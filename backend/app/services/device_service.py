@@ -14,7 +14,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.exceptions import DeviceNotFoundError
-from app.models.device import AirFiber, ClientModem, Device, Lr, Rocket, UispPower, UispSwitch
+from app.models.device import (
+    AirFiber,
+    ClientModem,
+    Device,
+    Lr,
+    PtpLiteBeam,
+    Rocket,
+    UispPower,
+    UispSwitch,
+)
 from app.schemas.device import (
     AirFiberCreate,
     ClientModemCreate,
@@ -38,6 +47,7 @@ _TYPE_TO_MODEL: dict[str, type[Device]] = {
     "uisp_switch": UispSwitch,
     "client_modem": ClientModem,
     "airfiber": AirFiber,
+    "ptp_litebeam": PtpLiteBeam,
 }
 
 

@@ -424,7 +424,7 @@ class Settings(BaseSettings):
     af60_link_potential_min_pct: float = 30.0
     af60_total_capacity_min_mbps: float = 1950.0
 
-    # Liens P2P airMAX (Rocket/LiteBeam/PowerBeam marqués is_backhaul) : plancher
+    # Liens P2P LiteBeam (device_type ptp_litebeam) : plancher
     # de capacité totale (Mbps) sous lequel le lien inter-site est jugé dégradé
     # (p2p_link_substandard, notifié WhatsApp). Équivalent airMAX du plancher AF60
     # 1.95 Gb/s — un backhaul airMAX porte beaucoup moins, d'où un seuil dédié.

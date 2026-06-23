@@ -938,9 +938,7 @@ class RocketClientOverloadRule(AlertRule):
         # A manual per-Rocket ceiling (operator-set) overrides the formula and
         # applies even when the channel width is unknown.
         override = metrics.get("max_clients_override")
-        # P2P backhaul (airMAX inter-site link) serves no subscribers — its single
-        # peer is the far end, never an overload. Never evaluate this rule for it.
-        if metrics.get("is_backhaul") or clients is None:
+        if clients is None:
             return AlertEvalResult(
                 alert_type=self.alert_type,
                 severity=None,
@@ -1268,24 +1266,20 @@ class Af60LinkSubstandardRule(AlertRule):
 
 
 class P2pLinkSubstandardRule(AlertRule):
-    """Lien P2P airMAX (Rocket/LiteBeam marqué is_backhaul) dégradé.
+    """Lien P2P LiteBeam (airMAX) dégradé.
 
     Équivalent airMAX de ``Af60LinkSubstandardRule`` : ces radios font un
     backhaul inter-sites, pas un AP. Critique si la capacité totale du lien passe
     sous ``airmax_backhaul_capacity_min_mbps`` (plancher dédié, 150 Mbps par
     défaut — un backhaul airMAX porte bien moins que le 1.95 Gb/s d'un AF60).
 
-    ``skip`` si le device n'est PAS un backhaul (la règle est montée sur toutes
-    les Rockets airMAX mais ne concerne que les liens P2P) ou si la capacité n'a
-    pas encore été relevée. Anti-flap ``p2p_link_substandard_failure_threshold``."""
+    Montée uniquement sur la rule_category ``ptp_litebeam`` → pas de garde-fou
+    de type ici. ``skip`` tant que la capacité n'a pas été relevée. Anti-flap
+    ``p2p_link_substandard_failure_threshold``."""
 
     alert_type = "p2p_link_substandard"
 
     def evaluate(self, device_name: str, metrics: dict, settings) -> AlertEvalResult:
-        if not metrics.get("is_backhaul"):
-            return AlertEvalResult(
-                self.alert_type, None, "total_capacity_mbps", None, None, "", skip=True
-            )
         capacity = metrics.get("total_capacity_mbps")
         if capacity is None:
             return AlertEvalResult(
@@ -1359,8 +1353,6 @@ _AIRMAX_ROCKET_RULES: list[AlertRule] = [
     HighRxTxErrorsRule(),
     ThroughputAnomalyRule(),
     RocketClientOverloadRule(),
-    # Self-skips unless the Rocket is flagged is_backhaul (a P2P inter-site link).
-    P2pLinkSubstandardRule(),
 ]
 
 _AF60_RULES: list[AlertRule] = [
@@ -1370,6 +1362,14 @@ _AF60_RULES: list[AlertRule] = [
     Af60LinkSubstandardRule(),
 ]
 
+# PTP LiteBeam (airMAX point-à-point inter-sites) : supervisé sur la capacité du
+# lien + la qualité radio, comme un backhaul AF60. PAS de règle AP (overload/CPE).
+_PTP_LITEBEAM_RULES: list[AlertRule] = [
+    SignalLowRule(),
+    CINRLowRule(),
+    P2pLinkSubstandardRule(),
+]
+
 RULES_BY_DEVICE_TYPE: dict[str, list[AlertRule]] = {
     "ltu_rocket": _ROCKET_RULES,
     "lr": _LR_RULES,
@@ -1377,6 +1377,7 @@ RULES_BY_DEVICE_TYPE: dict[str, list[AlertRule]] = {
     "uisp_power": [],
     "airmax_rocket": _AIRMAX_ROCKET_RULES,
     "airfiber": _AF60_RULES,
+    "ptp_litebeam": _PTP_LITEBEAM_RULES,
 }
 
 # Failure threshold per alert_type — resolved from settings in the engine

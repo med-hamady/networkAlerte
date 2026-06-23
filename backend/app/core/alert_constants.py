@@ -133,7 +133,7 @@ AT_AF60_SIGNAL_LOW       = "af60_signal_low"       # signal local sous seuil 60 
 AT_AF60_SNR_LOW          = "af60_snr_low"          # SNR local sous seuil (pas de CINR en 60 GHz)
 AT_AF60_LINK_SUBSTANDARD = "af60_link_substandard" # consolidé : potentiel / capacité sous plancher
 
-# Lien P2P airMAX (Rocket/LiteBeam marqué is_backhaul) dégradé — capacité totale
+# Lien P2P LiteBeam (device_type ptp_litebeam) dégradé — capacité totale
 # sous le plancher dédié (airmax_backhaul_capacity_min_mbps). Équivalent airMAX
 # de af60_link_substandard : ces radios font un backhaul inter-sites, pas un AP.
 AT_P2P_LINK_SUBSTANDARD  = "p2p_link_substandard"

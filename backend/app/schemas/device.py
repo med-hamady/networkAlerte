@@ -15,7 +15,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, field_validator
 
 # Discriminator values used by SQLAlchemy polymorphic identity and by the API.
-DeviceType = Literal["rocket", "lr", "uisp_power", "uisp_switch", "client_modem", "airfiber"]
+DeviceType = Literal[
+    "rocket", "lr", "uisp_power", "uisp_switch", "client_modem", "airfiber", "ptp_litebeam"
+]
 
 ManagementProtocol = Literal["ssh", "telnet"]
 
@@ -131,8 +133,6 @@ class RocketCreate(_DeviceBaseCreate):
     ssh_username: str | None = None
     ssh_password: str | None = None
     ssh_port: int = 443
-    # True = airMAX P2P inter-site backhaul (treated like an AF60), not an AP.
-    is_backhaul: bool = False
     # Manual client-capacity ceiling. None = auto formula (per family/width).
     max_clients_override: int | None = None
 
@@ -142,9 +142,6 @@ class RocketUpdate(_DeviceBaseUpdate):
     ssh_username: str | None = None
     ssh_password: str | None = None
     ssh_port: int | None = None
-    # Operator toggles a Rocket as a P2P backhaul (or back to an AP). Omitted =
-    # keep existing (the UISP sync never sends it, so it survives re-syncs).
-    is_backhaul: bool | None = None
     # Manual rocket_client_overload ceiling. None sent explicitly = clear the
     # override (back to the auto formula); omitted = keep existing.
     max_clients_override: int | None = None
@@ -237,6 +234,26 @@ class AirFiberUpdate(_DeviceBaseUpdate):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# PTP LiteBeam — LiteBeam airMAX en lien point-à-point inter-sites.
+# Mêmes creds airOS que les LR airMAX. Type infra dédié (ni Rocket ni LR).
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class PtpLiteBeamCreate(_DeviceBaseCreate):
+    device_type: Literal["ptp_litebeam"] = "ptp_litebeam"
+    ssh_username: str | None = None
+    ssh_password: str | None = None
+    ssh_port: int = 443
+    distance_m: float | None = None
+
+
+class PtpLiteBeamUpdate(_DeviceBaseUpdate):
+    ssh_username: str | None = None
+    ssh_password: str | None = None
+    ssh_port: int | None = None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Client modem — TP-Link / Huawei / ZTE behind an LR (NAT)
 # Inventoried only; reachability is probed from the parent LR (ping-from-LR).
 # ─────────────────────────────────────────────────────────────────────────────
@@ -264,7 +281,8 @@ class ClientModemUpdate(_DeviceBaseUpdate):
 # auto-discovery pipeline (see services/discovery_service.reconcile_peers).
 # A POST /devices with device_type="lr" therefore fails validation (422).
 DeviceCreate = (
-    RocketCreate | UispPowerCreate | UispSwitchCreate | ClientModemCreate | AirFiberCreate
+    RocketCreate | UispPowerCreate | UispSwitchCreate | ClientModemCreate
+    | AirFiberCreate | PtpLiteBeamCreate
 )
 DeviceUpdate = (
     RocketUpdate
@@ -273,6 +291,7 @@ DeviceUpdate = (
     | UispSwitchUpdate
     | ClientModemUpdate
     | AirFiberUpdate
+    | PtpLiteBeamUpdate
 )
 
 
@@ -315,7 +334,6 @@ class _DeviceBaseRead(BaseModel):
 class RocketRead(_DeviceBaseRead):
     device_type: Literal["rocket"] = "rocket"
     radio_tech: str
-    is_backhaul: bool = False
     max_clients_override: int | None = None
     ssh_username: str | None = None
     ssh_port: int = 443
@@ -397,6 +415,22 @@ class AirFiberRead(_DeviceBaseRead):
         return instance
 
 
+class PtpLiteBeamRead(_DeviceBaseRead):
+    device_type: Literal["ptp_litebeam"] = "ptp_litebeam"
+    ssh_username: str | None = None
+    ssh_port: int = 443
+    ssh_host_fingerprint: str | None = None
+    has_ssh_password: bool = False
+    distance_m: float | None = None
+
+    @classmethod
+    def model_validate(cls, obj: Any, **kwargs: Any) -> "PtpLiteBeamRead":
+        instance = super().model_validate(obj, **kwargs)
+        if hasattr(obj, "ssh_password"):
+            instance.has_ssh_password = bool(obj.ssh_password)
+        return instance
+
+
 class ClientModemRead(_DeviceBaseRead):
     device_type: Literal["client_modem"] = "client_modem"
     lr_id: int | None = None
@@ -416,5 +450,6 @@ class ClientModemRead(_DeviceBaseRead):
 
 # Discriminated union for responses — FastAPI emits the type matching device_type.
 DeviceRead = (
-    RocketRead | LrRead | UispPowerRead | UispSwitchRead | ClientModemRead | AirFiberRead
+    RocketRead | LrRead | UispPowerRead | UispSwitchRead | ClientModemRead
+    | AirFiberRead | PtpLiteBeamRead
 )

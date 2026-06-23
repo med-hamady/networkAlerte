@@ -23,14 +23,22 @@ interface DeviceBase {
 export interface Rocket extends DeviceBase {
   device_type: 'rocket'
   radio_tech: 'ltu' | 'airmax'
-  // true = lien P2P inter-sites (traité comme un AF60), pas une station de base.
-  is_backhaul: boolean
   // ceiling manuel de saturation clients (null = formule auto par famille/largeur).
   max_clients_override: number | null
   ssh_username: string | null
   ssh_port: number
   ssh_host_fingerprint: string | null
   has_ssh_password: boolean
+}
+
+// LiteBeam airMAX en lien point-à-point inter-sites (ni Rocket ni LR).
+export interface PtpLiteBeam extends DeviceBase {
+  device_type: 'ptp_litebeam'
+  ssh_username: string | null
+  ssh_port: number
+  ssh_host_fingerprint: string | null
+  has_ssh_password: boolean
+  distance_m: number | null
 }
 
 export type LrModelVariant =
@@ -98,7 +106,7 @@ export interface AirFiber extends DeviceBase {
 }
 
 // Discriminated union — narrow by `device_type`.
-export type Device = Rocket | Lr | UispPower | UispSwitch | ClientModem | AirFiber
+export type Device = Rocket | Lr | UispPower | UispSwitch | ClientModem | AirFiber | PtpLiteBeam
 
 // ──────────────────────────────────────────────────────────────────────────
 // Form payloads — one DeviceFormData per type. The form switches its
@@ -116,7 +124,13 @@ interface DeviceFormBase {
 export type RocketFormData = DeviceFormBase & {
   device_type: 'rocket'
   radio_tech: 'ltu' | 'airmax'
-  is_backhaul: boolean
+  ssh_username: string
+  ssh_password: string   // write-only — empty = keep existing
+  ssh_port: number
+}
+
+export type PtpLiteBeamFormData = DeviceFormBase & {
+  device_type: 'ptp_litebeam'
   ssh_username: string
   ssh_password: string   // write-only — empty = keep existing
   ssh_port: number
@@ -168,6 +182,7 @@ export type DeviceFormData =
   | UispSwitchFormData
   | ClientModemFormData
   | AirFiberFormData
+  | PtpLiteBeamFormData
 
 export interface Threshold {
   key: string
@@ -358,6 +373,7 @@ export const DEVICE_TYPE_LABELS: Record<string, string> = {
   uisp_power:   'UISP Power',
   client_modem: 'Modem client',
   airfiber:     'airFiber 60',
+  ptp_litebeam: 'Liaison P2P (airMAX)',
 }
 
 export const LR_MODEL_VARIANT_LABELS: Record<LrModelVariant, string> = {
@@ -385,8 +401,6 @@ export function parentRocketId(device: Device): number | null {
 /** Specific human label for a device — narrows Rockets by radio_tech and LRs by model_variant. */
 export function deviceLabel(device: Device): string {
   if (device.device_type === 'rocket') {
-    // Un Rocket airMAX marqué backhaul est un lien P2P inter-sites, pas un AP.
-    if (device.is_backhaul) return 'Liaison P2P (airMAX)'
     return device.radio_tech === 'airmax' ? 'Rocket airMAX' : 'LTU Rocket'
   }
   if (device.device_type === 'lr') {

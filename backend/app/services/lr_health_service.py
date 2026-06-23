@@ -36,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
-from app.models.device import AirFiber, Lr, Rocket
+from app.models.device import AirFiber, Lr, PtpLiteBeam, Rocket
 from app.schemas.device import normalize_mac
 from app.schemas.lr_health import (
     BadInstallationRow,
@@ -617,7 +617,7 @@ async def get_site_link_health(db: AsyncSession) -> SiteLinkHealthResponse:
     Deux technos, même critère (dernière ``total_capacity_mbps`` en base, pas de
     fetch live) mais plancher distinct :
       - AF60 (airFiber 60) ........ ``af60_capacity_display_min_mbps`` (1.95 Gb/s)
-      - backhaul airMAX (is_backhaul) ``airmax_backhaul_capacity_min_mbps`` (150 Mbps)
+      - PTP LiteBeam (ptp_litebeam) ``airmax_backhaul_capacity_min_mbps`` (150 Mbps)
     """
     now = datetime.datetime.now(datetime.UTC)
     settings = get_settings()
@@ -651,10 +651,10 @@ async def get_site_link_health(db: AsyncSession) -> SiteLinkHealthResponse:
                 )
             )
 
-    # ── Backhauls airMAX (Rocket/LiteBeam marqués is_backhaul) ──
-    # cinr_db sert d'équivalent SNR ; pas de distance (colonne absente sur Rocket).
+    # ── PTP LiteBeams (airMAX point-à-point inter-sites) ──
+    # cinr_db sert d'équivalent SNR à l'affichage (latest_snr_db laissé None).
     backhauls = (
-        await db.execute(select(Rocket).where(Rocket.is_backhaul.is_(True)))
+        await db.execute(select(PtpLiteBeam))
     ).scalars().all()
     if backhauls:
         bh_floor = float(settings.airmax_backhaul_capacity_min_mbps)
@@ -672,7 +672,7 @@ async def get_site_link_health(db: AsyncSession) -> SiteLinkHealthResponse:
                     device_id=r.id,
                     name=r.name,
                     ip=r.ip_address,
-                    distance_m=None,
+                    distance_m=r.distance_m,
                     link_type="airmax",
                     latest_total_capacity_mbps=cap,
                     capacity_floor_mbps=bh_floor,

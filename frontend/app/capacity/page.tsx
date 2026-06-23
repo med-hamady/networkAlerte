@@ -33,9 +33,9 @@ export default function CapacityPage() {
     [sites],
   )
 
-  // Rockets saturés : connectés ≥ max (le critère exact de rocket_client_overload).
-  // Capacité indéterminée (max_clients null) = jamais saturé. Trié du plus
-  // surchargé au moins (ratio connectés/max décroissant).
+  // Rockets saturés : clients installés ≥ max. Capacité indéterminée
+  // (max_clients null) = jamais saturé. Trié du plus surchargé au moins
+  // (ratio installés/max décroissant).
   const saturatedRockets = useMemo<SaturatedRocket[]>(() => {
     const out: SaturatedRocket[] = []
     for (const s of sites) {
@@ -78,8 +78,8 @@ export default function CapacityPage() {
         </div>
         <p className="text-blue-400 text-sm">
           {siteObj != null
-            ? <>Rockets de ce site — clients connectés vs maximum avant saturation.</>
-            : <>Clients consommés vs disponibles par famille radio et par site — clique un site pour voir ses Rockets.</>}
+            ? <>Rockets de ce site — clients installés vs maximum avant saturation.</>
+            : <>Clients installés vs disponibles par famille radio et par site — clique un site pour voir ses Rockets.</>}
         </p>
       </div>
 
@@ -116,7 +116,7 @@ export default function CapacityPage() {
             <div className="mb-4">
               <h3 className="font-semibold text-blue-900">Capacité par site</h3>
               <p className="text-xs text-blue-400 mt-0.5">
-                Longueur = capacité totale du site ; partie pleine = clients connectés.
+                Longueur = capacité totale du site ; partie pleine = clients installés.
                 Clique un site pour le détail.
               </p>
             </div>
@@ -171,7 +171,7 @@ function SaturatedRocketsSection({
           {rockets.length}
         </span>
         <p className="text-xs text-blue-400 ml-1">
-          Clients connectés ≥ maximum — capacité atteinte ou dépassée.
+          Clients installés ≥ maximum — capacité atteinte ou dépassée.
         </p>
       </div>
       {rockets.length === 0 ? (
@@ -270,7 +270,7 @@ function SiteRocketsTable({
             <th className="text-left font-semibold px-4 py-2.5">Rocket</th>
             <th className="text-left font-semibold px-4 py-2.5">Famille</th>
             <th className="text-right font-semibold px-4 py-2.5">Largeur</th>
-            <th className="text-right font-semibold px-4 py-2.5">Connectés</th>
+            <th className="text-right font-semibold px-4 py-2.5">Installés</th>
             <th className="text-right font-semibold px-4 py-2.5 w-56">Capacité max</th>
             <th className="text-left font-semibold px-4 py-2.5 w-40">Charge</th>
           </tr>

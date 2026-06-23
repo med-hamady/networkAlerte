@@ -5,12 +5,17 @@ For every base-station Rocket we know two numbers:
   - **max clients** : the ceiling that opens the ``rocket_client_overload``
     incident, computed by :func:`alert_rules._rocket_overload_threshold`
     (per-family base at 10 MHz + step per +10 MHz of channel width).
-  - **current clients** : the live connected-peer count (``peer_count`` —
-    ``len(all_peers)`` for LTU, SNMP station count for airMAX).
+  - **installed clients** : how many subscriber LRs are **provisioned** on this
+    Rocket — the count of ``lrs`` rows attached to it (``rocket_id``). This is
+    the UISP-authoritative roster (kept up to date by ``sync_uisp_stations``),
+    so it does NOT drop when a client's antenna goes down. A live connected-peer
+    count (the old ``peer_count``) collapsed whenever a CPE was offline, making
+    a Rocket look under-loaded even though the client is still installed on it.
 
-Both are read from ``device_metrics`` (latest-only collapse, persisted by the
-LTU/airMAX poll jobs) via a single ``DISTINCT ON`` query. The service rolls them
-up by radio **family** (LTU / airMAX) for the whole network and by **site**
+The channel width (for the ceiling) is still read from ``device_metrics``
+(latest-only collapse, persisted by the LTU/airMAX poll jobs); the installed
+count is a single ``GROUP BY rocket_id`` over ``lrs``. The service rolls both up
+by radio **family** (LTU / airMAX) for the whole network and by **site**
 (``Rocket.location``), and lists each site's Rockets for the drill-down.
 
 A Rocket whose channel width is unknown (no airOS creds → no ``chanbw``) has no
@@ -22,27 +27,27 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.models.device import Rocket
+from app.models.device import Lr, Rocket
 from app.services import threshold_service
 from app.services.alert_rules import _rocket_overload_threshold
 
 _SITE_FALLBACK = "Sans site"
-_CAPACITY_METRICS = ("peer_count", "channel_width_mhz")
+_CAPACITY_METRICS = ("channel_width_mhz",)
 
 
 async def _fetch_latest_capacity_metrics(
     db: AsyncSession, device_ids: list[int],
 ) -> dict[int, dict[str, float]]:
-    """Latest ``peer_count`` + ``channel_width_mhz`` per Rocket, read from
-    ``device_metrics`` — ``{device_id: {metric_name: value}}``.
+    """Latest ``channel_width_mhz`` per Rocket, read from ``device_metrics`` —
+    ``{device_id: {metric_name: value}}``.
 
-    One ``DISTINCT ON`` query served by ``ix_device_metrics_lookup``; both
-    metrics are collapse-only (one fresh row per ``(device_id, metric_name)``)
-    so this is the latest poll value, freshness ≤ poll interval (30-60 s)."""
+    One ``DISTINCT ON`` query served by ``ix_device_metrics_lookup``; the metric
+    is collapse-only (one fresh row per ``(device_id, metric_name)``) so this is
+    the latest poll value, freshness ≤ poll interval (30-60 s)."""
     if not device_ids:
         return {}
     sql = text(
@@ -62,6 +67,25 @@ async def _fetch_latest_capacity_metrics(
     for r in rows:
         out[r.device_id][r.metric_name] = float(r.metric_value)
     return out
+
+
+async def _fetch_installed_client_counts(db: AsyncSession) -> dict[int, int]:
+    """Number of subscriber LRs provisioned on each Rocket — ``{rocket_id: n}``.
+
+    Counts ``lrs`` rows by their ``rocket_id`` attachment. This is the installed
+    roster (populated/refreshed by ``sync_uisp_stations`` from the UISP
+    controller and by radio discovery), independent of whether each client is
+    currently up or down — which is exactly the capacity we want to size against.
+    LRs with no parent Rocket (``rocket_id`` NULL) are skipped (not attributable
+    to any AP)."""
+    rows = (
+        await db.execute(
+            select(Lr.rocket_id, func.count())
+            .where(Lr.rocket_id.isnot(None))
+            .group_by(Lr.rocket_id)
+        )
+    ).all()
+    return {rocket_id: count for rocket_id, count in rows}
 
 
 def _empty_bucket() -> dict[str, int]:
@@ -96,6 +120,7 @@ async def get_network_capacity(db: AsyncSession) -> dict:
         )
     ).all()
     latest = await _fetch_latest_capacity_metrics(db, [r.id for r in rockets])
+    installed = await _fetch_installed_client_counts(db)
 
     families = {"ltu": _empty_bucket(), "airmax": _empty_bucket()}
     sites: dict[str, dict] = {}
@@ -105,7 +130,9 @@ async def get_network_capacity(db: AsyncSession) -> dict:
         family = "airmax" if airmax else "ltu"
         metrics = latest.get(rocket.id, {})
         width = metrics.get("channel_width_mhz")
-        current = int(metrics.get("peer_count") or 0)
+        # Installed (provisioned) clients on this AP — stable to up/down, unlike
+        # the old live peer count which collapsed when a CPE went offline.
+        current = installed.get(rocket.id, 0)
         override = rocket.max_clients_override
         # Auto formula value (None if width unknown) — surfaced separately so the
         # UI can show it as the "automatic" reference even when an override is set.

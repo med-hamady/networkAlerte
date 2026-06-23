@@ -18,6 +18,7 @@ from app.schemas.device import (
     DeviceRead,
     DeviceUpdate,
     LrRead,
+    PtpLiteBeamRead,
     RocketRead,
     UispPowerRead,
     UispSwitchRead,
@@ -55,6 +56,7 @@ _READ_BY_TYPE: dict[str, type] = {
     "uisp_switch": UispSwitchRead,
     "client_modem": ClientModemRead,
     "airfiber": AirFiberRead,
+    "ptp_litebeam": PtpLiteBeamRead,
 }
 
 

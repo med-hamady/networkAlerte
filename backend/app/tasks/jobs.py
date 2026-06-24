@@ -64,6 +64,7 @@ from app.services import (
     ltu_api_service,
     notification_service,
     poller,
+    saturation_report_service,
     snmp_service,
     ssh_service,
     threshold_service,
@@ -2400,6 +2401,46 @@ async def network_latency_aggregate_job() -> None:
         )
 
 
+async def rocket_saturation_report_job() -> None:
+    """Daily WhatsApp PDF report of saturated base-station Rockets.
+
+    Builds a PDF listing every Rocket whose installed clients reached its
+    capacity ceiling (current >= max, the rocket_client_overload condition) via
+    saturation_report_service and sends it to the WhatsApp group as a document.
+    Unlike network_latency_aggregate_job this is a CONTROL report: it is sent
+    EVERY day even when no Rocket is saturated (empty-list PDF), so the absence
+    of a message can't be mistaken for a missed run. Gated by
+    rocket_saturation_report_enabled; the document send no-ops if WhatsApp is
+    unconfigured.
+    """
+    settings = get_settings()
+    if not settings.rocket_saturation_report_enabled:
+        return
+
+    async with async_session_factory() as session:
+        pdf_bytes, saturated = await saturation_report_service.build_saturation_report(
+            session
+        )
+
+    today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    filename = f"rockets-satures-{today}.pdf"
+    count = len(saturated)
+    if count:
+        caption = (
+            f"*📄 Rapport quotidien — Rockets saturés*\n"
+            f"{count} Rocket(s) ont atteint leur capacité maximale (clients "
+            f"installés ≥ max). Détail dans le PDF."
+        )
+    else:
+        caption = (
+            "*📄 Rapport quotidien — Rockets saturés*\n"
+            "Aucun Rocket saturé aujourd'hui. ✅"
+        )
+
+    logger.info("rocket_saturation_report: %d Rocket(s) saturé(s) — envoi PDF", count)
+    await whatsapp_service.send_whatsapp_document(pdf_bytes, filename, caption)
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
@@ -2465,7 +2506,7 @@ _FAST_JOB_IDS = {
     "infra_ping", "client_ping", "warning_digest", "flap_detection",
     "network_latency_aggregate", "client_consumption_matview_refresh",
     "client_consumption_7d_refresh", "device_metrics_retention",
-    "security_anomaly_detection",
+    "security_anomaly_detection", "rocket_saturation_report",
 }
 _HEAVY_JOB_IDS = {
     "snmp_poll", "power_poll", "lr_internet_probe", "ltu_api_poll",
@@ -2623,6 +2664,22 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         # scheduler ne doit pas annuler le contrôle du jour).
         max_instances=1, coalesce=True, misfire_grace_time=3600,
     )
+    if settings.rocket_saturation_report_enabled:
+        scheduler.add_job(
+            rocket_saturation_report_job,
+            trigger="cron", hour=settings.rocket_saturation_report_hour, minute=0,
+            timezone="UTC",
+            id="rocket_saturation_report",
+            name="Saturated Rockets — daily WhatsApp PDF report",
+            replace_existing=True,
+            # Run once right after the scheduler boots (i.e. at deploy) so the
+            # report goes out immediately; the cron then fires daily at
+            # rocket_saturation_report_hour:00 UTC (Mauritania GMT → 07:00 local).
+            next_run_time=datetime.datetime.now(),
+            # Rapport quotidien : tolérance de misfire large (un redémarrage du
+            # scheduler ne doit pas annuler le contrôle du jour).
+            max_instances=1, coalesce=True, misfire_grace_time=3600,
+        )
     if settings.client_block_enforcement_enabled:
         scheduler.add_job(
             client_block_enforcement_job,

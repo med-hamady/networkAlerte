@@ -27,6 +27,9 @@ paramiko>=3.4,<4.0
 # System metrics
 psutil>=5.9,<7.0
 
+# PDF generation (daily saturated-Rockets WhatsApp report)
+fpdf2>=2.7,<3.0
+
 # Dev tools
 ruff>=0.8,<1.0
 pre-commit>=4.0,<5.0

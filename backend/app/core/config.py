@@ -538,6 +538,16 @@ class Settings(BaseSettings):
     network_latency_min_sample: int = 10
     network_latency_check_interval_minutes: int = 1440  # 24 h
 
+    # Daily saturated-Rockets PDF report — rocket_saturation_report_job builds a
+    # PDF listing every base-station Rocket whose installed clients reached its
+    # capacity ceiling (current >= max, i.e. the rocket_client_overload state)
+    # and sends it to the WhatsApp group as a document. Unlike the latency job
+    # this is sent EVERY day (even when the list is empty) as a control report.
+    # Fires once at scheduler boot (deploy) then daily at this hour, UTC
+    # (Mauritania is GMT/UTC+0 → 07:00 local).
+    rocket_saturation_report_enabled: bool = True
+    rocket_saturation_report_hour: int = 7
+
     @computed_field(repr=False)
     @property
     def database_url(self) -> str:

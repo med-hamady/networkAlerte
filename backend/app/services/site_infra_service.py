@@ -58,22 +58,27 @@ async def get_site_infra_capacity(db: AsyncSession) -> dict:
     settings = get_settings()
     threshold = settings.site_infra_max
 
+    # Group on the raw column (coalesce in SQL tripped a Postgres GROUP BY check
+    # via asyncpg bind params); fold NULL/blank site into the fallback in Python,
+    # merging counts so a NULL group and a literal "Sans site" land together.
     rows = (
         await db.execute(
-            select(
-                func.coalesce(Device.site, _SITE_FALLBACK).label("site"),
-                func.count().label("count"),
-            )
+            select(Device.site, func.count())
             .where(Device.device_type.in_(INFRA_COUNTED_TYPES))
-            .group_by(func.coalesce(Device.site, _SITE_FALLBACK))
+            .group_by(Device.site)
         )
     ).all()
 
-    sites = []
+    counts: dict[str, int] = {}
     total = 0
     for site_name, count in rows:
         count = int(count)
         total += count
+        key = (site_name or "").strip() or _SITE_FALLBACK
+        counts[key] = counts.get(key, 0) + count
+
+    sites = []
+    for site_name, count in counts.items():
         remaining = threshold - count
         sites.append(
             {

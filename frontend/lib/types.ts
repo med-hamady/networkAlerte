@@ -602,9 +602,26 @@ export interface SiteCapacity {
   rockets: RocketCapacity[]
 }
 
+// Budget d'équipements infra par site : count (Rockets + AF60 + PTP, hors
+// switch et UISP Power) vs le maximum SITE_INFRA_MAX. remaining = max - count
+// (positif = places libres → +N ; négatif = dépassement → -N).
+export interface SiteInfra {
+  site: string
+  count: number
+  remaining: number
+  over: boolean
+}
+
+export interface NetworkInfraCapacity {
+  threshold: number
+  total_devices: number
+  sites: SiteInfra[]
+}
+
 export interface NetworkCapacity {
   families: { ltu: CapacityBucket; airmax: CapacityBucket }
   sites: SiteCapacity[]
+  infra: NetworkInfraCapacity
 }
 
 // ─── Network uptime — Journal des coupures ─────────────────────────────────

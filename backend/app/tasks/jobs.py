@@ -65,6 +65,7 @@ from app.services import (
     notification_service,
     poller,
     saturation_report_service,
+    site_infra_service,
     snmp_service,
     ssh_service,
     threshold_service,
@@ -2441,6 +2442,44 @@ async def rocket_saturation_report_job() -> None:
     await whatsapp_service.send_whatsapp_document(pdf_bytes, filename, caption)
 
 
+async def site_infra_report_job() -> None:
+    """Daily WhatsApp PDF report of per-site infra-equipment budget.
+
+    Builds a PDF listing every site with its infra device count (Rockets + AF60 +
+    PTP LiteBeam; switches/UISP Power excluded) against SITE_INFRA_MAX (14), and
+    its margin: +N free slots or -N over budget. Sent EVERY day as a control
+    report (same contract as rocket_saturation_report_job). Gated by
+    site_infra_report_enabled; the document send no-ops if WhatsApp is
+    unconfigured.
+    """
+    settings = get_settings()
+    if not settings.site_infra_report_enabled:
+        return
+
+    async with async_session_factory() as session:
+        pdf_bytes, rollup = await site_infra_service.build_site_infra_report(session)
+
+    today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    filename = f"capacite-infra-sites-{today}.pdf"
+    threshold = rollup["threshold"]
+    over = sum(1 for s in rollup["sites"] if s["over"])
+    if over:
+        caption = (
+            f"*📄 Rapport quotidien — Capacité infra par site*\n"
+            f"{over} site(s) dépassent le maximum de {threshold} équipements "
+            f"infra. Détail dans le PDF."
+        )
+    else:
+        caption = (
+            f"*📄 Rapport quotidien — Capacité infra par site*\n"
+            f"Tous les sites sont sous le maximum de {threshold} équipements "
+            f"infra. ✅"
+        )
+
+    logger.info("site_infra_report: %d site(s) en dépassement — envoi PDF", over)
+    await whatsapp_service.send_whatsapp_document(pdf_bytes, filename, caption)
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
@@ -2507,6 +2546,7 @@ _FAST_JOB_IDS = {
     "network_latency_aggregate", "client_consumption_matview_refresh",
     "client_consumption_7d_refresh", "device_metrics_retention",
     "security_anomaly_detection", "rocket_saturation_report",
+    "site_infra_report",
 }
 _HEAVY_JOB_IDS = {
     "snmp_poll", "power_poll", "lr_internet_probe", "ltu_api_poll",
@@ -2678,6 +2718,18 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
             next_run_time=datetime.datetime.now(),
             # Rapport quotidien : tolérance de misfire large (un redémarrage du
             # scheduler ne doit pas annuler le contrôle du jour).
+            max_instances=1, coalesce=True, misfire_grace_time=3600,
+        )
+    if settings.site_infra_report_enabled:
+        scheduler.add_job(
+            site_infra_report_job,
+            trigger="cron", hour=settings.site_infra_report_hour, minute=0,
+            timezone="UTC",
+            id="site_infra_report",
+            name="Per-site infra-equipment budget — daily WhatsApp PDF report",
+            replace_existing=True,
+            # Run once at scheduler boot (deploy) then daily at the hour, UTC.
+            next_run_time=datetime.datetime.now(),
             max_instances=1, coalesce=True, misfire_grace_time=3600,
         )
     if settings.client_block_enforcement_enabled:

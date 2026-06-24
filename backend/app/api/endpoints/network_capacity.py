@@ -11,12 +11,19 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.services import network_capacity_service
+from app.services import network_capacity_service, site_infra_service
 
 router = APIRouter()
 
 
 @router.get("")
 async def get_network_capacity(db: AsyncSession = Depends(get_db)) -> dict:
-    """Client-capacity overview: LTU/airMAX donuts + per-site breakdown."""
-    return await network_capacity_service.get_network_capacity(db)
+    """Client-capacity overview: LTU/airMAX donuts + per-site breakdown.
+
+    Also carries the per-site **infra-equipment budget** roll-up under ``infra``
+    (count of Rockets/AF60/PTP per site vs ``SITE_INFRA_MAX``), so the /capacity
+    page can render it without a second request.
+    """
+    capacity = await network_capacity_service.get_network_capacity(db)
+    capacity["infra"] = await site_infra_service.get_site_infra_capacity(db)
+    return capacity

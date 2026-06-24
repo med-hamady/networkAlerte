@@ -548,6 +548,16 @@ class Settings(BaseSettings):
     rocket_saturation_report_enabled: bool = True
     rocket_saturation_report_hour: int = 7
 
+    # Per-site infra-equipment budget — each site may hold at most SITE_INFRA_MAX
+    # infra devices (Rockets + AF60 + PTP LiteBeam; switches, UISP Power and
+    # client LRs are NOT counted). site_infra_report_job sends a daily PDF listing
+    # every site with its count and the remaining (+N) / over-budget (-N) margin,
+    # and the same roll-up is surfaced on the /capacity page. Like the saturation
+    # report it fires once at scheduler boot then daily at the hour, UTC.
+    site_infra_max: int = 14
+    site_infra_report_enabled: bool = True
+    site_infra_report_hour: int = 7
+
     @computed_field(repr=False)
     @property
     def database_url(self) -> str:

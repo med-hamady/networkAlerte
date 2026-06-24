@@ -29,7 +29,7 @@ const sections: NavSection[] = [
       { href: '/lr-health',  label: 'Liaisons clients',    icon: LinkIcon      },
       { href: '/clients',    label: 'Consommation clients', icon: TrafficIcon  },
       { href: '/capacity',   label: 'Capacité du réseau',  icon: CapacityIcon },
-      { href: '/access',     label: 'Accès clients',       icon: ShieldIcon   },
+      { href: '/access',     label: 'FAI',                 icon: ShieldIcon   },
     ],
   },
   {

@@ -90,6 +90,36 @@ async def list_devices(
     return [_to_read(d) for d in devices]
 
 
+class DeviceSearchResult(BaseModel):
+    id: int
+    name: str
+    ip_address: str | None
+    device_type: str
+    site: str | None
+    status: str
+
+
+@router.get("/search", response_model=list[DeviceSearchResult])
+async def search_devices(
+    q: str = Query(..., min_length=2, description="Match on name or IP (LR name carries the client phone)."),
+    limit: int = Query(20, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+) -> list[DeviceSearchResult]:
+    """Search bar lookup for /sites — match any device by name or IP."""
+    rows = await device_service.search_devices(db, q.strip(), limit=limit)
+    return [
+        DeviceSearchResult(
+            id=r.id,
+            name=r.name,
+            ip_address=r.ip_address,
+            device_type=r.device_type,
+            site=r.site,
+            status=r.status,
+        )
+        for r in rows
+    ]
+
+
 @router.get("/{device_id}", response_model=DeviceRead)
 async def get_device(
     device_id: int,

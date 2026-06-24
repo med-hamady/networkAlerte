@@ -39,6 +39,8 @@ export const endpoints = {
   // Une seule page (drill-down /sites) : équipements d'un site, filtrés côté
   // backend par la colonne indexée devices.site → petite réponse rapide.
   devicesBySite:        (site: string) => `${API_BASE}/devices?site=${encodeURIComponent(site)}&limit=1000`,
+  // Recherche /sites : IP (infra + LR) ou nom (LR — porte le téléphone client).
+  devicesSearch:        (q: string) => `${API_BASE}/devices/search?q=${encodeURIComponent(q)}`,
   device:               (id: number) => `${API_BASE}/devices/${id}`,
   incidents:            `${API_BASE}/incidents`,
   incident:             (id: number) => `${API_BASE}/incidents/${id}`,

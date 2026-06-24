@@ -9,7 +9,7 @@ type-specific row in one flush.
 
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -65,6 +65,39 @@ async def get_devices(
         stmt = stmt.where(Device.site == site)
     result = await db.execute(stmt.offset(skip).limit(limit))
     return list(result.scalars().all())
+
+
+async def search_devices(db: AsyncSession, query: str, limit: int = 20):
+    """Quick lookup for the /sites search bar.
+
+    Any device matches on `name` or on `ip_address`. For an LR the name also
+    carries the client name AND their phone number, so searching a phone number
+    searches the name.
+
+    Returns lightweight rows (no polymorphic load) — just enough to render a
+    result and deep-link into the device's site. Sorted infra-first then by name.
+    """
+    pattern = f"%{query}%"
+    stmt = (
+        select(
+            Device.id,
+            Device.name,
+            Device.ip_address,
+            Device.device_type,
+            Device.site,
+            Device.status,
+        )
+        .where(
+            or_(
+                Device.ip_address.ilike(pattern),
+                Device.name.ilike(pattern),
+            )
+        )
+        .order_by(Device.device_type, Device.name)
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    return result.all()
 
 
 async def get_device(db: AsyncSession, device_id: int) -> Device:

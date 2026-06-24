@@ -9,6 +9,7 @@ import SiteOverviewCard from '@/components/SiteOverviewCard'
 import PanneDetailsModal from '@/components/PanneDetailsModal'
 import DeviceDetailModal from '@/components/DeviceDetailModal'
 import DeviceCard from '@/components/DeviceCard'
+import DeviceSearchBar from '@/components/DeviceSearchBar'
 
 const SITE_FALLBACK = 'Sans site'
 
@@ -27,6 +28,16 @@ function SitesPage() {
   const openEquipment = (name: string, filter: 'all' | 'infra' = 'all') => {
     setDrillFilter(filter)
     setSelectedSite(name)
+  }
+
+  // Open a device's detail in its site context (shared by the ?device deep-link
+  // and the search bar). Fetch by id (never search a truncated list); setting
+  // the site then lazily loads that site's grid for the modal's linked LRs.
+  const openDeviceById = async (id: number, site: string | null) => {
+    setSelectedSite(site?.trim() || SITE_FALLBACK)
+    try {
+      setSelected(await fetcher(endpoints.device(id)))
+    } catch { /* device introuvable : on n'ouvre pas la fiche */ }
   }
 
   // Site cards (grouping, counts, down_since, down/power device lists) are built
@@ -133,6 +144,9 @@ function SitesPage() {
             ↻ Rafraîchir
           </button>
         </div>
+
+        {/* Recherche globale — IP (infra + LR) ou nom/téléphone (LR) */}
+        <DeviceSearchBar onSelect={openDeviceById} />
 
         {/* Sites grid OR equipment grid */}
         {overviewLoading ? (

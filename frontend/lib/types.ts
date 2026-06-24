@@ -327,6 +327,16 @@ export function metricLabel(metricName: string | null): string {
 }
 
 
+// Résultat allégé de la barre de recherche /sites — GET /devices/search?q=…
+export interface DeviceSearchResult {
+  id: number
+  name: string
+  ip_address: string | null
+  device_type: string
+  site: string | null
+  status: string
+}
+
 export interface MetricPoint {
   value: number
   unit: string | null

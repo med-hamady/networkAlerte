@@ -69,7 +69,7 @@ export default function ClientAccessActionModal({ lr, action, onClose, onSuccess
           <h2 className={`font-semibold text-sm ${
             isBlock ? 'text-red-700' : 'text-green-700'
           }`}>
-            {isBlock ? "Couper l'accès internet" : "Rétablir l'accès"}
+            {isBlock ? "Bloquer l'accès internet" : "Débloquer l'accès"}
           </h2>
           <button
             onClick={onClose}
@@ -185,8 +185,8 @@ export default function ClientAccessActionModal({ lr, action, onClose, onSuccess
             }`}
           >
             {busy
-              ? (isBlock ? 'Coupure…' : 'Rétablissement…')
-              : (isBlock ? 'Confirmer la coupure' : 'Confirmer le rétablissement')}
+              ? (isBlock ? 'Blocage…' : 'Déblocage…')
+              : (isBlock ? 'Confirmer le blocage' : 'Confirmer le déblocage')}
           </button>
         </div>
       </div>

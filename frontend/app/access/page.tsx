@@ -63,7 +63,7 @@ export default function AccessPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Accès clients</h1>
+        <h1 className="text-2xl font-bold text-blue-900 tracking-tight">FAI</h1>
         <p className="text-blue-400 text-sm mt-1">
           Gère l'accès internet de chaque client en coupant ou rétablissant depuis son LR.
           Deux modes au choix : <strong>coupure totale</strong> (shutdown du port LAN) ou
@@ -168,11 +168,11 @@ export default function AccessPage() {
                       <td className="px-4 py-3 whitespace-nowrap">
                         {isBlocked ? (
                           <div className="flex flex-col gap-1">
-                            <span className="text-red-500 font-semibold text-xs">● Accès coupé</span>
+                            <span className="text-red-500 font-semibold text-xs">● Bloqué</span>
                             <ModeBadge mode={lr.block_mode} />
                           </div>
                         ) : (
-                          <span className="text-green-600 font-semibold text-xs">● Accès actif</span>
+                          <span className="text-green-600 font-semibold text-xs">● Actif</span>
                         )}
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-700 max-w-xs">
@@ -198,7 +198,7 @@ export default function AccessPage() {
                             onClick={() => { setModalLr(lr); setModalAction('unblock') }}
                             className="px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs font-semibold hover:bg-green-700"
                           >
-                            Rétablir
+                            Débloquer
                           </button>
                         ) : isBridge || !lr.reachable ? (
                           <button
@@ -208,14 +208,14 @@ export default function AccessPage() {
                               : 'LR injoignable — pas de session SSH pour appliquer le blocage'}
                             className="px-3 py-1.5 rounded-lg bg-blue-50 text-blue-300 text-xs font-semibold cursor-not-allowed"
                           >
-                            Couper
+                            Bloquer
                           </button>
                         ) : (
                           <button
                             onClick={() => { setModalLr(lr); setModalAction('block') }}
                             className="px-3 py-1.5 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700"
                           >
-                            Couper
+                            Bloquer
                           </button>
                         )}
                       </td>

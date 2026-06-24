@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models.device import Lr
+from app.schemas.device import normalize_mac
 from app.services import ssh_service
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,19 @@ def default_lan_interface(model_variant: str) -> str:
     site-specific verification (`ip -o addr show` + `brctl show` on the LR).
     """
     return "eth0.1" if model_variant in _LTU_VARIANTS else "eth0"
+
+
+async def find_lr_by_mac(session: AsyncSession, mac: str) -> Lr | None:
+    """Look up a client LR by its MAC address (the stable cross-IP identity).
+
+    Accepts any common MAC notation (colon, dash, dotted, raw) and normalises it
+    the same way the discovery / UISP sync store it (lowercase colon form), so an
+    external caller (e.g. the payment system) need not care about formatting.
+    Raises ``ValueError`` on a malformed MAC; returns ``None`` if no LR matches.
+    """
+    normalized = normalize_mac(mac)  # ValueError on bad format — caller maps to 400
+    result = await session.execute(select(Lr).where(Lr.mac_address == normalized))
+    return result.scalar_one_or_none()
 
 
 def _now() -> datetime.datetime:

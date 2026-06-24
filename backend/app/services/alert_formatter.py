@@ -17,12 +17,20 @@ from __future__ import annotations
 import datetime
 
 from app.core.alert_constants import (
+    AT_BATTERY_EXTERNAL_LOW,
+    AT_BATTERY_INTERNAL_LOW,
     NotificationEvent,
     Severity,
 )
 from app.core.alert_labels import alert_type_label, metric_label
 from app.models.device import Device
 from app.models.incident import Incident
+
+# Alert types whose human description carries operational context not present in
+# the structured fields (charge % + estimated autonomy for the UISP Power
+# batteries). For these we render the description as an extra line so the
+# WhatsApp message exposes it; every other alert keeps the terse field layout.
+_DESCRIPTION_ALERT_TYPES = {AT_BATTERY_INTERNAL_LOW, AT_BATTERY_EXTERNAL_LOW}
 
 # ---------------------------------------------------------------------------
 # Visual identity per severity
@@ -116,6 +124,8 @@ def format_human_readable(
     metric = _metric_line(incident)
     if metric:
         lines.append(f"Métrique     : {metric}")
+    if incident.alert_type in _DESCRIPTION_ALERT_TYPES and incident.description:
+        lines.append(f"Détail       : {incident.description}")
     lines.append(f"Début        : {_fmt_dt(incident.detected_at)}")
     return "\n".join(lines)
 

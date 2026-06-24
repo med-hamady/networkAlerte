@@ -925,6 +925,21 @@ async def snmp_poll_job() -> None:
             await session.commit()
 
 
+def _fmt_autonomy(seconds: float | None) -> str:
+    """Human-friendly remaining battery autonomy from a runtime in seconds.
+
+    "≈ 1 h 30 min" / "≈ 45 min". Returns "inconnue" when the device reports no
+    estimate (None) or a non-positive one.
+    """
+    if seconds is None or seconds <= 0:
+        return "inconnue"
+    minutes, _ = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"≈ {hours} h {minutes:02d} min"
+    return f"≈ {minutes} min"
+
+
 def _active_battery_label(batteries: list[dict]) -> str:
     """Name the battery/batteries currently discharging (in use on outage).
 
@@ -1164,23 +1179,29 @@ async def power_poll_job() -> None:
                 #   - EXTERNE (banc plomb, type_slug "lead_acid") < 30 %
                 # Retour ≥ seuil = fermeture SILENCIEUSE (resolve_incidents direct).
                 # On garde la pire charge par catégorie (plusieurs slots possibles).
-                internal_pct: float | None = None
-                external_pct: float | None = None
+                # On garde la pire BATTERIE (dict complet) par catégorie, pas
+                # seulement sa charge : le message d'alerte ajoute aussi son
+                # autonomie estimée (runtime_seconds) à côté du pourcentage.
+                internal_batt: dict | None = None
+                external_batt: dict | None = None
                 for b in readings.get("batteries") or []:
                     pct = b.get("percentage")
                     if pct is None or not b.get("connected"):
                         continue
                     slug = b.get("type_slug")
-                    if slug == "li_ion":
-                        internal_pct = pct if internal_pct is None else min(internal_pct, pct)
-                    elif slug == "lead_acid":
-                        external_pct = pct if external_pct is None else min(external_pct, pct)
+                    if slug == "li_ion" and (internal_batt is None or pct < internal_batt["percentage"]):
+                        internal_batt = b
+                    elif slug == "lead_acid" and (external_batt is None or pct < external_batt["percentage"]):
+                        external_batt = b
+                internal_pct = internal_batt["percentage"] if internal_batt else None
+                external_pct = external_batt["percentage"] if external_batt else None
 
                 # Batterie interne (Li-Ion UPS) < seuil → critique.
                 if internal_pct is not None and internal_pct < settings.battery_internal_critical_pct:
                     await _open_and_notify(
                         session, dev, INC_BATT_INTERNAL, "critical",
                         f"Batterie interne (Li-Ion UPS) de {dev.name} à {internal_pct:.0f}% "
+                        f"— autonomie estimée {_fmt_autonomy(internal_batt.get('runtime_seconds'))} "
                         f"(seuil {settings.battery_internal_critical_pct}%).",
                         alert_type=AT_BATTERY_INTERNAL_LOW,
                     )
@@ -1194,6 +1215,7 @@ async def power_poll_job() -> None:
                     await _open_and_notify(
                         session, dev, INC_BATT_EXTERNAL, "critical",
                         f"Batterie externe (banc plomb) de {dev.name} à {external_pct:.0f}% "
+                        f"— autonomie estimée {_fmt_autonomy(external_batt.get('runtime_seconds'))} "
                         f"(seuil {settings.battery_external_critical_pct}%).",
                         alert_type=AT_BATTERY_EXTERNAL_LOW,
                     )

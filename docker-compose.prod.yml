@@ -2,7 +2,11 @@
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 #
 # Changes vs docker-compose.yml (dev):
-#   - No bind mounts: code is baked into images at build time
+#   - Backend code is bind-mounted (Python is interpreted — no build step):
+#     a code change only needs `restart`, not `--build`. Rebuild the backend
+#     image ONLY when requirements.txt changes. The image still bakes the code
+#     (COPY . .) as a fallback; the mount just overlays the live source.
+#   - Frontend is still baked at build time (needs `npm run build`)
 #   - Frontend uses the optimized `runner` target (next build + node server.js)
 #   - Backend port bound to 127.0.0.1 only (nginx is the public entry point)
 #   - Frontend port bound to 127.0.0.1 only (nginx is the public entry point)
@@ -11,8 +15,13 @@
 
 services:
   backend:
-    volumes: !reset []
-    # Pas de bind host: nginx parle au backend via le réseau Docker interne.
+    # Bind-mount du code (Python interprété) : un changement de code ne demande
+    # qu'un `restart`, pas un `--build`. Rebuild de l'image seulement si
+    # requirements.txt change. Les deps restent dans l'image (site-packages),
+    # le mount n'écrase que /app (source + entrypoint, versionnés).
+    volumes:
+      - ./backend:/app
+    # Pas de bind host réseau: nginx parle au backend via le réseau Docker interne.
     # Pour debug, exposer ponctuellement: docker compose ... run --service-ports backend
     ports: !reset []
     environment:
@@ -38,6 +47,9 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # Même bind-mount que backend (image partagée) : code à chaud, restart suffit.
+    volumes:
+      - ./backend:/app
     environment:
       # Force-on même si le .env l'a désactivé : ce container n'existe que pour ça.
       SCHEDULER_ENABLED: "true"
@@ -69,6 +81,9 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # Même bind-mount que backend (image partagée) : code à chaud, restart suffit.
+    volumes:
+      - ./backend:/app
     environment:
       SCHEDULER_ENABLED: "true"
       RUN_MODE: "scheduler"

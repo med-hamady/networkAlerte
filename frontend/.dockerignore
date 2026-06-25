@@ -1,0 +1,29 @@
+# Réduit le contexte de build et corrige aussi une subtilité : sans cet ignore,
+# `COPY . .` écrasait le node_modules fraîchement installé par `npm ci` avec
+# celui de l'hôte. Le build régénère node_modules et .next lui-même.
+
+# Dépendances et artefacts de build (régénérés dans l'image)
+node_modules/
+.next/
+out/
+.nuxt/
+*.tsbuildinfo
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Secrets / env locaux
+.env
+*.env.local
+
+# Divers
+.git/
+.gitignore
+.DS_Store
+Thumbs.db
+Dockerfile
+.dockerignore
+README.md

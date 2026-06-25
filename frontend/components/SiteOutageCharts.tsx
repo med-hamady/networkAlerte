@@ -22,16 +22,12 @@ export default function SiteOutageCharts({
   startIso: startProp,
   endIso: endProp,
   periodLabel,
-  expanded = false,
 }: {
   // Optional explicit window. When omitted, defaults to the last 7 days
   // (dashboard usage). The /reports page passes its selected date range.
   startIso?: string
   endIso?: string
   periodLabel?: string
-  // Report/print mode : tout le détail par équipement est déplié d'office (pas
-  // de clic — impossible dans un PDF), pas de scroll qui coupe, cartes empilées.
-  expanded?: boolean
 }) {
   // 7-day window — recomputed once (stable enough; SWR refresh keeps data fresh).
   const { startIso, endIso } = useMemo(() => {
@@ -58,36 +54,32 @@ export default function SiteOutageCharts({
     )
   }
 
-  const hint = expanded ? ' · détail par équipement ci-dessous' : ' · cliquer un site pour le détail'
-
   return (
-    <div className={`grid grid-cols-1 gap-4 ${expanded ? '' : 'lg:grid-cols-2'}`}>
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <SiteOutageCard
         title="Nombre de pannes par site"
-        subtitle={`Épisodes de coupure — ${period}${hint}`}
+        subtitle={`Épisodes de coupure — ${period} · cliquer un site pour le détail`}
         sites={data?.by_pannes ?? []}
         valueOf={s => s.pannes}
         labelOf={s => `${s.pannes}`}
         deviceLabelOf={d => `${d.episodes_count} panne${d.episodes_count > 1 ? 's' : ''}`}
         barClass="bg-red-400"
-        expanded={expanded}
       />
       <SiteOutageCard
         title="Temps de panne par site"
-        subtitle={`Downtime cumulé — ${period}${hint}`}
+        subtitle={`Downtime cumulé — ${period} · cliquer un site pour le détail`}
         sites={data?.by_downtime ?? []}
         valueOf={s => s.downtime_seconds}
         labelOf={s => fmtDuration(s.downtime_seconds)}
         deviceLabelOf={d => fmtDuration(d.total_downtime_seconds)}
         barClass="bg-orange-400"
-        expanded={expanded}
       />
     </div>
   )
 }
 
 function SiteOutageCard({
-  title, subtitle, sites, valueOf, labelOf, deviceLabelOf, barClass, expanded = false,
+  title, subtitle, sites, valueOf, labelOf, deviceLabelOf, barClass,
 }: {
   title: string
   subtitle: string
@@ -96,13 +88,12 @@ function SiteOutageCard({
   labelOf: (s: OutageSite) => string
   deviceLabelOf: (d: OutageSiteDevice) => string
   barClass: string
-  expanded?: boolean
 }) {
   const [openSite, setOpenSite] = useState<string | null>(null)
   const max = sites.reduce((m, s) => Math.max(m, valueOf(s)), 0) || 1
 
   return (
-    <div className="bg-white border border-blue-100 rounded-xl shadow-sm p-5 break-inside-avoid">
+    <div className="bg-white border border-blue-100 rounded-xl shadow-sm p-5">
       <div className="mb-4">
         <h3 className="font-semibold text-blue-900">{title}</h3>
         <p className="text-xs text-blue-400 mt-0.5">{subtitle}</p>
@@ -113,30 +104,23 @@ function SiteOutageCard({
           <p className="text-green-600 font-semibold text-sm">✓ Aucune coupure sur la période</p>
         </div>
       ) : (
-        // Déplié (rapport/PDF) : pas de hauteur max ni de scroll, sinon le contenu
-        // au-delà serait coupé à l'impression.
-        <div className={`space-y-1.5 ${expanded ? '' : 'max-h-96 overflow-y-auto pr-1'}`}>
+        <div className="space-y-1.5 max-h-96 overflow-y-auto pr-1">
           {sites.map(s => {
-            const isOpen = expanded || openSite === s.site
+            const isOpen = openSite === s.site
             return (
-              <div key={s.site} className="break-inside-avoid">
+              <div key={s.site}>
                 <button
                   type="button"
-                  onClick={expanded ? undefined : () => setOpenSite(o => (o === s.site ? null : s.site))}
-                  disabled={expanded}
-                  className={`w-full flex items-center gap-3 py-1 group ${expanded ? 'cursor-default' : ''}`}
-                  title={expanded ? undefined : 'Cliquer pour voir les équipements en panne'}
+                  onClick={() => setOpenSite(o => (o === s.site ? null : s.site))}
+                  className="w-full flex items-center gap-3 py-1 group"
+                  title="Cliquer pour voir les équipements en panne"
                 >
-                  {expanded ? (
-                    <span className="w-3.5 shrink-0" aria-hidden />
-                  ) : (
-                    <svg
-                      className={`w-3.5 h-3.5 shrink-0 text-blue-400 transition-transform ${isOpen ? 'rotate-90' : ''}`}
-                      fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                    </svg>
-                  )}
+                  <svg
+                    className={`w-3.5 h-3.5 shrink-0 text-blue-400 transition-transform ${isOpen ? 'rotate-90' : ''}`}
+                    fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                  </svg>
                   <div className="w-24 shrink-0 text-xs text-slate-600 truncate text-right group-hover:text-blue-700" title={s.site}>
                     {s.site}
                   </div>
@@ -156,6 +140,87 @@ function SiteOutageCard({
             )
           })}
         </div>
+      )}
+    </div>
+  )
+}
+
+// Variante TABLEAU pour le rapport/PDF : une ligne par site avec le nombre
+// total de pannes et le temps total de coupure. Pas d'interactivité (le clic
+// est impossible dans un PDF généré) ; ligne de totaux en pied.
+export function SiteOutageTable({
+  startIso: startProp,
+  endIso: endProp,
+  periodLabel,
+}: {
+  startIso?: string
+  endIso?: string
+  periodLabel?: string
+}) {
+  const { startIso, endIso } = useMemo(() => {
+    if (startProp && endProp) return { startIso: startProp, endIso: endProp }
+    const end = new Date()
+    const start = new Date(end.getTime() - WINDOW_DAYS * 24 * 3_600_000)
+    return { startIso: start.toISOString(), endIso: end.toISOString() }
+  }, [startProp, endProp])
+
+  const period = periodLabel ?? `${WINDOW_DAYS} derniers jours`
+
+  const { data, isLoading } = useSWR<SiteOutageSummary>(
+    endpoints.siteOutageSummary(startIso, endIso), fetcher, { refreshInterval: REFRESH },
+  )
+
+  // by_downtime contient tous les sites (avec pannes ET downtime), déjà triés
+  // par downtime décroissant.
+  const sites = data?.by_downtime ?? []
+  const totalPannes = sites.reduce((m, s) => m + s.pannes, 0)
+  const totalDowntime = sites.reduce((m, s) => m + s.downtime_seconds, 0)
+
+  if (isLoading) {
+    return <div className="rounded-xl bg-white border border-blue-100 h-48 animate-pulse" />
+  }
+
+  return (
+    <div className="bg-white border border-blue-100 rounded-xl shadow-sm p-5 break-inside-avoid">
+      <div className="mb-4">
+        <h3 className="font-semibold text-blue-900">Pannes et temps de coupure par site</h3>
+        <p className="text-xs text-blue-400 mt-0.5">
+          Nombre total de pannes et downtime cumulé de l'infrastructure — {period}.
+        </p>
+      </div>
+
+      {sites.length === 0 ? (
+        <div className="py-10 text-center">
+          <p className="text-green-600 font-semibold text-sm">✓ Aucune coupure sur la période</p>
+        </div>
+      ) : (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-blue-400 border-b border-blue-100">
+              <th className="py-2 pr-3 font-medium">Site</th>
+              <th className="py-2 px-3 font-medium text-right">Nombre de pannes</th>
+              <th className="py-2 pl-3 font-medium text-right">Temps total de coupure</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sites.map(s => (
+              <tr key={s.site} className="border-b border-blue-50">
+                <td className="py-2 pr-3 font-medium text-slate-800">{s.site}</td>
+                <td className="py-2 px-3 text-right tabular-nums text-slate-700">{s.pannes}</td>
+                <td className="py-2 pl-3 text-right tabular-nums text-slate-700">
+                  {fmtDuration(s.downtime_seconds)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="border-t-2 border-blue-100 font-semibold text-slate-900">
+              <td className="py-2 pr-3">Total</td>
+              <td className="py-2 px-3 text-right tabular-nums">{totalPannes}</td>
+              <td className="py-2 pl-3 text-right tabular-nums">{fmtDuration(totalDowntime)}</td>
+            </tr>
+          </tfoot>
+        </table>
       )}
     </div>
   )

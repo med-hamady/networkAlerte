@@ -5,7 +5,7 @@ import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type { CapacityBucket, NetworkCapacity, NetworkInfraCapacity } from '@/lib/types'
 import CapacityDonut from '@/components/CapacityDonut'
-import SiteOutageCharts from '@/components/SiteOutageCharts'
+import { SiteOutageTable } from '@/components/SiteOutageCharts'
 
 // Couleurs par famille — mêmes teintes que la page /capacity.
 const FAMILY = {
@@ -216,11 +216,10 @@ export default function ReportsPage() {
         subtitle="Pannes et downtime cumulé de l'infrastructure (Rockets, Switches, UISP Power) sur la période."
       />
       <div className="print-card">
-        <SiteOutageCharts
+        <SiteOutageTable
           startIso={dayStartIso(applied.from)}
           endIso={dayEndIso(applied.to)}
           periodLabel={`${applied.from} → ${applied.to}`}
-          expanded
         />
       </div>
       </div>

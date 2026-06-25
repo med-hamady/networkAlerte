@@ -241,19 +241,23 @@ WHATSAPP_ALERT_TYPES: frozenset[str] = frozenset({
 # wrongly silence real infra alerts. Two explicit exceptions override the device
 # rule:
 #   - CLIENT_KEPT_ALERT_TYPES — kept even when raised on an LR: the operator
-#     must act on them. lr_bridge_mode_misconfig means the LR is in bridge mode,
-#     which silently breaks the client-block feature.
+#     must act on them. (Currently empty.)
 #   - INFRA_DEVICE_SUPPRESSED_ALERT_TYPES — dropped even when raised on an infra
-#     device: cpe_disconnected is a Rocket-side signal that a subscriber CPE
-#     vanished, i.e. client-side churn, not our outage.
+#     device:
+#       * cpe_disconnected is a Rocket-side signal that a subscriber CPE
+#         vanished, i.e. client-side churn, not our outage.
+#       * rocket_client_overload (Rocket saturation) is owned by the /capacity
+#         page (policy 2026-06-25) — surfaced there, never an /incidents row.
+#       * lr_bridge_mode_misconfig (LR in bridge mode) is owned by the /access
+#         page (policy 2026-06-25) — surfaced there, never an /incidents row.
 CLIENT_RULE_CATEGORY: str = "lr"
 
-CLIENT_KEPT_ALERT_TYPES: frozenset[str] = frozenset({
-    AT_LR_BRIDGE_MODE_MISCONFIG,
-})
+CLIENT_KEPT_ALERT_TYPES: frozenset[str] = frozenset()
 
 INFRA_DEVICE_SUPPRESSED_ALERT_TYPES: frozenset[str] = frozenset({
     AT_CPE_DISCONNECTED,
+    AT_ROCKET_CLIENT_OVERLOAD,
+    AT_LR_BRIDGE_MODE_MISCONFIG,
 })
 
 

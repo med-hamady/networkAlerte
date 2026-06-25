@@ -75,8 +75,8 @@ async def test_lr_radio_alert_suppressed(db, settings, patch_notif):
     assert result.scalars().first() is None
 
 
-async def test_lr_bridge_misconfig_kept(db, patch_notif):
-    """Exception : lr_bridge_mode_misconfig est conservé même sur un LR (client)."""
+async def test_lr_bridge_misconfig_suppressed(db, patch_notif):
+    """lr_bridge_mode_misconfig n'est plus un incident (géré par /access, 2026-06-25)."""
     from app.services import incident_service
 
     lr = await _make_lr(db)
@@ -89,12 +89,34 @@ async def test_lr_bridge_misconfig_kept(db, patch_notif):
     )
     await db.flush()
 
-    assert is_new is True
-    assert incident is not None
+    assert is_new is False
+    assert incident is None
     row = (
-        await db.execute(select(Incident).where(Incident.id == incident.id))
+        await db.execute(select(Incident).where(Incident.device_id == lr.id))
     ).scalar_one_or_none()
-    assert row is not None
+    assert row is None
+
+
+async def test_rocket_overload_suppressed(db, patch_notif):
+    """rocket_client_overload n'est plus un incident (géré par /capacity, 2026-06-25)."""
+    from app.services import incident_service
+
+    rocket = await _make_rocket(db)
+
+    incident, is_new = await incident_service.open_incident(
+        db, rocket,
+        title="Rocket saturé",
+        severity="critical",
+        alert_type="rocket_client_overload",
+    )
+    await db.flush()
+
+    assert is_new is False
+    assert incident is None
+    row = (
+        await db.execute(select(Incident).where(Incident.device_id == rocket.id))
+    ).scalar_one_or_none()
+    assert row is None
 
 
 # ---------------------------------------------------------------------------

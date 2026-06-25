@@ -78,7 +78,10 @@ function SitesPage() {
     return () => { cancelled = true }
   }, [deviceParam])
 
-  const sites = overview ?? []
+  // "Sans site" (équipements sans site UISP) n'est pas un vrai site : on le
+  // masque entièrement. Le sync UISP ignore aussi les équipements sans site
+  // (cf. uisp_sync_service) → ce groupe ne se remplit plus.
+  const sites = (overview ?? []).filter(s => s.name !== SITE_FALLBACK)
   const totalPannes = sites.reduce((s, x) => s + x.pannes, 0)
 
   // Pannes modal: render straight from fn_site_overview's down_devices — the

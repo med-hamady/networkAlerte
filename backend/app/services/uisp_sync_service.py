@@ -250,9 +250,12 @@ async def sync_uisp_devices(session: AsyncSession, *, dry_run: bool = False) -> 
     for raw in raw_devices:
         ident = raw.get("identification") or {}
         site_name = (ident.get("site") or {}).get("name")
+        site_clean = (site_name or "").strip()
 
-        # Operator-excluded site (office/LAN gear) → never create or update.
-        if site_name and site_name.strip().lower() in ignored_sites:
+        # No-site device (would land in the "Sans site" bucket) or operator-excluded
+        # site (office/LAN gear) → never create or update. "Sans site" n'est pas un
+        # vrai site : on n'importe que l'infra rattachée à un site UISP réel.
+        if not site_clean or site_clean.lower() in ignored_sites:
             summary["skipped"]["ignored_site"] += 1
             continue
 

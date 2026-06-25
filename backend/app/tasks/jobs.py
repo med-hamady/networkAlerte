@@ -635,9 +635,18 @@ async def _ping_sweep(*, infra: bool) -> None:
                 device.status = "up"
                 device.last_seen = now
                 # Recovery : uniquement si le device avait un incident *_down ouvert.
+                # On résout TOUT incident de disponibilité ouvert (peu importe son
+                # alert_type exact) — robuste au reclassement d'un device après
+                # l'ouverture de l'incident (ex. airMAX Rocket → ptp_litebeam par
+                # le sync UISP : l'incident garde alert_type=airmax_down alors que
+                # le device est maintenant device_unreachable, et un resolve sur un
+                # seul type ne matcherait plus → incident bloqué « hors ligne »).
                 if device.id in open_down:
-                    recovery_title = f"RECOVERY : {device.name} de nouveau disponible"
-                    await _resolve_and_notify(session, device, recovery_title, alert_type=at)
+                    resolved = await incident_service.resolve_availability_incidents(
+                        session, device.id
+                    )
+                    for incident in resolved:
+                        await notification_service.notify_incident_resolved(device, incident)
                 logger.info("UP   %s (%s)", device.name, device.ip_address)
             else:
                 failures = prev_failures + 1

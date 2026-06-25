@@ -223,6 +223,50 @@ async def resolve_incidents(
     return incidents
 
 
+async def resolve_availability_incidents(
+    db: AsyncSession,
+    device_id: int,
+) -> list[Incident]:
+    """Resolve every open availability/outage incident for a device.
+
+    Used on ping recovery: when a device is reachable again, ALL of its open
+    *_down incidents must clear, whatever their exact alert_type. Resolving by a
+    single recomputed alert_type is fragile — if the device was reclassified
+    after the incident opened (e.g. an airMAX Rocket converted to a ptp_litebeam
+    by the UISP sync, same devices.id row), the stored alert_type (airmax_down)
+    no longer matches the type computed for the new class (device_unreachable),
+    so the incident would never resolve and the device would show up in /sites
+    yet stuck "hors ligne" in /incidents. Matching on the AVAILABILITY_ALERT_TYPES
+    set instead of one type fixes both the live case and legacy stuck rows.
+
+    Availability incidents are kept with status=resolved (downtime journal), like
+    resolve_incidents — none are purged here since all matched types are
+    availability types.
+    """
+    result = await db.execute(
+        select(Incident).where(
+            Incident.device_id == device_id,
+            Incident.status == "open",
+            Incident.alert_type.in_(tuple(AVAILABILITY_ALERT_TYPES)),
+        )
+    )
+    incidents = list(result.scalars().all())
+    if not incidents:
+        return []
+
+    now = datetime.datetime.now(datetime.UTC)
+    for inc in incidents:
+        inc.status = "resolved"
+        inc.resolved_at = now
+
+    logger.info(
+        "Availability incidents resolved — device_id=%d (%d resolved)",
+        device_id,
+        len(incidents),
+    )
+    return incidents
+
+
 async def delete_open_incidents(
     db: AsyncSession,
     device_id: int,

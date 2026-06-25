@@ -177,15 +177,6 @@ function SiteInfraSection({
 }) {
   const overCount = infra.sites.filter(s => s.over).length
 
-  // Échelle de l'axe : 0 → max(plafond, plus gros site) avec ~15 % de marge à
-  // droite pour que la plus longue barre ne touche pas le bord. Au moins le
-  // plafond + 1 pour que la ligne de plafond reste lisible même si tout est bas.
-  const axisMax = useMemo(() => {
-    const maxCount = infra.sites.reduce((m, s) => Math.max(m, s.count), 0)
-    return Math.max(Math.ceil(Math.max(infra.threshold, maxCount) * 1.15), infra.threshold + 1)
-  }, [infra])
-  const thresholdPct = (infra.threshold / axisMax) * 100
-
   return (
     <div className="bg-white border border-blue-100 rounded-xl shadow-sm p-5">
       <div className="mb-4 flex items-center gap-2 flex-wrap">
@@ -205,73 +196,145 @@ function SiteInfraSection({
       {infra.sites.length === 0 ? (
         <p className="py-6 text-center text-slate-400 text-sm">Aucun équipement infra.</p>
       ) : (
-        <div className="space-y-2.5 max-h-[28rem] overflow-y-auto pr-1">
-          {infra.sites.map((s: SiteInfra) => {
-            const canNavigate = navigable.has(s.site)
-            const barPct = Math.min((s.count / axisMax) * 100, 100)
-            return (
-              <button
-                key={s.site}
-                onClick={canNavigate ? () => onSelectSite(s.site) : undefined}
-                disabled={!canNavigate}
-                className={`w-full text-left flex items-center gap-3 rounded-lg px-2 py-1.5 transition-colors ${
-                  canNavigate ? 'hover:bg-blue-50 cursor-pointer' : 'cursor-default'
-                }`}
-              >
-                <span
-                  className="w-32 shrink-0 text-xs font-semibold text-slate-800 truncate text-right"
-                  title={s.site}
-                >
-                  {s.site}
-                </span>
-                {/* Piste = repère ; ligne de plafond ; barre = nb d'équipements */}
-                <div className="relative flex-1 bg-slate-50 rounded h-5 overflow-hidden">
-                  <div
-                    className="absolute inset-y-0 left-0 rounded"
-                    style={{
-                      width: `${Math.max(barPct, 1.5)}%`,
-                      background: s.over ? '#ef4444' : '#10b981',
-                    }}
-                  />
-                  {/* Plafond : trait vertical en pointillés rouges */}
-                  <div
-                    className="absolute inset-y-0 border-l-2 border-dashed border-red-400"
-                    style={{ left: `${thresholdPct}%` }}
-                    title={`Plafond ${infra.threshold}`}
-                  />
-                </div>
-                <span className="w-10 shrink-0 text-right text-xs font-bold text-slate-700 tabular-nums">
-                  {s.count}
-                </span>
-                <span
-                  className={`w-10 shrink-0 text-center text-xs font-semibold rounded-full px-1.5 py-0.5 tabular-nums ${
-                    s.over
-                      ? 'text-red-600 bg-red-50 border border-red-200'
-                      : 'text-emerald-600 bg-emerald-50 border border-emerald-200'
-                  }`}
-                >
-                  {s.remaining >= 0 ? `+${s.remaining}` : `−${Math.abs(s.remaining)}`}
-                </span>
-              </button>
-            )
-          })}
-          {/* Légende de l'axe : 0 … plafond … max */}
-          <div className="flex items-center gap-3 pt-1.5 mt-1 border-t border-blue-50 text-[10px] text-slate-400 tabular-nums">
-            <span className="w-32 shrink-0 text-right">0</span>
-            <div className="relative flex-1 h-3">
-              <span
-                className="absolute -translate-x-1/2 text-red-400 font-medium"
-                style={{ left: `${thresholdPct}%` }}
-              >
-                plafond {infra.threshold}
-              </span>
-              <span className="absolute right-0">{axisMax}</span>
-            </div>
-            <span className="w-10 shrink-0" />
-            <span className="w-10 shrink-0" />
-          </div>
-        </div>
+        <SiteInfraScatter
+          infra={infra}
+          navigable={navigable}
+          onSelectSite={onSelectSite}
+        />
       )}
+    </div>
+  )
+}
+
+// Repère quadrillé (papier millimétré) : un point par site. X = sites alignés,
+// Y = nombre d'équipements infra ; ligne horizontale rouge = plafond. Dessiné
+// en SVG pur (comme les donuts) — aucune librairie de charts.
+function SiteInfraScatter({
+  infra, navigable, onSelectSite,
+}: {
+  infra: NetworkCapacity['infra']
+  navigable: Set<string>
+  onSelectSite: (site: string) => void
+}) {
+  const sites = infra.sites
+  const n = sites.length
+
+  // Échelle Y : 0 → un peu au-dessus du max(plafond, plus gros site), arrondi à
+  // un entier pair pour des graduations propres.
+  const yMax = useMemo(() => {
+    const maxCount = sites.reduce((m, s) => Math.max(m, s.count), 0)
+    const raw = Math.max(infra.threshold, maxCount, 1)
+    const withHead = raw + Math.max(1, Math.ceil(raw * 0.1))
+    return Math.ceil(withHead / 2) * 2
+  }, [sites, infra.threshold])
+
+  // Pas des graduations Y selon l'amplitude.
+  const yStep = yMax <= 12 ? 2 : yMax <= 24 ? 4 : 5
+  const yTicks: number[] = []
+  for (let v = 0; v <= yMax; v += yStep) yTicks.push(v)
+
+  // Géométrie du repère (coordonnées SVG). Largeur dynamique : ≥ 54 px/site →
+  // scroll horizontal si beaucoup de sites, sinon le viewBox s'étire au conteneur.
+  const M = { left: 40, right: 24, top: 16, bottom: 76 }
+  const colW = 56
+  const plotW = Math.max(n * colW, colW)
+  const plotH = 268
+  const W = M.left + plotW + M.right
+  const H = M.top + plotH + M.bottom
+
+  const xAt = (i: number) => M.left + plotW * ((i + 0.5) / n)
+  const yAt = (v: number) => M.top + plotH * (1 - v / yMax)
+
+  const yBase = M.top + plotH       // axe X (y = 0)
+  const yThreshold = yAt(infra.threshold)
+
+  return (
+    <div className="overflow-x-auto">
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="block h-auto"
+        style={{ width: '100%', minWidth: Math.max(W, 320) }}
+        role="img"
+        aria-label="Repère : équipements infra par site"
+      >
+        <defs>
+          {/* Papier millimétré : grille fine + lignes maîtresses tous les 5 carreaux */}
+          <pattern id="infra-grid-minor" width="11" height="11" patternUnits="userSpaceOnUse">
+            <path d="M 11 0 L 0 0 0 11" fill="none" stroke="#e6eef7" strokeWidth="1" />
+          </pattern>
+          <pattern id="infra-grid-major" width="55" height="55" patternUnits="userSpaceOnUse">
+            <rect width="55" height="55" fill="url(#infra-grid-minor)" />
+            <path d="M 55 0 L 0 0 0 55" fill="none" stroke="#cfe0f2" strokeWidth="1.3" />
+          </pattern>
+          <marker id="infra-arrow" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="#94a3b8" />
+          </marker>
+        </defs>
+
+        {/* Fond quadrillé */}
+        <rect x={M.left} y={M.top} width={plotW} height={plotH} fill="url(#infra-grid-major)" />
+
+        {/* Graduations + libellés Y */}
+        {yTicks.map(v => (
+          <g key={v}>
+            <line x1={M.left - 4} y1={yAt(v)} x2={M.left} y2={yAt(v)} stroke="#94a3b8" strokeWidth={1} />
+            <text x={M.left - 7} y={yAt(v) + 3.5} textAnchor="end" fontSize={10} fill="#64748b" className="tabular-nums">
+              {v}
+            </text>
+          </g>
+        ))}
+
+        {/* Ligne de plafond */}
+        <line
+          x1={M.left} y1={yThreshold} x2={M.left + plotW} y2={yThreshold}
+          stroke="#ef4444" strokeWidth={1.5} strokeDasharray="6 4"
+        />
+        <text x={M.left + plotW - 2} y={yThreshold - 5} textAnchor="end" fontSize={10} fontWeight={600} fill="#ef4444">
+          plafond {infra.threshold}
+        </text>
+
+        {/* Axes (math : flèches) + origine */}
+        <line x1={M.left} y1={yBase} x2={M.left + plotW} y2={yBase} stroke="#64748b" strokeWidth={1.4} markerEnd="url(#infra-arrow)" />
+        <line x1={M.left} y1={yBase} x2={M.left} y2={M.top - 2} stroke="#64748b" strokeWidth={1.4} markerEnd="url(#infra-arrow)" />
+        <circle cx={M.left} cy={yBase} r={4.5} fill="white" stroke="#64748b" strokeWidth={1.4} />
+        <text x={M.left - 6} y={yBase + 14} textAnchor="end" fontSize={10} fill="#94a3b8">éq.</text>
+
+        {/* Points par site */}
+        {sites.map((s: SiteInfra, i) => {
+          const cx = xAt(i)
+          const cy = yAt(s.count)
+          const color = s.over ? '#ef4444' : '#10b981'
+          const canNavigate = navigable.has(s.site)
+          const margin = s.remaining >= 0 ? `+${s.remaining}` : `−${Math.abs(s.remaining)}`
+          const label = s.site.length > 12 ? s.site.slice(0, 11) + '…' : s.site
+          return (
+            <g
+              key={s.site}
+              onClick={canNavigate ? () => onSelectSite(s.site) : undefined}
+              style={{ cursor: canNavigate ? 'pointer' : 'default' }}
+            >
+              <title>{`${s.site} — ${s.count} équip. (max ${infra.threshold}, marge ${margin})`}</title>
+              {/* Tige du point jusqu'à l'axe */}
+              <line x1={cx} y1={yBase} x2={cx} y2={cy} stroke={color} strokeWidth={1} strokeOpacity={0.35} />
+              {/* Zone de clic/survol élargie */}
+              <circle cx={cx} cy={cy} r={14} fill="transparent" />
+              <circle cx={cx} cy={cy} r={5} fill={color} stroke="white" strokeWidth={1.5} />
+              {/* Valeur au-dessus du point */}
+              <text x={cx} y={cy - 9} textAnchor="middle" fontSize={10} fontWeight={700} fill={s.over ? '#dc2626' : '#334155'} className="tabular-nums">
+                {s.count}
+              </text>
+              {/* Libellé du site sous l'axe (incliné) */}
+              <text
+                x={cx} y={yBase + 12}
+                transform={`rotate(-40 ${cx} ${yBase + 12})`}
+                textAnchor="end" fontSize={9} fill="#64748b"
+              >
+                {label}
+              </text>
+            </g>
+          )
+        })}
+      </svg>
     </div>
   )
 }

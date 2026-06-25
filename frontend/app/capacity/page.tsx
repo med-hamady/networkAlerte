@@ -176,6 +176,16 @@ function SiteInfraSection({
   onSelectSite: (site: string) => void
 }) {
   const overCount = infra.sites.filter(s => s.over).length
+
+  // Échelle de l'axe : 0 → max(plafond, plus gros site) avec ~15 % de marge à
+  // droite pour que la plus longue barre ne touche pas le bord. Au moins le
+  // plafond + 1 pour que la ligne de plafond reste lisible même si tout est bas.
+  const axisMax = useMemo(() => {
+    const maxCount = infra.sites.reduce((m, s) => Math.max(m, s.count), 0)
+    return Math.max(Math.ceil(Math.max(infra.threshold, maxCount) * 1.15), infra.threshold + 1)
+  }, [infra])
+  const thresholdPct = (infra.threshold / axisMax) * 100
+
   return (
     <div className="bg-white border border-blue-100 rounded-xl shadow-sm p-5">
       <div className="mb-4 flex items-center gap-2 flex-wrap">
@@ -195,46 +205,71 @@ function SiteInfraSection({
       {infra.sites.length === 0 ? (
         <p className="py-6 text-center text-slate-400 text-sm">Aucun équipement infra.</p>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs text-blue-400 border-b border-blue-100">
-                <th className="py-2 pr-3 font-medium">Site</th>
-                <th className="py-2 px-3 font-medium text-right">Équip. infra</th>
-                <th className="py-2 px-3 font-medium text-right">Max</th>
-                <th className="py-2 pl-3 font-medium text-right">Marge</th>
-              </tr>
-            </thead>
-            <tbody>
-              {infra.sites.map((s: SiteInfra) => {
-                const canNavigate = navigable.has(s.site)
-                return (
-                  <tr
-                    key={s.site}
-                    onClick={canNavigate ? () => onSelectSite(s.site) : undefined}
-                    className={`border-b border-blue-50 last:border-0 ${
-                      canNavigate ? 'cursor-pointer hover:bg-blue-50' : ''
-                    }`}
-                  >
-                    <td className="py-2 pr-3 font-medium text-slate-800">{s.site}</td>
-                    <td className="py-2 px-3 text-right tabular-nums text-slate-700">{s.count}</td>
-                    <td className="py-2 px-3 text-right tabular-nums text-slate-400">{infra.threshold}</td>
-                    <td className="py-2 pl-3 text-right">
-                      <span
-                        className={`inline-block text-xs font-semibold rounded-full px-2 py-0.5 tabular-nums ${
-                          s.over
-                            ? 'text-red-600 bg-red-50 border border-red-200'
-                            : 'text-emerald-600 bg-emerald-50 border border-emerald-200'
-                        }`}
-                      >
-                        {s.remaining >= 0 ? `+${s.remaining}` : `−${Math.abs(s.remaining)}`}
-                      </span>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+        <div className="space-y-2.5 max-h-[28rem] overflow-y-auto pr-1">
+          {infra.sites.map((s: SiteInfra) => {
+            const canNavigate = navigable.has(s.site)
+            const barPct = Math.min((s.count / axisMax) * 100, 100)
+            return (
+              <button
+                key={s.site}
+                onClick={canNavigate ? () => onSelectSite(s.site) : undefined}
+                disabled={!canNavigate}
+                className={`w-full text-left flex items-center gap-3 rounded-lg px-2 py-1.5 transition-colors ${
+                  canNavigate ? 'hover:bg-blue-50 cursor-pointer' : 'cursor-default'
+                }`}
+              >
+                <span
+                  className="w-32 shrink-0 text-xs font-semibold text-slate-800 truncate text-right"
+                  title={s.site}
+                >
+                  {s.site}
+                </span>
+                {/* Piste = repère ; ligne de plafond ; barre = nb d'équipements */}
+                <div className="relative flex-1 bg-slate-50 rounded h-5 overflow-hidden">
+                  <div
+                    className="absolute inset-y-0 left-0 rounded"
+                    style={{
+                      width: `${Math.max(barPct, 1.5)}%`,
+                      background: s.over ? '#ef4444' : '#10b981',
+                    }}
+                  />
+                  {/* Plafond : trait vertical en pointillés rouges */}
+                  <div
+                    className="absolute inset-y-0 border-l-2 border-dashed border-red-400"
+                    style={{ left: `${thresholdPct}%` }}
+                    title={`Plafond ${infra.threshold}`}
+                  />
+                </div>
+                <span className="w-10 shrink-0 text-right text-xs font-bold text-slate-700 tabular-nums">
+                  {s.count}
+                </span>
+                <span
+                  className={`w-10 shrink-0 text-center text-xs font-semibold rounded-full px-1.5 py-0.5 tabular-nums ${
+                    s.over
+                      ? 'text-red-600 bg-red-50 border border-red-200'
+                      : 'text-emerald-600 bg-emerald-50 border border-emerald-200'
+                  }`}
+                >
+                  {s.remaining >= 0 ? `+${s.remaining}` : `−${Math.abs(s.remaining)}`}
+                </span>
+              </button>
+            )
+          })}
+          {/* Légende de l'axe : 0 … plafond … max */}
+          <div className="flex items-center gap-3 pt-1.5 mt-1 border-t border-blue-50 text-[10px] text-slate-400 tabular-nums">
+            <span className="w-32 shrink-0 text-right">0</span>
+            <div className="relative flex-1 h-3">
+              <span
+                className="absolute -translate-x-1/2 text-red-400 font-medium"
+                style={{ left: `${thresholdPct}%` }}
+              >
+                plafond {infra.threshold}
+              </span>
+              <span className="absolute right-0">{axisMax}</span>
+            </div>
+            <span className="w-10 shrink-0" />
+            <span className="w-10 shrink-0" />
+          </div>
         </div>
       )}
     </div>

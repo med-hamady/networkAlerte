@@ -3,7 +3,7 @@
 import { useMemo, useRef, useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
-import type { CapacityBucket, NetworkCapacity } from '@/lib/types'
+import type { CapacityBucket, NetworkCapacity, NetworkInfraCapacity } from '@/lib/types'
 import CapacityDonut from '@/components/CapacityDonut'
 import SiteOutageCharts from '@/components/SiteOutageCharts'
 
@@ -200,6 +200,11 @@ export default function ReportsPage() {
               </div>
             )}
           </div>
+
+          {/* Capacité infra par site (Rockets + AF60 + PTP vs max) */}
+          {capacity.infra != null && (
+            <SiteInfraReportTable infra={capacity.infra} />
+          )}
         </>
       )}
 
@@ -253,6 +258,68 @@ function SiteFamilyBar({
       <span className="w-8 shrink-0 text-[10px] text-amber-600 text-right tabular-nums">
         {bucket.unknown > 0 ? `+${bucket.unknown}` : ''}
       </span>
+    </div>
+  )
+}
+
+// Tableau « Capacité infra par site » pour le rapport — même contenu que le PDF
+// WhatsApp quotidien (Site / Équip. infra / Max / Marge), lignes en dépassement
+// surlignées. Statique (pas de navigation, c'est un rapport imprimable).
+function SiteInfraReportTable({ infra }: { infra: NetworkInfraCapacity }) {
+  const overCount = infra.sites.filter((s) => s.over).length
+  return (
+    <div className="print-card bg-white border border-blue-100 rounded-xl shadow-sm p-5">
+      <div className="mb-4 flex items-center gap-2 flex-wrap">
+        <h3 className="font-semibold text-blue-900">Capacité infra par site</h3>
+        <span className="text-xs font-semibold text-slate-600 bg-slate-50 border border-slate-200 rounded-full px-2 py-0.5 tabular-nums">
+          max {infra.threshold}/site
+        </span>
+        {overCount > 0 && (
+          <span className="text-xs font-semibold text-red-600 bg-red-50 border border-red-200 rounded-full px-2 py-0.5 tabular-nums">
+            {overCount} en dépassement
+          </span>
+        )}
+        <p className="text-xs text-blue-400 ml-1 w-full sm:w-auto">
+          Rockets + AF60 + PTP (hors switch et UISP Power). +N = places libres, −N = dépassement.
+        </p>
+      </div>
+      {infra.sites.length === 0 ? (
+        <p className="py-6 text-center text-slate-400 text-sm">Aucun équipement infra.</p>
+      ) : (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-blue-400 border-b border-blue-100">
+              <th className="py-2 pr-3 font-medium">Site</th>
+              <th className="py-2 px-3 font-medium text-right">Équip. infra</th>
+              <th className="py-2 px-3 font-medium text-right">Max</th>
+              <th className="py-2 pl-3 font-medium text-right">Marge</th>
+            </tr>
+          </thead>
+          <tbody>
+            {infra.sites.map((s) => (
+              <tr
+                key={s.site}
+                className={`border-b border-blue-50 last:border-0 ${s.over ? 'bg-red-50' : ''}`}
+              >
+                <td className="py-2 pr-3 font-medium text-slate-800">{s.site}</td>
+                <td className="py-2 px-3 text-right tabular-nums text-slate-700">{s.count}</td>
+                <td className="py-2 px-3 text-right tabular-nums text-slate-400">{infra.threshold}</td>
+                <td className="py-2 pl-3 text-right">
+                  <span
+                    className={`inline-block text-xs font-semibold rounded-full px-2 py-0.5 tabular-nums ${
+                      s.over
+                        ? 'text-red-600 bg-red-50 border border-red-200'
+                        : 'text-emerald-600 bg-emerald-50 border border-emerald-200'
+                    }`}
+                  >
+                    {s.remaining >= 0 ? `+${s.remaining}` : `−${Math.abs(s.remaining)}`}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   )
 }

@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type { CapacityBucket, NetworkCapacity, NetworkInfraCapacity } from '@/lib/types'
@@ -12,8 +12,6 @@ const FAMILY = {
   ltu:    { label: 'LTU',    used: '#22c55e', free: '#fcd34d' },
   airmax: { label: 'airMAX', used: '#3b82f6', free: '#fdba74' },
 } as const
-
-type Family = keyof typeof FAMILY
 
 function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10)
@@ -71,10 +69,6 @@ export default function ReportsPage() {
   }
 
   const sites = capacity?.sites ?? []
-  const globalMax = useMemo(
-    () => sites.reduce((m, s) => Math.max(m, s.ltu.capacity, s.airmax.capacity), 0),
-    [sites],
-  )
 
   return (
     <div className="space-y-6">
@@ -171,33 +165,41 @@ export default function ReportsPage() {
           </div>
 
           <div className="print-card bg-white border border-blue-100 rounded-xl shadow-sm p-5">
-            <div className="mb-4">
+            <div className="mb-4 flex items-center gap-x-4 gap-y-1.5 flex-wrap">
               <h3 className="font-semibold text-blue-900">Capacité par site</h3>
-              <p className="text-xs text-blue-400 mt-0.5">
-                Longueur = capacité totale du site ; partie pleine = clients connectés.
+              <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-500">
+                <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: FAMILY.ltu.used }} />
+                LTU
+              </span>
+              <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-500">
+                <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: FAMILY.airmax.used }} />
+                airMAX
+              </span>
+              <p className="text-xs text-blue-400 w-full">
+                Clients installés / capacité max par famille radio. Cellule en rouge = famille saturée.
               </p>
             </div>
             {sites.length === 0 ? (
               <p className="py-8 text-center text-slate-400 text-sm">Aucun site.</p>
             ) : (
-              <div className="space-y-3">
-                {sites.map((s) => (
-                  <div key={s.site} className="rounded-lg px-2 py-2">
-                    <div className="flex items-center gap-2 mb-1.5">
-                      <span className="text-sm font-semibold text-slate-800 truncate">{s.site}</span>
-                      {s.unknown > 0 && (
-                        <span className="shrink-0 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
-                          {s.unknown} indéterminé{s.unknown > 1 ? 's' : ''}
-                        </span>
-                      )}
-                    </div>
-                    <div className="space-y-1">
-                      <SiteFamilyBar family="ltu" bucket={s.ltu} globalMax={globalMax} />
-                      <SiteFamilyBar family="airmax" bucket={s.airmax} globalMax={globalMax} />
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-blue-400 border-b border-blue-100">
+                    <th className="py-2 pr-3 font-medium">Site</th>
+                    <th className="py-2 px-3 font-medium text-right">LTU (inst./cap.)</th>
+                    <th className="py-2 pl-3 font-medium text-right">airMAX (inst./cap.)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sites.map((s) => (
+                    <tr key={s.site} className="border-b border-blue-50 last:border-0">
+                      <td className="py-2 pr-3 font-medium text-slate-800">{s.site}</td>
+                      <td className="py-2 px-3 text-right"><CapacityCell bucket={s.ltu} /></td>
+                      <td className="py-2 pl-3 text-right"><CapacityCell bucket={s.airmax} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             )}
           </div>
 
@@ -225,40 +227,32 @@ export default function ReportsPage() {
   )
 }
 
-function SiteFamilyBar({
-  family, bucket, globalMax,
-}: { family: Family; bucket: CapacityBucket; globalMax: number }) {
-  const { label, used, free } = FAMILY[family]
-
+// Cellule d'une famille radio dans le tableau « Capacité par site » :
+// installés / capacité (rouge si saturée), + note des Rockets à capacité
+// indéterminée. Tiret si la famille est absente du site.
+function CapacityCell({ bucket }: { bucket: CapacityBucket }) {
   if (bucket.capacity <= 0) {
-    if (bucket.unknown <= 0) return null
-    return (
-      <div className="flex items-center gap-2">
-        <span className="w-14 shrink-0 text-[11px] text-slate-500 text-right">{label}</span>
-        <span className="text-[11px] text-amber-600">{bucket.unknown} Rocket(s) — capacité indéterminée</span>
-      </div>
-    )
+    if (bucket.unknown > 0) {
+      return (
+        <span className="text-[11px] text-amber-600 tabular-nums">
+          {bucket.unknown} indéterminé{bucket.unknown > 1 ? 's' : ''}
+        </span>
+      )
+    }
+    return <span className="text-slate-300">—</span>
   }
 
-  const trackPct = globalMax > 0 ? (bucket.capacity / globalMax) * 100 : 0
-  const usedPct = bucket.capacity > 0 ? (bucket.consumed / bucket.capacity) * 100 : 0
-
+  const saturated = bucket.consumed >= bucket.capacity
   return (
-    <div className="flex items-center gap-2">
-      <span className="w-14 shrink-0 text-[11px] text-slate-500 text-right">{label}</span>
-      <div className="flex-1 bg-slate-50 rounded h-4 overflow-hidden relative">
-        <div className="absolute inset-y-0 left-0 flex" style={{ width: `${Math.max(trackPct, 1)}%` }}>
-          <div className="h-full" style={{ width: `${usedPct}%`, background: used }} />
-          <div className="h-full flex-1" style={{ background: free }} />
-        </div>
-      </div>
-      <span className="w-16 shrink-0 text-[11px] font-semibold text-slate-800 text-right tabular-nums">
-        {bucket.consumed}/{bucket.capacity}
+    <span className="tabular-nums">
+      <span className={saturated ? 'font-bold text-red-600' : 'font-semibold text-slate-800'}>
+        {bucket.consumed}
       </span>
-      <span className="w-8 shrink-0 text-[10px] text-amber-600 text-right tabular-nums">
-        {bucket.unknown > 0 ? `+${bucket.unknown}` : ''}
-      </span>
-    </div>
+      <span className="text-slate-400"> / {bucket.capacity}</span>
+      {bucket.unknown > 0 && (
+        <span className="ml-1 text-[10px] text-amber-600">+{bucket.unknown}</span>
+      )}
+    </span>
   )
 }
 

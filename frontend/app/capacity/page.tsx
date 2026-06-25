@@ -27,12 +27,6 @@ export default function CapacityPage() {
   const sites = data?.sites ?? []
   const siteObj = selectedSite != null ? sites.find(s => s.site === selectedSite) ?? null : null
 
-  // Échelle commune des barres par site = plus grande capacité (famille × site).
-  const globalMax = useMemo(
-    () => sites.reduce((m, s) => Math.max(m, s.ltu.capacity, s.airmax.capacity), 0),
-    [sites],
-  )
-
   // Rockets saturés : clients installés ≥ max. Capacité indéterminée
   // (max_clients null) = jamais saturé. Trié du plus surchargé au moins
   // (ratio installés/max décroissant).
@@ -120,43 +114,33 @@ export default function CapacityPage() {
             />
           )}
 
-          {/* Barres par site */}
+          {/* Capacité par site — repère quadrillé (clients installés vs capacité propre) */}
           <div className="bg-white border border-blue-100 rounded-xl shadow-sm p-5">
-            <div className="mb-4">
+            <div className="mb-4 flex items-center gap-x-4 gap-y-1.5 flex-wrap">
               <h3 className="font-semibold text-blue-900">Capacité par site</h3>
-              <p className="text-xs text-blue-400 mt-0.5">
-                Longueur = capacité totale du site ; partie pleine = clients installés.
-                Clique un site pour le détail.
+              <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-500">
+                <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: FAMILY.ltu.used }} />
+                LTU
+              </span>
+              <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-500">
+                <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: FAMILY.airmax.used }} />
+                airMAX
+              </span>
+              <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-500">
+                <span className="inline-block w-2.5 h-2.5 rounded-full bg-slate-600" />
+                installés
+                <span className="inline-block w-2.5 h-2.5 rounded-full border-2 border-slate-400 bg-white ml-1.5" />
+                capacité
+              </span>
+              <p className="text-xs text-blue-400 w-full">
+                Y = nombre de clients. Chaque site porte sa propre capacité (marqueur creux) ;
+                point plein = installés. Point au-dessus de son creux = saturé. Survol = détail, clic = site.
               </p>
             </div>
             {sites.length === 0 ? (
               <p className="py-8 text-center text-slate-400 text-sm">Aucun site.</p>
             ) : (
-              <div className="space-y-3 max-h-[28rem] overflow-y-auto pr-1">
-                {sites.map(s => (
-                  <button
-                    key={s.site}
-                    onClick={() => setSelectedSite(s.site)}
-                    className="w-full text-left rounded-lg px-2 py-2 hover:bg-blue-50 transition-colors"
-                  >
-                    <div className="flex items-center gap-2 mb-1.5">
-                      <span className="text-sm font-semibold text-slate-800 truncate">{s.site}</span>
-                      {s.unknown > 0 && (
-                        <span
-                          className="shrink-0 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5"
-                          title="Rockets à capacité indéterminée (largeur de canal inconnue, exclus des totaux)"
-                        >
-                          {s.unknown} indéterminé{s.unknown > 1 ? 's' : ''}
-                        </span>
-                      )}
-                    </div>
-                    <div className="space-y-1">
-                      <SiteFamilyBar family="ltu" bucket={s.ltu} globalMax={globalMax} />
-                      <SiteFamilyBar family="airmax" bucket={s.airmax} globalMax={globalMax} />
-                    </div>
-                  </button>
-                ))}
-              </div>
+              <SiteCapacityScatter sites={sites} onSelectSite={setSelectedSite} />
             )}
           </div>
         </>
@@ -390,44 +374,150 @@ function SaturatedRocketsSection({
   )
 }
 
-function SiteFamilyBar({
-  family, bucket, globalMax,
-}: { family: Family; bucket: CapacityBucket; globalMax: number }) {
-  const { label, used, free } = FAMILY[family]
-
-  if (bucket.capacity <= 0) {
-    if (bucket.unknown <= 0) return null
-    return (
-      <div className="flex items-center gap-2">
-        <span className="w-14 shrink-0 text-[11px] text-slate-500 text-right">{label}</span>
-        <span className="text-[11px] text-amber-600">{bucket.unknown} Rocket(s) — capacité indéterminée</span>
-      </div>
-    )
+// Repère quadrillé (papier millimétré) pour « Capacité par site ». X = sites,
+// Y = nombre de clients. Chaque site porte SA PROPRE capacité (les plafonds
+// diffèrent d'un site à l'autre) : par famille, un point plein = clients
+// installés et un marqueur creux = capacité, reliés par une tige (marge libre).
+// Point plein au-dessus de son creux ⇒ site saturé (rouge). SVG pur.
+function SiteCapacityScatter({
+  sites, onSelectSite,
+}: { sites: SiteCapacity[]; onSelectSite: (site: string) => void }) {
+  // Aplatit en marqueurs (un par famille présente sur un site) ; on ignore une
+  // famille sans capacité connue (que des Rockets à largeur indéterminée).
+  type Mark = {
+    site: string; family: Family
+    consumed: number; capacity: number; over: boolean
   }
+  const perSite = sites.map(s => {
+    const marks: Mark[] = []
+    for (const family of ['ltu', 'airmax'] as Family[]) {
+      const b: CapacityBucket = s[family]
+      if (b.capacity <= 0) continue
+      marks.push({
+        site: s.site, family,
+        consumed: b.consumed, capacity: b.capacity,
+        over: b.consumed >= b.capacity,
+      })
+    }
+    return { site: s.site, marks }
+  })
 
-  const trackPct = globalMax > 0 ? (bucket.capacity / globalMax) * 100 : 0
-  const usedPct = bucket.capacity > 0 ? (bucket.consumed / bucket.capacity) * 100 : 0
+  const n = perSite.length
+
+  // Échelle Y : 0 → un peu au-dessus du plus gros (capacité ou installés),
+  // arrondi pour des graduations propres.
+  const yMax = useMemo(() => {
+    let peak = 1
+    for (const s of perSite)
+      for (const m of s.marks) peak = Math.max(peak, m.capacity, m.consumed)
+    const withHead = peak + Math.max(1, Math.ceil(peak * 0.1))
+    const round = withHead <= 20 ? 5 : withHead <= 60 ? 10 : 20
+    return Math.ceil(withHead / round) * round
+  }, [perSite])
+
+  const yStep = yMax <= 20 ? 5 : yMax <= 60 ? 10 : 20
+  const yTicks: number[] = []
+  for (let v = 0; v <= yMax; v += yStep) yTicks.push(v)
+
+  // Géométrie (coordonnées SVG). Largeur dynamique → scroll horizontal si
+  // beaucoup de sites, sinon le viewBox s'étire au conteneur.
+  const M = { left: 40, right: 24, top: 16, bottom: 76 }
+  const colW = 60
+  const plotW = Math.max(n * colW, colW)
+  const plotH = 268
+  const W = M.left + plotW + M.right
+  const H = M.top + plotH + M.bottom
+
+  const bandX = (i: number) => M.left + plotW * ((i + 0.5) / n)
+  const yAt = (v: number) => M.top + plotH * (1 - v / yMax)
+  const yBase = M.top + plotH
+  const DX = 11 // décalage LTU/airMAX dans la colonne du site
 
   return (
-    <div className="flex items-center gap-2">
-      <span className="w-14 shrink-0 text-[11px] text-slate-500 text-right">{label}</span>
-      <div className="flex-1 bg-slate-50 rounded h-4 overflow-hidden relative">
-        <div className="absolute inset-y-0 left-0 flex" style={{ width: `${Math.max(trackPct, 1)}%` }}>
-          <div className="h-full" style={{ width: `${usedPct}%`, background: used }} />
-          <div className="h-full flex-1" style={{ background: free }} />
-        </div>
-      </div>
-      <span className="w-16 shrink-0 text-[11px] font-semibold text-slate-800 text-right tabular-nums">
-        {bucket.consumed}/{bucket.capacity}
-      </span>
-      <span
-        className="w-8 shrink-0 text-[10px] text-amber-600 text-right tabular-nums"
-        title={bucket.unknown > 0
-          ? `${bucket.unknown} Rocket(s) à capacité indéterminée (largeur inconnue, exclus du total)`
-          : undefined}
+    <div className="overflow-x-auto">
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="block h-auto"
+        style={{ width: '100%', minWidth: Math.max(W, 320) }}
+        role="img"
+        aria-label="Repère : clients installés vs capacité par site"
       >
-        {bucket.unknown > 0 ? `+${bucket.unknown}` : ''}
-      </span>
+        <defs>
+          <pattern id="cap-grid-minor" width="11" height="11" patternUnits="userSpaceOnUse">
+            <path d="M 11 0 L 0 0 0 11" fill="none" stroke="#e6eef7" strokeWidth="1" />
+          </pattern>
+          <pattern id="cap-grid-major" width="55" height="55" patternUnits="userSpaceOnUse">
+            <rect width="55" height="55" fill="url(#cap-grid-minor)" />
+            <path d="M 55 0 L 0 0 0 55" fill="none" stroke="#cfe0f2" strokeWidth="1.3" />
+          </pattern>
+          <marker id="cap-arrow" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="#94a3b8" />
+          </marker>
+        </defs>
+
+        {/* Fond quadrillé */}
+        <rect x={M.left} y={M.top} width={plotW} height={plotH} fill="url(#cap-grid-major)" />
+
+        {/* Graduations + libellés Y */}
+        {yTicks.map(v => (
+          <g key={v}>
+            <line x1={M.left - 4} y1={yAt(v)} x2={M.left} y2={yAt(v)} stroke="#94a3b8" strokeWidth={1} />
+            <text x={M.left - 7} y={yAt(v) + 3.5} textAnchor="end" fontSize={10} fill="#64748b" className="tabular-nums">
+              {v}
+            </text>
+          </g>
+        ))}
+
+        {/* Axes (math : flèches) + origine */}
+        <line x1={M.left} y1={yBase} x2={M.left + plotW} y2={yBase} stroke="#64748b" strokeWidth={1.4} markerEnd="url(#cap-arrow)" />
+        <line x1={M.left} y1={yBase} x2={M.left} y2={M.top - 2} stroke="#64748b" strokeWidth={1.4} markerEnd="url(#cap-arrow)" />
+        <circle cx={M.left} cy={yBase} r={4.5} fill="white" stroke="#64748b" strokeWidth={1.4} />
+        <text x={M.left - 6} y={yBase + 14} textAnchor="end" fontSize={10} fill="#94a3b8">cli.</text>
+
+        {/* Marqueurs par site */}
+        {perSite.map((s, i) => {
+          const center = bandX(i)
+          const label = s.site.length > 12 ? s.site.slice(0, 11) + '…' : s.site
+          return (
+            <g
+              key={s.site}
+              onClick={() => onSelectSite(s.site)}
+              style={{ cursor: 'pointer' }}
+            >
+              {/* Zone de clic/survol sur toute la colonne */}
+              <rect x={center - colW / 2} y={M.top} width={colW} height={plotH} fill="transparent" />
+              {s.marks.map(m => {
+                const cx = center + (m.family === 'ltu' ? -DX : DX)
+                const yCon = yAt(m.consumed)
+                const yCap = yAt(m.capacity)
+                const color = FAMILY[m.family].used
+                const stem = m.over ? '#ef4444' : color
+                return (
+                  <g key={m.family}>
+                    <title>
+                      {`${s.site} · ${FAMILY[m.family].label} — installés ${m.consumed} / capacité ${m.capacity}`}
+                    </title>
+                    {/* Tige = marge libre entre installés et capacité */}
+                    <line x1={cx} y1={yCon} x2={cx} y2={yCap} stroke={stem} strokeWidth={2} strokeOpacity={0.45} />
+                    {/* Capacité (creux) */}
+                    <circle cx={cx} cy={yCap} r={4} fill="white" stroke={color} strokeWidth={2} />
+                    {/* Installés (plein) — rouge si saturé */}
+                    <circle cx={cx} cy={yCon} r={4.5} fill={m.over ? '#ef4444' : color} stroke="white" strokeWidth={1.3} />
+                  </g>
+                )
+              })}
+              {/* Libellé du site sous l'axe (incliné) */}
+              <text
+                x={center} y={yBase + 12}
+                transform={`rotate(-40 ${center} ${yBase + 12})`}
+                textAnchor="end" fontSize={9} fill="#64748b"
+              >
+                {label}
+              </text>
+            </g>
+          )
+        })}
+      </svg>
     </div>
   )
 }

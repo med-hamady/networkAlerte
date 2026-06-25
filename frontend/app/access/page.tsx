@@ -141,7 +141,7 @@ export default function AccessPage() {
             <table className="w-full text-sm">
               <thead className="bg-blue-50 border-b border-blue-100">
                 <tr>
-                  {['Client', 'Topologie', 'État', 'Motif', 'Coupé depuis', 'Renforcé', 'Action'].map(h => (
+                  {['Client', 'Topologie', 'État', 'Coupé depuis', 'Action'].map(h => (
                     <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
                       {h}
                     </th>
@@ -152,7 +152,6 @@ export default function AccessPage() {
                 {sorted.map(lr => {
                   const isBridge = lr.effective_mode === 'bridge'
                   const isBlocked = lr.client_blocked
-                  const pendingEnforcement = isBlocked && lr.client_block_enforced_at == null
                   return (
                     <tr key={lr.id} className="hover:bg-blue-50/60 align-top">
                       <td className="px-4 py-3">
@@ -175,22 +174,10 @@ export default function AccessPage() {
                           <span className="text-green-600 font-semibold text-xs">● Actif</span>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-xs text-slate-700 max-w-xs">
-                        {lr.client_blocked_reason || <span className="text-blue-300">—</span>}
-                      </td>
                       <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-700">
                         {isBlocked
                           ? timeAgo(lr.client_blocked_at)
                           : <span className="text-blue-300">—</span>}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-xs">
-                        {!isBlocked ? (
-                          <span className="text-blue-300">—</span>
-                        ) : pendingEnforcement ? (
-                          <span className="text-amber-600 font-semibold">en attente (LR injoignable)</span>
-                        ) : (
-                          <span className="text-slate-700">{timeAgo(lr.client_block_enforced_at)}</span>
-                        )}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">
                         {isBlocked ? (

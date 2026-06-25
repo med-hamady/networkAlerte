@@ -220,6 +220,7 @@ export default function ReportsPage() {
           startIso={dayStartIso(applied.from)}
           endIso={dayEndIso(applied.to)}
           periodLabel={`${applied.from} → ${applied.to}`}
+          expanded
         />
       </div>
       </div>

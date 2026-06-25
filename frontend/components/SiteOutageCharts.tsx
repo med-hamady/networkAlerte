@@ -22,12 +22,16 @@ export default function SiteOutageCharts({
   startIso: startProp,
   endIso: endProp,
   periodLabel,
+  expanded = false,
 }: {
   // Optional explicit window. When omitted, defaults to the last 7 days
   // (dashboard usage). The /reports page passes its selected date range.
   startIso?: string
   endIso?: string
   periodLabel?: string
+  // Report/print mode : tout le détail par équipement est déplié d'office (pas
+  // de clic — impossible dans un PDF), pas de scroll qui coupe, cartes empilées.
+  expanded?: boolean
 }) {
   // 7-day window — recomputed once (stable enough; SWR refresh keeps data fresh).
   const { startIso, endIso } = useMemo(() => {
@@ -54,32 +58,36 @@ export default function SiteOutageCharts({
     )
   }
 
+  const hint = expanded ? ' · détail par équipement ci-dessous' : ' · cliquer un site pour le détail'
+
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <div className={`grid grid-cols-1 gap-4 ${expanded ? '' : 'lg:grid-cols-2'}`}>
       <SiteOutageCard
         title="Nombre de pannes par site"
-        subtitle={`Épisodes de coupure — ${period} · cliquer un site pour le détail`}
+        subtitle={`Épisodes de coupure — ${period}${hint}`}
         sites={data?.by_pannes ?? []}
         valueOf={s => s.pannes}
         labelOf={s => `${s.pannes}`}
         deviceLabelOf={d => `${d.episodes_count} panne${d.episodes_count > 1 ? 's' : ''}`}
         barClass="bg-red-400"
+        expanded={expanded}
       />
       <SiteOutageCard
         title="Temps de panne par site"
-        subtitle={`Downtime cumulé — ${period} · cliquer un site pour le détail`}
+        subtitle={`Downtime cumulé — ${period}${hint}`}
         sites={data?.by_downtime ?? []}
         valueOf={s => s.downtime_seconds}
         labelOf={s => fmtDuration(s.downtime_seconds)}
         deviceLabelOf={d => fmtDuration(d.total_downtime_seconds)}
         barClass="bg-orange-400"
+        expanded={expanded}
       />
     </div>
   )
 }
 
 function SiteOutageCard({
-  title, subtitle, sites, valueOf, labelOf, deviceLabelOf, barClass,
+  title, subtitle, sites, valueOf, labelOf, deviceLabelOf, barClass, expanded = false,
 }: {
   title: string
   subtitle: string
@@ -88,12 +96,13 @@ function SiteOutageCard({
   labelOf: (s: OutageSite) => string
   deviceLabelOf: (d: OutageSiteDevice) => string
   barClass: string
+  expanded?: boolean
 }) {
   const [openSite, setOpenSite] = useState<string | null>(null)
   const max = sites.reduce((m, s) => Math.max(m, valueOf(s)), 0) || 1
 
   return (
-    <div className="bg-white border border-blue-100 rounded-xl shadow-sm p-5">
+    <div className="bg-white border border-blue-100 rounded-xl shadow-sm p-5 break-inside-avoid">
       <div className="mb-4">
         <h3 className="font-semibold text-blue-900">{title}</h3>
         <p className="text-xs text-blue-400 mt-0.5">{subtitle}</p>
@@ -104,23 +113,30 @@ function SiteOutageCard({
           <p className="text-green-600 font-semibold text-sm">✓ Aucune coupure sur la période</p>
         </div>
       ) : (
-        <div className="space-y-1.5 max-h-96 overflow-y-auto pr-1">
+        // Déplié (rapport/PDF) : pas de hauteur max ni de scroll, sinon le contenu
+        // au-delà serait coupé à l'impression.
+        <div className={`space-y-1.5 ${expanded ? '' : 'max-h-96 overflow-y-auto pr-1'}`}>
           {sites.map(s => {
-            const isOpen = openSite === s.site
+            const isOpen = expanded || openSite === s.site
             return (
-              <div key={s.site}>
+              <div key={s.site} className="break-inside-avoid">
                 <button
                   type="button"
-                  onClick={() => setOpenSite(o => (o === s.site ? null : s.site))}
-                  className="w-full flex items-center gap-3 py-1 group"
-                  title="Cliquer pour voir les équipements en panne"
+                  onClick={expanded ? undefined : () => setOpenSite(o => (o === s.site ? null : s.site))}
+                  disabled={expanded}
+                  className={`w-full flex items-center gap-3 py-1 group ${expanded ? 'cursor-default' : ''}`}
+                  title={expanded ? undefined : 'Cliquer pour voir les équipements en panne'}
                 >
-                  <svg
-                    className={`w-3.5 h-3.5 shrink-0 text-blue-400 transition-transform ${isOpen ? 'rotate-90' : ''}`}
-                    fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                  </svg>
+                  {expanded ? (
+                    <span className="w-3.5 shrink-0" aria-hidden />
+                  ) : (
+                    <svg
+                      className={`w-3.5 h-3.5 shrink-0 text-blue-400 transition-transform ${isOpen ? 'rotate-90' : ''}`}
+                      fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
                   <div className="w-24 shrink-0 text-xs text-slate-600 truncate text-right group-hover:text-blue-700" title={s.site}>
                     {s.site}
                   </div>

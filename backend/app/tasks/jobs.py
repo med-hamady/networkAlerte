@@ -2402,6 +2402,39 @@ async def network_latency_aggregate_job() -> None:
         )
 
 
+async def _claim_daily_run(key: str) -> bool:
+    """Atomically claim today's run for a once-per-day report.
+
+    Returns True if this is the first run for the current UTC day (caller should
+    proceed), False if the report already ran today (caller should skip). Backed
+    by an upsert on the ``system_settings`` key/value table so a report can't be
+    re-sent on every container restart — the ``next_run_time=now`` boot trigger
+    fires on each (re)start, which otherwise spams the WhatsApp group several
+    times a day when the scheduler restarts (e.g. after an OOM kill).
+
+    The upsert only writes (and so only returns a row) when the stored date
+    differs from today, making the claim race-safe even across processes.
+    """
+    today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    async with async_session_factory() as session:
+        row = (
+            await session.execute(
+                text(
+                    "INSERT INTO system_settings (key, value) "
+                    "VALUES (:key, :today) "
+                    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value "
+                    "WHERE system_settings.value <> EXCLUDED.value "
+                    "RETURNING id"
+                ),
+                {"key": key, "today": today},
+            )
+        ).first()
+        await session.commit()
+    if row is None:
+        logger.info("%s déjà envoyé aujourd'hui (%s) — saut", key, today)
+    return row is not None
+
+
 async def rocket_saturation_report_job() -> None:
     """Daily WhatsApp PDF report of saturated base-station Rockets.
 
@@ -2416,6 +2449,9 @@ async def rocket_saturation_report_job() -> None:
     """
     settings = get_settings()
     if not settings.rocket_saturation_report_enabled:
+        return
+    # Once-per-day guard: a restart re-fires next_run_time=now and would re-send.
+    if not await _claim_daily_run("last_run:rocket_saturation_report"):
         return
 
     async with async_session_factory() as session:
@@ -2454,6 +2490,9 @@ async def site_infra_report_job() -> None:
     """
     settings = get_settings()
     if not settings.site_infra_report_enabled:
+        return
+    # Once-per-day guard: a restart re-fires next_run_time=now and would re-send.
+    if not await _claim_daily_run("last_run:site_infra_report"):
         return
 
     async with async_session_factory() as session:

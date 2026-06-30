@@ -36,11 +36,11 @@ from app.services import asn_service
 
 logger = logging.getLogger(__name__)
 
-# Candidate field names for destination IP / byte / packet counters across
+# Candidate field names for source/destination IP and byte counters across
 # NetFlow v5/v9/IPFIX as normalised by the `netflow` library.
+_SRC_KEYS = ("IPV4_SRC_ADDR", "IPV6_SRC_ADDR", "sourceIPv4Address", "sourceIPv6Address")
 _DST_KEYS = ("IPV4_DST_ADDR", "IPV6_DST_ADDR", "destinationIPv4Address", "destinationIPv6Address")
 _BYTE_KEYS = ("IN_BYTES", "IN_OCTETS", "octetDeltaCount", "octetTotalCount", "IN_OCTET")
-_PKT_KEYS = ("IN_PKTS", "IN_PACKETS", "packetDeltaCount", "packetTotalCount")
 
 
 def _first(data: dict, keys: tuple[str, ...]) -> object | None:
@@ -63,19 +63,18 @@ def _normalize_ip(value: object) -> str | None:
         return None
 
 
-def _extract_flow(data: dict) -> tuple[str, int, int] | None:
-    """Return ``(dst_ip, bytes, packets)`` from a decoded flow's data dict, or None."""
+def _extract_flow(data: dict) -> tuple[str, str, int] | None:
+    """Return ``(src_ip, dst_ip, bytes)`` from a decoded flow's data dict, or None."""
+    src = _normalize_ip(_first(data, _SRC_KEYS))
     dst = _normalize_ip(_first(data, _DST_KEYS))
-    if dst is None:
+    if src is None or dst is None:
         return None
     raw_bytes = _first(data, _BYTE_KEYS)
-    raw_pkts = _first(data, _PKT_KEYS)
     try:
         nbytes = int(raw_bytes) if raw_bytes is not None else 0
-        npkts = int(raw_pkts) if raw_pkts is not None else 0
     except (TypeError, ValueError):
-        nbytes, npkts = 0, 0
-    return dst, nbytes, npkts
+        nbytes = 0
+    return src, dst, nbytes
 
 
 class _Collector:
@@ -85,7 +84,7 @@ class _Collector:
         self._settings = settings
         # {"netflow": {}, "ipfix": {}} — template state the decoder mutates.
         self._templates: dict[str, dict] = {"netflow": {}, "ipfix": {}}
-        # (asn, operator) -> {"bytes", "packets", "flows"}
+        # (asn, operator) -> {"down", "up", "flows"} (bytes by direction)
         self._agg: dict[tuple[int | None, str | None], dict[str, int]] = {}
         self._internal_nets = self._build_internal_nets(settings.netflow_internal_prefix_list)
         self._packets_seen = 0
@@ -132,13 +131,23 @@ class _Collector:
             extracted = _extract_flow(getattr(flow, "data", {}) or {})
             if extracted is None:
                 continue
-            dst, nbytes, npkts = extracted
-            if self._is_internal(dst):
-                continue
-            asn, org = _resolve_cached(dst)
-            slot = self._agg.setdefault((asn, org), {"bytes": 0, "packets": 0, "flows": 0})
-            slot["bytes"] += nbytes
-            slot["packets"] += npkts
+            src, dst, nbytes = extracted
+            # Attribute the flow to its PUBLIC endpoint (the Internet operator/CDN)
+            # and to a direction. "Internal" = our LAN/CGNAT + our own public WAN
+            # prefix (netflow_internal_prefixes) so post-NAT flows resolve to the
+            # CDN, not to us. A flow has exactly one external end in normal cases.
+            src_internal = self._is_internal(src)
+            dst_internal = self._is_internal(dst)
+            if dst_internal and not src_internal:
+                public_ip, down, up = src, nbytes, 0   # download: operator → client (RX WAN)
+            elif src_internal and not dst_internal:
+                public_ip, down, up = dst, 0, nbytes   # upload: client → operator (TX WAN)
+            else:
+                continue  # LAN↔LAN or transit (both external) — not our client traffic
+            asn, org = _resolve_cached(public_ip)
+            slot = self._agg.setdefault((asn, org), {"down": 0, "up": 0, "flows": 0})
+            slot["down"] += down
+            slot["up"] += up
             slot["flows"] += 1
             self._flows_kept += 1
 
@@ -163,8 +172,8 @@ class _Collector:
                 bucket_start=bucket,
                 asn=asn,
                 as_org=org,
-                bytes=v["bytes"],
-                packets=v["packets"],
+                down_bytes=v["down"],
+                up_bytes=v["up"],
                 flows=v["flows"],
             )
             for (asn, org), v in snapshot.items()

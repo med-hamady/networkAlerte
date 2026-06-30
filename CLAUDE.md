@@ -77,9 +77,9 @@ backend/app/
 │   ├── digest_service.py           # Regroupement des warnings en digest 15 min
 │   ├── uisp_service.py             # Client REST contrôleur UISP/UNMS (login → token, GET /devices) — read-only
 │   ├── uisp_sync_service.py        # Import auto depuis UISP : INFRA (classify→upsert name/IP/site, creds par convention à la CRÉATION) + STATIONS clientes via sync_uisp_stations (LR abonnés dans `lrs`, colonnes uisp_* mode/statut, identité MAC, gated UISP_STATION_SYNC_ENABLED) ; aucun delete/deactivate
-│   ├── netflow_service.py          # Collecteur NetFlow (asyncio UDP) : décode v1/v5/v9/IPFIX (lib `netflow`), garde les destinations PUBLIQUES (exclut RFC1918/CGNAT + NETFLOW_INTERNAL_PREFIXES), résout l'ASN (asn_service), agrège en mémoire par (asn, opérateur) et flush périodique dans `traffic_dest_stats`. Process long dédié (RUN_MODE=collector), PAS un job APScheduler
+│   ├── netflow_service.py          # Collecteur NetFlow (asyncio UDP) : décode v1/v5/v9/IPFIX (lib `netflow`). Attribue chaque flux à son **extrémité PUBLIQUE** (source en download, destination en upload ; l'extrémité INTERNE = client/WAN défini par NETFLOW_INTERNAL_PREFIXES), résout l'ASN (asn_service), agrège en mémoire par (asn, opérateur) avec **down_bytes/up_bytes** et flush dans `traffic_dest_stats`. Process long dédié (RUN_MODE=collector), PAS un job APScheduler
 │   ├── asn_service.py              # IP → (ASN, opérateur) via MaxMind GeoLite2-ASN (.mmdb offline, lib `maxminddb`) + map statique de labels CDN (FB/Google/Netflix…). Reader lazy ; .mmdb absent = tout sous "Indéterminé"
-│   └── traffic_service.py          # Roll-up lecture : SUM(bytes) GROUP BY asn sur 24h/7j/30j → top opérateurs/CDN + part %. Alimente /traffic
+│   └── traffic_service.py          # 2 roll-ups : `get_top_destinations` (VOLUME down/up/total par ASN sur 24h/7j/30j) + `get_throughput` (DÉBIT Gb/s = bytes÷bucket s, dernier bucket, descendant/montant + part). Alimente /traffic
 ├── tasks/
 │   ├── scheduler.py         # Init APScheduler, start/stop lifecycle
 │   ├── runner.py            # Entrée du container scheduler standalone (RUN_MODE=scheduler)
@@ -206,9 +206,9 @@ backend/app/
 | `UISP_AF60_SSH_USERNAME` / `UISP_AF60_SSH_PASSWORD` | Creds API posés sur un AF60 créé par le sync (défaut `ubnt` / `A2F60@4321`) |
 | `NETFLOW_COLLECTOR_ENABLED` | Active le collecteur NetFlow (container `netflow-collector`, RUN_MODE=collector). Le container existe pour ça ; `false` = il idle (défaut `false`) |
 | `NETFLOW_LISTEN_PORT` | Port UDP d'écoute du collecteur (défaut 2055). Publié **uniquement sur l'IP LAN** via `docker-compose.lan.yml`, **jamais 0.0.0.0** ; restreindre la source au routeur au firewall (NetFlow non authentifié). Sur le MikroTik : exporter vers `${LAN_BIND_IP}:2055` |
-| `NETFLOW_FLUSH_INTERVAL_SECONDS` | Fréquence d'écriture de l'agrégat mémoire → `traffic_dest_stats` (défaut 300) |
-| `NETFLOW_BUCKET_MINUTES` | Taille de la fenêtre temporelle agrégée (défaut 5) |
-| `NETFLOW_INTERNAL_PREFIXES` | Préfixes traités comme INTERNES et exclus (on ne veut que client→Internet) — CSV de CIDR (défaut RFC1918 + CGNAT). En plus, tout IP non-`is_global` est exclu d'office |
+| `NETFLOW_FLUSH_INTERVAL_SECONDS` | Fréquence d'écriture de l'agrégat mémoire → `traffic_dest_stats` (défaut **60**) |
+| `NETFLOW_BUCKET_MINUTES` | Fenêtre agrégée (défaut **1** min → débit « live » en Gb/s ; le débit = bytes ÷ bucket s) |
+| `NETFLOW_INTERNAL_PREFIXES` | Préfixes traités comme **INTERNES** (notre côté = client/WAN). L'extrémité interne d'un flux = le client ; l'autre = l'opérateur Internet attribué. CSV de CIDR — **DOIT inclure RFC1918/CGNAT ET le préfixe public WAN** (ex. `102.215.95.228/30`), sinon les flux descendants post-NAT sont vus opérateur↔opérateur et ignorés (pas de download mesuré) |
 | `GEOIP_ASN_DB_PATH` | Base offline MaxMind GeoLite2-ASN (IP→ASN+opérateur). Défaut `/app/data/GeoLite2-ASN.mmdb` (couvert par le bind-mount `./backend:/app` ; voir `backend/data/README.md`). Absente = tout agrégé sous "Indéterminé" |
 | `TRAFFIC_STATS_RETENTION_DAYS` | Rétention batchée de `traffic_dest_stats` (défaut 90 ; `traffic_stats_retention_job`) |
 
@@ -346,7 +346,8 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | POST | `/api/v1/system/test-whatsapp` | Oui | Diagnostic WhatsApp (Ultramsg) — envoie un message de test au groupe `WHATSAPP_GROUP_ID` |
 | POST | `/api/v1/uisp/sync` | Oui | Import des équipements d'infra depuis le contrôleur UISP (`?dry_run=true` = prévisualisation sans écriture). Renvoie un résumé (créés/màj/ignorés + échantillon) |
 | GET | `/api/v1/network-capacity` | Oui | Capacité clients : par famille (LTU/airMAX) et par site, clients connectés (`peer_count`) vs max (seuil `rocket_client_overload`). Rockets sans largeur connue exclus des totaux (`unknown`). `network_capacity_service`. Inclut aussi la clé **`infra`** (`site_infra_service.get_site_infra_capacity`) : budget d'équipements infra par site (Rockets+AF60+PTP) vs `SITE_INFRA_MAX`, avec marge `remaining` signée |
-| GET | `/api/v1/traffic/top-destinations` | Oui | Top destinations Internet par opérateur/CDN (ASN) sur `?period=24h\|7d\|30d` : `SUM(bytes)` GROUP BY asn depuis `traffic_dest_stats` (alimenté par le collecteur NetFlow), trié + part %. `traffic_service`. Sert à décider les caches (GGC/FNA/OCA) |
+| GET | `/api/v1/traffic/top-destinations` | Oui | **Volume** Internet par opérateur/CDN (ASN) sur `?period=24h\|7d\|30d` : SUM(down/up) GROUP BY asn depuis `traffic_dest_stats`, trié par total + part %. `traffic_service.get_top_destinations` |
+| GET | `/api/v1/traffic/throughput` | Oui | **Débit** (Gb/s) par opérateur sur le dernier bucket : descendant/montant Mbps + part du download. Montre le partage de la bande passante WAN en direct. `traffic_service.get_throughput` |
 
 ### Frontend Next.js
 | Page | Chemin | Contenu |
@@ -354,7 +355,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | Devices | `/devices` | Liste avec statut, dernière vue, métriques, modal détail |
 | Anomalies détectées | `/incidents` | Anomalies actuellement détectées (lecture seule, résolution automatique) |
 | Capacité du réseau | `/capacity` | 2 cercles (LTU/airMAX) consommé vs disponible sur tout le réseau + barres par site (LTU/airMAX séparés) ; clic site → table Rockets (connectés/max + largeur). Donut SVG custom (pas de lib de charts). Inclut la section **« Capacité infra par site »** (table Site/Équip. infra/Max/Marge, marge +N vert / -N rouge) alimentée par la clé `infra` de `/network-capacity` |
-| Destinations Internet | `/traffic` | Top opérateurs/CDN consultés par les clients, par volume (sélecteur 24h/7j/30j) — barres + part %. Lit `/traffic/top-destinations`. Repère les candidats à un serveur de cache. **Vide tant que `NETFLOW_COLLECTOR_ENABLED=false` ou que le routeur n'exporte pas vers le collecteur** |
+| Destinations Internet | `/traffic` | 2 sections : **Débit en direct** (descendant/montant Gb/s + partage par opérateur, `/traffic/throughput`, refresh 30 s) et **Volume** (par opérateur sur 24h/7j/30j, down/up/total + part, `/traffic/top-destinations`). Repère les candidats à un serveur de cache. **Vide tant que `NETFLOW_COLLECTOR_ENABLED=false` ou que le routeur n'exporte pas vers le collecteur** |
 
 ### À implémenter (prochaines phases)
 - [ ] Tests unitaires et d'intégration

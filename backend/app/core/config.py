@@ -573,12 +573,18 @@ class Settings(BaseSettings):
     # public interface; restrict the source to the router at the firewall).
     netflow_listen_host: str = "0.0.0.0"
     netflow_listen_port: int = 2055
-    # How often the in-memory ASN aggregate is written to the DB, and the size
-    # of each time bucket the flows are folded into.
-    netflow_flush_interval_seconds: int = 300
-    netflow_bucket_minutes: int = 5
-    # Destination prefixes treated as INTERNAL and excluded (we only want
-    # client→Internet egress). RFC1918 + our own ranges; comma-separated CIDRs.
+    # How often the in-memory aggregate is written to the DB, and the size of
+    # each time bucket flows are folded into. Kept at 1 min so the /traffic
+    # "débit" view (bytes ÷ bucket seconds → Gb/s) reflects near-current
+    # throughput rather than a 5-min average. ASN cardinality is small, so
+    # 1-min rows stay cheap.
+    netflow_flush_interval_seconds: int = 60
+    netflow_bucket_minutes: int = 1
+    # Prefixes treated as INTERNAL (our side). A flow's INTERNAL end is the
+    # client; its other end is the Internet operator we attribute it to. Must
+    # include RFC1918/CGNAT **and our own public WAN prefix**, otherwise post-NAT
+    # download flows (operator → our public IP) look operator↔operator and are
+    # dropped. Set the WAN prefix per deployment via NETFLOW_INTERNAL_PREFIXES.
     netflow_internal_prefixes: str = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10"
     # Offline MaxMind GeoLite2-ASN database (IP→ASN + AS org name). Mounted into
     # the container; refresh periodically (free MaxMind account). When the file

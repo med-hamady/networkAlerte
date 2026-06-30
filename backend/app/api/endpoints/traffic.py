@@ -25,3 +25,9 @@ async def get_top_destinations(
 ) -> dict:
     """Top operators/CDNs our clients consult, by traffic volume over ``period``."""
     return await traffic_service.get_top_destinations(db, period)
+
+
+@router.get("/throughput")
+async def get_throughput(db: AsyncSession = Depends(get_db)) -> dict:
+    """Current WAN bandwidth split by operator (Mbps download/upload, latest bucket)."""
+    return await traffic_service.get_throughput(db)

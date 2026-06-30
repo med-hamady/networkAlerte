@@ -558,6 +558,40 @@ class Settings(BaseSettings):
     site_infra_report_enabled: bool = True
     site_infra_report_hour: int = 7
 
+    # ── NetFlow traffic collector ────────────────────────────────────────────
+    # Top public destinations our clients consult, grouped by operator/CDN (ASN).
+    # The edge router (MikroTik) already exports NetFlow; we point it at this
+    # server and a dedicated long-running collector process (RUN_MODE=collector,
+    # app/tasks/collector_runner.py) listens on UDP, decodes the flows, resolves
+    # each destination IP to its ASN (MaxMind GeoLite2-ASN) and periodically
+    # flushes per-(time-bucket, ASN) byte aggregates into ``traffic_dest_stats``.
+    # The /traffic page reads them back. This is NOT an APScheduler job (a UDP
+    # listener is permanent, not interval-based) — hence its own container.
+    netflow_collector_enabled: bool = False
+    # Bind host INSIDE the container (0.0.0.0 is fine here — Docker only
+    # publishes the port on the LAN IP via docker-compose.lan.yml, never on the
+    # public interface; restrict the source to the router at the firewall).
+    netflow_listen_host: str = "0.0.0.0"
+    netflow_listen_port: int = 2055
+    # How often the in-memory ASN aggregate is written to the DB, and the size
+    # of each time bucket the flows are folded into.
+    netflow_flush_interval_seconds: int = 300
+    netflow_bucket_minutes: int = 5
+    # Destination prefixes treated as INTERNAL and excluded (we only want
+    # client→Internet egress). RFC1918 + our own ranges; comma-separated CIDRs.
+    netflow_internal_prefixes: str = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10"
+    # Offline MaxMind GeoLite2-ASN database (IP→ASN + AS org name). Mounted into
+    # the container; refresh periodically (free MaxMind account). When the file
+    # is absent the collector still runs and aggregates under ASN "unknown".
+    geoip_asn_db_path: str = "/app/data/GeoLite2-ASN.mmdb"
+    # Retention of the aggregate rows (batched purge, like device_metrics).
+    traffic_stats_retention_days: int = 90
+    traffic_stats_retention_interval_minutes: int = 360  # every 6 h
+
+    @property
+    def netflow_internal_prefix_list(self) -> list[str]:
+        return [p.strip() for p in self.netflow_internal_prefixes.split(",") if p.strip()]
+
     @computed_field(repr=False)
     @property
     def database_url(self) -> str:

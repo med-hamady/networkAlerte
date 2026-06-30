@@ -24,6 +24,12 @@ bcrypt>=4.0,<5.0
 pysnmp-lextudio>=6.1,<7.0
 paramiko>=3.4,<4.0
 
+# NetFlow collector (top client destinations by operator/CDN)
+# - netflow : pure-Python NetFlow v1/v5/v9/IPFIX decoder
+# - maxminddb : reads the offline GeoLite2-ASN.mmdb (IP → ASN + org name)
+netflow>=0.12,<1.0
+maxminddb>=2.6,<4.0
+
 # System metrics
 psutil>=5.9,<7.0
 

@@ -5,6 +5,8 @@ set -e
 #                       Used in production to isolate APScheduler from uvicorn workers.
 #                       Migrations are owned by the API container — this one just waits
 #                       for it to be healthy via depends_on.
+# RUN_MODE=collector  → standalone NetFlow collector (UDP listener + flush, no HTTP
+#                       server, no migrations). Same isolation rationale as scheduler.
 # RUN_MODE=api (default) → run migrations + uvicorn (existing behaviour).
 
 RUN_MODE="${RUN_MODE:-api}"
@@ -12,6 +14,11 @@ RUN_MODE="${RUN_MODE:-api}"
 if [ "$RUN_MODE" = "scheduler" ]; then
     echo "Starting scheduler runner (APP_ENV=${APP_ENV:-development})..."
     exec python -m app.tasks.runner
+fi
+
+if [ "$RUN_MODE" = "collector" ]; then
+    echo "Starting NetFlow collector runner (APP_ENV=${APP_ENV:-development})..."
+    exec python -m app.tasks.collector_runner
 fi
 
 echo "Running database migrations..."

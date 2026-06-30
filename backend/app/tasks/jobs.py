@@ -2151,6 +2151,52 @@ async def device_metrics_retention_job() -> None:
 
 
 @_timed_job
+async def traffic_stats_retention_job() -> None:
+    """Purge traffic_dest_stats buckets older than the retention window.
+
+    The NetFlow collector aggregates per (5-min bucket, ASN), so this table is
+    small, but it still grows unbounded without pruning. Batched delete on
+    bucket_start (indexed by ix_traffic_dest_stats_bucket) — same pattern as
+    device_metrics_retention_job, in small committed chunks.
+    """
+    from sqlalchemy import text
+
+    settings = get_settings()
+    cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
+        days=settings.traffic_stats_retention_days
+    )
+    batch = 50_000
+    total = 0
+    try:
+        async with async_session_factory() as session:
+            while True:
+                result = await session.execute(
+                    text(
+                        "DELETE FROM traffic_dest_stats WHERE id IN ("
+                        "  SELECT id FROM traffic_dest_stats"
+                        "  WHERE bucket_start < :cutoff"
+                        "  LIMIT :batch"
+                        ")"
+                    ),
+                    {"cutoff": cutoff, "batch": batch},
+                )
+                await session.commit()
+                deleted = result.rowcount or 0
+                total += deleted
+                if deleted < batch:
+                    break
+        if total:
+            logger.info(
+                "traffic_dest_stats retention — purged %d rows older than %d days",
+                total, settings.traffic_stats_retention_days,
+            )
+        else:
+            logger.debug("traffic_dest_stats retention — nothing to purge")
+    except Exception:
+        logger.exception("traffic_stats retention job failed")
+
+
+@_timed_job
 async def client_block_enforcement_job() -> None:
     """Re-assert every active client block so it survives an LR reboot.
 
@@ -2593,6 +2639,7 @@ _FAST_JOB_IDS = {
     "infra_ping", "client_ping", "warning_digest", "flap_detection",
     "network_latency_aggregate", "client_consumption_matview_refresh",
     "client_consumption_7d_refresh", "device_metrics_retention",
+    "traffic_stats_retention",
     "security_anomaly_detection", "rocket_saturation_report",
     "site_infra_report",
 }
@@ -2719,6 +2766,17 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         name="device_metrics retention (purge history older than N days)",
         replace_existing=True,
         # A missed purge isn't urgent — rows just live a little longer.
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=300,
+    )
+    scheduler.add_job(
+        traffic_stats_retention_job,
+        trigger="interval",
+        minutes=settings.traffic_stats_retention_interval_minutes,
+        id="traffic_stats_retention",
+        name="traffic_dest_stats retention (purge NetFlow aggregates older than N days)",
+        replace_existing=True,
         max_instances=1,
         coalesce=True,
         misfire_grace_time=300,

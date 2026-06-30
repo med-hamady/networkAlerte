@@ -76,10 +76,15 @@ backend/app/
 │   ├── alert_policy.py             # Registre interne : politique (canal/groupable/recovery/immédiat) par alert_type — plus exposé en API
 │   ├── digest_service.py           # Regroupement des warnings en digest 15 min
 │   ├── uisp_service.py             # Client REST contrôleur UISP/UNMS (login → token, GET /devices) — read-only
-│   └── uisp_sync_service.py        # Import auto depuis UISP : INFRA (classify→upsert name/IP/site, creds par convention à la CRÉATION) + STATIONS clientes via sync_uisp_stations (LR abonnés dans `lrs`, colonnes uisp_* mode/statut, identité MAC, gated UISP_STATION_SYNC_ENABLED) ; aucun delete/deactivate
+│   ├── uisp_sync_service.py        # Import auto depuis UISP : INFRA (classify→upsert name/IP/site, creds par convention à la CRÉATION) + STATIONS clientes via sync_uisp_stations (LR abonnés dans `lrs`, colonnes uisp_* mode/statut, identité MAC, gated UISP_STATION_SYNC_ENABLED) ; aucun delete/deactivate
+│   ├── netflow_service.py          # Collecteur NetFlow (asyncio UDP) : décode v1/v5/v9/IPFIX (lib `netflow`), garde les destinations PUBLIQUES (exclut RFC1918/CGNAT + NETFLOW_INTERNAL_PREFIXES), résout l'ASN (asn_service), agrège en mémoire par (asn, opérateur) et flush périodique dans `traffic_dest_stats`. Process long dédié (RUN_MODE=collector), PAS un job APScheduler
+│   ├── asn_service.py              # IP → (ASN, opérateur) via MaxMind GeoLite2-ASN (.mmdb offline, lib `maxminddb`) + map statique de labels CDN (FB/Google/Netflix…). Reader lazy ; .mmdb absent = tout sous "Indéterminé"
+│   └── traffic_service.py          # Roll-up lecture : SUM(bytes) GROUP BY asn sur 24h/7j/30j → top opérateurs/CDN + part %. Alimente /traffic
 ├── tasks/
 │   ├── scheduler.py         # Init APScheduler, start/stop lifecycle
-│   └── jobs.py              # 7 jobs planifiés (voir tableau ci-dessous)
+│   ├── runner.py            # Entrée du container scheduler standalone (RUN_MODE=scheduler)
+│   ├── collector_runner.py # Entrée du container NetFlow collecteur (RUN_MODE=collector) : lance netflow_service.run_collector, gate NETFLOW_COLLECTOR_ENABLED (idle si off)
+│   └── jobs.py              # jobs planifiés (voir tableau ci-dessous)
 ├── db/
 │   ├── base.py              # DeclarativeBase avec id/created_at/updated_at
 │   └── session.py           # Engine async + get_db() + async_session_factory()
@@ -199,6 +204,13 @@ backend/app/
 | `UISP_ROCKET_SSH_USERNAME` / `UISP_ROCKET_SSH_PASSWORD_TEMPLATE` | Creds posés sur un Rocket créé par le sync. `{site}` = code extrait du nom de site UISP (`A2 SNDE`→`SNDE`). Défaut `ubnt` / `A2{site}@4321$A2` |
 | `UISP_POWER_API_USERNAME` / `UISP_POWER_API_PASSWORD` | Creds API posés sur un UISP Power créé par le sync (défaut `ubnt` / `A2@uispp2025`) |
 | `UISP_AF60_SSH_USERNAME` / `UISP_AF60_SSH_PASSWORD` | Creds API posés sur un AF60 créé par le sync (défaut `ubnt` / `A2F60@4321`) |
+| `NETFLOW_COLLECTOR_ENABLED` | Active le collecteur NetFlow (container `netflow-collector`, RUN_MODE=collector). Le container existe pour ça ; `false` = il idle (défaut `false`) |
+| `NETFLOW_LISTEN_PORT` | Port UDP d'écoute du collecteur (défaut 2055). Publié **uniquement sur l'IP LAN** via `docker-compose.lan.yml`, **jamais 0.0.0.0** ; restreindre la source au routeur au firewall (NetFlow non authentifié). Sur le MikroTik : exporter vers `${LAN_BIND_IP}:2055` |
+| `NETFLOW_FLUSH_INTERVAL_SECONDS` | Fréquence d'écriture de l'agrégat mémoire → `traffic_dest_stats` (défaut 300) |
+| `NETFLOW_BUCKET_MINUTES` | Taille de la fenêtre temporelle agrégée (défaut 5) |
+| `NETFLOW_INTERNAL_PREFIXES` | Préfixes traités comme INTERNES et exclus (on ne veut que client→Internet) — CSV de CIDR (défaut RFC1918 + CGNAT). En plus, tout IP non-`is_global` est exclu d'office |
+| `GEOIP_ASN_DB_PATH` | Base offline MaxMind GeoLite2-ASN (IP→ASN+opérateur). Défaut `/app/data/GeoLite2-ASN.mmdb` (couvert par le bind-mount `./backend:/app` ; voir `backend/data/README.md`). Absente = tout agrégé sous "Indéterminé" |
+| `TRAFFIC_STATS_RETENTION_DAYS` | Rétention batchée de `traffic_dest_stats` (défaut 90 ; `traffic_stats_retention_job`) |
 
 ## État d'implémentation
 
@@ -254,6 +266,7 @@ backend/app/
 | `client_consumption_matview_refresh_job` | 15 min | `REFRESH MATERIALIZED VIEW CONCURRENTLY client_consumption_30d` — pré-calcule la somme des deltas de compteurs bytes sur 30 j (download/upload par CPE). Avant : l'endpoint `/clients/consumption?period=30d` transférait des millions de samples vers Python pour faire la boucle `_sum_positive_deltas` → ~36 s en prod. Maintenant : delta calculé en SQL via `LAG()` + `CASE`, et 30d servi depuis la vue. |
 | `client_consumption_7d_refresh_job` | 15 min | `REFRESH MATERIALIZED VIEW CONCURRENTLY client_consumption_7d` — même pattern que le matview 30 j mais borné à 7 j. La période 7 j à elle seule clockait ~13 s sur le live SQL (seq scan + external sort 30 MB) ; le matview la fait passer à <100 ms. Matview séparé car l'agrégat 30 j est un seul SUM qui ne peut pas être soustrait à une fenêtre plus étroite. 24h reste en SQL live (true rolling window, ~2 s acceptable) ; lifetime aussi (sera adressé via la rétention 90 j). |
 | `device_metrics_retention_job` | 6 h | Purge `device_metrics` plus vieux que `DEVICE_METRICS_RETENTION_DAYS` (défaut 90 j) en **batches** (`DELETE … WHERE id IN (SELECT id … LIMIT n)`, boucle jusqu'à épuisement) — jamais une grosse transaction (cf. leçon `u2a3b4c5d6e7`). Seules les métriques de `HISTORY_METRICS` accumulent encore des lignes ; le reste est déjà collapsé par `persist_device_metrics`. Crée aussi `ix_device_metrics_collected_at` via `CREATE INDEX CONCURRENTLY IF NOT EXISTS` (dans le scheduler, hors path de démarrage — cf. no-op `w4c5d6e7f8a9`) pour que la purge soit un index range scan. |
+| `traffic_stats_retention_job` | `TRAFFIC_STATS_RETENTION_INTERVAL_MINUTES` (6 h) | Purge `traffic_dest_stats` plus vieux que `TRAFFIC_STATS_RETENTION_DAYS` (90 j) en **batches** (même pattern que `device_metrics_retention_job`). Groupe scheduler **fast**. La collecte elle-même tourne dans le container **`netflow-collector`** (hors APScheduler). |
 | `uisp_sync_job` | **Cron quotidien `UISP_SYNC_HOUR`:00 UTC** (défaut 07:00 ; Mauritanie GMT → 07:00 locale) + **1× au démarrage** (`next_run_time=now` → import dès le déploiement) | **Désactivé par défaut** (`UISP_SYNC_ENABLED=false`). Importe les équipements d'**infra** (Rocket LTU/airMAX role=ap, switches `uisps`/blackBox, UISP Power `uispp`, AF60* P2P) depuis `GET /nms/api/v2.1/devices` du contrôleur UISP. Mapping `classify_device(type, role, model)` ; identité = **MAC** (sinon IP, sinon (type,nom)). Met à jour **name/IP/site(location)** ; pose les **creds par convention famille/site à la création** (jamais d'écrasement). **Abonnés (LTU-LR/LiteBeam station)** : ignorés par l'import **infra**, mais importés dans `lrs` par `sync_uisp_stations` (après l'infra) si `UISP_STATION_SYNC_ENABLED` — apporte le mode routeur/bridge + statut UISP (colonnes `uisp_*` seules, identité MAC, AF60 exclus, **roster complet**) pour que `/access` reste complet même Rocket/LR down. **Aucun delete/deactivate**. Voir `uisp_sync_service`. |
 | `flap_detection_job` | `FLAP_CHECK_INTERVAL_MINUTES` (10 min) | Détecte les équipements d'**infra instables** (flapping). Compte par device les **incidents de disponibilité** (`AVAILABILITY_ALERT_TYPES`, conservés en DB après résolution) avec `detected_at` sur les dernières `FLAP_WINDOW_HOURS` ; au-delà de `FLAP_THRESHOLD_24H` (3) → ouvre `device_flapping` (critique → WhatsApp), résout sinon. **UISP Power exclus** (`device_type=="uisp_power"` filtré dans la requête : leurs up/down sur coupure secteur sont normaux). Infra-only par nature (un LR down n'est jamais un incident). |
 | `network_latency_aggregate_job` | `NETWORK_LATENCY_CHECK_INTERVAL_MINUTES` (**1440 min = 24 h**) | **Contrôle quotidien** réseau-wide : part des LR `up` dont le dernier `lr_latency_ms` ≥ seuil latence 100 ms (`lr_health_service.network_latency_summary`, réutilise `_fetch_latest_latency`). Si > `NETWORK_HIGH_LATENCY_PCT` (20%) et échantillon ≥ `NETWORK_LATENCY_MIN_SAMPLE` (10) → **message WhatsApp direct** (PAS un incident : un Incident exige un device_id). **Pas de flag/rétabli** : rapport quotidien qui n'envoie que si la condition est remplie. |
@@ -333,6 +346,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | POST | `/api/v1/system/test-whatsapp` | Oui | Diagnostic WhatsApp (Ultramsg) — envoie un message de test au groupe `WHATSAPP_GROUP_ID` |
 | POST | `/api/v1/uisp/sync` | Oui | Import des équipements d'infra depuis le contrôleur UISP (`?dry_run=true` = prévisualisation sans écriture). Renvoie un résumé (créés/màj/ignorés + échantillon) |
 | GET | `/api/v1/network-capacity` | Oui | Capacité clients : par famille (LTU/airMAX) et par site, clients connectés (`peer_count`) vs max (seuil `rocket_client_overload`). Rockets sans largeur connue exclus des totaux (`unknown`). `network_capacity_service`. Inclut aussi la clé **`infra`** (`site_infra_service.get_site_infra_capacity`) : budget d'équipements infra par site (Rockets+AF60+PTP) vs `SITE_INFRA_MAX`, avec marge `remaining` signée |
+| GET | `/api/v1/traffic/top-destinations` | Oui | Top destinations Internet par opérateur/CDN (ASN) sur `?period=24h\|7d\|30d` : `SUM(bytes)` GROUP BY asn depuis `traffic_dest_stats` (alimenté par le collecteur NetFlow), trié + part %. `traffic_service`. Sert à décider les caches (GGC/FNA/OCA) |
 
 ### Frontend Next.js
 | Page | Chemin | Contenu |
@@ -340,6 +354,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | Devices | `/devices` | Liste avec statut, dernière vue, métriques, modal détail |
 | Anomalies détectées | `/incidents` | Anomalies actuellement détectées (lecture seule, résolution automatique) |
 | Capacité du réseau | `/capacity` | 2 cercles (LTU/airMAX) consommé vs disponible sur tout le réseau + barres par site (LTU/airMAX séparés) ; clic site → table Rockets (connectés/max + largeur). Donut SVG custom (pas de lib de charts). Inclut la section **« Capacité infra par site »** (table Site/Équip. infra/Max/Marge, marge +N vert / -N rouge) alimentée par la clé `infra` de `/network-capacity` |
+| Destinations Internet | `/traffic` | Top opérateurs/CDN consultés par les clients, par volume (sélecteur 24h/7j/30j) — barres + part %. Lit `/traffic/top-destinations`. Repère les candidats à un serveur de cache. **Vide tant que `NETFLOW_COLLECTOR_ENABLED=false` ou que le routeur n'exporte pas vers le collecteur** |
 
 ### À implémenter (prochaines phases)
 - [ ] Tests unitaires et d'intégration
@@ -352,6 +367,7 @@ Le système est prévu pour être déployé sur un serveur physique après valid
 ### Points d'attention pour la production
 - Mettre `APP_ENV=production` dans le `.env` du serveur → uvicorn sans `--reload`, avec workers
 - **Scheduler isolé en prod** : `docker-compose.prod.yml` ajoute un container dédié `scheduler` (`RUN_MODE=scheduler`, `SCHEDULER_ENABLED=true`) qui exécute APScheduler en process séparé. Le `backend` tourne avec `SCHEDULER_ENABLED=false` et peut scaler à `UVICORN_WORKERS>1` sans dupliquer les jobs (sinon chaque worker démarrerait son propre scheduler → SSH/alertes en double). Les migrations Alembic restent gérées par le container `backend` ; le `scheduler` attend `backend: service_healthy` avant de démarrer.
+- **Collecteur NetFlow isolé** : un container dédié `netflow-collector` (`RUN_MODE=collector`, entrée `app/tasks/collector_runner.py`) écoute le NetFlow exporté par le MikroTik (UDP) — un listener permanent, pas un job APScheduler. Off par défaut (`NETFLOW_COLLECTOR_ENABLED=false` → idle). Le port UDP n'est publié que sur l'IP LAN via `docker-compose.lan.yml` (`${LAN_BIND_IP}:2055/udp`), **jamais 0.0.0.0** ; **verrouiller la source au MikroTik au firewall** (NetFlow non authentifié). Déposer `backend/data/GeoLite2-ASN.mmdb` (cf. `backend/data/README.md`) pour les noms d'opérateurs.
 - Séparer les volumes Docker pour les données PostgreSQL sur un stockage persistant.
 - Mettre en place un reverse proxy (nginx ou Caddy) devant uvicorn.
 - Remplacer les mots de passe et l'`API_KEY` par des valeurs fortes dans `.env`.
@@ -379,9 +395,9 @@ cp .env.example .env  # 1re fois seulement, puis éditer (APP_ENV=production, se
 export LAN_BIND_IP=10.135.3.25
 alias dc='docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.lan.yml'
 
-# Déploiement standard (5 conteneurs : postgres + backend + frontend +
-# scheduler[fast] + scheduler-heavy). Le backend (RUN_MODE=api) applique les
-# migrations Alembic au démarrage.
+# Déploiement standard (6 conteneurs : postgres + backend + frontend +
+# scheduler[fast] + scheduler-heavy + netflow-collector). Le backend
+# (RUN_MODE=api) applique les migrations Alembic au démarrage.
 dc up -d --build
 dc logs -f backend            # suivre les migrations + le démarrage
 

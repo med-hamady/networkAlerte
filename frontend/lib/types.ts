@@ -624,6 +624,24 @@ export interface NetworkCapacity {
   infra: NetworkInfraCapacity
 }
 
+// ─── Top destinations Internet par opérateur/CDN (collecteur NetFlow) ───────
+// Volume de trafic client→Internet agrégé par ASN/opérateur sur une période —
+// sert à décider quels caches (GGC/FNA/OCA) demander. share_pct = part du total.
+export interface TrafficDestination {
+  asn: number | null
+  operator: string
+  bytes: number
+  packets: number
+  flows: number
+  share_pct: number
+}
+
+export interface TopDestinations {
+  period: '24h' | '7d' | '30d'
+  total_bytes: number
+  destinations: TrafficDestination[]
+}
+
 // ─── Network uptime — Journal des coupures ─────────────────────────────────
 
 export interface FlapSubEpisode {

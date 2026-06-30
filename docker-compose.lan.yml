@@ -40,3 +40,11 @@ services:
     ports:
       - "${LAN_BIND_IP:?Set LAN_BIND_IP to the server private LAN IP, e.g. 10.135.3.25}:80:80"
       - "${LAN_BIND_IP:?Set LAN_BIND_IP to the server private LAN IP, e.g. 10.135.3.25}:443:443"
+
+  # NetFlow collector UDP port, published ONLY on the LAN IP (never 0.0.0.0 —
+  # same rule as nginx above). This is where the edge router (MikroTik) sends its
+  # NetFlow export: point it at ${LAN_BIND_IP}:2055/udp. Lock the source down to
+  # the router's IP at the host/FortiGate firewall — NetFlow is unauthenticated.
+  netflow-collector:
+    ports:
+      - "${LAN_BIND_IP:?Set LAN_BIND_IP to the server private LAN IP, e.g. 10.135.3.25}:2055:2055/udp"

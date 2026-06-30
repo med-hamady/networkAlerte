@@ -52,6 +52,35 @@ services:
         max-size: "50m"
         max-file: "5"
 
+  # NetFlow collector — listens for NetFlow exported by the edge router (MikroTik)
+  # and aggregates top client→Internet destinations by ASN/operator into
+  # traffic_dest_stats (RUN_MODE=collector, app/tasks/collector_runner.py). A UDP
+  # listener is permanent, not interval-based, so it runs in its own process —
+  # never inside an APScheduler job. Off by default (NETFLOW_COLLECTOR_ENABLED) —
+  # the container then idles. In dev the UDP port is bound on loopback so a local
+  # packet generator can reach it.
+  netflow-collector:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      RUN_MODE: "collector"
+    ports:
+      - "127.0.0.1:2055:2055/udp"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      backend:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
   frontend:
     build:
       context: ./frontend

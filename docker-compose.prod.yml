@@ -105,6 +105,19 @@ services:
         max-size: "50m"
         max-file: "5"
 
+  # NetFlow collector — receives NetFlow from the edge router (MikroTik). The
+  # loopback port from docker-compose.yml is useless here (the router can't reach
+  # the server's loopback), so we drop it; the ONLY publish address is added by
+  # docker-compose.lan.yml on the LAN IP (never 0.0.0.0 — same rule as nginx).
+  # Restrict the source to the router at the host/FortiGate firewall (NetFlow is
+  # unauthenticated UDP).
+  netflow-collector:
+    ports: !reset []
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
   frontend:
     build:
       context: ./frontend

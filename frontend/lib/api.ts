@@ -60,6 +60,7 @@ export const endpoints = {
   highLatencyClients:   `${API_BASE}/lr-health/high-latency`,
   clientsConsumption:   (period: '24h' | '7d' | '30d' | 'lifetime') => `${API_BASE}/clients/consumption?period=${period}`,
   networkCapacity:      `${API_BASE}/network-capacity`,
+  topDestinations:      (period: '24h' | '7d' | '30d') => `${API_BASE}/traffic/top-destinations?period=${period}`,
   downtimeLog:          (startIso: string, endIso: string) =>
     `${API_BASE}/network-uptime/downtime-log?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`,
   // Logique centralisée côté DB (fonctions RPC) — payloads prêts-à-afficher.

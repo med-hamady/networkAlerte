@@ -172,7 +172,6 @@ async def get_throughput_history(
     (series ordered by total download desc, "Autres" last)."""
     window, step = _HISTORY_PERIODS.get(period, _HISTORY_PERIODS["24h"])
     cutoff = datetime.datetime.now(datetime.UTC) - window
-    step_interval = f"{step} seconds"
 
     def _mbps(nbytes: int) -> float:
         return round(nbytes * 8 / step / 1_000_000, 2)
@@ -194,7 +193,9 @@ async def get_throughput_history(
     labels = {r.asn: _operator_label(r.asn, r.as_org) for r in top_rows}
 
     # 2) Per-slot totals (all operators) — gives the timeline + the "Autres" base.
-    bin_expr = "date_bin(CAST(:step AS interval), bucket_start, TIMESTAMPTZ 'epoch')"
+    # `step` is a trusted int from _HISTORY_PERIODS → safe to inline as an interval
+    # literal (passing it as a bound param makes asyncpg expect a timedelta).
+    bin_expr = f"date_bin('{step} seconds', bucket_start, TIMESTAMPTZ 'epoch')"
     total_rows = (
         await db.execute(
             text(
@@ -203,7 +204,7 @@ async def get_throughput_history(
                 "FROM traffic_dest_stats WHERE bucket_start >= :cutoff "
                 "GROUP BY t ORDER BY t"
             ),
-            {"step": step_interval, "cutoff": cutoff},
+            {"cutoff": cutoff},
         )
     ).all()
     times = [r.t for r in total_rows]
@@ -223,7 +224,7 @@ async def get_throughput_history(
                     "WHERE bucket_start >= :cutoff AND asn = ANY(CAST(:asns AS integer[])) "
                     "GROUP BY t, asn"
                 ),
-                {"step": step_interval, "cutoff": cutoff, "asns": top_asns},
+                {"cutoff": cutoff, "asns": top_asns},
             )
         ).all()
         for r in rows:

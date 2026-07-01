@@ -5,8 +5,16 @@ import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type { TopDestinations, Throughput, ThroughputHistory } from '@/lib/types'
 
-// Palette pour les séries opérateurs du graphe empilé ("Autres" = gris, en dernier).
-const SERIES_COLORS = ['#22c55e', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#94a3b8']
+// Palette pour les opérateurs nommés du graphe empilé. « Autres » (gris) et
+// « Indéterminé » (rose, pour repérer d'éventuelles IP non résolues) ont des
+// couleurs réservées, quel que soit leur rang.
+const SERIES_COLORS = ['#22c55e', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#0ea5e9', '#a3e635']
+
+function seriesColor(operator: string, i: number): string {
+  if (operator === 'Autres') return '#94a3b8'        // gris ardoise
+  if (operator === 'Indéterminé') return '#e11d48'   // rose — visible si significatif
+  return SERIES_COLORS[i % SERIES_COLORS.length]
+}
 
 const PERIODS: { value: '24h' | '7d' | '30d'; label: string }[] = [
   { value: '24h', label: '24 heures' },
@@ -175,7 +183,7 @@ function HistorySection() {
             <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
               {data.series.map((s, i) => (
                 <span key={s.asn ?? `o-${i}`} className="inline-flex items-center gap-1.5 text-xs text-slate-600">
-                  <span className="inline-block w-3 h-3 rounded-sm" style={{ background: SERIES_COLORS[i % SERIES_COLORS.length] }} />
+                  <span className="inline-block w-3 h-3 rounded-sm" style={{ background: seriesColor(s.operator, i) }} />
                   {s.operator}
                 </span>
               ))}
@@ -226,7 +234,7 @@ function StackedAreaChart({ times, series }: { times: string[]; series: { operat
       lower.push(`${xAt(i).toFixed(1)},${yAt(before).toFixed(1)}`)
     }
     lower.reverse()
-    return { points: [...upper, ...lower].join(' '), color: SERIES_COLORS[k % SERIES_COLORS.length] }
+    return { points: [...upper, ...lower].join(' '), color: seriesColor(serie.operator, k) }
   })
 
   // Étiquettes X : ~5 repères de temps.

@@ -234,9 +234,29 @@ async def get_throughput_history(
             if i is not None:
                 per_top[r[1]][i] = int(r[2] or 0)
 
-    # "Autres" = per-slot total minus the top-N sum.
+    # 4) Unresolved-ASN (Indéterminé) download per slot — its own series so the
+    # grey "Autres" band isn't inflated by IPs the ASN DB couldn't resolve.
+    indet = [0] * n
+    if n:
+        rows = (
+            await db.execute(
+                text(
+                    f"SELECT {bin_expr} AS t, SUM(down_bytes) AS d "
+                    "FROM traffic_dest_stats "
+                    "WHERE bucket_start >= :cutoff AND asn IS NULL "
+                    "GROUP BY t"
+                ),
+                {"cutoff": cutoff},
+            )
+        ).all()
+        for r in rows:  # columns: (t, d)
+            i = idx.get(r[0])
+            if i is not None:
+                indet[i] = int(r[1] or 0)
+
+    # "Autres" = per-slot total minus the top-N sum minus Indéterminé.
     others = [
-        max(total_down[i] - sum(per_top[a][i] for a in top_asns), 0)
+        max(total_down[i] - sum(per_top[a][i] for a in top_asns) - indet[i], 0)
         for i in range(n)
     ]
 
@@ -247,6 +267,10 @@ async def get_throughput_history(
     if any(others):
         series.append(
             {"asn": None, "operator": _OTHERS_LABEL, "down_mbps": [_mbps(v) for v in others]}
+        )
+    if any(indet):
+        series.append(
+            {"asn": None, "operator": _UNKNOWN_LABEL, "down_mbps": [_mbps(v) for v in indet]}
         )
 
     return {

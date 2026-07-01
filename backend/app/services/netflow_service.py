@@ -89,6 +89,11 @@ class _Collector:
         self._internal_nets = self._build_internal_nets(settings.netflow_internal_prefix_list)
         self._packets_seen = 0
         self._flows_kept = 0
+        # Per-flush classification counters + a sample of dropped "both external"
+        # flows (their src/dst reveals the real client/NAT addressing when the
+        # download direction is being lost). Reset each flush.
+        self._cls = {"down": 0, "up": 0, "skip_ext": 0, "skip_int": 0}
+        self._ext_samples: list[tuple[str, str]] = []
 
     @staticmethod
     def _build_internal_nets(prefixes: list[str]) -> list:
@@ -140,10 +145,21 @@ class _Collector:
             dst_internal = self._is_internal(dst)
             if dst_internal and not src_internal:
                 public_ip, down, up = src, nbytes, 0   # download: operator → client (RX WAN)
+                self._cls["down"] += 1
             elif src_internal and not dst_internal:
                 public_ip, down, up = dst, 0, nbytes   # upload: client → operator (TX WAN)
+                self._cls["up"] += 1
+            elif not src_internal and not dst_internal:
+                # Both look public → dropped. If the download direction lands here,
+                # one of these is really our client/NAT address not covered by
+                # netflow_internal_prefixes. Sample a few to reveal it.
+                self._cls["skip_ext"] += 1
+                if len(self._ext_samples) < 8:
+                    self._ext_samples.append((src, dst))
+                continue
             else:
-                continue  # LAN↔LAN or transit (both external) — not our client traffic
+                self._cls["skip_int"] += 1  # LAN↔LAN
+                continue
             asn, org = _resolve_cached(public_ip)
             slot = self._agg.setdefault((asn, org), {"down": 0, "up": 0, "flows": 0})
             slot["down"] += down
@@ -181,12 +197,23 @@ class _Collector:
         async with async_session_factory() as session:
             session.add_all(rows)
             await session.commit()
+        cls, samples = self._cls, self._ext_samples
+        self._cls = {"down": 0, "up": 0, "skip_ext": 0, "skip_int": 0}
+        self._ext_samples = []
         logger.info(
-            "NetFlow flush: %d destination(s) written (bucket %s); %d packets / "
-            "%d public flows since boot",
+            "NetFlow flush: %d destination(s) written (bucket %s); flows this cycle "
+            "down=%d up=%d skip_both_public=%d skip_lan=%d; %d packets / %d flows since boot",
             len(rows), bucket.strftime("%Y-%m-%d %H:%M"),
+            cls["down"], cls["up"], cls["skip_ext"], cls["skip_int"],
             self._packets_seen, self._flows_kept,
         )
+        if cls["skip_ext"] and samples:
+            # These reveal the real client/NAT addressing — add the internal side
+            # to NETFLOW_INTERNAL_PREFIXES so the download direction is captured.
+            logger.info(
+                "NetFlow dropped 'both public' samples (src → dst): %s",
+                ", ".join(f"{s}→{d}" for s, d in samples),
+            )
         return len(rows)
 
     async def flush_loop(self, stop_event: asyncio.Event) -> None:

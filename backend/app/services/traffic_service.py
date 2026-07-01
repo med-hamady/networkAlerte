@@ -207,11 +207,13 @@ async def get_throughput_history(
             {"cutoff": cutoff},
         )
     ).all()
-    times = [r.t for r in total_rows]
+    # Access text() columns by index — attribute access on Row is unreliable
+    # (e.g. `.t` is reserved for the row tuple in SQLAlchemy 2.0). Columns: (t, d, u).
+    times = [r[0] for r in total_rows]
     idx = {t: i for i, t in enumerate(times)}
     n = len(times)
-    total_down = [int(r.d or 0) for r in total_rows]
-    total_up = [int(r.u or 0) for r in total_rows]
+    total_down = [int(r[1] or 0) for r in total_rows]
+    total_up = [int(r[2] or 0) for r in total_rows]
 
     # 3) Per-slot download for the top-N operators.
     per_top: dict[int, list[int]] = {a: [0] * n for a in top_asns}
@@ -227,10 +229,10 @@ async def get_throughput_history(
                 {"cutoff": cutoff, "asns": top_asns},
             )
         ).all()
-        for r in rows:
-            i = idx.get(r.t)
+        for r in rows:  # columns: (t, asn, d)
+            i = idx.get(r[0])
             if i is not None:
-                per_top[r.asn][i] = int(r.d or 0)
+                per_top[r[1]][i] = int(r[2] or 0)
 
     # "Autres" = per-slot total minus the top-N sum.
     others = [

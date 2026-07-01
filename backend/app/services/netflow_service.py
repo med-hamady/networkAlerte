@@ -177,11 +177,20 @@ class _Collector:
         )
         return floored
 
+    async def _persist(self, rows: list) -> None:
+        async with async_session_factory() as session:
+            session.add_all(rows)
+            await session.commit()
+
     async def flush(self) -> int:
         """Write the current aggregate to the DB and reset it. Returns row count."""
         if not self._agg:
             return 0
         snapshot, self._agg = self._agg, {}
+        # Reset counters up-front so a failed/timed-out write still clears them.
+        cls, samples = self._cls, self._ext_samples
+        self._cls = {"down": 0, "up": 0, "skip_ext": 0, "skip_int": 0}
+        self._ext_samples = []
         bucket = self._bucket_start()
         rows = [
             TrafficDestStat(
@@ -194,12 +203,19 @@ class _Collector:
             )
             for (asn, org), v in snapshot.items()
         ]
-        async with async_session_factory() as session:
-            session.add_all(rows)
-            await session.commit()
-        cls, samples = self._cls, self._ext_samples
-        self._cls = {"down": 0, "up": 0, "skip_ext": 0, "skip_int": 0}
-        self._ext_samples = []
+        # Hard timeout so a stuck DB round-trip can NEVER freeze the flush loop
+        # (a single hung commit once silenced the collector for hours). On timeout
+        # we drop this bucket and the next cycle retries with a fresh connection
+        # (pool_pre_ping validates it).
+        try:
+            await asyncio.wait_for(self._persist(rows), timeout=30)
+        except TimeoutError:
+            logger.error(
+                "NetFlow flush: DB write timed out (>30s) — dropped %d row(s) "
+                "(bucket %s); retrying next cycle",
+                len(rows), bucket.strftime("%Y-%m-%d %H:%M"),
+            )
+            return 0
         logger.info(
             "NetFlow flush: %d destination(s) written (bucket %s); flows this cycle "
             "down=%d up=%d skip_both_public=%d skip_lan=%d; %d packets / %d flows since boot",

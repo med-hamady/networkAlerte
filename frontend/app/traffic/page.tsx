@@ -1,9 +1,12 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
-import type { TopDestinations, Throughput } from '@/lib/types'
+import type { TopDestinations, Throughput, ThroughputHistory } from '@/lib/types'
+
+// Palette pour les séries opérateurs du graphe empilé ("Autres" = gris, en dernier).
+const SERIES_COLORS = ['#22c55e', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#94a3b8']
 
 const PERIODS: { value: '24h' | '7d' | '30d'; label: string }[] = [
   { value: '24h', label: '24 heures' },
@@ -40,6 +43,7 @@ export default function TrafficPage() {
       </div>
 
       <ThroughputSection />
+      <HistorySection />
       <VolumeSection />
     </div>
   )
@@ -122,6 +126,138 @@ function ThroughputSection() {
         </>
       )}
     </div>
+  )
+}
+
+const HISTORY_PERIODS: { value: '1h' | '6h' | '24h'; label: string }[] = [
+  { value: '1h', label: '1 heure' },
+  { value: '6h', label: '6 heures' },
+  { value: '24h', label: '24 heures' },
+]
+
+function HistorySection() {
+  const [period, setPeriod] = useState<'1h' | '6h' | '24h'>('24h')
+  const { data, error, isLoading } = useSWR<ThroughputHistory>(
+    endpoints.trafficThroughputHistory(period), fetcher, { refreshInterval: 60_000 },
+  )
+
+  const hasData = (data?.times.length ?? 0) > 0 && (data?.series.length ?? 0) > 0
+
+  return (
+    <div className="bg-white border border-blue-100 rounded-xl shadow-sm overflow-hidden">
+      <div className="px-5 pt-4 pb-3 flex items-center justify-between gap-4 flex-wrap">
+        <div>
+          <h3 className="font-semibold text-blue-900">Débit descendant par opérateur</h3>
+          <p className="text-xs text-blue-400 mt-0.5">
+            Évolution du download (Gb/s) et de son partage entre opérateurs sur la période.
+          </p>
+        </div>
+        <div className="flex rounded-lg border border-blue-200 overflow-hidden shrink-0">
+          {HISTORY_PERIODS.map(p => (
+            <button key={p.value} onClick={() => setPeriod(p.value)}
+              className={`px-3 py-1.5 text-sm font-medium transition-colors ${
+                period === p.value ? 'bg-blue-600 text-white' : 'bg-white text-blue-600 hover:bg-blue-50'}`}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {error && <p className="px-5 pb-4 text-red-600 text-sm">Erreur de chargement de l’historique.</p>}
+      {isLoading && <p className="px-5 pb-4 text-slate-400 text-sm">Chargement…</p>}
+
+      {data != null && !isLoading && (
+        !hasData ? (
+          <p className="py-10 text-center text-slate-400 text-sm">Aucune donnée sur cette période.</p>
+        ) : (
+          <div className="px-5 pb-5">
+            <StackedAreaChart times={data.times} series={data.series} />
+            <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
+              {data.series.map((s, i) => (
+                <span key={s.asn ?? `o-${i}`} className="inline-flex items-center gap-1.5 text-xs text-slate-600">
+                  <span className="inline-block w-3 h-3 rounded-sm" style={{ background: SERIES_COLORS[i % SERIES_COLORS.length] }} />
+                  {s.operator}
+                </span>
+              ))}
+            </div>
+          </div>
+        )
+      )}
+    </div>
+  )
+}
+
+// Graphe d'aires empilées en SVG pur (pas de lib de charts, comme les donuts).
+// X = temps, Y = débit descendant (Mb/s), une aire par opérateur empilée.
+function StackedAreaChart({ times, series }: { times: string[]; series: { operator: string; down_mbps: number[] }[] }) {
+  const n = times.length
+
+  const { yMax, yTicks } = useMemo(() => {
+    let peak = 0
+    for (let i = 0; i < n; i++) {
+      let s = 0
+      for (const serie of series) s += serie.down_mbps[i] ?? 0
+      if (s > peak) peak = s
+    }
+    const top = peak > 0 ? peak * 1.1 : 1
+    const ticks: number[] = []
+    const step = top / 4
+    for (let k = 0; k <= 4; k++) ticks.push(step * k)
+    return { yMax: top, yTicks: ticks }
+  }, [times, series, n])
+
+  const M = { left: 52, right: 12, top: 10, bottom: 28 }
+  const plotW = 900, plotH = 240
+  const W = M.left + plotW + M.right
+  const H = M.top + plotH + M.bottom
+  const xAt = (i: number) => M.left + (n <= 1 ? plotW / 2 : plotW * (i / (n - 1)))
+  const yAt = (v: number) => M.top + plotH * (1 - v / yMax)
+
+  // Empilement : pour chaque série, aire entre la somme cumulée avant et après.
+  const cum = new Array(n).fill(0)
+  const areas = series.map((serie, k) => {
+    const upper: string[] = []
+    const lower: string[] = []
+    for (let i = 0; i < n; i++) {
+      const before = cum[i]
+      const after = before + (serie.down_mbps[i] ?? 0)
+      cum[i] = after
+      upper.push(`${xAt(i).toFixed(1)},${yAt(after).toFixed(1)}`)
+      lower.push(`${xAt(i).toFixed(1)},${yAt(before).toFixed(1)}`)
+    }
+    lower.reverse()
+    return { points: [...upper, ...lower].join(' '), color: SERIES_COLORS[k % SERIES_COLORS.length] }
+  })
+
+  // Étiquettes X : ~5 repères de temps.
+  const nLabels = Math.min(5, n)
+  const xLabels = Array.from({ length: nLabels }, (_, j) => {
+    const i = nLabels <= 1 ? 0 : Math.round((j * (n - 1)) / (nLabels - 1))
+    const d = new Date(times[i])
+    return { x: xAt(i), label: d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) }
+  })
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="block w-full h-auto" role="img" aria-label="Débit descendant par opérateur dans le temps">
+      {/* Grille + libellés Y */}
+      {yTicks.map((v, i) => (
+        <g key={i}>
+          <line x1={M.left} y1={yAt(v)} x2={M.left + plotW} y2={yAt(v)} stroke="#eef2f7" strokeWidth={1} />
+          <text x={M.left - 6} y={yAt(v) + 3.5} textAnchor="end" fontSize={10} fill="#64748b" className="tabular-nums">
+            {fmtRate(v)}
+          </text>
+        </g>
+      ))}
+      {/* Aires empilées */}
+      {areas.map((a, k) => (
+        <polygon key={k} points={a.points} fill={a.color} fillOpacity={0.85} stroke={a.color} strokeWidth={0.5} />
+      ))}
+      {/* Axe X + libellés */}
+      <line x1={M.left} y1={M.top + plotH} x2={M.left + plotW} y2={M.top + plotH} stroke="#94a3b8" strokeWidth={1} />
+      {xLabels.map((l, i) => (
+        <text key={i} x={l.x} y={M.top + plotH + 16} textAnchor="middle" fontSize={10} fill="#64748b">{l.label}</text>
+      ))}
+    </svg>
   )
 }
 

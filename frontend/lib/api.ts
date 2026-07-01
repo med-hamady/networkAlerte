@@ -62,6 +62,7 @@ export const endpoints = {
   networkCapacity:      `${API_BASE}/network-capacity`,
   topDestinations:      (period: '24h' | '7d' | '30d') => `${API_BASE}/traffic/top-destinations?period=${period}`,
   trafficThroughput:    `${API_BASE}/traffic/throughput`,
+  trafficThroughputHistory: (period: '1h' | '6h' | '24h') => `${API_BASE}/traffic/throughput-history?period=${period}`,
   downtimeLog:          (startIso: string, endIso: string) =>
     `${API_BASE}/network-uptime/downtime-log?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`,
   // Logique centralisée côté DB (fonctions RPC) — payloads prêts-à-afficher.

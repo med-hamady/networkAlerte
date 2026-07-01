@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -28,7 +28,16 @@ _PERIODS: dict[str, datetime.timedelta] = {
     "30d": datetime.timedelta(days=30),
 }
 
+# Windows + resample step (seconds) for the throughput history chart. The stored
+# buckets are 1 min; we re-bin to keep the point count reasonable per window.
+_HISTORY_PERIODS: dict[str, tuple[datetime.timedelta, int]] = {
+    "1h": (datetime.timedelta(hours=1), 60),      # 60 points
+    "6h": (datetime.timedelta(hours=6), 300),     # 72 points
+    "24h": (datetime.timedelta(hours=24), 600),   # 144 points
+}
+
 _UNKNOWN_LABEL = "Indéterminé"
+_OTHERS_LABEL = "Autres"
 
 
 def _operator_label(asn: int | None, as_org: str | None) -> str:
@@ -148,4 +157,99 @@ async def get_throughput(db: AsyncSession, limit: int = 50) -> dict:
         "total_down_mbps": _mbps(total_down),
         "total_up_mbps": _mbps(total_up),
         "operators": operators,
+    }
+
+
+async def get_throughput_history(
+    db: AsyncSession, period: str = "24h", top: int = 6,
+) -> dict:
+    """Download throughput (Mbps) per operator **over time**, for a stacked chart.
+
+    Re-bins the stored 1-min buckets into `step`-second slots over the window,
+    keeps the top-N operators as their own series and folds the rest into
+    "Autres". Débit per slot = bytes ÷ step × 8. Returns ``{period, step_seconds,
+    times, series:[{asn, operator, down_mbps:[...]}], total_up_mbps:[...]}``
+    (series ordered by total download desc, "Autres" last)."""
+    window, step = _HISTORY_PERIODS.get(period, _HISTORY_PERIODS["24h"])
+    cutoff = datetime.datetime.now(datetime.UTC) - window
+    step_interval = f"{step} seconds"
+
+    def _mbps(nbytes: int) -> float:
+        return round(nbytes * 8 / step / 1_000_000, 2)
+
+    # 1) Top-N operators (resolved ASNs only) by total download over the window.
+    top_rows = (
+        await db.execute(
+            select(
+                TrafficDestStat.asn,
+                func.max(TrafficDestStat.as_org).label("as_org"),
+            )
+            .where(TrafficDestStat.bucket_start >= cutoff, TrafficDestStat.asn.isnot(None))
+            .group_by(TrafficDestStat.asn)
+            .order_by(func.sum(TrafficDestStat.down_bytes).desc())
+            .limit(top)
+        )
+    ).all()
+    top_asns = [r.asn for r in top_rows]
+    labels = {r.asn: _operator_label(r.asn, r.as_org) for r in top_rows}
+
+    # 2) Per-slot totals (all operators) — gives the timeline + the "Autres" base.
+    bin_expr = "date_bin(CAST(:step AS interval), bucket_start, TIMESTAMPTZ 'epoch')"
+    total_rows = (
+        await db.execute(
+            text(
+                f"SELECT {bin_expr} AS t, "
+                "       SUM(down_bytes) AS d, SUM(up_bytes) AS u "
+                "FROM traffic_dest_stats WHERE bucket_start >= :cutoff "
+                "GROUP BY t ORDER BY t"
+            ),
+            {"step": step_interval, "cutoff": cutoff},
+        )
+    ).all()
+    times = [r.t for r in total_rows]
+    idx = {t: i for i, t in enumerate(times)}
+    n = len(times)
+    total_down = [int(r.d or 0) for r in total_rows]
+    total_up = [int(r.u or 0) for r in total_rows]
+
+    # 3) Per-slot download for the top-N operators.
+    per_top: dict[int, list[int]] = {a: [0] * n for a in top_asns}
+    if top_asns and n:
+        rows = (
+            await db.execute(
+                text(
+                    f"SELECT {bin_expr} AS t, asn, SUM(down_bytes) AS d "
+                    "FROM traffic_dest_stats "
+                    "WHERE bucket_start >= :cutoff AND asn = ANY(CAST(:asns AS integer[])) "
+                    "GROUP BY t, asn"
+                ),
+                {"step": step_interval, "cutoff": cutoff, "asns": top_asns},
+            )
+        ).all()
+        for r in rows:
+            i = idx.get(r.t)
+            if i is not None:
+                per_top[r.asn][i] = int(r.d or 0)
+
+    # "Autres" = per-slot total minus the top-N sum.
+    others = [
+        max(total_down[i] - sum(per_top[a][i] for a in top_asns), 0)
+        for i in range(n)
+    ]
+
+    series = [
+        {"asn": a, "operator": labels[a], "down_mbps": [_mbps(per_top[a][i]) for i in range(n)]}
+        for a in top_asns
+    ]
+    if any(others):
+        series.append(
+            {"asn": None, "operator": _OTHERS_LABEL, "down_mbps": [_mbps(v) for v in others]}
+        )
+
+    return {
+        "period": period if period in _HISTORY_PERIODS else "24h",
+        "step_seconds": step,
+        "times": [t.isoformat() for t in times],
+        "series": series,
+        "total_up_mbps": [_mbps(v) for v in total_up],
     }

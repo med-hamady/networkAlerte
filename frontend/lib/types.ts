@@ -661,6 +661,22 @@ export interface Throughput {
   operators: ThroughputOperator[]
 }
 
+// Historique du débit (download) par opérateur dans le temps — graphe d'aires
+// empilées. `times` = axe X ; chaque `series[i].down_mbps` est aligné sur `times`.
+export interface ThroughputSeries {
+  asn: number | null
+  operator: string
+  down_mbps: number[]
+}
+
+export interface ThroughputHistory {
+  period: '1h' | '6h' | '24h'
+  step_seconds: number
+  times: string[]
+  series: ThroughputSeries[]
+  total_up_mbps: number[]
+}
+
 // ─── Network uptime — Journal des coupures ─────────────────────────────────
 
 export interface FlapSubEpisode {

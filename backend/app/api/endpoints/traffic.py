@@ -31,3 +31,12 @@ async def get_top_destinations(
 async def get_throughput(db: AsyncSession = Depends(get_db)) -> dict:
     """Current WAN bandwidth split by operator (Mbps download/upload, latest bucket)."""
     return await traffic_service.get_throughput(db)
+
+
+@router.get("/throughput-history")
+async def get_throughput_history(
+    period: Literal["1h", "6h", "24h"] = Query("24h"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Download throughput per operator over time (stacked-area series)."""
+    return await traffic_service.get_throughput_history(db, period)

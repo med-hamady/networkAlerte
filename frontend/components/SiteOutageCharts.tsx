@@ -9,6 +9,12 @@ import { deviceTypeLabel } from '@/lib/types'
 const WINDOW_DAYS = 7
 const REFRESH = 60_000
 
+// Sum of the residual downtime (seconds) of every device down longer than the
+// site's switch. Rough aggregate (device-time), shown as a single value.
+function sumExtra(devices: OutageExtraDevice[]): number {
+  return devices.reduce((a, d) => a + d.extra_downtime_seconds, 0)
+}
+
 // Format a downtime duration (seconds) — pure display formatting.
 function fmtDuration(secs: number): string {
   if (secs < 60) return `${Math.round(secs)}s`
@@ -141,22 +147,15 @@ function SiteOutageCard({
                 </button>
 
                 {extras.length > 0 && (
-                  <div className="ml-7 mr-2 -mt-0.5 mb-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+                  <div className="ml-7 mr-2 -mt-0.5 mb-1 text-[11px]">
                     <span
-                      className="text-amber-600 font-medium shrink-0"
-                      title="Équipements restés down plus longtemps que le switch — panne non couverte par le temps de panne du site"
+                      className="inline-block px-1.5 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 font-medium tabular-nums"
+                      title={extras
+                        .map(d => `${d.device_name} (${deviceTypeLabel(d.device_type)}) : +${fmtDuration(d.extra_downtime_seconds)}`)
+                        .join('\n')}
                     >
-                      ⚠ Au-delà du switch :
+                      ⚠ Au-delà du switch : +{fmtDuration(sumExtra(extras))} ({extras.length} équip.)
                     </span>
-                    {extras.map(d => (
-                      <span
-                        key={d.device_id}
-                        className="px-1.5 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 tabular-nums"
-                        title={`${d.device_name} (${deviceTypeLabel(d.device_type)}) est resté down ${fmtDuration(d.extra_downtime_seconds)} de plus que le switch`}
-                      >
-                        {d.device_name} +{fmtDuration(d.extra_downtime_seconds)}
-                      </span>
-                    ))}
                   </div>
                 )}
 
@@ -226,7 +225,7 @@ export function SiteOutageTable({
               <th className="py-2 pr-3 font-medium">Site</th>
               <th className="py-2 px-3 font-medium text-right">Nombre de pannes</th>
               <th className="py-2 px-3 font-medium text-right">Temps de coupure (switch)</th>
-              <th className="py-2 pl-3 font-medium">Au-delà du switch</th>
+              <th className="py-2 pl-3 font-medium text-right">Au-delà du switch</th>
             </tr>
           </thead>
           <tbody>
@@ -239,11 +238,17 @@ export function SiteOutageTable({
                   <td className="py-2 px-3 text-right tabular-nums text-slate-700">
                     {fmtDuration(s.downtime_seconds)}
                   </td>
-                  <td className="py-2 pl-3 text-xs text-amber-700">
+                  <td className="py-2 pl-3 text-xs text-amber-700 text-right tabular-nums">
                     {extras.length === 0 ? (
                       <span className="text-slate-300">—</span>
                     ) : (
-                      extras.map(d => `${d.device_name} +${fmtDuration(d.extra_downtime_seconds)}`).join(', ')
+                      <span
+                        title={extras
+                          .map(d => `${d.device_name} : +${fmtDuration(d.extra_downtime_seconds)}`)
+                          .join('\n')}
+                      >
+                        +{fmtDuration(sumExtra(extras))} ({extras.length})
+                      </span>
                     )}
                   </td>
                 </tr>

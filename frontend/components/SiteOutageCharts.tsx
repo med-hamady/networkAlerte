@@ -67,7 +67,7 @@ export default function SiteOutageCharts({
       />
       <SiteOutageCard
         title="Temps de panne par site"
-        subtitle={`Downtime cumulé — ${period} · cliquer un site pour le détail`}
+        subtitle={`Downtime du switch (équipement parent) — ${period} · cliquer un site pour le détail`}
         sites={data?.by_downtime ?? []}
         valueOf={s => s.downtime_seconds}
         labelOf={s => fmtDuration(s.downtime_seconds)}

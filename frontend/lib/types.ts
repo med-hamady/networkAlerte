@@ -800,11 +800,20 @@ export interface OutageSiteDevice {
   episodes_count: number
   total_downtime_seconds: number
 }
+export interface OutageExtraDevice {
+  device_id: number
+  device_name: string
+  device_type: string
+  extra_downtime_seconds: number
+}
 export interface OutageSite {
   site: string
   pannes: number
   downtime_seconds: number
   devices: OutageSiteDevice[]
+  // Only present on by_downtime: non-switch devices down longer than the site's
+  // switch, with the residual downtime beyond the switch outage.
+  extra_devices?: OutageExtraDevice[]
 }
 export interface SiteOutageSummary {
   by_pannes: OutageSite[]

@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
-import type { OutageSite, OutageSiteDevice, SiteOutageSummary } from '@/lib/types'
+import type { OutageExtraDevice, OutageSite, OutageSiteDevice, SiteOutageSummary } from '@/lib/types'
 import { deviceTypeLabel } from '@/lib/types'
 
 const WINDOW_DAYS = 7
@@ -72,6 +72,7 @@ export default function SiteOutageCharts({
         valueOf={s => s.downtime_seconds}
         labelOf={s => fmtDuration(s.downtime_seconds)}
         deviceLabelOf={d => fmtDuration(d.total_downtime_seconds)}
+        extraOf={s => s.extra_devices ?? []}
         barClass="bg-orange-400"
       />
     </div>
@@ -79,7 +80,7 @@ export default function SiteOutageCharts({
 }
 
 function SiteOutageCard({
-  title, subtitle, sites, valueOf, labelOf, deviceLabelOf, barClass,
+  title, subtitle, sites, valueOf, labelOf, deviceLabelOf, extraOf, barClass,
 }: {
   title: string
   subtitle: string
@@ -87,6 +88,9 @@ function SiteOutageCard({
   valueOf: (s: OutageSite) => number
   labelOf: (s: OutageSite) => string
   deviceLabelOf: (d: OutageSiteDevice) => string
+  // Optional: equipment down LONGER than the site's switch. Rendered as an
+  // always-visible annotation under the site row (downtime card only).
+  extraOf?: (s: OutageSite) => OutageExtraDevice[]
   barClass: string
 }) {
   const [openSite, setOpenSite] = useState<string | null>(null)
@@ -107,6 +111,7 @@ function SiteOutageCard({
         <div className="space-y-1.5 max-h-96 overflow-y-auto pr-1">
           {sites.map(s => {
             const isOpen = openSite === s.site
+            const extras = extraOf?.(s) ?? []
             return (
               <div key={s.site}>
                 <button
@@ -134,6 +139,26 @@ function SiteOutageCard({
                     {labelOf(s)}
                   </div>
                 </button>
+
+                {extras.length > 0 && (
+                  <div className="ml-7 mr-2 -mt-0.5 mb-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+                    <span
+                      className="text-amber-600 font-medium shrink-0"
+                      title="Équipements restés down plus longtemps que le switch — panne non couverte par le temps de panne du site"
+                    >
+                      ⚠ Au-delà du switch :
+                    </span>
+                    {extras.map(d => (
+                      <span
+                        key={d.device_id}
+                        className="px-1.5 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 tabular-nums"
+                        title={`${d.device_name} (${deviceTypeLabel(d.device_type)}) est resté down ${fmtDuration(d.extra_downtime_seconds)} de plus que le switch`}
+                      >
+                        {d.device_name} +{fmtDuration(d.extra_downtime_seconds)}
+                      </span>
+                    ))}
+                  </div>
+                )}
 
                 {isOpen && <SiteDeviceList devices={s.devices} labelOf={deviceLabelOf} />}
               </div>

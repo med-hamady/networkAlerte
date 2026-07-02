@@ -213,7 +213,7 @@ export default function ReportsPage() {
       {/* ── Section 2 : Coupures par site ──────────────────────────────── */}
       <SectionHeader
         title="Temps de coupure des sites"
-        subtitle="Pannes et downtime cumulé de l'infrastructure (Rockets, Switches, UISP Power) sur la période."
+        subtitle="Temps de panne du site = downtime du switch parent. La colonne « Au-delà du switch » liste les équipements restés down plus longtemps que le switch."
       />
       <div className="print-card">
         <SiteOutageTable

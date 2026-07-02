@@ -210,7 +210,8 @@ export function SiteOutageTable({
       <div className="mb-4">
         <h3 className="font-semibold text-blue-900">Pannes et temps de coupure par site</h3>
         <p className="text-xs text-blue-400 mt-0.5">
-          Nombre total de pannes et downtime cumulé de l'infrastructure — {period}.
+          Temps de panne du site = downtime du switch parent ; « Au-delà du switch » =
+          équipements restés down plus longtemps — {period}.
         </p>
       </div>
 
@@ -224,25 +225,37 @@ export function SiteOutageTable({
             <tr className="text-left text-xs text-blue-400 border-b border-blue-100">
               <th className="py-2 pr-3 font-medium">Site</th>
               <th className="py-2 px-3 font-medium text-right">Nombre de pannes</th>
-              <th className="py-2 pl-3 font-medium text-right">Temps total de coupure</th>
+              <th className="py-2 px-3 font-medium text-right">Temps de coupure (switch)</th>
+              <th className="py-2 pl-3 font-medium">Au-delà du switch</th>
             </tr>
           </thead>
           <tbody>
-            {sites.map(s => (
-              <tr key={s.site} className="border-b border-blue-50">
-                <td className="py-2 pr-3 font-medium text-slate-800">{s.site}</td>
-                <td className="py-2 px-3 text-right tabular-nums text-slate-700">{s.pannes}</td>
-                <td className="py-2 pl-3 text-right tabular-nums text-slate-700">
-                  {fmtDuration(s.downtime_seconds)}
-                </td>
-              </tr>
-            ))}
+            {sites.map(s => {
+              const extras = s.extra_devices ?? []
+              return (
+                <tr key={s.site} className="border-b border-blue-50 align-top">
+                  <td className="py-2 pr-3 font-medium text-slate-800">{s.site}</td>
+                  <td className="py-2 px-3 text-right tabular-nums text-slate-700">{s.pannes}</td>
+                  <td className="py-2 px-3 text-right tabular-nums text-slate-700">
+                    {fmtDuration(s.downtime_seconds)}
+                  </td>
+                  <td className="py-2 pl-3 text-xs text-amber-700">
+                    {extras.length === 0 ? (
+                      <span className="text-slate-300">—</span>
+                    ) : (
+                      extras.map(d => `${d.device_name} +${fmtDuration(d.extra_downtime_seconds)}`).join(', ')
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
           <tfoot>
             <tr className="border-t-2 border-blue-100 font-semibold text-slate-900">
               <td className="py-2 pr-3">Total</td>
               <td className="py-2 px-3 text-right tabular-nums">{totalPannes}</td>
-              <td className="py-2 pl-3 text-right tabular-nums">{fmtDuration(totalDowntime)}</td>
+              <td className="py-2 px-3 text-right tabular-nums">{fmtDuration(totalDowntime)}</td>
+              <td className="py-2 pl-3" />
             </tr>
           </tfoot>
         </table>

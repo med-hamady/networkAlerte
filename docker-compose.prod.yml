@@ -116,7 +116,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256m
+          # 512m: the iptoasn v4+v6 BGP tables (~700k prefixes) are held in memory
+          # for O(log n) ASN lookups. Was 256m before that source was added.
+          memory: 512m
 
   frontend:
     build:

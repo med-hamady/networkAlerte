@@ -586,9 +586,13 @@ class Settings(BaseSettings):
     # download flows (operator → our public IP) look operator↔operator and are
     # dropped. Set the WAN prefix per deployment via NETFLOW_INTERNAL_PREFIXES.
     netflow_internal_prefixes: str = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10"
-    # Offline MaxMind GeoLite2-ASN database (IP→ASN + AS org name). Mounted into
-    # the container; refresh periodically (free MaxMind account). When the file
-    # is absent the collector still runs and aggregates under ASN "unknown".
+    # ASN resolution sources (IP → operator/CDN). Primary: iptoasn.com BGP-derived
+    # TSVs (far more complete than GeoLite2 for the long tail — small/regional
+    # networks, freshly announced prefixes). Fallback: MaxMind GeoLite2-ASN mmdb.
+    # All mounted via the ./backend:/app bind. Refresh the iptoasn files
+    # periodically (rebuilt daily). See backend/data/README.md.
+    iptoasn_v4_path: str = "/app/data/ip2asn-v4.tsv.gz"
+    iptoasn_v6_path: str = "/app/data/ip2asn-v6.tsv.gz"
     geoip_asn_db_path: str = "/app/data/GeoLite2-ASN.mmdb"
     # Retention of the aggregate rows (batched purge, like device_metrics).
     traffic_stats_retention_days: int = 90

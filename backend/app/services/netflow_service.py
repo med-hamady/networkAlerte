@@ -94,6 +94,9 @@ class _Collector:
         # download direction is being lost). Reset each flush.
         self._cls = {"down": 0, "up": 0, "skip_ext": 0, "skip_int": 0}
         self._ext_samples: list[tuple[str, str]] = []
+        # Sample of public IPs whose ASN couldn't be resolved ("Indéterminé") —
+        # reveals what the grey/rose band actually is (local nets, CDNs to name…).
+        self._indet_samples: list[str] = []
 
     @staticmethod
     def _build_internal_nets(prefixes: list[str]) -> list:
@@ -161,6 +164,8 @@ class _Collector:
                 self._cls["skip_int"] += 1  # LAN↔LAN
                 continue
             asn, org = _resolve_cached(public_ip)
+            if asn is None and len(self._indet_samples) < 8:
+                self._indet_samples.append(public_ip)
             slot = self._agg.setdefault((asn, org), {"down": 0, "up": 0, "flows": 0})
             slot["down"] += down
             slot["up"] += up
@@ -189,8 +194,10 @@ class _Collector:
         snapshot, self._agg = self._agg, {}
         # Reset counters up-front so a failed/timed-out write still clears them.
         cls, samples = self._cls, self._ext_samples
+        indet_samples = self._indet_samples
         self._cls = {"down": 0, "up": 0, "skip_ext": 0, "skip_int": 0}
         self._ext_samples = []
+        self._indet_samples = []
         bucket = self._bucket_start()
         rows = [
             TrafficDestStat(
@@ -229,6 +236,13 @@ class _Collector:
             logger.info(
                 "NetFlow dropped 'both public' samples (src → dst): %s",
                 ", ".join(f"{s}→{d}" for s, d in samples),
+            )
+        if indet_samples:
+            # Public IPs with no ASN match — reveal what "Indéterminé" really is
+            # (local nets = normal; nameable CDNs = refresh/extend the ASN source).
+            logger.info(
+                "NetFlow 'Indéterminé' sample IPs (no ASN match): %s",
+                ", ".join(indet_samples),
             )
         return len(rows)
 

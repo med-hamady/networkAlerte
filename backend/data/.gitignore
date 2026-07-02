@@ -1,3 +1,5 @@
-# MaxMind GeoLite2 databases are licensed — never commit them.
-# Drop GeoLite2-ASN.mmdb here on the server (see README.md).
+# ASN datasets are large / licensed — never commit them (see README.md).
+# MaxMind GeoLite2 (.mmdb) + iptoasn BGP TSVs are provided on the server.
 *.mmdb
+*.tsv
+*.tsv.gz

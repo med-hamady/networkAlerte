@@ -78,7 +78,7 @@ backend/app/
 │   ├── uisp_service.py             # Client REST contrôleur UISP/UNMS (login → token, GET /devices) — read-only
 │   ├── uisp_sync_service.py        # Import auto depuis UISP : INFRA (classify→upsert name/IP/site, creds par convention à la CRÉATION) + STATIONS clientes via sync_uisp_stations (LR abonnés dans `lrs`, colonnes uisp_* mode/statut, identité MAC, gated UISP_STATION_SYNC_ENABLED) ; aucun delete/deactivate
 │   ├── netflow_service.py          # Collecteur NetFlow (asyncio UDP) : décode v1/v5/v9/IPFIX (lib `netflow`). Attribue chaque flux à son **extrémité PUBLIQUE** (source en download, destination en upload ; l'extrémité INTERNE = client/WAN défini par NETFLOW_INTERNAL_PREFIXES), résout l'ASN (asn_service), agrège en mémoire par (asn, opérateur) avec **down_bytes/up_bytes** et flush dans `traffic_dest_stats`. Process long dédié (RUN_MODE=collector), PAS un job APScheduler
-│   ├── asn_service.py              # IP → (ASN, opérateur) via MaxMind GeoLite2-ASN (.mmdb offline, lib `maxminddb`) + map statique de labels CDN (FB/Google/Netflix…). Reader lazy ; .mmdb absent = tout sous "Indéterminé"
+│   ├── asn_service.py              # IP → (ASN, opérateur). PRIMAIRE : datasets BGP **iptoasn.com** (`ip2asn-v4/v6.tsv.gz`, sorted arrays + bisect, bien plus complets que GeoLite2 pour la longue traîne). FALLBACK : MaxMind GeoLite2-ASN (.mmdb). + map statique de labels CDN. Lazy load ; aucune source = tout sous "Indéterminé"
 │   └── traffic_service.py          # 2 roll-ups : `get_top_destinations` (VOLUME down/up/total par ASN sur 24h/7j/30j) + `get_throughput` (DÉBIT Gb/s = bytes÷bucket s, dernier bucket, descendant/montant + part). Alimente /traffic
 ├── tasks/
 │   ├── scheduler.py         # Init APScheduler, start/stop lifecycle
@@ -209,7 +209,8 @@ backend/app/
 | `NETFLOW_FLUSH_INTERVAL_SECONDS` | Fréquence d'écriture de l'agrégat mémoire → `traffic_dest_stats` (défaut **60**) |
 | `NETFLOW_BUCKET_MINUTES` | Fenêtre agrégée (défaut **1** min → débit « live » en Gb/s ; le débit = bytes ÷ bucket s) |
 | `NETFLOW_INTERNAL_PREFIXES` | Préfixes traités comme **INTERNES** (notre côté). L'extrémité interne d'un flux = le client ; l'autre = l'opérateur Internet attribué. CSV de CIDR — **DOIT inclure RFC1918/CGNAT ET tout notre bloc public** (les clients ont des IP publiques dans `102.215.95.0/24`, pas seulement le /30 WAN), sinon les flux **descendants** (opérateur → client 102.215.95.x) sont vus opérateur↔opérateur et ignorés (download à 0). Le collecteur logue par cycle `down/up/skip_both_public/skip_lan` + un échantillon `src→dst` des flux rejetés pour révéler l'adressage à couvrir |
-| `GEOIP_ASN_DB_PATH` | Base offline MaxMind GeoLite2-ASN (IP→ASN+opérateur). Défaut `/app/data/GeoLite2-ASN.mmdb` (couvert par le bind-mount `./backend:/app` ; voir `backend/data/README.md`). Absente = tout agrégé sous "Indéterminé" |
+| `IPTOASN_V4_PATH` / `IPTOASN_V6_PATH` | Datasets **BGP iptoasn.com** (IP→ASN+opérateur), source ASN **primaire** (bien plus complète que GeoLite2 pour la longue traîne). Défaut `/app/data/ip2asn-v4.tsv.gz` / `-v6`. Voir `backend/data/README.md` |
+| `GEOIP_ASN_DB_PATH` | Base MaxMind GeoLite2-ASN (.mmdb), **fallback** quand iptoasn ne répond pas. Défaut `/app/data/GeoLite2-ASN.mmdb`. Aucune source = tout agrégé sous "Indéterminé" |
 | `TRAFFIC_STATS_RETENTION_DAYS` | Rétention batchée de `traffic_dest_stats` (défaut 90 ; `traffic_stats_retention_job`) |
 
 ## État d'implémentation

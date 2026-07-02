@@ -9,6 +9,21 @@ import { deviceTypeLabel } from '@/lib/types'
 const WINDOW_DAYS = 7
 const REFRESH = 60_000
 
+// Default window (last 7 days) rounded to DAY boundaries, so it stays identical
+// across refreshes within the same day. A raw now()-based window (start = now −
+// 7d, end = now) slid forward by minutes on every refresh, re-clipping large
+// historical outages near the window edge → the same site's downtime appeared to
+// change on refresh. Day-rounding mirrors the Du/Au picker (dayStartIso/dayEndIso).
+function defaultDayWindow(): { startIso: string; endIso: string } {
+  const now = new Date()
+  const startDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() - WINDOW_DAYS)
+  const start = new Date(
+    startDay.getFullYear(), startDay.getMonth(), startDay.getDate(), 0, 0, 0, 0,
+  )
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
+  return { startIso: start.toISOString(), endIso: end.toISOString() }
+}
+
 // Sum of the residual downtime (seconds) of every device down longer than the
 // site's switch. Rough aggregate (device-time), shown as a single value.
 function sumExtra(devices: OutageExtraDevice[]): number {
@@ -38,9 +53,7 @@ export default function SiteOutageCharts({
   // 7-day window — recomputed once (stable enough; SWR refresh keeps data fresh).
   const { startIso, endIso } = useMemo(() => {
     if (startProp && endProp) return { startIso: startProp, endIso: endProp }
-    const end = new Date()
-    const start = new Date(end.getTime() - WINDOW_DAYS * 24 * 3_600_000)
-    return { startIso: start.toISOString(), endIso: end.toISOString() }
+    return defaultDayWindow()
   }, [startProp, endProp])
 
   const period = periodLabel ?? `${WINDOW_DAYS} derniers jours`
@@ -183,9 +196,7 @@ export function SiteOutageTable({
 }) {
   const { startIso, endIso } = useMemo(() => {
     if (startProp && endProp) return { startIso: startProp, endIso: endProp }
-    const end = new Date()
-    const start = new Date(end.getTime() - WINDOW_DAYS * 24 * 3_600_000)
-    return { startIso: start.toISOString(), endIso: end.toISOString() }
+    return defaultDayWindow()
   }, [startProp, endProp])
 
   const period = periodLabel ?? `${WINDOW_DAYS} derniers jours`

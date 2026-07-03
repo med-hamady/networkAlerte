@@ -183,13 +183,20 @@ function HistorySection() {
         ) : (
           <div className="px-5 pb-5">
             <StackedAreaChart times={data.times} series={data.series} />
-            <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
-              {data.series.map((s, i) => (
-                <span key={s.asn ?? `o-${i}`} className="inline-flex items-center gap-1.5 text-xs text-slate-600">
-                  <span className="inline-block w-3 h-3 rounded-sm" style={{ background: seriesColor(s.operator, i) }} />
-                  {s.operator}
-                </span>
-              ))}
+            <p className="mt-3 text-[11px] text-blue-400">
+              Survole le graphe pour la valeur exacte de chaque opérateur ; la valeur en légende = son pic sur la période.
+            </p>
+            <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1.5">
+              {data.series.map((s, i) => {
+                const peak = s.down_mbps.reduce((m, v) => Math.max(m, v), 0)
+                return (
+                  <span key={s.asn ?? `o-${i}`} className="inline-flex items-center gap-1.5 text-xs text-slate-600">
+                    <span className="inline-block w-3 h-3 rounded-sm" style={{ background: seriesColor(s.operator, i) }} />
+                    {s.operator}
+                    <span className="text-slate-400 tabular-nums">{fmtRate(peak)}</span>
+                  </span>
+                )
+              })}
             </div>
           </div>
         )
@@ -202,6 +209,7 @@ function HistorySection() {
 // X = temps, Y = débit descendant (Mb/s), une aire par opérateur empilée.
 function StackedAreaChart({ times, series }: { times: string[]; series: { operator: string; down_mbps: number[] }[] }) {
   const n = times.length
+  const [hover, setHover] = useState<number | null>(null)
 
   const { yMax, yTicks } = useMemo(() => {
     let peak = 0
@@ -248,27 +256,76 @@ function StackedAreaChart({ times, series }: { times: string[]; series: { operat
     return { x: xAt(i), label: d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) }
   })
 
+  // Infobulle : lignes (opérateur, valeur) au point survolé, triées décroissant.
+  const hoverRows = hover == null
+    ? []
+    : series
+        .map((s, k) => ({ operator: s.operator, color: seriesColor(s.operator, k), v: s.down_mbps[hover] ?? 0 }))
+        .filter(r => r.v > 0)
+        .sort((a, b) => b.v - a.v)
+  const hoverTotal = hoverRows.reduce((s, r) => s + r.v, 0)
+  const leftPct = hover == null ? 0 : (xAt(hover) / W) * 100
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="block w-full h-auto" role="img" aria-label="Débit descendant par opérateur dans le temps">
-      {/* Grille + libellés Y */}
-      {yTicks.map((v, i) => (
-        <g key={i}>
-          <line x1={M.left} y1={yAt(v)} x2={M.left + plotW} y2={yAt(v)} stroke="#eef2f7" strokeWidth={1} />
-          <text x={M.left - 6} y={yAt(v) + 3.5} textAnchor="end" fontSize={10} fill="#64748b" className="tabular-nums">
-            {fmtRate(v)}
-          </text>
-        </g>
-      ))}
-      {/* Aires empilées */}
-      {areas.map((a, k) => (
-        <polygon key={k} points={a.points} fill={a.color} fillOpacity={0.85} stroke={a.color} strokeWidth={0.5} />
-      ))}
-      {/* Axe X + libellés */}
-      <line x1={M.left} y1={M.top + plotH} x2={M.left + plotW} y2={M.top + plotH} stroke="#94a3b8" strokeWidth={1} />
-      {xLabels.map((l, i) => (
-        <text key={i} x={l.x} y={M.top + plotH + 16} textAnchor="middle" fontSize={10} fill="#64748b">{l.label}</text>
-      ))}
-    </svg>
+    <div className="relative">
+      <svg
+        viewBox={`0 0 ${W} ${H}`} className="block w-full h-auto"
+        role="img" aria-label="Débit descendant par opérateur dans le temps"
+        onMouseMove={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect()
+          if (!rect.width) return
+          const vbX = ((e.clientX - rect.left) / rect.width) * W
+          const i = Math.round(((vbX - M.left) / plotW) * (n - 1))
+          setHover(Math.max(0, Math.min(n - 1, i)))
+        }}
+        onMouseLeave={() => setHover(null)}
+      >
+        {/* Grille + libellés Y */}
+        {yTicks.map((v, i) => (
+          <g key={i}>
+            <line x1={M.left} y1={yAt(v)} x2={M.left + plotW} y2={yAt(v)} stroke="#eef2f7" strokeWidth={1} />
+            <text x={M.left - 6} y={yAt(v) + 3.5} textAnchor="end" fontSize={10} fill="#64748b" className="tabular-nums">
+              {fmtRate(v)}
+            </text>
+          </g>
+        ))}
+        {/* Aires empilées */}
+        {areas.map((a, k) => (
+          <polygon key={k} points={a.points} fill={a.color} fillOpacity={0.85} stroke={a.color} strokeWidth={0.5} />
+        ))}
+        {/* Repère vertical au survol */}
+        {hover != null && (
+          <line x1={xAt(hover)} y1={M.top} x2={xAt(hover)} y2={M.top + plotH} stroke="#334155" strokeWidth={1} strokeDasharray="3 3" />
+        )}
+        {/* Axe X + libellés */}
+        <line x1={M.left} y1={M.top + plotH} x2={M.left + plotW} y2={M.top + plotH} stroke="#94a3b8" strokeWidth={1} />
+        {xLabels.map((l, i) => (
+          <text key={i} x={l.x} y={M.top + plotH + 16} textAnchor="middle" fontSize={10} fill="#64748b">{l.label}</text>
+        ))}
+      </svg>
+
+      {/* Infobulle HTML (positionnée en % → pas de mesure de pixels) */}
+      {hover != null && hoverRows.length > 0 && (
+        <div
+          className="absolute z-10 pointer-events-none top-1"
+          style={{ left: `${leftPct}%`, transform: leftPct > 60 ? 'translateX(-100%) translateX(-8px)' : 'translateX(8px)' }}
+        >
+          <div className="bg-white/95 border border-slate-200 rounded-lg shadow-lg px-3 py-2 text-xs min-w-[190px] max-h-[15rem] overflow-y-auto">
+            <div className="font-semibold text-slate-700 mb-1 tabular-nums">
+              {new Date(times[hover]).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+              {' · total '}{fmtRate(hoverTotal)}
+            </div>
+            {hoverRows.map((r, i) => (
+              <div key={i} className="flex items-center gap-1.5 py-0.5">
+                <span className="inline-block w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: r.color }} />
+                <span className="flex-1 truncate text-slate-600">{r.operator}</span>
+                <span className="tabular-nums font-medium text-slate-800">{fmtRate(r.v)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 

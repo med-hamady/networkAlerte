@@ -161,7 +161,7 @@ async def get_throughput(db: AsyncSession, limit: int = 50) -> dict:
 
 
 async def get_throughput_history(
-    db: AsyncSession, period: str = "24h", top: int = 6,
+    db: AsyncSession, period: str = "24h", top: int = 12,
 ) -> dict:
     """Download throughput (Mbps) per operator **over time**, for a stacked chart.
 

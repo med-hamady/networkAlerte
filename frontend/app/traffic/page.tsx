@@ -8,7 +8,10 @@ import type { TopDestinations, Throughput, ThroughputHistory } from '@/lib/types
 // Palette pour les opérateurs nommés du graphe empilé. « Autres » (gris) et
 // « Indéterminé » (rose, pour repérer d'éventuelles IP non résolues) ont des
 // couleurs réservées, quel que soit leur rang.
-const SERIES_COLORS = ['#22c55e', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#0ea5e9', '#a3e635']
+const SERIES_COLORS = [
+  '#22c55e', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6',
+  '#0ea5e9', '#a3e635', '#f97316', '#6366f1', '#06b6d4', '#d946ef',
+]
 
 function seriesColor(operator: string, i: number): string {
   if (operator === 'Autres') return '#94a3b8'        // gris ardoise

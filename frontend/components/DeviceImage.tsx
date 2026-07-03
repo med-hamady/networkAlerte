@@ -2,13 +2,42 @@ import type { JSX } from 'react'
 
 interface Props {
   type: string
-  size?: 'sm' | 'md' | 'lg'
+  size?: 'sm' | 'md' | 'lg' | 'xl'
   className?: string
 }
 
-const sizeClass = { sm: 'w-10 h-10', md: 'w-24 h-24', lg: 'w-36 h-36' }
+const sizeClass = { sm: 'w-10 h-10', md: 'w-24 h-24', lg: 'w-36 h-36', xl: 'w-32 h-32' }
+
+// Vraies photos produit Ubiquiti (fond blanc) servies depuis public/devices/.
+// Prioritaires sur les SVG. `mix-blend-multiply` fond le blanc de la photo dans
+// le fond teinté de la carte au lieu d'afficher un rectangle blanc.
+// Les types sans photo (uisp_power, airfiber) retombent sur le SVG.
+const photoMap: Record<string, string> = {
+  rocket:       '/devices/ltu-rocket.jpg',
+  uisp_switch:  '/devices/uisp-switch.jpg',
+  lr:           '/devices/ltu-lr.jpg',
+  ptp_litebeam: '/devices/ltu-lr.jpg', // LiteBeam à antenne plate — même boîtier
+  uisp_power:   '/devices/uisp-power.jpg',
+  airfiber:     '/devices/airfiber.webp',
+}
 
 export default function DeviceImage({ type, size = 'md', className = '' }: Props) {
+  const photo = photoMap[type]
+  if (photo) {
+    return (
+      <div className={`${sizeClass[size]} mx-auto flex items-center justify-center ${className}`}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        {/* mix-blend-multiply fond le blanc de la photo dans l'arrière-plan ;
+            pas de drop-shadow (créerait un carré d'ombre sur un JPEG opaque). */}
+        <img
+          src={photo}
+          alt=""
+          className="w-full h-full object-contain mix-blend-multiply"
+        />
+      </div>
+    )
+  }
+
   const SvgComp = svgMap[type] ?? DefaultSvg
   return (
     <div className={`${sizeClass[size]} mx-auto flex items-center justify-center ${className}`}>

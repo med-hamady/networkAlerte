@@ -44,8 +44,9 @@ export const config = {
      * Match every path EXCEPT:
      *   - /api/proxy/...   (the proxy passes through to the backend)
      *   - /_next/...       (Next.js static & internal)
+     *   - /devices/...     (photos produit dans public/ — assets non sensibles)
      *   - /favicon.ico, /robots.txt, ...
      */
-    '/((?!api/proxy|_next/static|_next/image|favicon\\.ico|robots\\.txt).*)',
+    '/((?!api/proxy|_next/static|_next/image|devices/|favicon\\.ico|robots\\.txt).*)',
   ],
 }

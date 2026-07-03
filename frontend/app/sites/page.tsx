@@ -10,6 +10,7 @@ import PanneDetailsModal from '@/components/PanneDetailsModal'
 import DeviceDetailModal from '@/components/DeviceDetailModal'
 import DeviceCard from '@/components/DeviceCard'
 import DeviceSearchBar from '@/components/DeviceSearchBar'
+import SiteTopology from '@/components/SiteTopology'
 
 const SITE_FALLBACK = 'Sans site'
 
@@ -94,6 +95,11 @@ function SitesPage() {
   const siteGrid = selectedSite != null
     ? siteDeviceList.filter(d => drillFilter === 'all' || INFRA_TYPES.has(d.device_type))
     : []
+
+  // Split the drill-down grid into the infra topology (switch hub + equipment)
+  // and, in "all" mode, the clients (LRs) shown separately below.
+  const infraGrid  = siteGrid.filter(d => INFRA_TYPES.has(d.device_type))
+  const clientGrid = siteGrid.filter(d => !INFRA_TYPES.has(d.device_type))
 
   const childrenMap: Record<number, number> = {}
   siteDeviceList.forEach(d => {
@@ -181,15 +187,29 @@ function SitesPage() {
             ))}
           </div>
         ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-            {siteGrid.map(d => (
-              <DeviceCard
-                key={d.id}
-                device={d}
-                onClick={setSelected}
-                linkedLRCount={childrenMap[d.id] ?? 0}
-              />
-            ))}
+          <div className="space-y-8">
+            {/* Topologie infra du site : switch en hub, équipements reliés par câble */}
+            <SiteTopology devices={infraGrid} onSelect={setSelected} />
+
+            {/* Clients (LR) — uniquement en vue « tous les équipements » */}
+            {clientGrid.length > 0 && (
+              <div className="space-y-3">
+                <h2 className="text-sm font-semibold text-blue-900">
+                  Clients
+                  <span className="text-blue-400 font-normal ml-2">{clientGrid.length}</span>
+                </h2>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                  {clientGrid.map(d => (
+                    <DeviceCard
+                      key={d.id}
+                      device={d}
+                      onClick={setSelected}
+                      linkedLRCount={childrenMap[d.id] ?? 0}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -5,12 +5,12 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.db.session import get_db
-from app.models.device import AirFiber, ClientModem, Device, Lr, Rocket
+from app.models.device import ClientModem, Device, Lr, Rocket
 from app.schemas.device import (
     AirFiberRead,
     ClientModemRead,
@@ -22,20 +22,14 @@ from app.schemas.device import (
     RocketRead,
     UispPowerRead,
     UispSwitchRead,
-    normalize_mac,
 )
 from app.services import (
-    af60_api_service,
     client_block_service,
     device_service,
     lan_discovery,
     lr_plan_service,
-    ltu_api_service,
-    snmp_service,
     ssh_service,
 )
-
-_AIRMAX_LR_VARIANTS = {"litebeam_5ac", "litebeam_m5"}
 
 logger = logging.getLogger(__name__)
 
@@ -215,155 +209,6 @@ async def get_device_metrics_latest(
             collected_at=row.collected_at,
         )
         for row in result
-    }
-
-
-_AIRMAX_METRIC_UNITS = {
-    "signal_dbm": "dBm",
-    "noise_dbm": "dBm",
-    "cinr_db": "dB",
-    "ccq_pct": "%",
-    "tx_rate_mbps": "Mbps",
-    "rx_rate_mbps": "Mbps",
-    "radio_rx_bytes": "B",
-    "radio_tx_bytes": "B",
-    "radio_in_errors": "",
-    "radio_out_errors": "",
-    "radio_if_up": "",
-    "eth_if_up": "",
-    "uptime_seconds": "s",
-}
-
-
-async def _live_metrics_airmax_snmp(device: Lr) -> dict[str, MetricPoint]:
-    """Live SNMP fetch on an airMAX LR (LiteBeam 5AC/M5)."""
-    settings = get_settings()
-    community = device.snmp_community or settings.snmp_default_community
-    if not community:
-        raise HTTPException(status_code=503, detail="SNMP community non configurée pour ce LR.")
-    metrics = await snmp_service.collect_airmax_metrics(
-        host=device.ip_address,
-        community=community,
-        port=settings.snmp_port,
-        timeout=settings.snmp_timeout,
-    )
-    if not any(v is not None for v in metrics.values()):
-        raise HTTPException(status_code=502, detail="LR injoignable en SNMP.")
-    now = datetime.datetime.now(datetime.UTC)
-    return {
-        name: MetricPoint(
-            value=value,
-            unit=_AIRMAX_METRIC_UNITS.get(name, ""),
-            collected_at=now,
-        )
-        for name, value in metrics.items()
-        if value is not None
-    }
-
-
-async def _live_metrics_af60(device: AirFiber) -> dict[str, MetricPoint]:
-    """Live fetch on an airFiber 60 (UDAPI, identique aux LTU)."""
-    if not device.ssh_username or not device.ssh_password:
-        raise HTTPException(status_code=503, detail="Identifiants API de l'AF60 manquants en base.")
-    metrics = await af60_api_service.collect_af60_metrics(
-        host=device.ip_address,
-        username=device.ssh_username,
-        password=device.ssh_password,
-        port=device.ssh_port or 443,
-    )
-    if metrics is None:
-        raise HTTPException(status_code=502, detail="AF60 injoignable (API HTTP).")
-    now = datetime.datetime.now(datetime.UTC)
-    return {
-        name: MetricPoint(
-            value=value,
-            unit=af60_api_service.METRIC_UNITS.get(name),
-            collected_at=now,
-        )
-        for name, value in metrics.items()
-        if value is not None
-    }
-
-
-@router.get("/{device_id}/metrics/live", response_model=dict[str, MetricPoint])
-async def get_device_metrics_live(
-    device_id: int,
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, MetricPoint]:
-    """Fetch radio metrics LIVE from the device, bypassing the 60 s snapshot.
-
-    Radio values (signal, capacity, link potential, RX rates…) fluctuate
-    per-second; the poll job's last DB row lags the device dashboard. For an
-    LR we hit its parent Rocket's HTTP API and extract this LR's peer
-    (matched by MAC); for a Rocket we hit its own API. Display-only — the
-    poll job still owns history/alerting. Non-2xx on any failure so the UI
-    can keep showing the DB value.
-    """
-    device = await device_service.get_device(db, device_id)
-
-    if device.device_type == "rocket":
-        rocket: Rocket = device  # type: ignore[assignment]
-        lr_mac: str | None = None
-    elif device.device_type == "lr":
-        # airMAX LRs (LiteBeam) — fetched SNMP-direct because the parent
-        # Rocket airMAX exposes peer identification only, not per-peer radio
-        # metrics. LTU LRs continue through the parent-HTTP path below.
-        if device.model_variant in _AIRMAX_LR_VARIANTS:
-            return await _live_metrics_airmax_snmp(device)
-        if device.rocket_id is None:
-            raise HTTPException(status_code=409, detail="LR sans Rocket parent — pas de source live.")
-        rocket = (
-            await db.execute(select(Rocket).where(Rocket.id == device.rocket_id))
-        ).scalar_one_or_none()
-        if rocket is None:
-            raise HTTPException(status_code=409, detail="Rocket parent introuvable.")
-        lr_mac = device.mac_address
-    elif device.device_type == "airfiber":
-        # AF60 backhaul — même UDAPI que LTU, interrogé directement à son IP.
-        return await _live_metrics_af60(device)
-    else:
-        raise HTTPException(status_code=400, detail="Métriques live : AF60, LR ou Rocket.")
-
-    if rocket.radio_tech != "ltu":
-        raise HTTPException(status_code=409, detail="Live indisponible : Rocket airMAX (SNMP only).")
-    if not rocket.ssh_username or not rocket.ssh_password:
-        raise HTTPException(status_code=503, detail="Identifiants API du Rocket manquants en base.")
-
-    rocket_ap, all_peers, per_peer = await ltu_api_service.collect_ltu_api_full(
-        host=rocket.ip_address,
-        username=rocket.ssh_username,
-        password=rocket.ssh_password,
-        port=443,
-    )
-    if rocket_ap is None:
-        raise HTTPException(status_code=502, detail="Rocket injoignable (API HTTP).")
-
-    if lr_mac is not None:
-        try:
-            want = normalize_mac(lr_mac)
-        except ValueError:
-            want = lr_mac.lower()
-        src: dict[str, float | None] | None = next(
-            (m for mac, m in per_peer if mac and mac.lower() == want), None
-        )
-        if src is None:
-            raise HTTPException(
-                status_code=404,
-                detail="LR absent des peers du Rocket à cet instant (lien radio down ?).",
-            )
-    else:
-        src = dict(rocket_ap)
-        src["peer_count"] = float(len(all_peers))
-
-    now = datetime.datetime.now(datetime.UTC)
-    return {
-        name: MetricPoint(
-            value=value,
-            unit=ltu_api_service.METRIC_UNITS.get(name),
-            collected_at=now,
-        )
-        for name, value in src.items()
-        if value is not None
     }
 
 

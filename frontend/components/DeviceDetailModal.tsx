@@ -12,7 +12,6 @@ import IpLink from './IpLink'
 
 const RADIO_TYPES = new Set(['rocket', 'lr', 'airfiber', 'ptp_litebeam'])
 const REFRESH      = 15_000
-const LIVE_REFRESH = 10_000
 
 // Friendly labels + display order for the per-battery readings a UISP Power
 // reports (metric slugs from uisp_power_service.battery_type_slug).
@@ -79,26 +78,13 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
     ? devices.filter(d => parentRocketId(d) === device.id)
     : []
 
-  const { data: dbMetrics } = useSWR<DeviceMetrics>(
+  // Métriques affichées depuis le dernier snapshot en base (poll ≤ 60 s).
+  // L'ancien appel live (SNMP/API direct sur l'équipement) a été retiré.
+  const { data: metrics } = useSWR<DeviceMetrics>(
     (isRadio || isSwitch || isPower) ? endpoints.deviceMetrics(device.id) : null,
     fetcher,
     { refreshInterval: REFRESH },
   )
-  // Radio values fluctuate per-second, so the 60 s poll snapshot lags the
-  // device dashboard. For LR/Rocket, also pull a live reading from the
-  // (parent) Rocket API and let it override the DB values key-by-key: the
-  // DB shows instantly, live replaces as soon as it lands.
-  // A P2P backhaul has no live Rocket-API path (it's polled into the DB via the
-  // airOS poll) — the live endpoint 409s for it, so skip it and use the DB value.
-  const { data: liveMetrics, isValidating: liveValidating } = useSWR<DeviceMetrics>(
-    isRadio && !isBackhaul ? endpoints.deviceMetricsLive(device.id) : null,
-    fetcher,
-    { refreshInterval: LIVE_REFRESH, shouldRetryOnError: false },
-  )
-  const metrics: DeviceMetrics | undefined =
-    dbMetrics || liveMetrics ? { ...(dbMetrics ?? {}), ...(liveMetrics ?? {}) } : undefined
-  const liveState: 'live' | 'loading' | 'deferred' =
-    liveMetrics ? 'live' : liveValidating ? 'loading' : 'deferred'
 
   // Client capacity for a base-station Rocket: connected peers (current) vs the
   // rocket_client_overload ceiling (max). Read from /network-capacity so the
@@ -243,7 +229,7 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
 
         {/* Radio metrics */}
         {isRadio && metrics && (
-          <Section title={<>Métriques radio<LiveBadge state={liveState} /></>}>
+          <Section title="Métriques radio">
             {metrics.eth_if_up?.value != null && device.device_type === 'rocket' && (
               <MetricRow label="Lien switch (eth0)" value={<LinkStatus up={metrics.eth_if_up.value === 1} />} />
             )}
@@ -692,35 +678,6 @@ function RocketCapacityContent({ cap }: { cap: RocketCapacity }) {
 }
 
 /* ─── Sub-components ─── */
-
-function LiveBadge({ state }: { state: 'live' | 'loading' | 'deferred' }) {
-  if (state === 'live') {
-    return (
-      <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-semibold text-green-600 normal-case tracking-normal align-middle">
-        <span className="relative flex h-1.5 w-1.5">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-70" />
-          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-green-500" />
-        </span>
-        temps réel
-      </span>
-    )
-  }
-  if (state === 'loading') {
-    return (
-      <span className="ml-2 text-[10px] font-medium text-blue-400 normal-case tracking-normal align-middle animate-pulse">
-        actualisation…
-      </span>
-    )
-  }
-  return (
-    <span
-      className="ml-2 text-[10px] text-blue-300 normal-case tracking-normal align-middle"
-      title="API du Rocket injoignable — affichage du dernier relevé (≤ 60 s)"
-    >
-      différé ≤ 60 s
-    </span>
-  )
-}
 
 function Section({ title, children }: { title: React.ReactNode; children: React.ReactNode }) {
   return (

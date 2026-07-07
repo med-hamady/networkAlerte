@@ -1,12 +1,13 @@
 'use client'
 
-import Link from 'next/link'
 import { useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
+import DeviceDetailModal from '@/components/DeviceDetailModal'
 import type {
   BadInstallationRow,
   BadInstallationVerdict,
+  Device,
   HighLatencyResponse,
   HighLatencyRow,
   LiveLinkHealthResponse,
@@ -74,6 +75,18 @@ type LinkTab = 'clients' | 'sites' | 'latency'
 
 export default function LrHealthPage() {
   const [tab, setTab] = useState<LinkTab>('clients')
+  // Fiche d'équipement ouverte SUR PLACE (sans redirection vers /sites) :
+  // fetch par id avec loader, la liste des liaisons reste derrière la modale.
+  const [selected, setSelected] = useState<Device | null>(null)
+  const [deviceLoading, setDeviceLoading] = useState(false)
+
+  const openDevice = async (id: number) => {
+    setDeviceLoading(true)
+    try {
+      setSelected(await fetcher(endpoints.device(id)))
+    } catch { /* device introuvable : on n'ouvre pas la fiche */ }
+    finally { setDeviceLoading(false) }
+  }
 
   return (
     <div className="space-y-10">
@@ -111,15 +124,31 @@ export default function LrHealthPage() {
         ))}
       </div>
 
-      {tab === 'clients' && <ClientLinksSection />}
-      {tab === 'sites' && <SiteLinksSection />}
-      {tab === 'latency' && <HighLatencySection />}
+      {tab === 'clients' && <ClientLinksSection onOpenDevice={openDevice} />}
+      {tab === 'sites' && <SiteLinksSection onOpenDevice={openDevice} />}
+      {tab === 'latency' && <HighLatencySection onOpenDevice={openDevice} />}
+
+      {/* Loader pendant la résolution de la fiche (fetch par id en cours). */}
+      {deviceLoading && selected == null && (
+        <div className="fixed inset-0 bg-blue-900/30 backdrop-blur-sm z-50 flex items-center justify-center animate-fade-in">
+          <div className="bg-white rounded-xl shadow-2xl px-6 py-5 flex items-center gap-3">
+            <span className="w-5 h-5 rounded-full border-2 border-blue-200 border-t-blue-600 animate-spin shrink-0" />
+            <span className="text-sm font-medium text-blue-900">Chargement de l'équipement…</span>
+          </div>
+        </div>
+      )}
+
+      <DeviceDetailModal
+        device={selected}
+        onClose={() => setSelected(null)}
+        onNavigate={setSelected}
+      />
     </div>
   )
 }
 
 // ─── Liaisons des clients (LR) ────────────────────────────────────────────────
-function ClientLinksSection() {
+function ClientLinksSection({ onOpenDevice }: { onOpenDevice: (id: number) => void }) {
   const { data, isLoading } = useSWR<LiveLinkHealthResponse>(
     endpoints.badInstallations,
     fetcher,
@@ -325,12 +354,13 @@ function ClientLinksSection() {
                         </td>
 
                         <td className="px-4 py-3 whitespace-nowrap">
-                          <Link
-                            href={`/sites?device=${row.lr_id}`}
+                          <button
+                            type="button"
+                            onClick={() => onOpenDevice(row.lr_id)}
                             className="text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline"
                           >
                             Voir l'équipement →
-                          </Link>
+                          </button>
                         </td>
                       </tr>
                     ))}
@@ -358,7 +388,7 @@ function capDisplay(mbps: number | null, linkType: string): string {
   return linkType === 'af60' ? gbps(mbps) : `${mbps.toFixed(0)} Mb/s`
 }
 
-function SiteLinksSection() {
+function SiteLinksSection({ onOpenDevice }: { onOpenDevice: (id: number) => void }) {
   const { data, isLoading } = useSWR<SiteLinkHealthResponse>(
     endpoints.siteLinks,
     fetcher,
@@ -446,12 +476,13 @@ function SiteLinksSection() {
                     </td>
 
                     <td className="px-4 py-3 whitespace-nowrap">
-                      <Link
-                        href={`/sites?device=${row.device_id}`}
+                      <button
+                        type="button"
+                        onClick={() => onOpenDevice(row.device_id)}
                         className="text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline"
                       >
                         Voir l'équipement →
-                      </Link>
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -467,7 +498,7 @@ function SiteLinksSection() {
 // ─── Clients à latence élevée (RTT LR → Internet ≥ seuil) ─────────────────────
 // Critère UNIQUE : dernier lr_latency_ms ≥ lr_latency_critical_ms (défaut 100 ms),
 // lu en base (sonde SSH lr_internet_probe_job). Pas d'interrogation live.
-function HighLatencySection() {
+function HighLatencySection({ onOpenDevice }: { onOpenDevice: (id: number) => void }) {
   const { data, isLoading } = useSWR<HighLatencyResponse>(
     endpoints.highLatencyClients,
     fetcher,
@@ -544,12 +575,13 @@ function HighLatencySection() {
                     </td>
 
                     <td className="px-4 py-3 whitespace-nowrap">
-                      <Link
-                        href={`/sites?device=${row.lr_id}`}
+                      <button
+                        type="button"
+                        onClick={() => onOpenDevice(row.lr_id)}
                         className="text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline"
                       >
                         Voir l'équipement →
-                      </Link>
+                      </button>
                     </td>
                   </tr>
                 ))}

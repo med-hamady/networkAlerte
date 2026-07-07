@@ -2070,94 +2070,14 @@ async def client_consumption_7d_refresh_job() -> None:
         )
 
 
-async def device_metrics_retention_job() -> None:
-    """Purge device_metrics rows older than the retention window.
-
-    Only HISTORY_METRICS still accumulate rows (everything else is collapsed
-    to one latest row by persist_device_metrics), so in practice this prunes
-    the byte-counter and radio-quality series feeding the 30-day matviews and
-    the report. 90 days (default) covers those with margin.
-
-    The delete is BATCHED (delete a bounded set of ids per statement, loop
-    until none remain) so it never holds one giant transaction over the table
-    — a bulk delete on device_metrics (16 M+ rows in prod) once stalled the
-    backend healthcheck when run on the startup path. Here it runs in the
-    scheduler, in small committed chunks.
-    """
-    from sqlalchemy import text
-
-    from app.db.session import engine
-
-    settings = get_settings()
-    cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
-        days=settings.device_metrics_retention_days
-    )
-    batch = settings.device_metrics_retention_batch_size
-
-    # Ensure the index that makes the purge's `collected_at < cutoff` scan an
-    # index range (not a 16 M-row seq scan every run). Built CONCURRENTLY here
-    # in the scheduler — NOT in a startup migration — because a non-concurrent
-    # build locks writes and a concurrent build in a migration would stall the
-    # backend healthcheck (same lesson as u2a3b4c5d6e7's switch backlog). IF
-    # NOT EXISTS makes it a cheap no-op after the first build. CONCURRENTLY
-    # cannot run inside a transaction → AUTOCOMMIT connection.
-    try:
-        async with engine.connect() as conn:
-            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
-            await conn.execute(
-                text(
-                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
-                    "ix_device_metrics_collected_at ON device_metrics (collected_at)"
-                )
-            )
-    except Exception:
-        # A failed CONCURRENTLY build can leave an INVALID index; the purge
-        # still works (seq scan), just slower. Don't abort the purge.
-        logger.exception("device_metrics retention — collected_at index ensure failed")
-
-    started = datetime.datetime.now(datetime.UTC)
-    total = 0
-    try:
-        async with async_session_factory() as session:
-            while True:
-                # DELETE ... WHERE id IN (SELECT id ... LIMIT n) — Postgres has
-                # no DELETE ... LIMIT, so we bound each pass via a subquery on
-                # the PK. ix on (collected_at) keeps the lookup cheap.
-                result = await session.execute(
-                    text(
-                        "DELETE FROM device_metrics WHERE id IN ("
-                        "  SELECT id FROM device_metrics"
-                        "  WHERE collected_at < :cutoff"
-                        "  LIMIT :batch"
-                        ")"
-                    ),
-                    {"cutoff": cutoff, "batch": batch},
-                )
-                await session.commit()
-                deleted = result.rowcount or 0
-                total += deleted
-                if deleted < batch:
-                    break
-        elapsed = (datetime.datetime.now(datetime.UTC) - started).total_seconds()
-        if total:
-            logger.info(
-                "device_metrics retention — purged %d rows older than %d days in %.1f s",
-                total, settings.device_metrics_retention_days, elapsed,
-            )
-        else:
-            logger.debug("device_metrics retention — nothing to purge")
-    except Exception:
-        logger.exception("device_metrics retention job failed")
-
-
 @_timed_job
 async def traffic_stats_retention_job() -> None:
     """Purge traffic_dest_stats buckets older than the retention window.
 
     The NetFlow collector aggregates per (5-min bucket, ASN), so this table is
     small, but it still grows unbounded without pruning. Batched delete on
-    bucket_start (indexed by ix_traffic_dest_stats_bucket) — same pattern as
-    device_metrics_retention_job, in small committed chunks.
+    bucket_start (indexed by ix_traffic_dest_stats_bucket), in small committed
+    chunks (never one giant transaction over the table).
     """
     from sqlalchemy import text
 
@@ -2638,7 +2558,7 @@ _ALWAYS_JOB_IDS = {"heartbeat"}
 _FAST_JOB_IDS = {
     "infra_ping", "client_ping", "warning_digest", "flap_detection",
     "network_latency_aggregate", "client_consumption_matview_refresh",
-    "client_consumption_7d_refresh", "device_metrics_retention",
+    "client_consumption_7d_refresh",
     "traffic_stats_retention",
     "security_anomaly_detection", "rocket_saturation_report",
     "site_infra_report",
@@ -2757,18 +2677,6 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         max_instances=1,
         coalesce=True,
         misfire_grace_time=120,
-    )
-    scheduler.add_job(
-        device_metrics_retention_job,
-        trigger="interval",
-        minutes=settings.device_metrics_retention_interval_minutes,
-        id="device_metrics_retention",
-        name="device_metrics retention (purge history older than N days)",
-        replace_existing=True,
-        # A missed purge isn't urgent — rows just live a little longer.
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=300,
     )
     scheduler.add_job(
         traffic_stats_retention_job,

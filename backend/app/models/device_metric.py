@@ -1,6 +1,6 @@
 import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, String, func
+from sqlalchemy import DateTime, Float, ForeignKey, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -11,14 +11,11 @@ class DeviceMetric(Base):
 
     __tablename__ = "device_metrics"
 
-    # Index on collected_at alone — serves the retention purge's
-    # `WHERE collected_at < cutoff` range scan (device_metrics_retention_job).
-    # Built CONCURRENTLY by that job on existing DBs (never in a startup
-    # migration — see u2a3b4c5d6e7 / w4c5d6e7f8a9); declared here so alembic
-    # autogenerate knows it and won't emit a spurious drop_index.
-    __table_args__ = (
-        Index("ix_device_metrics_collected_at", "collected_at"),
-    )
+    # NB: no standalone index on collected_at. The old ix_device_metrics_collected_at
+    # only served the (now removed) retention purge and was dropped by migration
+    # q5a6b7c8d9e0. Consumption queries filter on device_id + metric_name + a
+    # collected_at range, served by the composite (device_id, metric_name,
+    # collected_at) index — not a bare collected_at one.
 
     device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
     metric_name: Mapped[str] = mapped_column(String(100), nullable=False)

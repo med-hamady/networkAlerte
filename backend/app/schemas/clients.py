@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-Period = Literal["24h", "7d", "30d", "lifetime"]
+Period = Literal["24h", "7d", "30d", "lifetime", "custom"]
 
 
 class ClientConsumption(BaseModel):

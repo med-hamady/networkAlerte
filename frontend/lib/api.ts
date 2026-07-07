@@ -58,6 +58,7 @@ export const endpoints = {
   siteLinks:            `${API_BASE}/lr-health/site-links`,
   highLatencyClients:   `${API_BASE}/lr-health/high-latency`,
   clientsConsumption:   (period: '24h' | '7d' | '30d' | 'lifetime') => `${API_BASE}/clients/consumption?period=${period}`,
+  clientsConsumptionRange: (start: string, end: string) => `${API_BASE}/clients/consumption?period=custom&start=${start}&end=${end}`,
   networkCapacity:      `${API_BASE}/network-capacity`,
   topDestinations:      (period: '24h' | '7d' | '30d') => `${API_BASE}/traffic/top-destinations?period=${period}`,
   trafficThroughput:    `${API_BASE}/traffic/throughput`,

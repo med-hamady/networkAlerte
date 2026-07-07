@@ -126,6 +126,39 @@ _LIVE_AGGREGATE_SQL = text(
     """
 )
 
+# Same as _LIVE_AGGREGATE_SQL but bounded on both ends — for an explicit
+# [start, end) date range. The upper bound is exclusive (frontend passes the
+# day *after* the last selected day so the last day is fully included). The
+# custom range can't reuse the 7d/30d matviews (fixed windows) so it always
+# runs live; the (device_id, metric_name, collected_at) index still applies.
+_LIVE_AGGREGATE_RANGE_SQL = text(
+    """
+    SELECT
+        device_id,
+        metric_name,
+        SUM(CASE WHEN d IS NOT NULL AND d >= 0 AND d <= :max_delta
+                 THEN d ELSE 0 END) AS bytes,
+        COUNT(*)        AS samples,
+        MIN(collected_at) AS first_sample_at
+    FROM (
+        SELECT
+            device_id,
+            metric_name,
+            collected_at,
+            metric_value - LAG(metric_value) OVER w AS d
+        FROM device_metrics
+        WHERE device_id = ANY(CAST(:lr_ids AS integer[]))
+          AND metric_name = ANY(CAST(:metric_names AS text[]))
+          AND collected_at >= :cutoff
+          AND collected_at < :upper
+        WINDOW w AS (
+            PARTITION BY device_id, metric_name ORDER BY collected_at
+        )
+    ) deltas
+    GROUP BY device_id, metric_name
+    """
+)
+
 # Matview lookup: same schema as the live query above, but pre-computed.
 # Keep the column list aligned with the matview definition. One matview per
 # pre-computed window — the SUM in each can't be subtracted to a narrower
@@ -147,24 +180,50 @@ _MATVIEW_7D_SQL = text(
 async def get_clients_consumption(
     db: AsyncSession,
     period: Period,
+    *,
+    start: datetime.date | None = None,
+    end: datetime.date | None = None,
 ) -> ClientConsumptionResponse:
-    """Cumulative download/upload per LR client, rolled up site → rocket → client."""
-    now = datetime.datetime.now(datetime.UTC)
+    """Cumulative download/upload per LR client, rolled up site → rocket → client.
 
-    if period == "lifetime":
-        cutoff: datetime.datetime | None = None
+    When both ``start`` and ``end`` are given, totals are computed over that
+    exact date range (both days inclusive, UTC) and ``period`` is reported as
+    ``"custom"``. Otherwise the named ``period`` window is used.
+    """
+    now = datetime.datetime.now(datetime.UTC)
+    is_custom = start is not None and end is not None
+
+    if is_custom:
+        # [start 00:00, end+1day 00:00) so both selected days are fully covered.
+        cutoff: datetime.datetime | None = datetime.datetime.combine(
+            start, datetime.time.min, tzinfo=datetime.UTC
+        )
+        upper = datetime.datetime.combine(
+            end, datetime.time.min, tzinfo=datetime.UTC
+        ) + datetime.timedelta(days=1)
+        query_lower_bound = cutoff
+        period_end = upper
+        effective_period: Period = "custom"
+    elif period == "lifetime":
+        cutoff = None
         query_lower_bound = datetime.datetime(2000, 1, 1, tzinfo=datetime.UTC)
+        upper = None
+        period_end = now
+        effective_period = period
     else:
         cutoff = now - _PERIOD_TO_TIMEDELTA[period]
         query_lower_bound = cutoff
+        upper = None
+        period_end = now
+        effective_period = period
 
     lrs_result = await db.execute(select(Lr).options(selectinload(Lr.rocket)))
     lrs: list[Lr] = list(lrs_result.scalars().all())
     if not lrs:
         return ClientConsumptionResponse(
-            period=period,
+            period=effective_period,
             period_start=cutoff,
-            period_end=now,
+            period_end=period_end,
             data_start=None,
             sites=[],
         )
@@ -172,8 +231,23 @@ async def get_clients_consumption(
     # 7d and 30d are served from per-window matviews (<100 ms). 24h runs
     # live SQL (~2 s — acceptable for the default tab, and gives a true
     # rolling 24 h window). Lifetime also runs live so it stays correct
-    # once retention pushes data past 30 d.
-    if period == "30d":
+    # once retention pushes data past 30 d. A custom range always runs the
+    # bounded live query (matviews are fixed windows).
+    if is_custom:
+        lr_ids = [lr.id for lr in lrs]
+        agg_rows = (
+            await db.execute(
+                _LIVE_AGGREGATE_RANGE_SQL,
+                {
+                    "lr_ids": lr_ids,
+                    "metric_names": list(_COUNTER_METRICS),
+                    "cutoff": query_lower_bound,
+                    "upper": upper,
+                    "max_delta": _MAX_PLAUSIBLE_DELTA_BYTES,
+                },
+            )
+        ).all()
+    elif period == "30d":
         agg_rows = (await db.execute(_MATVIEW_30D_SQL)).all()
     elif period == "7d":
         agg_rows = (await db.execute(_MATVIEW_7D_SQL)).all()
@@ -208,9 +282,9 @@ async def get_clients_consumption(
     sites = _group_by_site(clients)
 
     return ClientConsumptionResponse(
-        period=period,
+        period=effective_period,
         period_start=cutoff,
-        period_end=now,
+        period_end=period_end,
         data_start=earliest_global,
         sites=sites,
     )

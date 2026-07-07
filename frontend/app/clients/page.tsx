@@ -6,7 +6,7 @@ import { endpoints, fetcher } from '@/lib/api'
 import { formatBytes } from '@/lib/types'
 import IpLink from '@/components/IpLink'
 
-type Period = '24h' | '7d' | '30d' | 'lifetime'
+type Period = '24h' | '7d' | '30d' | 'lifetime' | 'custom'
 
 type ClientConsumption = {
   device_id: number
@@ -52,12 +52,19 @@ type ConsumptionResponse = {
   sites: SiteConsumption[]
 }
 
-const PERIODS: { value: Period; label: string }[] = [
-  { value: '24h',      label: '24 heures' },
-  { value: '7d',       label: '7 jours'   },
-  { value: '30d',      label: '30 jours'  },
-  { value: 'lifetime', label: 'Depuis démarrage' },
+const PRESETS: { value: Exclude<Period, 'lifetime' | 'custom'>; label: string }[] = [
+  { value: '24h', label: '24 heures' },
+  { value: '7d',  label: '7 jours'   },
+  { value: '30d', label: '30 jours'  },
 ]
+
+// Local YYYY-MM-DD for a Date, for prefilling the date inputs.
+function isoDay(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
 
 // Stable key for a rocket bucket — rocket_id can be null (the "no parent"
 // bucket), so we can't use the id alone as a selection key.
@@ -112,18 +119,36 @@ function ShareBar({ pct }: { pct: number }) {
 
 export default function ClientsPage() {
   const [period, setPeriod] = useState<Period>('24h')
+  // Custom date-range state. `range` is what's actually applied (drives the
+  // query); the two `draft` values track the pickers before « Appliquer ».
+  const today = isoDay(new Date())
+  const weekAgo = isoDay(new Date(Date.now() - 7 * 86_400_000))
+  const [draftStart, setDraftStart] = useState<string>(weekAgo)
+  const [draftEnd, setDraftEnd] = useState<string>(today)
+  const [range, setRange] = useState<{ start: string; end: string } | null>(null)
   // Drill-down state: site name, then rocket bucket key within that site.
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
   const [selectedRocket, setSelectedRocket] = useState<string | null>(null)
 
+  const isCustom = period === 'custom' && range != null
+
   const { data, isLoading } = useSWR<ConsumptionResponse>(
-    endpoints.clientsConsumption(period),
+    isCustom
+      ? endpoints.clientsConsumptionRange(range!.start, range!.end)
+      : endpoints.clientsConsumption(period === 'custom' ? '24h' : period),
     fetcher,
     { refreshInterval: 60_000 },
   )
 
+  const applyRange = () => {
+    if (!draftStart || !draftEnd || draftEnd < draftStart) return
+    setRange({ start: draftStart, end: draftEnd })
+    setPeriod('custom')
+  }
+
   const sites = data?.sites ?? []
   const isLifetime = period === 'lifetime'
+  const rangeInvalid = !draftStart || !draftEnd || draftEnd < draftStart
 
   // Resolve the current drill-down level from the (possibly refreshed) data.
   const siteObj = selectedSite != null
@@ -189,9 +214,10 @@ export default function ClientsPage() {
               <>Volume par CPE connecté à cette Rocket.</>
             ) : siteObj != null ? (
               <>Volume par Rocket de ce site — clique une Rocket pour voir ses clients.</>
-            ) : isLifetime ? (
-              <>Volume cumulé par site <strong>depuis le début du monitoring</strong> — clique un site pour
-              descendre aux Rockets puis aux clients.</>
+            ) : isCustom && data?.period_start != null ? (
+              <>Volume par site du <strong>{shortDate(data.period_start)}</strong> au{' '}
+              <strong>{range != null ? shortDate(range.end) : ''}</strong> (inclus) — clique un site
+              pour descendre aux Rockets puis aux clients.</>
             ) : (
               <>Volume téléchargé / uploadé par site sur la fenêtre choisie — clique un site pour descendre
               aux Rockets puis aux clients.</>
@@ -199,20 +225,52 @@ export default function ClientsPage() {
           </p>
         </div>
 
-        <div className="flex gap-1 rounded-lg bg-white border border-blue-100 p-1 shadow-sm">
-          {PERIODS.map(({ value, label }) => (
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex gap-1 rounded-lg bg-white border border-blue-100 p-1 shadow-sm">
+            {PRESETS.map(({ value, label }) => (
+              <button
+                key={value}
+                onClick={() => setPeriod(value)}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+                  period === value
+                    ? 'bg-blue-600 text-white'
+                    : 'text-blue-600 hover:bg-blue-50'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* Custom date range — replaces the old « Depuis démarrage » preset. */}
+          <div className={`flex items-center gap-2 rounded-lg bg-white border p-1.5 shadow-sm ${
+            isCustom ? 'border-blue-400' : 'border-blue-100'
+          }`}>
+            <span className="text-[11px] font-semibold text-blue-500 uppercase tracking-wider pl-1">Du</span>
+            <input
+              type="date"
+              value={draftStart}
+              max={draftEnd || today}
+              onChange={e => setDraftStart(e.target.value)}
+              className="text-xs text-slate-700 border border-blue-100 rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400"
+            />
+            <span className="text-[11px] font-semibold text-blue-500 uppercase tracking-wider">Au</span>
+            <input
+              type="date"
+              value={draftEnd}
+              min={draftStart}
+              max={today}
+              onChange={e => setDraftEnd(e.target.value)}
+              className="text-xs text-slate-700 border border-blue-100 rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400"
+            />
             <button
-              key={value}
-              onClick={() => setPeriod(value)}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
-                period === value
-                  ? 'bg-blue-600 text-white'
-                  : 'text-blue-600 hover:bg-blue-50'
-              }`}
+              onClick={applyRange}
+              disabled={rangeInvalid}
+              className="px-3 py-1 text-xs font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              {label}
+              Appliquer
             </button>
-          ))}
+          </div>
         </div>
       </div>
 
@@ -222,9 +280,13 @@ export default function ClientsPage() {
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4c-.77-1.33-2.69-1.33-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z" />
           </svg>
           <div>
-            <strong>Fenêtre partielle</strong> — l'historique en base ne couvre pas encore toute la période demandée.
-            Les totaux affichés ne couvrent que <strong>{formatDateTime(data.data_start)} → maintenant</strong>.
-            La vue sera complète une fois assez d'historique accumulé.
+            <strong>Fenêtre partielle</strong> — l'historique en base ne couvre pas toute la période demandée.
+            Les totaux affichés ne couvrent que <strong>{formatDateTime(data.data_start)} → {
+              isCustom ? formatDateTime(data.period_end) : 'maintenant'
+            }</strong>.
+            {isCustom
+              ? ' La supervision n\'avait pas encore de relevés à la date de début choisie.'
+              : ' La vue sera complète une fois assez d\'historique accumulé.'}
           </div>
         </div>
       )}

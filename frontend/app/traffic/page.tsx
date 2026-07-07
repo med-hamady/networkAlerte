@@ -232,21 +232,27 @@ function StackedAreaChart({ times, series }: { times: string[]; series: { operat
   const xAt = (i: number) => M.left + (n <= 1 ? plotW / 2 : plotW * (i / (n - 1)))
   const yAt = (v: number) => M.top + plotH * (1 - v / yMax)
 
-  // Empilement : pour chaque série, aire entre la somme cumulée avant et après.
+  // Empilement inversé : on cumule de la plus petite série vers la plus grosse,
+  // donc le plus gros opérateur se retrouve EN HAUT du stack (les petits collés
+  // à l'axe). La couleur reste indexée sur la position d'origine (`k`) pour
+  // rester cohérente avec la légende (triée plus gros → plus petit).
   const cum = new Array(n).fill(0)
-  const areas = series.map((serie, k) => {
-    const upper: string[] = []
-    const lower: string[] = []
-    for (let i = 0; i < n; i++) {
-      const before = cum[i]
-      const after = before + (serie.down_mbps[i] ?? 0)
-      cum[i] = after
-      upper.push(`${xAt(i).toFixed(1)},${yAt(after).toFixed(1)}`)
-      lower.push(`${xAt(i).toFixed(1)},${yAt(before).toFixed(1)}`)
-    }
-    lower.reverse()
-    return { points: [...upper, ...lower].join(' '), color: seriesColor(serie.operator, k) }
-  })
+  const areas = series
+    .map((serie, k) => ({ serie, k }))
+    .reverse()
+    .map(({ serie, k }) => {
+      const upper: string[] = []
+      const lower: string[] = []
+      for (let i = 0; i < n; i++) {
+        const before = cum[i]
+        const after = before + (serie.down_mbps[i] ?? 0)
+        cum[i] = after
+        upper.push(`${xAt(i).toFixed(1)},${yAt(after).toFixed(1)}`)
+        lower.push(`${xAt(i).toFixed(1)},${yAt(before).toFixed(1)}`)
+      }
+      lower.reverse()
+      return { points: [...upper, ...lower].join(' '), color: seriesColor(serie.operator, k) }
+    })
 
   // Étiquettes X : ~5 repères de temps.
   const nLabels = Math.min(5, n)

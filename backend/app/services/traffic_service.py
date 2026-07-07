@@ -264,14 +264,15 @@ async def get_throughput_history(
         {"asn": a, "operator": labels[a], "down_mbps": [_mbps(per_top[a][i]) for i in range(n)]}
         for a in top_asns
     ]
-    if any(others):
-        series.append(
-            {"asn": None, "operator": _OTHERS_LABEL, "down_mbps": [_mbps(v) for v in others]}
-        )
-    if any(indet):
-        series.append(
-            {"asn": None, "operator": _UNKNOWN_LABEL, "down_mbps": [_mbps(v) for v in indet]}
-        )
+    # N'ajoute "Autres"/"Indéterminé" que si leur pic est visible une fois arrondi
+    # en Mb/s : sinon on empile une bande à 0.0 (légende "0.0 Mb/s" + sliver au
+    # sommet du stack) pour quelques octets bruts non résolus.
+    others_mbps = [_mbps(v) for v in others]
+    if any(v > 0 for v in others_mbps):
+        series.append({"asn": None, "operator": _OTHERS_LABEL, "down_mbps": others_mbps})
+    indet_mbps = [_mbps(v) for v in indet]
+    if any(v > 0 for v in indet_mbps):
+        series.append({"asn": None, "operator": _UNKNOWN_LABEL, "down_mbps": indet_mbps})
 
     return {
         "period": period if period in _HISTORY_PERIODS else "24h",

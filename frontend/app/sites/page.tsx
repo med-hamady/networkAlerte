@@ -159,8 +159,9 @@ function SitesPage() {
           </button>
         </div>
 
-        {/* Recherche globale — IP (infra + LR) ou nom/téléphone (LR) */}
-        <DeviceSearchBar onSelect={openDeviceById} />
+        {/* Recherche globale — IP (infra + LR) ou nom/téléphone (LR).
+            Masquée quand un site est ouvert (vue équipements). */}
+        {selectedSite == null && <DeviceSearchBar onSelect={openDeviceById} />}
 
         {/* Sites grid OR equipment grid */}
         {overviewLoading ? (

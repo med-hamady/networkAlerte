@@ -24,6 +24,9 @@ function SitesPage() {
   const [drillFilter, setDrillFilter]   = useState<'all' | 'infra'>('all')
   const [pannesSite, setPannesSite]     = useState<string | null>(null)
   const [selected, setSelected]         = useState<Device | null>(null)
+  // Deep-link ?device= : fiche en cours de résolution → overlay loader plein
+  // écran jusqu'à l'ouverture de la modale (sinon rien n'indique le chargement).
+  const [deviceLoading, setDeviceLoading] = useState(false)
 
   // Open a site's equipment, optionally filtered to infra only.
   const openEquipment = (name: string, filter: 'all' | 'infra' = 'all') => {
@@ -68,6 +71,7 @@ function SitesPage() {
     if (!deviceParam || lastHandledDevice.current === deviceParam) return
     lastHandledDevice.current = deviceParam
     let cancelled = false
+    setDeviceLoading(true)
     ;(async () => {
       try {
         const dev: Device = await fetcher(endpoints.device(Number(deviceParam)))
@@ -75,6 +79,7 @@ function SitesPage() {
         setSelected(dev)
         setSelectedSite(dev.site?.trim() || SITE_FALLBACK)
       } catch { /* device introuvable : on n'ouvre pas la fiche */ }
+      finally { if (!cancelled) setDeviceLoading(false) }
     })()
     return () => { cancelled = true }
   }, [deviceParam])
@@ -227,6 +232,17 @@ function SitesPage() {
           } catch { /* device introuvable : on n'ouvre pas la fiche */ }
         }}
       />
+
+      {/* Loader du deep-link ?device= : même backdrop que la modale, affiché
+          tant que la fiche n'est pas résolue (fetch par id en cours). */}
+      {deviceLoading && selected == null && (
+        <div className="fixed inset-0 bg-blue-900/30 backdrop-blur-sm z-50 flex items-center justify-center animate-fade-in">
+          <div className="bg-white rounded-xl shadow-2xl px-6 py-5 flex items-center gap-3">
+            <span className="w-5 h-5 rounded-full border-2 border-blue-200 border-t-blue-600 animate-spin shrink-0" />
+            <span className="text-sm font-medium text-blue-900">Chargement de l'équipement…</span>
+          </div>
+        </div>
+      )}
 
       <DeviceDetailModal
         device={selected}

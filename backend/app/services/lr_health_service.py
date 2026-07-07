@@ -618,6 +618,10 @@ async def get_site_link_health(db: AsyncSession) -> SiteLinkHealthResponse:
     fetch live) mais plancher distinct :
       - AF60 (airFiber 60) ........ ``af60_capacity_display_min_mbps`` (1.95 Gb/s)
       - PTP LiteBeam (ptp_litebeam) ``airmax_backhaul_capacity_min_mbps`` (150 Mbps)
+
+    Seuls les équipements ``up`` (ping) sont évalués : un lien down est déjà
+    couvert par les alertes de disponibilité, et sa dernière capacité en base
+    est stale — l'afficher ici serait un faux « dégradé ».
     """
     now = datetime.datetime.now(datetime.UTC)
     settings = get_settings()
@@ -625,7 +629,9 @@ async def get_site_link_health(db: AsyncSession) -> SiteLinkHealthResponse:
     no_data = 0
 
     # ── AF60 (airFiber 60) ──
-    afs = (await db.execute(select(AirFiber))).scalars().all()
+    afs = (
+        await db.execute(select(AirFiber).where(AirFiber.status == "up"))
+    ).scalars().all()
     if afs:
         af_floor = float(settings.af60_capacity_display_min_mbps)
         latest = await _fetch_latest_af60_metrics(db, [af.id for af in afs])
@@ -654,7 +660,7 @@ async def get_site_link_health(db: AsyncSession) -> SiteLinkHealthResponse:
     # ── PTP LiteBeams (airMAX point-à-point inter-sites) ──
     # cinr_db sert d'équivalent SNR à l'affichage (latest_snr_db laissé None).
     backhauls = (
-        await db.execute(select(PtpLiteBeam))
+        await db.execute(select(PtpLiteBeam).where(PtpLiteBeam.status == "up"))
     ).scalars().all()
     if backhauls:
         bh_floor = float(settings.airmax_backhaul_capacity_min_mbps)

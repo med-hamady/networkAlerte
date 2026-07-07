@@ -3,7 +3,7 @@
 import type { ReactNode } from 'react'
 import type { Device } from '@/lib/types'
 import { deviceLabel, timeAgo } from '@/lib/types'
-import DeviceImage from './DeviceImage'
+import DeviceImage, { devicePhotoVariant } from './DeviceImage'
 import IpLink from './IpLink'
 
 interface Props {
@@ -30,7 +30,7 @@ export default function DeviceCard({ device, onClick, linkedLRCount = 0 }: Props
       <div className={`rounded-t-xl flex items-center justify-center py-6 px-4 ${
         isDown ? 'bg-red-50' : 'bg-blue-50'
       }`}>
-        <DeviceImage type={device.device_type} size="md" />
+        <DeviceImage type={device.device_type} variant={devicePhotoVariant(device)} size="md" />
       </div>
 
       {/* Info area */}

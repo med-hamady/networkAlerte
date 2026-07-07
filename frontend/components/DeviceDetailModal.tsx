@@ -7,7 +7,7 @@ import type { DiagResult } from '@/lib/api'
 import type { Device, DeviceMetrics, NetworkCapacity, RocketCapacity } from '@/lib/types'
 import { deviceLabel, formatDate, timeAgo, formatBytes, formatUptime, parentRocketId } from '@/lib/types'
 import { useThresholds } from '@/lib/useThresholds'
-import DeviceImage from './DeviceImage'
+import DeviceImage, { devicePhotoVariant } from './DeviceImage'
 import IpLink from './IpLink'
 
 const RADIO_TYPES = new Set(['rocket', 'lr', 'airfiber', 'ptp_litebeam'])
@@ -121,7 +121,7 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
       <div className={`px-6 py-8 flex flex-col items-center gap-4 border-b border-blue-100 ${
         isDown ? 'bg-red-50' : 'bg-blue-50'
       }`}>
-        <DeviceImage type={device.device_type} size="lg" />
+        <DeviceImage type={device.device_type} variant={devicePhotoVariant(device)} size="lg" />
 
         {isUp && (
           <div className="flex items-center gap-2 bg-white border border-green-200 px-4 py-1.5 rounded-full shadow-sm">

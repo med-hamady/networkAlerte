@@ -1,7 +1,11 @@
 import type { JSX } from 'react'
+import type { Device } from '@/lib/types'
 
 interface Props {
   type: string
+  // Affine le choix de la photo : `radio_tech` pour un Rocket (ltu/airmax),
+  // `model_variant` pour un LR (ltu_lite, litebeam…). Optionnel.
+  variant?: string
   size?: 'sm' | 'md' | 'lg' | 'xl'
   className?: string
 }
@@ -11,7 +15,7 @@ const sizeClass = { sm: 'w-10 h-10', md: 'w-24 h-24', lg: 'w-36 h-36', xl: 'w-32
 // Vraies photos produit Ubiquiti (fond blanc) servies depuis public/devices/.
 // Prioritaires sur les SVG. `mix-blend-multiply` fond le blanc de la photo dans
 // le fond teinté de la carte au lieu d'afficher un rectangle blanc.
-// Les types sans photo (uisp_power, airfiber) retombent sur le SVG.
+// Les types sans photo retombent sur le SVG.
 const photoMap: Record<string, string> = {
   rocket:       '/devices/ltu-rocket.jpg',
   uisp_switch:  '/devices/uisp-switch.jpg',
@@ -21,8 +25,22 @@ const photoMap: Record<string, string> = {
   airfiber:     '/devices/airfiber.webp',
 }
 
-export default function DeviceImage({ type, size = 'md', className = '' }: Props) {
-  const photo = photoMap[type]
+// Extrait la variante utile au choix de photo depuis un device.
+export function devicePhotoVariant(device: Device): string | undefined {
+  if (device.device_type === 'rocket') return device.radio_tech
+  if (device.device_type === 'lr')     return device.model_variant
+  return undefined
+}
+
+// Photo affinée par variante (sinon la photo générique du type).
+function resolvePhoto(type: string, variant?: string): string | undefined {
+  if (type === 'rocket') return variant === 'airmax' ? '/devices/rocket-airmax.jpg' : '/devices/ltu-rocket.jpg'
+  if (type === 'lr')     return variant === 'ltu_lite' ? '/devices/ltu-lite.jpg' : '/devices/ltu-lr.jpg'
+  return photoMap[type]
+}
+
+export default function DeviceImage({ type, variant, size = 'md', className = '' }: Props) {
+  const photo = resolvePhoto(type, variant)
   if (photo) {
     return (
       <div className={`${sizeClass[size]} mx-auto flex items-center justify-center ${className}`}>

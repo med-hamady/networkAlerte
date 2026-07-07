@@ -12,7 +12,8 @@ import Sidebar from '@/components/Sidebar'
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   // Paths that render full-screen, without the dashboard chrome.
-  const isChromeless = pathname === '/login'
+  // (/topo-preview = aperçu temporaire sans auth ni sidebar)
+  const isChromeless = pathname === '/login' || pathname === '/topo-preview'
 
   if (isChromeless) {
     return <>{children}</>

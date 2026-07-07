@@ -24,6 +24,11 @@ export function middleware(req: NextRequest) {
     return NextResponse.next()
   }
 
+  // TEMP — aperçu topologie sans auth (à retirer avec app/topo-preview).
+  if (req.nextUrl.pathname === '/topo-preview') {
+    return NextResponse.next()
+  }
+
   if (!hasSession) {
     const url = req.nextUrl.clone()
     url.pathname = '/login'

@@ -89,6 +89,7 @@ export default function LrHealthPage() {
   }
 
   return (
+    <>
     <div className="space-y-10">
 
       <div className="flex items-start justify-between gap-4">
@@ -127,23 +128,25 @@ export default function LrHealthPage() {
       {tab === 'clients' && <ClientLinksSection onOpenDevice={openDevice} />}
       {tab === 'sites' && <SiteLinksSection onOpenDevice={openDevice} />}
       {tab === 'latency' && <HighLatencySection onOpenDevice={openDevice} />}
-
-      {/* Loader pendant la résolution de la fiche (fetch par id en cours). */}
-      {deviceLoading && selected == null && (
-        <div className="fixed inset-0 bg-blue-900/30 backdrop-blur-sm z-50 flex items-center justify-center animate-fade-in">
-          <div className="bg-white rounded-xl shadow-2xl px-6 py-5 flex items-center gap-3">
-            <span className="w-5 h-5 rounded-full border-2 border-blue-200 border-t-blue-600 animate-spin shrink-0" />
-            <span className="text-sm font-medium text-blue-900">Chargement de l'équipement…</span>
-          </div>
-        </div>
-      )}
-
-      <DeviceDetailModal
-        device={selected}
-        onClose={() => setSelected(null)}
-        onNavigate={setSelected}
-      />
     </div>
+
+    {/* Loader + modale HORS du conteneur space-y-10 : son margin-top décale
+        les éléments `fixed` (top-0 cale le bord de marge → bande vide en haut). */}
+    {deviceLoading && selected == null && (
+      <div className="fixed inset-0 bg-blue-900/30 backdrop-blur-sm z-50 flex items-center justify-center animate-fade-in">
+        <div className="bg-white rounded-xl shadow-2xl px-6 py-5 flex items-center gap-3">
+          <span className="w-5 h-5 rounded-full border-2 border-blue-200 border-t-blue-600 animate-spin shrink-0" />
+          <span className="text-sm font-medium text-blue-900">Chargement de l'équipement…</span>
+        </div>
+      </div>
+    )}
+
+    <DeviceDetailModal
+      device={selected}
+      onClose={() => setSelected(null)}
+      onNavigate={setSelected}
+    />
+    </>
   )
 }
 

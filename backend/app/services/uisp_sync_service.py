@@ -473,6 +473,18 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
         logger.warning("UISP data-links fetch failed (%s) — using apDevice attribution only", exc)
         ap_by_station = {}
 
+    # Every MAC UISP currently lists as a station — used after the loop to clear
+    # the AP attribution of rows UISP no longer knows (deprovisioned clients).
+    roster_macs: set[str] = set()
+    for dev in raw:
+        m = (dev.get("identification") or {}).get("mac")
+        try:
+            nm = normalize_mac(m) if m else None
+        except ValueError:
+            nm = None
+        if nm:
+            roster_macs.add(nm)
+
     existing = (await session.execute(select(Device))).scalars().all()
     by_mac: dict[str, Device] = {d.mac_address: d for d in existing if d.mac_address}
     by_ip: dict[str, Device] = {d.ip_address: d for d in existing if d.ip_address}
@@ -594,9 +606,24 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
                 "mode": uisp_mode, "status": uisp_status, "ap": ap_name,
             })
 
+    # Reconcile the roster: an LR that carries a UISP AP attribution but whose
+    # MAC is no longer in the fetched station list has been deprovisioned in
+    # UISP. Since the sync never deletes rows, without this its stale
+    # `uisp_ap_name` would keep it counted in /capacity forever (the "25 vs 24"
+    # phantom). Clear only the UISP snapshot columns — discovery-owned columns
+    # (rocket_id, topology_mode, block state) stay untouched.
+    summary["cleared_ap"] = 0
+    if not dry_run:
+        for d in existing:
+            if isinstance(d, Lr) and d.uisp_ap_name and d.mac_address not in roster_macs:
+                d.uisp_ap_name = None
+                d.uisp_status = None
+                d.uisp_synced_at = now
+                summary["cleared_ap"] += 1
+
     logger.info(
-        "UISP station sync %s: fetched=%d stations=%d created=%d updated=%d skipped=%s",
+        "UISP station sync %s: fetched=%d stations=%d created=%d updated=%d cleared_ap=%d skipped=%s",
         "(dry-run)" if dry_run else "", summary["fetched"], summary["stations"],
-        summary["created"], summary["updated"], summary["skipped"],
+        summary["created"], summary["updated"], summary["cleared_ap"], summary["skipped"],
     )
     return summary

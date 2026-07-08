@@ -5,16 +5,22 @@ For every base-station Rocket we know two numbers:
   - **max clients** : the ceiling that opens the ``rocket_client_overload``
     incident, computed by :func:`alert_rules._rocket_overload_threshold`
     (per-family base at 10 MHz + step per +10 MHz of channel width).
-  - **installed clients** : how many subscriber LRs are **provisioned** on this
-    Rocket — the count of ``lrs`` rows attached to it (``rocket_id``). This is
-    the UISP-authoritative roster (kept up to date by ``sync_uisp_stations``),
-    so it does NOT drop when a client's antenna goes down. A live connected-peer
-    count (the old ``peer_count``) collapsed whenever a CPE was offline, making
-    a Rocket look under-loaded even though the client is still installed on it.
+  - **installed clients** : how many subscriber LRs UISP lists on this Rocket —
+    the count of ``lrs`` rows whose UISP-reported parent AP (``uisp_ap_name``,
+    ``attributes.apDevice.name``, refreshed every sync by
+    ``sync_uisp_stations``) matches the Rocket name. This is the
+    UISP-authoritative roster, so it does NOT drop when a client's antenna goes
+    down. **It is deliberately NOT the discovery ``rocket_id``**: that column is
+    owned by radio discovery, which keeps a client pinned to its old Rocket
+    until it is re-seen as a peer elsewhere — so a roamed/removed client lingers
+    on ``rocket_id`` (UISP moves it away instantly) and the ceiling count would
+    over-report. A live connected-peer count (the old ``peer_count``) had the
+    opposite bug: it collapsed whenever a CPE was offline.
 
 The channel width (for the ceiling) is still read from ``device_metrics``
 (latest-only collapse, persisted by the LTU/airMAX poll jobs); the installed
-count is a single ``GROUP BY rocket_id`` over ``lrs``. The service rolls both up
+count is a single ``GROUP BY uisp_ap_name`` over ``lrs`` mapped to Rockets by
+name. The service rolls both up
 by radio **family** (LTU / airMAX) for the whole network and by **site**
 (``Rocket.location``), and lists each site's Rockets for the drill-down.
 
@@ -73,23 +79,35 @@ async def _fetch_latest_capacity_metrics(
     return out
 
 
-async def _fetch_installed_client_counts(db: AsyncSession) -> dict[int, int]:
-    """Number of subscriber LRs provisioned on each Rocket — ``{rocket_id: n}``.
+async def _fetch_installed_client_counts(
+    db: AsyncSession, name_to_id: dict[str, int]
+) -> dict[int, int]:
+    """Number of subscriber LRs UISP lists on each Rocket — ``{rocket_id: n}``.
 
-    Counts ``lrs`` rows by their ``rocket_id`` attachment. This is the installed
-    roster (populated/refreshed by ``sync_uisp_stations`` from the UISP
-    controller and by radio discovery), independent of whether each client is
-    currently up or down — which is exactly the capacity we want to size against.
-    LRs with no parent Rocket (``rocket_id`` NULL) are skipped (not attributable
-    to any AP)."""
+    Counts ``lrs`` rows by their UISP-reported parent AP (``uisp_ap_name``,
+    refreshed every sync by ``sync_uisp_stations``), mapped to the Rocket by
+    name via ``name_to_id``. This is the installed roster the page sizes
+    against, independent of whether each client is up or down.
+
+    We count by ``uisp_ap_name`` rather than the discovery ``rocket_id`` on
+    purpose: ``rocket_id`` is owned by radio discovery, which leaves a client
+    pinned to its old Rocket until it is re-seen as a peer elsewhere, so roamed
+    or decommissioned clients (the sync never deletes) linger there and inflate
+    the count — while UISP moves them off ``uisp_ap_name`` immediately. LRs
+    whose ``uisp_ap_name`` is NULL or names no known Rocket are skipped."""
     rows = (
         await db.execute(
-            select(Lr.rocket_id, func.count())
-            .where(Lr.rocket_id.isnot(None))
-            .group_by(Lr.rocket_id)
+            select(Lr.uisp_ap_name, func.count())
+            .where(Lr.uisp_ap_name.isnot(None))
+            .group_by(Lr.uisp_ap_name)
         )
     ).all()
-    return {rocket_id: count for rocket_id, count in rows}
+    out: dict[int, int] = {}
+    for ap_name, count in rows:
+        rocket_id = name_to_id.get(ap_name)
+        if rocket_id is not None:
+            out[rocket_id] = out.get(rocket_id, 0) + count
+    return out
 
 
 def _empty_bucket() -> dict[str, int]:
@@ -125,7 +143,11 @@ async def get_network_capacity(db: AsyncSession) -> dict:
         )
     ).all()
     latest = await _fetch_latest_capacity_metrics(db, [r.id for r in rockets])
-    installed = await _fetch_installed_client_counts(db)
+    # Installed roster is keyed on the UISP parent-AP name (`uisp_ap_name`), so
+    # resolve it back to Rocket ids via the name→id map. Names come from UISP for
+    # both sides (Rocket + station `apDevice`) so they converge each sync.
+    name_to_id = {r.name: r.id for r in rockets}
+    installed = await _fetch_installed_client_counts(db, name_to_id)
 
     families = {"ltu": _empty_bucket(), "airmax": _empty_bucket()}
     sites: dict[str, dict] = {}

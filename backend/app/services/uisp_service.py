@@ -91,3 +91,28 @@ class UISPClient:
                 logger.warning("UISP /devices returned a non-list payload (%s)", type(payload))
                 return []
             return payload
+
+    async def fetch_data_links(self) -> list[dict]:
+        """Return the controller's provisioned data-links (raw UISP dicts).
+
+        Each link has `from`/`to` device ends; an AP↔station link ties a client
+        station to its base-station AP **independently of live up/down status**.
+        The station sync uses this to attribute each client to its AP even when
+        UISP leaves the station's own `apDevice` attribute empty — which happens
+        for some fully-active stations, making an `apDevice`-only count
+        under-report the installed roster. Raises UISPAuthError on bad
+        credentials, httpx errors on transport/HTTP failures.
+        """
+        async with httpx.AsyncClient(verify=self._verify, timeout=self._timeout) as client:
+            headers = await self._auth_headers(client)
+            resp = await client.get(
+                f"{self._base}/nms/api/v2.1/data-links",
+                headers=headers,
+                timeout=self._timeout,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            if not isinstance(payload, list):
+                logger.warning("UISP /data-links returned a non-list payload (%s)", type(payload))
+                return []
+            return payload

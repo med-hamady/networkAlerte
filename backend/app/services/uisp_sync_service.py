@@ -404,6 +404,38 @@ def _parse_iso(value: str | None) -> datetime.datetime | None:
         return None
 
 
+def _build_station_ap_map(links: list[dict]) -> dict[str, str]:
+    """Map each station **device id → its AP device name**, from provisioned
+    data-links.
+
+    For every AP↔station data-link we take the ``role=="ap"`` end as the AP and
+    the ``role=="station"`` end as the client. This is the roster UISP's own UI
+    counts against — it attributes a client to its AP even when the station's
+    ``apDevice`` attribute is empty (UISP leaves it null for some active
+    stations, which made our ``apDevice``-only count under-report). When a
+    station has several links (roaming history), an ``active`` link wins over a
+    ``disconnected`` one so the current AP is used. AP↔switch (wired uplink) and
+    AP↔AP (PTP backhaul) links are naturally ignored (no station end)."""
+    chosen: dict[str, tuple[bool, str]] = {}  # station_id -> (link_active, ap_name)
+    for link in links:
+        ends = [
+            ((link.get(side) or {}).get("device") or {}).get("identification") or {}
+            for side in ("from", "to")
+        ]
+        ap = next((e for e in ends if e.get("role") == "ap"), None)
+        sta = next((e for e in ends if e.get("role") == "station"), None)
+        if not ap or not sta:
+            continue
+        sid, ap_name = sta.get("id"), ap.get("name")
+        if not sid or not ap_name:
+            continue
+        active = link.get("state") == "active"
+        prev = chosen.get(sid)
+        if prev is None or (active and not prev[0]):
+            chosen[sid] = (active, ap_name)
+    return {sid: name for sid, (_, name) in chosen.items()}
+
+
 async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) -> dict:
     """Import the UISP client-station roster into the `lrs` table.
 
@@ -431,6 +463,15 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
         timeout=settings.uisp_request_timeout,
     )
     raw = await client.fetch_devices(role="station")
+    # Attribute each station to its AP via the provisioned data-links (reliable,
+    # up or down) rather than the station's `apDevice` attribute alone — UISP
+    # leaves that attribute null for some active stations, which under-reported
+    # the installed roster. Best-effort: on failure we fall back to `apDevice`.
+    try:
+        ap_by_station = _build_station_ap_map(await client.fetch_data_links())
+    except Exception as exc:  # noqa: BLE001 — non-fatal, apDevice fallback remains
+        logger.warning("UISP data-links fetch failed (%s) — using apDevice attribution only", exc)
+        ap_by_station = {}
 
     existing = (await session.execute(select(Device))).scalars().all()
     by_mac: dict[str, Device] = {d.mac_address: d for d in existing if d.mac_address}
@@ -484,7 +525,11 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
         ip = _strip_ip(dev.get("ipAddress"))
         uisp_mode = dev.get("mode")  # 'router' | 'bridge'
         uisp_status = (dev.get("overview") or {}).get("status")  # 'active'|'disconnected'
-        ap_name = ((dev.get("attributes") or {}).get("apDevice") or {}).get("name")
+        # Prefer the data-link attribution (covers stations whose apDevice is
+        # null); fall back to the station's own apDevice attribute.
+        ap_name = ap_by_station.get(ident.get("id")) or (
+            ((dev.get("attributes") or {}).get("apDevice") or {}).get("name")
+        )
         model_name = ident.get("modelName") or model
 
         match = by_mac.get(mac)

@@ -60,6 +60,8 @@ export const endpoints = {
   clientsConsumption:   (period: '24h' | '7d' | '30d' | 'lifetime') => `${API_BASE}/clients/consumption?period=${period}`,
   clientsConsumptionRange: (start: string, end: string) => `${API_BASE}/clients/consumption?period=custom&start=${start}&end=${end}`,
   networkCapacity:      `${API_BASE}/network-capacity`,
+  uispSync:             `${API_BASE}/uisp/sync`,
+  uispSyncStations:     `${API_BASE}/uisp/sync?stations=true`,
   topDestinations:      (period: '24h' | '7d' | '30d') => `${API_BASE}/traffic/top-destinations?period=${period}`,
   trafficThroughput:    `${API_BASE}/traffic/throughput`,
   trafficThroughputHistory: (period: '1h' | '6h' | '24h') => `${API_BASE}/traffic/throughput-history?period=${period}`,
@@ -246,6 +248,28 @@ export interface DiscoverModemsResponse {
 export async function discoverModemsViaLr(lrId: number): Promise<DiscoverModemsResponse> {
   const res = await fetch(endpoints.discoverModems(lrId), { method: 'POST' })
   return jsonOrThrow<DiscoverModemsResponse>(res)
+}
+
+export interface UispSyncSummary {
+  created?: number
+  updated?: number
+  unchanged?: number
+  ignored?: number
+  [k: string]: unknown
+}
+
+// Trigger a full UISP sync on demand, mirroring the daily uisp_sync_job:
+// infrastructure first (Rockets/switches/power/AF60), then the client-station
+// roster into `lrs` (installed-clients count used by /capacity). Used by the
+// "Synchroniser" button on the capacity page.
+export async function runUispSync(): Promise<{ infra: UispSyncSummary; stations: UispSyncSummary }> {
+  const infra = await jsonOrThrow<UispSyncSummary>(
+    await fetch(endpoints.uispSync, { method: 'POST' }),
+  )
+  const stations = await jsonOrThrow<UispSyncSummary>(
+    await fetch(endpoints.uispSyncStations, { method: 'POST' }),
+  )
+  return { infra, stations }
 }
 
 // Typed wrappers for SWR (pass to useSWR as key)

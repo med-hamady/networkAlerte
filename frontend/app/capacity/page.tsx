@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import useSWR, { type KeyedMutator } from 'swr'
-import { endpoints, fetcher, updateDevice } from '@/lib/api'
+import { endpoints, fetcher, runUispSync, updateDevice } from '@/lib/api'
 import type { CapacityBucket, NetworkCapacity, RocketCapacity, SiteCapacity, SiteInfra } from '@/lib/types'
 import CapacityDonut from '@/components/CapacityDonut'
 
@@ -57,6 +57,7 @@ export default function CapacityPage() {
   return (
     <div className="space-y-6">
       {/* Breadcrumb / header */}
+      <div className="flex items-start justify-between gap-4">
       <div className="min-w-0">
         <div className="flex items-center gap-2 text-sm mb-1">
           <button
@@ -81,6 +82,8 @@ export default function CapacityPage() {
             ? <>Rockets de ce site — clients installés vs maximum avant saturation.</>
             : <>Clients installés vs disponibles par famille radio et par site — clique un site pour voir ses Rockets.</>}
         </p>
+      </div>
+        <SyncButton onSynced={mutate} />
       </div>
 
       {isLoading && <p className="text-slate-400 text-sm">Chargement…</p>}
@@ -164,6 +167,58 @@ export default function CapacityPage() {
 
       {/* Drill-down : Rockets du site */}
       {siteObj != null && <SiteRocketsTable site={siteObj} onSaved={mutate} />}
+    </div>
+  )
+}
+
+// Bouton « Synchroniser » : déclenche à la demande le même import UISP que le
+// cron quotidien de 7h (infra puis stations clientes), puis rafraîchit la page.
+function SyncButton({ onSynced }: { onSynced: KeyedMutator<NetworkCapacity> }) {
+  const [syncing, setSyncing] = useState(false)
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  async function sync() {
+    setSyncing(true)
+    setMsg(null)
+    try {
+      const { infra, stations } = await runUispSync()
+      await onSynced()
+      const infraChanged = (infra.created ?? 0) + (infra.updated ?? 0)
+      const staChanged = (stations.created ?? 0) + (stations.updated ?? 0)
+      setMsg({
+        ok: true,
+        text: `Synchronisé — infra ${infraChanged} maj, clients ${staChanged} maj.`,
+      })
+    } catch (e) {
+      setMsg({ ok: false, text: `Échec : ${(e as Error).message}` })
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  return (
+    <div className="shrink-0 flex flex-col items-end gap-1">
+      <button
+        onClick={sync}
+        disabled={syncing}
+        className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+        title="Importer les équipements et clients depuis le contrôleur UISP maintenant"
+      >
+        <svg
+          className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`}
+          viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
+          strokeLinecap="round" strokeLinejoin="round"
+        >
+          <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+          <path d="M21 3v6h-6" />
+        </svg>
+        {syncing ? 'Synchronisation…' : 'Synchroniser'}
+      </button>
+      {msg != null && (
+        <span className={`text-[11px] max-w-[16rem] text-right ${msg.ok ? 'text-green-600' : 'text-red-600'}`}>
+          {msg.text}
+        </span>
+      )}
     </div>
   )
 }

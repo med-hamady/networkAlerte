@@ -804,7 +804,10 @@ export interface OutageExtraDevice {
   device_id: number
   device_name: string
   device_type: string
+  // Residual downtime beyond the switch (by_downtime) / residual outage count
+  // beyond the switch (by_pannes). Both fields are always present.
   extra_downtime_seconds: number
+  extra_episodes: number
 }
 export interface OutageSite {
   site: string

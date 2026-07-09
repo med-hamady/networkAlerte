@@ -64,11 +64,14 @@ export default function SiteOutageCharts({
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <SiteOutageCard
         title="Nombre de pannes par site"
-        subtitle={`Épisodes de coupure — ${period} · cliquer un site pour le détail`}
+        subtitle={`Épisodes de coupure du switch (équipement parent) — ${period} · cliquer un site pour le détail`}
         sites={data?.by_pannes ?? []}
         valueOf={s => s.pannes}
         labelOf={s => `${s.pannes}`}
         deviceLabelOf={d => `${d.episodes_count} panne${d.episodes_count > 1 ? 's' : ''}`}
+        extraOf={s => s.extra_devices ?? []}
+        extraValueOf={d => d.extra_episodes}
+        extraFmt={n => `+${n} panne${n > 1 ? 's' : ''}`}
         barClass="bg-red-400"
       />
       <SiteOutageCard
@@ -79,6 +82,8 @@ export default function SiteOutageCharts({
         labelOf={s => fmtDuration(s.downtime_seconds)}
         deviceLabelOf={d => fmtDuration(d.total_downtime_seconds)}
         extraOf={s => s.extra_devices ?? []}
+        extraValueOf={d => d.extra_downtime_seconds}
+        extraFmt={n => `+${fmtDuration(n)}`}
         barClass="bg-orange-400"
       />
     </div>
@@ -86,7 +91,8 @@ export default function SiteOutageCharts({
 }
 
 function SiteOutageCard({
-  title, subtitle, sites, valueOf, labelOf, deviceLabelOf, extraOf, barClass,
+  title, subtitle, sites, valueOf, labelOf, deviceLabelOf,
+  extraOf, extraValueOf, extraFmt, barClass,
 }: {
   title: string
   subtitle: string
@@ -94,9 +100,12 @@ function SiteOutageCard({
   valueOf: (s: OutageSite) => number
   labelOf: (s: OutageSite) => string
   deviceLabelOf: (d: OutageSiteDevice) => string
-  // Optional: equipment down LONGER than the site's switch. Rendered as an
-  // always-visible annotation under the site row (downtime card only).
+  // Optional: equipment that exceeded the site's switch (longer downtime, or
+  // more outages). Rendered as an always-visible annotation under the site row.
+  // `extraValueOf` picks the metric (seconds / episodes), `extraFmt` formats it.
   extraOf?: (s: OutageSite) => OutageExtraDevice[]
+  extraValueOf?: (d: OutageExtraDevice) => number
+  extraFmt?: (total: number) => string
   barClass: string
 }) {
   const [openSite, setOpenSite] = useState<string | null>(null)
@@ -146,15 +155,15 @@ function SiteOutageCard({
                   </div>
                 </button>
 
-                {extras.length > 0 && (
+                {extras.length > 0 && extraValueOf && extraFmt && (
                   <div className="ml-7 mr-2 -mt-0.5 mb-1 text-[11px]">
                     <span
                       className="inline-block px-1.5 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 font-medium tabular-nums"
                       title={extras
-                        .map(d => `${d.device_name} (${deviceTypeLabel(d.device_type)}) : +${fmtDuration(d.extra_downtime_seconds)}`)
+                        .map(d => `${d.device_name} (${deviceTypeLabel(d.device_type)}) : ${extraFmt(extraValueOf(d))}`)
                         .join('\n')}
                     >
-                      ⚠ Au-delà du switch : +{fmtDuration(sumExtra(extras))} ({extras.length} équip.)
+                      ⚠ Au-delà du switch : {extraFmt(extras.reduce((a, d) => a + extraValueOf(d), 0))} ({extras.length} équip.)
                     </span>
                   </div>
                 )}

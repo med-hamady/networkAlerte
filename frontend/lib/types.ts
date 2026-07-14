@@ -833,7 +833,7 @@ export interface FaiJournalEntry {
   mac: string | null
   name: string
   mode: string
-  source: 'payment' | 'enforce'
+  source: 'payment' | 'enforce' | 'script'
   message: string
 }
 export interface FaiJournalStats {

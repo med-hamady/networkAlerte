@@ -24,6 +24,13 @@ const ACTION_STYLE: Record<FaiJournalEntry['action'], { label: string; cls: stri
   ABANDON:  { label: 'Abandonné',      cls: 'bg-amber-50 text-amber-800 border-amber-300' },
 }
 
+// Qui a demandé l'action. `script` = blocage de masse (migration depuis le MikroTik).
+const SOURCE_LABEL: Record<string, string> = {
+  payment: 'Système de paiement',
+  enforce: 'Renforcement auto',
+  script:  'Blocage de masse',
+}
+
 function formatTs(ts: string): string {
   const d = new Date(ts)
   if (Number.isNaN(d.getTime())) return ts
@@ -159,9 +166,7 @@ export default function FaiJournalPage() {
                   </Td>
                   <Td className="font-medium text-blue-900">{e.name}</Td>
                   <Td className="font-mono text-xs text-blue-500">{e.mac ?? '—'}</Td>
-                  <Td className="text-xs text-blue-500">
-                    {e.source === 'payment' ? 'Système de paiement' : 'Renforcement auto'}
-                  </Td>
+                  <Td className="text-xs text-blue-500">{SOURCE_LABEL[e.source] ?? e.source}</Td>
                   <Td>
                     <span className={`font-semibold ${e.ok ? 'text-green-700' : 'text-red-700'}`}>
                       {e.ok ? 'Appliqué' : 'Non appliqué'}

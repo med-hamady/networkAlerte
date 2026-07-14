@@ -39,7 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.core.config import get_settings
 from app.db.session import async_session_factory
 from app.schemas.device import normalize_mac
-from app.services import client_block_service
+from app.services import client_block_service, fai_audit
 
 DEFAULT_REASON = "Blocage de masse (impayé)"
 
@@ -102,6 +102,12 @@ async def _block_one(
                 await session.rollback()
                 results["pending"].append((mac, label, lr.name, f"exception: {exc}"))
                 return
+            # Même journal que les ordres du système de paiement — la migration de
+            # masse est justement ce qu'on voudra pouvoir relire client par client.
+            fai_audit.log_action(
+                "BLOCK", ok=ok, mac=lr.mac_address, name=lr.name,
+                mode=lr.block_mode, source="script", message=msg,
+            )
             if ok:
                 results["enforced"].append((mac, label, lr.name))
             else:

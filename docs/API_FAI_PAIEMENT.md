@@ -14,14 +14,19 @@ du LR. Ce n'est plus le routeur core qui bloque.
 
 | | |
 |---|---|
-| **URL de base** | `https://102.215.95.229/api/v1/fai` |
+| **URL de base** | `https://102.215.95.233/api/v1/fai` |
 | **Authentification** | En-tête HTTP `X-API-Key: <clé fournie par l'équipe réseau>` |
 | **Portée de la clé** | La clé remise au système de paiement n'ouvre **que** ces trois routes `/fai`. Elle ne donne accès à aucune autre partie du superviseur. |
 | **Format** | JSON (`Content-Type: application/json`) |
 
-> **Filtrage par IP source** : l'accès est restreint par pare-feu à une liste d'adresses IP
-> autorisées. L'IP publique du serveur de paiement y est déjà déclarée. Les appels **doivent
-> partir de ce serveur** — depuis toute autre adresse, la connexion n'aboutira pas.
+> **Confidentialité de la clé** : cette URL est joignable depuis Internet et il n'y a pas de
+> filtrage par IP source. **La clé est donc le seul secret qui protège l'accès des clients** :
+> elle ne doit jamais être commitée dans un dépôt, ni figurer dans une URL, ni être partagée
+> hors de l'équipe paiement. En cas de doute sur une fuite, prévenir l'équipe réseau —
+> la clé est révoquée et remplacée en une minute, sans impact sur le reste du système.
+>
+> **Débit** : 30 requêtes/minute par IP source. Largement au-dessus d'un usage normal
+> (un blocage/déblocage à la transaction) ; ne pas boucler sur des retries (voir §6).
 >
 > **TLS** : le serveur présente un certificat **auto-signé**. Le client HTTP du système de
 > paiement doit désactiver la vérification du certificat **pour cet hôte uniquement**
@@ -39,7 +44,7 @@ du LR. Ce n'est plus le routeur core qui bloque.
 
 ```http
 POST /api/v1/fai/block HTTP/1.1
-Host: 102.215.95.229
+Host: 102.215.95.233
 X-API-Key: <clé>
 Content-Type: application/json
 
@@ -64,7 +69,7 @@ Content-Type: application/json
 
 ```http
 POST /api/v1/fai/unblock HTTP/1.1
-Host: 102.215.95.229
+Host: 102.215.95.233
 X-API-Key: <clé>
 Content-Type: application/json
 
@@ -143,22 +148,22 @@ Règle simple côté paiement :
 
 ```bash
 # Bloquer (coupure totale)
-curl -k -X POST https://102.215.95.229/api/v1/fai/block \
+curl -k -X POST https://102.215.95.233/api/v1/fai/block \
   -H "X-API-Key: <clé>" -H "Content-Type: application/json" \
   -d '{"mac":"d0:21:f9:f6:07:c2","mode":"full","reason":"Impayé"}'
 
 # Bloquer en laissant WhatsApp accessible
-curl -k -X POST https://102.215.95.229/api/v1/fai/block \
+curl -k -X POST https://102.215.95.233/api/v1/fai/block \
   -H "X-API-Key: <clé>" -H "Content-Type: application/json" \
   -d '{"mac":"d0:21:f9:f6:07:c2","mode":"whatsapp_only","reason":"Impayé"}'
 
 # Débloquer (paiement reçu)
-curl -k -X POST https://102.215.95.229/api/v1/fai/unblock \
+curl -k -X POST https://102.215.95.233/api/v1/fai/unblock \
   -H "X-API-Key: <clé>" -H "Content-Type: application/json" \
   -d '{"mac":"d0:21:f9:f6:07:c2"}'
 
 # Vérifier l'état
-curl -k "https://102.215.95.229/api/v1/fai/status?mac=d0:21:f9:f6:07:c2" \
+curl -k "https://102.215.95.233/api/v1/fai/status?mac=d0:21:f9:f6:07:c2" \
   -H "X-API-Key: <clé>"
 ```
 

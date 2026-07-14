@@ -58,6 +58,14 @@ def _api_key_matches(x_api_key: str | None) -> bool:
     return hmac.compare_digest(x_api_key or "", settings.api_key)
 
 
+def _fai_api_key_matches(x_api_key: str | None) -> bool:
+    """True if the header equals the dedicated payment-system key (timing-safe)."""
+    settings = get_settings()
+    if not settings.fai_api_key:
+        return False  # no dedicated key configured — /fai falls back to normal auth
+    return hmac.compare_digest(x_api_key or "", settings.fai_api_key)
+
+
 async def require_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -95,3 +103,21 @@ async def require_user_or_api_key(
             headers={"WWW-Authenticate": "Session"},
         )
     return user
+
+
+async def require_fai_client(
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """Auth for the /fai routes: the dedicated payment key, or the normal auth.
+
+    The payment system holds `fai_api_key`, which unlocks nothing but these three
+    routes — so handing it to a third party (and rotating it) never touches the
+    dashboard or the admin scripts. Operators keep reaching /fai through their
+    session cookie or the master `api_key`, which is what the dashboard's own
+    block/unblock buttons use.
+    """
+    if _fai_api_key_matches(x_api_key):
+        return None
+    return await require_user_or_api_key(request, x_api_key, db)

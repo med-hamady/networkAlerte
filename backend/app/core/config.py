@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     # API Key — set a strong secret in production; leave empty to disable auth
     api_key: str = ""
 
+    # Dedicated key for the external payment system. Accepted ONLY on the /fai
+    # routes (block / unblock / status), never on the rest of the API — so it can
+    # be handed out and rotated without touching `api_key` (dashboard + scripts).
+    # Empty = no dedicated key; /fai then only accepts api_key or a session.
+    fai_api_key: str = ""
+
     # CORS — comma-separated origins. Leave empty to disable cross-origin sharing.
     cors_origins: str = "http://localhost:3000"
 

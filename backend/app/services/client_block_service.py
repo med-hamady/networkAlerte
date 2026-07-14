@@ -35,13 +35,13 @@ flag: a stored boolean with nothing enforcing it was useless.
 import datetime
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models.device import Lr
 from app.schemas.device import normalize_mac
-from app.services import ssh_service
+from app.services import fai_audit, ssh_service
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +184,32 @@ async def _clear_block(lr: Lr) -> tuple[bool, str]:
     return False, f"Port LAN: {up_msg} | Filtre WhatsApp: {wa_msg}"
 
 
+# A failed SSH round-trip means one of two very different things, and conflating
+# them is expensive:
+#
+#   structural — the LR answers, we just cannot log in (wrong password after every
+#       fallback, host key changed). Retrying every 120s forever changes nothing;
+#       a human must fix the device or its stored credentials. We abandon and say so.
+#   transient  — the LR is powered off / its radio is down / the packet was lost.
+#       It WILL come back. Here retrying is the whole point: give up on those and a
+#       delinquent client defeats the block simply by unplugging his LR, and a client
+#       who paid while switched off never gets his internet back.
+#
+# ssh_service only surfaces failures as free-text messages (str(exc)), so this is a
+# string match on the two paramiko cases — deliberately narrow: anything unrecognised
+# counts as transient (we keep retrying), which is the safe default.
+_STRUCTURAL_MARKERS = ("authentication failed", "host key mismatch")
+
+
+def _structural_failure(msg: str) -> str | None:
+    """Return a short reason if `msg` is a structural SSH failure, else None."""
+    low = (msg or "").lower()
+    for marker in _STRUCTURAL_MARKERS:
+        if marker in low:
+            return msg[:255]
+    return None
+
+
 def _resolve_mode(mode: str | None) -> str:
     """Validate the requested mode, falling back to the configured default."""
     if mode in VALID_MODES:
@@ -238,11 +264,14 @@ async def block_client(
         lr.client_blocked_at = _now()
     lr.client_blocked_reason = (reason or "").strip() or None
 
+    lr.unblock_pending = False  # un blocage annule un déblocage resté en attente
+
     await _neutralize_other(lr)
     ok, msg = await _assert_block(lr)
     label = "WhatsApp autorisé" if resolved == MODE_WHATSAPP else "coupure totale"
     if ok:
         lr.client_block_enforced_at = _now()
+        lr.block_unenforceable_reason = None
         await session.commit()
         logger.warning(
             "CLIENT BLOCK appliqué — LR '%s' (id=%d, %s) mode=%s — motif: %s",
@@ -251,7 +280,23 @@ async def block_client(
         )
         return True, f"Client {lr.name} bloqué ({label}). {msg}"
 
+    structural = _structural_failure(msg)
+    lr.block_unenforceable_reason = structural  # None = transitoire → on réessaiera
     await session.commit()
+
+    if structural:
+        logger.error(
+            "CLIENT BLOCK ABANDONNÉ — LR '%s' (id=%d, %s) : %s — échec SSH "
+            "structurel, intervention technique requise (le job ne réessaiera pas)",
+            lr.name, lr.id, lr.ip_address, msg,
+        )
+        return (
+            False,
+            f"Blocage ({label}) enregistré pour {lr.name} mais IMPOSSIBLE à "
+            f"appliquer ({msg}). Connexion au LR refusée — intervention "
+            f"technique requise, aucune nouvelle tentative automatique.",
+        )
+
     logger.warning(
         "CLIENT BLOCK enregistré mais NON appliqué — LR '%s' (id=%d) mode=%s : "
         "%s — le job de renforcement réessaiera",
@@ -288,65 +333,137 @@ async def unblock_client(session: AsyncSession, lr: Lr) -> tuple[bool, str]:
         )
 
     ok, msg = await _clear_block(lr)
-    await session.commit()
     if ok:
+        lr.unblock_pending = False
+        lr.block_unenforceable_reason = None
+        await session.commit()
         logger.warning(
             "CLIENT UNBLOCK — LR '%s' (id=%d, %s) accès rétabli",
             lr.name, lr.id, lr.ip_address,
         )
         return True, f"Accès internet rétabli pour {lr.name}. {msg}"
 
+    structural = _structural_failure(msg)
+    # Transitoire → on retente jusqu'à ce que le LR réponde. Structurel → inutile
+    # d'y revenir : le port restera fermé tant qu'un technicien n'aura rien fait.
+    lr.unblock_pending = structural is None
+    lr.block_unenforceable_reason = structural
+    await session.commit()
+
+    suffix = "" if was_blocked else " (le client n'était pas marqué bloqué)"
+    if structural:
+        logger.error(
+            "CLIENT UNBLOCK ABANDONNÉ — LR '%s' (id=%d, %s) : %s — connexion au "
+            "LR refusée, le client reste COUPÉ jusqu'à intervention technique",
+            lr.name, lr.id, lr.ip_address, msg,
+        )
+        return (
+            False,
+            f"Déblocage enregistré pour {lr.name} mais l'accès n'a PAS pu être "
+            f"rétabli ({msg}). Connexion au LR refusée — intervention technique "
+            f"requise, aucune nouvelle tentative automatique.{suffix}",
+        )
+
     logger.warning(
         "CLIENT UNBLOCK — LR '%s' (id=%d) : intention levée mais accès non "
-        "entièrement rétabli : %s",
+        "entièrement rétabli : %s — le job de renforcement réessaiera",
         lr.name, lr.id, msg,
     )
-    suffix = "" if was_blocked else " (le client n'était pas marqué bloqué)"
     return (
         False,
-        f"Déblocage enregistré pour {lr.name} mais l'accès n'a pas pu être "
-        f"entièrement rétabli ({msg}). Relance le déblocage quand le LR sera "
-        f"joignable.{suffix}",
+        f"Déblocage enregistré pour {lr.name} mais l'accès n'a pas encore été "
+        f"rétabli ({msg}). Le job de renforcement réessaiera automatiquement dès "
+        f"que le LR sera joignable.{suffix}",
+    )
+
+
+async def _abandon(lr: Lr, action: str, reason: str) -> None:
+    """Take an LR out of the retry loop after a structural SSH failure."""
+    lr.block_unenforceable_reason = reason
+    lr.unblock_pending = False
+    logger.error(
+        "enforce: %s ABANDONNÉ — LR '%s' (id=%d, %s) : %s — intervention "
+        "technique requise",
+        action, lr.name, lr.id, lr.ip_address, reason,
+    )
+    fai_audit.log_action(
+        "ABANDON", ok=False, mac=lr.mac_address, name=lr.name,
+        mode=lr.block_mode, source="enforce",
+        message=f"{action} impossible (connexion refusée) : {reason}",
     )
 
 
 async def enforce_blocked_clients(session: AsyncSession) -> int:
-    """Re-assert the active block on every LR marked blocked.
+    """Re-assert the pending intent on every LR — block AND unblock.
 
     Idempotent per mode: re-shutting a down port / re-applying the same
     iptables chain is a no-op. The point is reboot recovery — a rebooted LR
     comes back with its port UP and its iptables flushed, and this re-asserts
-    the block within one cycle — plus retrying blocks that couldn't be enforced
-    at click time. Returns the count successfully (re)enforced this pass.
+    the block within one cycle — plus retrying the orders that couldn't be
+    enforced at click time, *in both directions*:
+
+      - `client_blocked` → re-assert the cut. Without the retry, a delinquent
+        client defeats the block by unplugging his LR while we call.
+      - `unblock_pending` → retry bringing the port back up. Without it, a client
+        who paid while his LR was off stays cut forever: clearing the intent takes
+        him out of the block loop, and nothing else would ever restore him.
+
+    LRs marked `block_unenforceable_reason` (wrong password, host-key mismatch) are
+    skipped: they answer but refuse the login, so retrying every cycle is pointless
+    noise — they're logged once to the FAI journal for a technician. Returns the
+    count of orders successfully applied this pass.
     """
-    result = await session.execute(select(Lr).where(Lr.client_blocked.is_(True)))
-    blocked = list(result.scalars().all())
-    if not blocked:
+    result = await session.execute(
+        select(Lr).where(
+            Lr.block_unenforceable_reason.is_(None),
+            or_(Lr.client_blocked.is_(True), Lr.unblock_pending.is_(True)),
+        )
+    )
+    pending = list(result.scalars().all())
+    if not pending:
         return 0
 
     enforced = 0
-    for lr in blocked:
+    for lr in pending:
         if not _has_ssh(lr):
             logger.warning(
-                "enforce_blocked_clients: LR '%s' (id=%d) bloqué mais sans "
-                "identifiants SSH — blocage non garanti",
+                "enforce_blocked_clients: LR '%s' (id=%d) sans identifiants SSH "
+                "— ordre non garanti",
                 lr.name, lr.id,
             )
             continue
-        ok, msg = await _assert_block(lr)
+
+        blocking = lr.client_blocked
+        action = "BLOCK" if blocking else "UNBLOCK"
+        ok, msg = await (_assert_block(lr) if blocking else _clear_block(lr))
+
         if ok:
-            lr.client_block_enforced_at = _now()
             enforced += 1
-            logger.info(
-                "enforce_blocked_clients: LR '%s' (id=%d) blocage maintenu "
-                "(mode=%s)",
-                lr.name, lr.id, lr.block_mode,
-            )
+            if blocking:
+                lr.client_block_enforced_at = _now()
+                logger.info(
+                    "enforce: LR '%s' (id=%d) blocage maintenu (mode=%s)",
+                    lr.name, lr.id, lr.block_mode,
+                )
+            else:
+                lr.unblock_pending = False
+                logger.warning(
+                    "enforce: LR '%s' (id=%d) accès rétabli (déblocage en "
+                    "attente rejoué avec succès)",
+                    lr.name, lr.id,
+                )
+                fai_audit.log_action(
+                    "RETRY_OK", ok=True, mac=lr.mac_address, name=lr.name,
+                    mode=lr.block_mode, source="enforce",
+                    message="Déblocage en attente appliqué sur le LR.",
+                )
+        elif structural := _structural_failure(msg):
+            await _abandon(lr, action, structural)
         else:
             logger.warning(
-                "enforce_blocked_clients: LR '%s' (id=%d) non renforcé "
-                "(mode=%s) : %s",
-                lr.name, lr.id, lr.block_mode, msg,
+                "enforce: LR '%s' (id=%d) %s non appliqué : %s — nouvelle "
+                "tentative au prochain cycle",
+                lr.name, lr.id, action, msg,
             )
         await session.commit()
 

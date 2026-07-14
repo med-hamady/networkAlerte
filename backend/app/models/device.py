@@ -207,6 +207,23 @@ class Lr(Device):
     block_mode: Mapped[str] = mapped_column(
         String(20), default="full", nullable=False, server_default="full",
     )
+    # Unblock is enforced too, symmetrically with the block. Set when an unblock
+    # was recorded but the LR could not be reached to bring the LAN port back up:
+    # the enforcement job retries until it succeeds. Without it, a client who paid
+    # while his LR was powered off would stay cut forever — `client_blocked=False`
+    # takes him out of the block loop, and nothing else would ever restore him.
+    unblock_pending: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false",
+    )
+    # Why enforcement was ABANDONED on this LR (structural SSH failure: wrong
+    # password, host-key mismatch). Retrying those every 120s is pointless — the
+    # LR answers, we just cannot log in. The job skips such LRs and a technician
+    # must fix the device (or its stored credentials); cleared on the next success.
+    # A merely unreachable LR (powered off, radio down) is NOT structural: it keeps
+    # being retried, otherwise unplugging the LR would defeat the block entirely.
+    block_unenforceable_reason: Mapped[str | None] = mapped_column(
+        String(255), nullable=True,
+    )
     # Router vs bridge mode — read from each LR's HTTP poll (airMAX: airOS
     # status.cgi host.netrole; LTU: Rocket API peer.remote.netMode), no SSH.
     # The client-block feature only works in router mode (the LR must be in

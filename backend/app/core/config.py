@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # Empty = no dedicated key; /fai then only accepts api_key or a session.
     fai_api_key: str = ""
 
+    # Journal d'audit des blocages / déblocages (une ligne par action). Fichier
+    # texte, dans un volume bind-monté → survit aux redéploiements.
+    fai_log_path: str = "/app/logs/fai_actions.log"
+
     # CORS — comma-separated origins. Leave empty to disable cross-origin sharing.
     cors_origins: str = "http://localhost:3000"
 

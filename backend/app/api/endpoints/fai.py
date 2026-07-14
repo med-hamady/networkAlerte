@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.models.device import Lr
-from app.services import client_block_service
+from app.services import client_block_service, fai_audit
 
 router = APIRouter()
 
@@ -48,9 +48,17 @@ class FaiBlockResult(BaseModel):
     client_blocked: bool
     block_mode: str
     client_block_enforced_at: datetime.datetime | None
+    # True quand l'ordre n'a pas pu être appliqué mais sera rejoué automatiquement
+    # (LR éteint / radio coupée). False + ok=False ⇒ voir `unenforceable_reason`.
+    retry_scheduled: bool
+    # Renseigné quand le LR REFUSE la connexion SSH (mot de passe, host key) :
+    # aucune nouvelle tentative automatique, une intervention technique est requise.
+    unenforceable_reason: str | None
 
 
 def _result(lr: Lr, ok: bool, message: str) -> FaiBlockResult:
+    """Snapshot the LR's block state — same payload for block / unblock / status."""
+    blocked_reason = lr.block_unenforceable_reason
     return FaiBlockResult(
         ok=ok,
         message=message,
@@ -59,6 +67,9 @@ def _result(lr: Lr, ok: bool, message: str) -> FaiBlockResult:
         client_blocked=lr.client_blocked,
         block_mode=lr.block_mode,
         client_block_enforced_at=lr.client_block_enforced_at,
+        # Un ordre non appliqué reste en file tant que l'échec est transitoire.
+        retry_scheduled=(not ok) and blocked_reason is None,
+        unenforceable_reason=blocked_reason,
     )
 
 
@@ -101,6 +112,10 @@ async def fai_block(
     ok, message = await client_block_service.block_client(
         db, lr, body.reason, body.mode
     )
+    fai_audit.log_action(
+        "BLOCK", ok=ok, mac=lr.mac_address, name=lr.name,
+        mode=lr.block_mode, message=message,
+    )
     return _result(lr, ok, message)
 
 
@@ -116,6 +131,10 @@ async def fai_unblock(
     """
     lr = await _lookup_lr(db, body.mac)
     ok, message = await client_block_service.unblock_client(db, lr)
+    fai_audit.log_action(
+        "UNBLOCK", ok=ok, mac=lr.mac_address, name=lr.name,
+        mode=lr.block_mode, message=message,
+    )
     return _result(lr, ok, message)
 
 

@@ -1,0 +1,36 @@
+# Public exposure override — OPT-IN, ONLY to serve the payment system's /fai API.
+#
+#   PUBLIC_BIND_IP=102.215.95.233 LAN_BIND_IP=10.135.3.25 docker compose \
+#       -f docker-compose.yml \
+#       -f docker-compose.prod.yml \
+#       -f docker-compose.lan.yml \
+#       -f docker-compose.public.yml up -d
+#
+# What it does
+# ------------
+# Publishes ONE port on the server's PUBLIC IP: 443 → the nginx container's
+# :8443. That container port is a dedicated `server` block (see nginx.conf) that
+# serves ONLY /api/v1/fai/ (block / unblock / status) and returns 404 for
+# everything else. So the external payment system reaches
+# https://<PUBLIC_BIND_IP>/api/v1/fai/... while the dashboard, /api/v1/devices,
+# /uisp/sync and the rest of the API stay unreachable from the Internet.
+#
+# What it deliberately does NOT do
+# --------------------------------
+# It does not publish the container's :443 (the full dashboard listener) on the
+# public IP, and it never binds 0.0.0.0. Publishing the full listener publicly is
+# exactly the 2026-05-17 incident (a scanner reached the whole API and wiped the
+# inventory). If you need the dashboard from outside, use the SSH tunnel.
+#
+# The only thing standing between the Internet and a client's internet access is
+# therefore FAI_API_KEY — a key scoped to the /fai routes (deps.require_fai_client),
+# rate-limited to 30 req/min per source IP in nginx. Rotate it by editing .env and
+# restarting the backend; nothing else in the system depends on it.
+#
+# PUBLIC_BIND_IP is REQUIRED (`:?`): an empty value would make Compose bind
+# 0.0.0.0 — the one thing we must never do. The deploy fails loudly instead.
+
+services:
+  nginx:
+    ports:
+      - "${PUBLIC_BIND_IP:?Set PUBLIC_BIND_IP to the server public IP, e.g. 102.215.95.233}:443:8443"

@@ -9,6 +9,7 @@ from app.api.endpoints import (
     dashboard,
     devices,
     fai,
+    fai_journal,
     health,
     incidents,
     lr_health,
@@ -41,6 +42,11 @@ api_router.include_router(access.router, prefix="/access", tags=["access"], depe
 api_router.include_router(
     fai.router, prefix="/fai", tags=["fai"],
     dependencies=[Depends(require_fai_client)],
+)
+# Lecture du journal : auth NORMALE (dashboard/clé maître). La clé du système de
+# paiement n'y a délibérément pas accès — elle ne sert qu'à bloquer/débloquer.
+api_router.include_router(
+    fai_journal.router, prefix="/fai-journal", tags=["fai"], dependencies=_auth,
 )
 api_router.include_router(incidents.router, prefix="/incidents", tags=["incidents"], dependencies=_auth)
 api_router.include_router(lr_health.router, prefix="/lr-health", tags=["lr-health"], dependencies=_auth)

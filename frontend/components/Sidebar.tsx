@@ -31,6 +31,7 @@ const sections: NavSection[] = [
       { href: '/capacity',   label: 'Capacité du réseau',  icon: CapacityIcon },
       { href: '/traffic',    label: 'Destinations Internet', icon: GlobeIcon  },
       { href: '/access',     label: 'FAI',                 icon: ShieldIcon   },
+      { href: '/fai-journal', label: 'Journal blocages',   icon: JournalIcon, indent: true },
     ],
   },
   {
@@ -282,6 +283,15 @@ function ShieldIcon({ className }: { className?: string }) {
       <path strokeLinecap="round" strokeLinejoin="round"
         d="M12 3l8 4v5c0 5-3.5 8.5-8 9-4.5-.5-8-4-8-9V7l8-4z" />
       <path strokeLinecap="round" strokeLinejoin="round" d="M9 13l2 2 4-4" />
+    </svg>
+  )
+}
+
+function JournalIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round"
+        d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
     </svg>
   )
 }

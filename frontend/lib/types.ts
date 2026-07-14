@@ -822,3 +822,41 @@ export interface SiteOutageSummary {
   by_pannes: OutageSite[]
   by_downtime: OutageSite[]
 }
+
+// --- Journal FAI (blocages / déblocages) -----------------------------------
+// Historique lu du fichier d'audit (backend/logs/fai_actions.log), et LR encore
+// en souffrance lus de la base. Voir backend/app/api/endpoints/fai_journal.py.
+export interface FaiJournalEntry {
+  timestamp: string
+  action: 'BLOCK' | 'UNBLOCK' | 'RETRY_OK' | 'ABANDON'
+  ok: boolean
+  mac: string | null
+  name: string
+  mode: string
+  source: 'payment' | 'enforce'
+  message: string
+}
+export interface FaiJournalStats {
+  total: number
+  ok: number
+  failed: number
+  abandoned: number
+}
+export interface FaiAttentionRow {
+  id: number
+  name: string
+  mac: string | null
+  ip_address: string | null
+  site: string | null
+  // unenforceable = le LR refuse la connexion SSH → intervention technique.
+  // pending       = l'ordre est rejoué automatiquement (LR éteint).
+  kind: 'unenforceable' | 'pending'
+  intent: 'block' | 'unblock'
+  reason: string | null
+  since: string | null
+}
+export interface FaiJournalResponse {
+  entries: FaiJournalEntry[]
+  stats: FaiJournalStats
+  attention: FaiAttentionRow[]
+}

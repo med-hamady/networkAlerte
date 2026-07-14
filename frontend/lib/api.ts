@@ -74,6 +74,9 @@ export const endpoints = {
     `${API_BASE}/access/clients?search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`,
   siteOutageSummary:    (startIso: string, endIso: string) =>
     `${API_BASE}/network-uptime/site-summary?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`,
+  // Journal des blocages/déblocages (fichier d'audit) + LR encore en souffrance.
+  faiJournal:           (status: string, search: string) =>
+    `${API_BASE}/fai-journal?limit=300&status=${encodeURIComponent(status)}&search=${encodeURIComponent(search)}`,
 }
 
 // ---------------------------------------------------------------------------

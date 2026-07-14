@@ -112,6 +112,8 @@ réel avant ou après une action.
 | `client_blocked` | **L'intention en base** : `true` = client marqué bloqué |
 | `block_mode` | Mode actif (`full` ou `whatsapp_only`) |
 | `client_block_enforced_at` | Dernière fois où le blocage a réellement été appliqué sur le LR (`null` = jamais) |
+| `retry_scheduled` | `true` = l'ordre n'a pas pu être appliqué (équipement éteint) mais **sera rejoué automatiquement**. Rien à faire. |
+| `unenforceable_reason` | Non `null` = l'équipement **refuse la connexion** : aucune nouvelle tentative automatique, une intervention technique est nécessaire. À signaler. |
 
 ---
 
@@ -127,7 +129,26 @@ job le ré-applique automatiquement dès que le LR revient. Le système de paiem
 Règle simple côté paiement :
 
 - `client_blocked: true` dans la réponse → la demande **est acceptée**, considérer le client comme bloqué.
-- `ok: false` → simplement logger « application différée » ; ne pas rejouer l'appel en boucle.
+- `ok: false` + `retry_scheduled: true` → logger « application différée » ; **ne pas rejouer l'appel**.
+- `ok: false` + `unenforceable_reason` renseigné → l'équipement refuse la connexion : **nous le signaler**, il n'y aura pas de rattrapage automatique.
+
+---
+
+## 6 bis. Timeout et appels simultanés
+
+Un appel `/block` ou `/unblock` **attend la réponse de l'équipement du client** avant de
+répondre (c'est ce qui rend `ok` fiable). Cela prend quelques secondes, et davantage
+quand plusieurs demandes arrivent en même temps — elles sont mises en file et traitées
+par groupes de 10.
+
+Deux conséquences pour l'intégration :
+
+- **Réglez le timeout de votre client HTTP à 60 secondes minimum** sur ces appels. Un
+  timeout court (10 s par défaut dans beaucoup de bibliothèques) vous ferait voir une
+  erreur alors que l'ordre est bel et bien enregistré et en cours d'application.
+- **Vous pouvez envoyer vos demandes en rafale** (par exemple tous les déblocages de la
+  nuit au matin) : elles sont toutes acceptées et enregistrées immédiatement. Le débit
+  est plafonné à 120 requêtes/minute par adresse IP.
 
 ---
 

@@ -32,6 +32,7 @@ This is the real mechanism behind the removed no-op `devices.is_suspended`
 flag: a stored boolean with nothing enforcing it was useless.
 """
 
+import asyncio
 import datetime
 import logging
 
@@ -115,20 +116,30 @@ def _promote_password(lr: Lr, primary: str, used: str | None) -> None:
         lr.ssh_password = used
 
 
+# Plafond de sessions SSH de blocage menées en parallèle. Le système de paiement
+# peut envoyer un batch (les paiements de la nuit) : sans plafond, autant de
+# handshakes SSH simultanés partent sur la radio. Terrain 2026-06-16 : à ~150
+# handshakes concurrents les LR décrochent ("No existing session") alors qu'ils se
+# connectent en <1,5 s isolément. Les appels au-delà attendent leur tour — ils ne
+# sont jamais rejetés, l'intention étant déjà commitée.
+_SSH_CONCURRENCY = asyncio.Semaphore(10)
+
+
 async def _set_full(lr: Lr, cut: bool) -> tuple[bool, str]:
     """Shut (cut=True) / restore (cut=False) the LR's LAN port over SSH."""
     settings = get_settings()
     primary_pw = lr.ssh_password
-    ok, msg, observed_fp, used_pw = await ssh_service.set_lan_interface(
-        host=lr.ip_address,
-        port=lr.ssh_port or 22,
-        username=lr.ssh_username,
-        password=primary_pw,
-        interface=lr.lan_interface,
-        bring_up=not cut,
-        expected_fingerprint=lr.ssh_host_fingerprint,
-        fallback_passwords=settings.lr_fallback_password_list,
-    )
+    async with _SSH_CONCURRENCY:
+        ok, msg, observed_fp, used_pw = await ssh_service.set_lan_interface(
+            host=lr.ip_address,
+            port=lr.ssh_port or 22,
+            username=lr.ssh_username,
+            password=primary_pw,
+            interface=lr.lan_interface,
+            bring_up=not cut,
+            expected_fingerprint=lr.ssh_host_fingerprint,
+            fallback_passwords=settings.lr_fallback_password_list,
+        )
     _pin_fp(lr, ok, observed_fp)
     _promote_password(lr, primary_pw, used_pw)
     return ok, msg
@@ -144,17 +155,18 @@ async def _set_whatsapp(lr: Lr, on: bool) -> tuple[bool, str]:
     """
     settings = get_settings()
     primary_pw = lr.ssh_password
-    ok, msg, observed_fp, used_pw = await ssh_service.set_whatsapp_only(
-        host=lr.ip_address,
-        port=lr.ssh_port or 22,
-        username=lr.ssh_username,
-        password=primary_pw,
-        enable=on,
-        allow_cidrs=settings.whatsapp_allow_cidr_list,
-        deny_domains=settings.blocked_domains_whatsapp_only_list,
-        expected_fingerprint=lr.ssh_host_fingerprint,
-        fallback_passwords=settings.lr_fallback_password_list,
-    )
+    async with _SSH_CONCURRENCY:
+        ok, msg, observed_fp, used_pw = await ssh_service.set_whatsapp_only(
+            host=lr.ip_address,
+            port=lr.ssh_port or 22,
+            username=lr.ssh_username,
+            password=primary_pw,
+            enable=on,
+            allow_cidrs=settings.whatsapp_allow_cidr_list,
+            deny_domains=settings.blocked_domains_whatsapp_only_list,
+            expected_fingerprint=lr.ssh_host_fingerprint,
+            fallback_passwords=settings.lr_fallback_password_list,
+        )
     _pin_fp(lr, ok, observed_fp)
     _promote_password(lr, primary_pw, used_pw)
     return ok, msg
@@ -266,6 +278,14 @@ async def block_client(
 
     lr.unblock_pending = False  # un blocage annule un déblocage resté en attente
 
+    # Commit AVANT le SSH : l'intention est acquise (le job d'enforcement peut déjà
+    # la reprendre) et surtout la connexion DB retourne au pool pendant les secondes
+    # du round-trip SSH. Sans ça, N appels simultanés du système de paiement gardaient
+    # N connexions ouvertes le temps de leur SSH → le pool (15) était épuisé dès la
+    # 16e demande, qui échouait en timeout. `expire_on_commit=False` (db/session.py)
+    # garde `lr` utilisable ensuite sans re-requête.
+    await session.commit()
+
     await _neutralize_other(lr)
     ok, msg = await _assert_block(lr)
     label = "WhatsApp autorisé" if resolved == MODE_WHATSAPP else "coupure totale"
@@ -331,6 +351,11 @@ async def unblock_client(session: AsyncSession, lr: Lr) -> tuple[bool, str]:
             f"SSH l'accès n'a pas pu être rétabli sur le LR. Configure les "
             f"credentials puis relance le déblocage.",
         )
+
+    # Idem block_client : on acquitte l'intention et on rend la connexion au pool
+    # avant de partir en SSH, pour que N déblocages simultanés (le batch du matin
+    # après une nuit de paiements) ne saturent pas le pool.
+    await session.commit()
 
     ok, msg = await _clear_block(lr)
     if ok:

@@ -836,14 +836,21 @@ def _ping_via_ssh_sync(
         return False, str(exc), None, None
 
     try:
-        # On CAPTURE la sortie pour afficher la latence RÉELLE mesurée à l'instant
-        # du test (RTT du DERNIER paquet reçu — la mesure la plus récente), et non
-        # une moyenne. busybox (airOS) comme iputils impriment "time=XX ms".
-        exit_code, out = _exec_capture(transport, "ping -c 3 -W 2 8.8.8.8", timeout=12)
+        # 5 paquets de 56 octets (payload → paquet ICMP de 64 o), et on affiche
+        # min/moy/max du RTT (résumé de fin de ping), pas seulement le dernier
+        # paquet. busybox (airOS) comme iputils impriment la ligne récap
+        # "round-trip min/avg/max = …". Fallback sur le RTT du dernier paquet si
+        # le récap n'est pas parsé (défensif).
+        exit_code, out = _exec_capture(transport, "ping -c 5 -s 56 -W 2 8.8.8.8", timeout=15)
         ok = exit_code == 0
         if ok:
-            times = _PING_TIME_RE.findall(out)
-            msg = f"Latence {float(times[-1]):.1f} ms" if times else "Joignable"
+            stats = _PING_STATS_RE.search(out)
+            if stats:
+                mn, avg, mx = (float(stats.group(i)) for i in (1, 2, 3))
+                msg = f"min {mn:.1f} / moy {avg:.1f} / max {mx:.1f} ms"
+            else:
+                times = _PING_TIME_RE.findall(out)
+                msg = f"Latence {float(times[-1]):.1f} ms" if times else "Joignable"
         else:
             msg = "Non joignable"
         logger.debug("Ping-via-SSH %s → %s (exit %d)", host, "OK" if ok else "KO", exit_code)
@@ -945,6 +952,13 @@ async def ping_targets_via_ssh(
 _PING_AVG_RE = re.compile(
     r"(?:round-trip|rtt)\s+min/avg/max(?:/mdev)?\s*=\s*"
     r"[\d.]+/([\d.]+)/[\d.]+"
+)
+
+# Same summary line but capturing all three values (min, avg, max) for the
+# check-ping diagnostic, which reports the full min/moy/max, not just the avg.
+_PING_STATS_RE = re.compile(
+    r"(?:round-trip|rtt)\s+min/avg/max(?:/mdev)?\s*=\s*"
+    r"([\d.]+)/([\d.]+)/([\d.]+)"
 )
 
 # RTT par paquet : "... time=23.4 ms" (iputils) / "time=23.4 ms" (busybox),

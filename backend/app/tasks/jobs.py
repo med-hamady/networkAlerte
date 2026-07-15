@@ -1960,6 +1960,18 @@ async def lr_internet_probe_job() -> None:
                     "lr_internet_probe: %s (%s) ping OK mais RTT non parsé — %s",
                     dev.name, dev.ip_address, msg,
                 )
+            else:
+                # Pas de transit (ping KO) → la latence stockée date du dernier
+                # cycle AVEC transit et n'a plus de sens. On la purge pour que la
+                # page « latence élevée » ne classe pas un LR SANS transit comme
+                # « latence élevée » sur une vieille valeur. Le vrai problème est
+                # couvert par AT_LR_NO_TRANSIT (via _evaluate_lr_transit ci-dessus).
+                await session.execute(
+                    delete(DeviceMetric).where(
+                        DeviceMetric.device_id == dev.id,
+                        DeviceMetric.metric_name == "lr_latency_ms",
+                    )
+                )
 
             # Métriques radio des M5 (via wstalist sur cette même session SSH) :
             # les LiteBeam M5 ne répondent pas au HTTP status.cgi → cette sonde

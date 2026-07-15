@@ -96,6 +96,12 @@ _TRACKED_METRICS: tuple[str, ...] = (
 # transit, pas un indicateur de qualité du lien radio.
 _M_LATENCY = "lr_latency_ms"
 
+# Au-delà de cette ancienneté, un relevé de latence est jugé périmé et ignoré
+# (la sonde tourne toutes les ~60 s ; même avec le backoff SSH un LR sondé
+# reste bien en-deçà). Évite d'afficher une vieille latence pour un LR qui
+# n'est plus sondé. 20 min = large marge au-dessus de la cadence normale.
+_LATENCY_STALE_AFTER_MIN = 20
+
 # Métrique propre aux liens AF60 (clé de af60_api_service) : le SNR 60 GHz,
 # affiché seul à côté de la capacité (hors filtre).
 _M_SNR = "snr_db"
@@ -303,10 +309,20 @@ async def _fetch_latest_latency(
 
     Un ``ORDER BY collected_at DESC LIMIT 1`` par LR sur
     ``ix_device_metrics_lookup`` plutôt qu'un scan. Absent du dict si le LR n'a
-    aucun relevé de latence (jamais de transit mesuré)."""
+    aucun relevé de latence (jamais de transit mesuré).
+
+    **Garde-fou fraîcheur** : seuls les relevés de moins de
+    ``_LATENCY_STALE_AFTER_MIN`` minutes comptent. Sans ça, un LR **up mais qui
+    n'est plus sondé** (SSH en backoff chronique) gardait indéfiniment sa
+    dernière latence et s'affichait à tort en « latence élevée ». Le cas « LR
+    up mais sans transit » est déjà purgé à la source par ``lr_internet_probe_job``
+    (le ping KO supprime la métrique) — ce filtre couvre le cas non-sondé."""
     if not lr_ids:
         return {}
 
+    cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
+        minutes=_LATENCY_STALE_AFTER_MIN
+    )
     sql = text(
         """
         SELECT did.device_id, m.metric_value
@@ -316,13 +332,17 @@ async def _fetch_latest_latency(
             FROM device_metrics dm
             WHERE dm.device_id = did.device_id
               AND dm.metric_name = :metric_name
+              AND dm.collected_at >= :cutoff
             ORDER BY dm.collected_at DESC
             LIMIT 1
         ) m ON true
         """
     )
     rows = (
-        await db.execute(sql, {"lr_ids": lr_ids, "metric_name": _M_LATENCY})
+        await db.execute(
+            sql,
+            {"lr_ids": lr_ids, "metric_name": _M_LATENCY, "cutoff": cutoff},
+        )
     ).all()
     return {r.device_id: float(r.metric_value) for r in rows}
 

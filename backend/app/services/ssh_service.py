@@ -1029,7 +1029,9 @@ def _measure_latency_via_ssh_sync(
         # Radio metrics via wstalist — only for M5 LRs (no HTTP status.cgi).
         radio = _read_wstalist_metrics(transport) if collect_radio else None
 
-        cmd = f"ping -c {int(count)} -W 3 {shlex.quote(target)}"
+        # -s 56 : payload 56 o (paquet ICMP 64 o), aligné sur le diagnostic
+        # check-ping. Le nombre de paquets vient de lr_latency_ping_count.
+        cmd = f"ping -c {int(count)} -s 56 -W 3 {shlex.quote(target)}"
         # busybox ping prints the summary on stdout; we need its content,
         # not just the exit code, so use _exec_capture.
         timeout_s = max(15, int(count) * 3 + 5)

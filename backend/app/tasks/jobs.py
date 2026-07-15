@@ -1881,7 +1881,7 @@ async def lr_internet_probe_job() -> None:
     # dans core/logging.py).
     ssh_failures: list[tuple[str, str, str]] = []
     async with async_session_factory() as session:
-        for dev_id, (ssh_ok, ping_ok, avg_rtt, msg, observed_fp, used_pw) in results.items():
+        for dev_id, (ssh_ok, ping_ok, avg_rtt, msg, observed_fp, used_pw, board_model) in results.items():
             dev = await session.get(Lr, dev_id)
             if dev is None:
                 continue
@@ -1895,6 +1895,23 @@ async def lr_internet_probe_job() -> None:
                     dev.name, dev.ip_address,
                 )
                 dev.ssh_password = used_pw
+
+            # Correct the airMAX model_variant (M5 vs 5AC) from /etc/board.info,
+            # read on this same SSH session. airOS-M LRs (M5) don't answer the
+            # HTTP status.cgi, so this is their only model source — a peer/UISP
+            # misclassification at creation self-heals here. Restricted to the
+            # two airMAX variants → never flips an LR out of the airMAX family;
+            # a board string that resolves to None leaves the variant untouched.
+            if dev.model_variant in AIRMAX_LR_VARIANTS:
+                resolved = airos_api_service.airmax_variant_from_model(board_model)
+                if resolved and dev.model_variant != resolved:
+                    logger.info(
+                        "lr_internet_probe: LR '%s' (%s) model_variant ← board.info "
+                        "'%s' : %s → %s",
+                        dev.name, dev.ip_address, board_model,
+                        dev.model_variant, resolved,
+                    )
+                    dev.model_variant = resolved
 
             if not ssh_ok:
                 # Géré par device_ping_job (le LR est down). Pas d'alerte ici.

@@ -154,6 +154,41 @@ def _exec_capture(
         channel.close()
 
 
+def _parse_board_model(text: str) -> str | None:
+    """Extract the hardware model from ``/etc/board.info`` (airOS).
+
+    The file is a set of ``key=value`` lines; the human model is ``board.name``
+    (e.g. "LiteBeam M5"), with ``board.shortname`` (e.g. "LBE-M5") as fallback.
+    Present on both airOS-M (M5) and airOS-8 (AC) — unlike the HTTP status.cgi,
+    which the older M-series firmware does not serve the way the AC ones do.
+    """
+    if not text:
+        return None
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        if "=" in line:
+            key, _, val = line.partition("=")
+            fields[key.strip()] = val.strip()
+    for key in ("board.name", "board.shortname", "board.hwmodel", "board.model"):
+        val = fields.get(key)
+        if val:
+            return val
+    return None
+
+
+def _read_board_model(transport: paramiko.Transport, timeout: int = 5) -> str | None:
+    """Read ``/etc/board.info`` on an already-open transport and return the
+    device model string, or None. Never raises — a failure here must not affect
+    the caller's primary operation (this rides on an existing SSH session)."""
+    try:
+        code, out = _exec_capture(transport, "cat /etc/board.info", timeout)
+        if code == 0 and out:
+            return _parse_board_model(out)
+    except Exception as exc:  # noqa: BLE001 — best-effort, never break the caller
+        logger.debug("read board.info failed — %s", exc)
+    return None
+
+
 # Cheap static pre-check — obvious never-shut interfaces (radio/loopback).
 # This is only a first line of defence: it is NOT sufficient on its own. Field
 # verification proved the real trap is device-specific — on an LTU LR the
@@ -844,11 +879,11 @@ def _measure_latency_via_ssh_sync(
     count: int,
     expected_fingerprint: str | None,
     fallback_passwords: list[str] | None,
-) -> tuple[bool, bool, float | None, str, str | None, str | None]:
+) -> tuple[bool, bool, float | None, str, str | None, str | None, str | None]:
     """Open SSH on the LR and ping `target` `count` times to measure avg RTT.
 
-    Returns ``(ssh_ok, ping_ok, avg_rtt_ms, message, observed_fp, used_pw)``,
-    a 3-state result so the caller can disambiguate :
+    Returns ``(ssh_ok, ping_ok, avg_rtt_ms, message, observed_fp, used_pw,
+    board_model)``, a 3-state result so the caller can disambiguate :
 
       - ``ssh_ok=False``                                  → device offline
         (handled by device_ping_job — caller should skip).
@@ -858,6 +893,11 @@ def _measure_latency_via_ssh_sync(
         latency against threshold.
       - ``ssh_ok=True, ping_ok=True, avg_rtt_ms=None``    → ping ran but RTT
         line couldn't be parsed (defensive, shouldn't normally happen).
+
+    ``board_model`` is the ``/etc/board.info`` model string (e.g. "LiteBeam M5"),
+    read on the same session so the caller can correct a mis-inferred
+    model_variant — it is the only model source for airOS-M LRs (M5), which do
+    not serve the HTTP status.cgi the AC firmware does. None when unreadable.
     """
     try:
         # 12 s (vs 6 s par défaut) : sur les liens radio avec perte, le kex SSH
@@ -871,12 +911,17 @@ def _measure_latency_via_ssh_sync(
         )
     except _FingerprintMismatchError as exc:
         logger.error("measure_latency host-key mismatch %s — %s", host, exc)
-        return False, False, None, str(exc), None, None
+        return False, False, None, str(exc), None, None, None
     except Exception as exc:
         logger.debug("measure_latency SSH connect failed %s — %s", host, exc)
-        return False, False, None, str(exc), None, None
+        return False, False, None, str(exc), None, None, None
 
     try:
+        # Hardware model, read on the same session (cheap local file) so an
+        # airMAX LR mis-inferred as the wrong variant self-heals — this is the
+        # only model source for M5 LRs that don't answer the HTTP API.
+        model = _read_board_model(transport)
+
         cmd = f"ping -c {int(count)} -W 3 {shlex.quote(target)}"
         # busybox ping prints the summary on stdout; we need its content,
         # not just the exit code, so use _exec_capture.
@@ -887,20 +932,20 @@ def _measure_latency_via_ssh_sync(
             return (
                 True, False, None,
                 f"ping {target} exit={code}",
-                observed, used_pw,
+                observed, used_pw, model,
             )
         if not out:
             return (
                 True, False, None,
                 f"ping {target}: stdout vide",
-                observed, used_pw,
+                observed, used_pw, model,
             )
         m = _PING_AVG_RE.search(out)
         if not m:
             return (
                 True, True, None,
                 f"ping {target} OK mais RTT non parsé",
-                observed, used_pw,
+                observed, used_pw, model,
             )
         try:
             avg = float(m.group(1))
@@ -908,16 +953,16 @@ def _measure_latency_via_ssh_sync(
             return (
                 True, True, None,
                 f"ping {target}: valeur RTT invalide",
-                observed, used_pw,
+                observed, used_pw, model,
             )
         return (
             True, True, avg,
             f"{target} avg={avg:.1f} ms",
-            observed, used_pw,
+            observed, used_pw, model,
         )
     except Exception as exc:
         logger.debug("measure_latency exec failed %s — %s", host, exc)
-        return True, False, None, str(exc), observed, used_pw
+        return True, False, None, str(exc), observed, used_pw, None
     finally:
         transport.close()
 
@@ -931,10 +976,11 @@ async def measure_latency_via_ssh(
     count: int = 5,
     expected_fingerprint: str | None = None,
     fallback_passwords: list[str] | None = None,
-) -> tuple[bool, bool, float | None, str, str | None, str | None]:
+) -> tuple[bool, bool, float | None, str, str | None, str | None, str | None]:
     """SSH into device and measure avg RTT of `count` pings to `target`.
 
-    Returns ``(ssh_ok, ping_ok, avg_rtt_ms, message, observed_fp, used_pw)``.
+    Returns ``(ssh_ok, ping_ok, avg_rtt_ms, message, observed_fp, used_pw,
+    board_model)``.
     """
     return await asyncio.to_thread(
         _measure_latency_via_ssh_sync,

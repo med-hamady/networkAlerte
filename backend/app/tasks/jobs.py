@@ -256,6 +256,15 @@ AIRMAX_RULE_CATEGORIES = {"airmax_rocket"}
 # Total Capacity, rate index, signal/CINR) the SNMP MIB lacks.
 AIRMAX_LR_VARIANTS = {"litebeam_5ac", "litebeam_m5"}
 
+# Units for the M5 radio metrics read via SSH `wstalist` (lr_internet_probe) —
+# same keys as the HTTP poll so persistence / modal / alert engine are unchanged.
+_M5_RADIO_UNITS = {
+    **ltu_api_service.METRIC_UNITS,
+    "radio_rx_bytes": "B",
+    "radio_tx_bytes": "B",
+    "uptime_seconds": "s",
+}
+
 # Switches → standard SNMP (uptime only).
 SWITCH_RULE_CATEGORIES = {"uisp_switch"}
 
@@ -1809,7 +1818,8 @@ async def lr_internet_probe_job() -> None:
         # la Phase 1 tourne hors session.
         targets = [
             (lr.id, lr.name, lr.ip_address, lr.ssh_port or 22,
-             lr.ssh_username, lr.ssh_password, lr.ssh_host_fingerprint)
+             lr.ssh_username, lr.ssh_password, lr.ssh_host_fingerprint,
+             lr.model_variant)
             for lr in result.scalars().all()
         ]
 
@@ -1853,7 +1863,11 @@ async def lr_internet_probe_job() -> None:
     results: dict[int, tuple] = {}
 
     async def _probe(t: tuple, pool: ThreadPoolExecutor) -> None:
-        dev_id, name, ip, port, user, pwd, fp = t
+        dev_id, name, ip, port, user, pwd, fp, model_variant = t
+        # Radio metrics via wstalist only for M5 LRs — they don't serve the
+        # HTTP status.cgi, so this SSH session (already open for the ping) is
+        # their only metric source. 5AC LRs get metrics from airos_api_poll_job.
+        collect_radio = model_variant == "litebeam_m5"
         try:
             results[dev_id] = await loop.run_in_executor(
                 pool,
@@ -1864,6 +1878,7 @@ async def lr_internet_probe_job() -> None:
                     settings.lr_latency_ping_count,
                     fp,
                     settings.lr_fallback_password_list,
+                    collect_radio,
                 ),
             )
         except Exception:
@@ -1881,7 +1896,7 @@ async def lr_internet_probe_job() -> None:
     # dans core/logging.py).
     ssh_failures: list[tuple[str, str, str]] = []
     async with async_session_factory() as session:
-        for dev_id, (ssh_ok, ping_ok, avg_rtt, msg, observed_fp, used_pw, board_model) in results.items():
+        for dev_id, (ssh_ok, ping_ok, avg_rtt, msg, observed_fp, used_pw, board_model, radio) in results.items():
             dev = await session.get(Lr, dev_id)
             if dev is None:
                 continue
@@ -1944,6 +1959,16 @@ async def lr_internet_probe_job() -> None:
                 logger.debug(
                     "lr_internet_probe: %s (%s) ping OK mais RTT non parsé — %s",
                     dev.name, dev.ip_address, msg,
+                )
+
+            # Métriques radio des M5 (via wstalist sur cette même session SSH) :
+            # les LiteBeam M5 ne répondent pas au HTTP status.cgi → cette sonde
+            # est leur seule source de signal/CCQ/CINR/débits. On persiste comme
+            # le poll airOS (mêmes clés) et on évalue les règles radio.
+            if radio and any(v is not None for v in radio.values()):
+                await persist_device_metrics(session, dev.id, radio, _M5_RADIO_UNITS)
+                await alert_engine.evaluate_device_metrics(
+                    session, dev, dict(radio), settings
                 )
 
             await session.commit()

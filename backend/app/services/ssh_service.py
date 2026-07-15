@@ -28,6 +28,7 @@ import asyncio
 import base64
 import hashlib
 import ipaddress
+import json
 import logging
 import re
 import shlex
@@ -186,6 +187,87 @@ def _read_board_model(transport: paramiko.Transport, timeout: int = 5) -> str | 
             return _parse_board_model(out)
     except Exception as exc:  # noqa: BLE001 — best-effort, never break the caller
         logger.debug("read board.info failed — %s", exc)
+    return None
+
+
+def _num(val: object) -> float | None:
+    """Best-effort float conversion; None on any non-numeric input."""
+    if val is None or isinstance(val, bool):
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+# Keys filled from `wstalist` — same names as ltu_api_service / airos_api_service
+# so the alert engine, DeviceMetric persistence and the frontend modal all work
+# unchanged.
+_WSTALIST_METRIC_KEYS = (
+    "signal_dbm", "noise_dbm", "cinr_db", "ccq_pct", "tx_rate_mbps",
+    "rx_rate_mbps", "remote_signal_dbm", "radio_rx_bytes", "radio_tx_bytes",
+    "uptime_seconds",
+)
+
+
+def _parse_wstalist_metrics(text: str) -> dict[str, float | None]:
+    """Parse ``wstalist`` JSON (airOS station list) into standard radio keys.
+
+    On a CPE the list has one entry: the AP the station is linked to. Returns an
+    all-None dict when there is no station / bad JSON.
+
+    This is the metric source for airOS-M LRs (LiteBeam M5) whose firmware does
+    not serve the HTTP status.cgi the AC LiteBeams do. airMAX-M has no Link
+    Potential / Total Capacity concept (the ``airmax.quality/capacity`` block
+    reads 0), so only the base radio indicators are filled. CINR is derived as
+    signal − noise floor (SNR), matching ``snmp_service.collect_airmax_metrics``.
+    """
+    result: dict[str, float | None] = dict.fromkeys(_WSTALIST_METRIC_KEYS)
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return result
+    if not isinstance(data, list) or not data:
+        return result
+    sta = data[0]
+    if not isinstance(sta, dict):
+        return result
+
+    result["signal_dbm"]   = _num(sta.get("signal"))
+    result["noise_dbm"]    = _num(sta.get("noisefloor"))
+    result["ccq_pct"]      = _num(sta.get("ccq"))
+    result["tx_rate_mbps"] = _num(sta.get("tx"))
+    result["rx_rate_mbps"] = _num(sta.get("rx"))
+    result["uptime_seconds"] = _num(sta.get("uptime"))
+
+    remote = sta.get("remote")
+    if isinstance(remote, dict):
+        result["remote_signal_dbm"] = _num(remote.get("signal"))
+    stats = sta.get("stats")
+    if isinstance(stats, dict):
+        result["radio_rx_bytes"] = _num(stats.get("rx_bytes"))
+        result["radio_tx_bytes"] = _num(stats.get("tx_bytes"))
+
+    # CINR ≈ SNR = signal − noise floor (dB).
+    if result["signal_dbm"] is not None and result["noise_dbm"] is not None:
+        result["cinr_db"] = round(result["signal_dbm"] - result["noise_dbm"], 1)
+    return result
+
+
+def _read_wstalist_metrics(
+    transport: paramiko.Transport, timeout: int = 8
+) -> dict[str, float | None] | None:
+    """Run ``wstalist`` on an already-open transport and parse its radio metrics.
+
+    Returns the metric dict (possibly all-None if no station), or None when the
+    command itself failed. Never raises — this rides on an existing SSH session
+    and must not break the caller's primary operation."""
+    try:
+        code, out = _exec_capture(transport, "wstalist", timeout)
+        if code == 0 and out:
+            return _parse_wstalist_metrics(out)
+    except Exception as exc:  # noqa: BLE001 — best-effort, never break the caller
+        logger.debug("read wstalist failed — %s", exc)
     return None
 
 
@@ -879,11 +961,16 @@ def _measure_latency_via_ssh_sync(
     count: int,
     expected_fingerprint: str | None,
     fallback_passwords: list[str] | None,
-) -> tuple[bool, bool, float | None, str, str | None, str | None, str | None]:
+    collect_radio: bool = False,
+) -> tuple[
+    bool, bool, float | None, str, str | None, str | None, str | None,
+    dict[str, float | None] | None,
+]:
     """Open SSH on the LR and ping `target` `count` times to measure avg RTT.
 
     Returns ``(ssh_ok, ping_ok, avg_rtt_ms, message, observed_fp, used_pw,
-    board_model)``, a 3-state result so the caller can disambiguate :
+    board_model, radio_metrics)``, a 3-state result so the caller can
+    disambiguate :
 
       - ``ssh_ok=False``                                  → device offline
         (handled by device_ping_job — caller should skip).
@@ -898,6 +985,10 @@ def _measure_latency_via_ssh_sync(
     read on the same session so the caller can correct a mis-inferred
     model_variant — it is the only model source for airOS-M LRs (M5), which do
     not serve the HTTP status.cgi the AC firmware does. None when unreadable.
+
+    ``radio_metrics`` is filled from ``wstalist`` only when ``collect_radio`` is
+    set (M5 LRs, whose radio metrics have no other source) — a dict of the same
+    keys as the HTTP poll, or None when not collected / command failed.
     """
     try:
         # 12 s (vs 6 s par défaut) : sur les liens radio avec perte, le kex SSH
@@ -911,16 +1002,18 @@ def _measure_latency_via_ssh_sync(
         )
     except _FingerprintMismatchError as exc:
         logger.error("measure_latency host-key mismatch %s — %s", host, exc)
-        return False, False, None, str(exc), None, None, None
+        return False, False, None, str(exc), None, None, None, None
     except Exception as exc:
         logger.debug("measure_latency SSH connect failed %s — %s", host, exc)
-        return False, False, None, str(exc), None, None, None
+        return False, False, None, str(exc), None, None, None, None
 
     try:
         # Hardware model, read on the same session (cheap local file) so an
         # airMAX LR mis-inferred as the wrong variant self-heals — this is the
         # only model source for M5 LRs that don't answer the HTTP API.
         model = _read_board_model(transport)
+        # Radio metrics via wstalist — only for M5 LRs (no HTTP status.cgi).
+        radio = _read_wstalist_metrics(transport) if collect_radio else None
 
         cmd = f"ping -c {int(count)} -W 3 {shlex.quote(target)}"
         # busybox ping prints the summary on stdout; we need its content,
@@ -932,20 +1025,20 @@ def _measure_latency_via_ssh_sync(
             return (
                 True, False, None,
                 f"ping {target} exit={code}",
-                observed, used_pw, model,
+                observed, used_pw, model, radio,
             )
         if not out:
             return (
                 True, False, None,
                 f"ping {target}: stdout vide",
-                observed, used_pw, model,
+                observed, used_pw, model, radio,
             )
         m = _PING_AVG_RE.search(out)
         if not m:
             return (
                 True, True, None,
                 f"ping {target} OK mais RTT non parsé",
-                observed, used_pw, model,
+                observed, used_pw, model, radio,
             )
         try:
             avg = float(m.group(1))
@@ -953,16 +1046,16 @@ def _measure_latency_via_ssh_sync(
             return (
                 True, True, None,
                 f"ping {target}: valeur RTT invalide",
-                observed, used_pw, model,
+                observed, used_pw, model, radio,
             )
         return (
             True, True, avg,
             f"{target} avg={avg:.1f} ms",
-            observed, used_pw, model,
+            observed, used_pw, model, radio,
         )
     except Exception as exc:
         logger.debug("measure_latency exec failed %s — %s", host, exc)
-        return True, False, None, str(exc), observed, used_pw, None
+        return True, False, None, str(exc), observed, used_pw, None, None
     finally:
         transport.close()
 
@@ -976,16 +1069,20 @@ async def measure_latency_via_ssh(
     count: int = 5,
     expected_fingerprint: str | None = None,
     fallback_passwords: list[str] | None = None,
-) -> tuple[bool, bool, float | None, str, str | None, str | None, str | None]:
+    collect_radio: bool = False,
+) -> tuple[
+    bool, bool, float | None, str, str | None, str | None, str | None,
+    dict[str, float | None] | None,
+]:
     """SSH into device and measure avg RTT of `count` pings to `target`.
 
     Returns ``(ssh_ok, ping_ok, avg_rtt_ms, message, observed_fp, used_pw,
-    board_model)``.
+    board_model, radio_metrics)``.
     """
     return await asyncio.to_thread(
         _measure_latency_via_ssh_sync,
         host, port, username, password, target, count,
-        expected_fingerprint, fallback_passwords,
+        expected_fingerprint, fallback_passwords, collect_radio,
     )
 
 

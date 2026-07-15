@@ -8,7 +8,9 @@ reads.
 
 from app.services.airos_api_service import (
     _extract_hostname,
+    _extract_model,
     _extract_netrole,
+    airmax_variant_from_model,
     parse_airos_link_metrics,
 )
 
@@ -75,6 +77,26 @@ def test_parse_real_status_maps_dashboard_values():
 
 def test_extract_hostname():
     assert _extract_hostname(_real_status()) == "44910449- Habib Khoumeini"
+
+
+def test_extract_model():
+    assert _extract_model({"host": {"devmodel": "LBE-M5-23"}}) == "LBE-M5-23"
+    assert _extract_model({"host": {"model": "LiteBeam 5AC Gen2"}}) == "LiteBeam 5AC Gen2"
+    # devmodel wins over model when both present
+    assert _extract_model({"host": {"devmodel": "LBE-M5-23", "model": "x"}}) == "LBE-M5-23"
+    assert _extract_model({"host": {}}) is None
+    assert _extract_model({}) is None
+
+
+def test_airmax_variant_from_model():
+    assert airmax_variant_from_model("LBE-M5-23") == "litebeam_m5"
+    assert airmax_variant_from_model("LiteBeam M5") == "litebeam_m5"
+    assert airmax_variant_from_model("LBE-5AC-Gen2") == "litebeam_5ac"
+    assert airmax_variant_from_model("LiteBeam 5AC Gen2") == "litebeam_5ac"
+    # ambiguous / absent → None (leave the current variant untouched)
+    assert airmax_variant_from_model("") is None
+    assert airmax_variant_from_model(None) is None
+    assert airmax_variant_from_model("PowerBeam") is None
 
 
 def test_extract_netrole():

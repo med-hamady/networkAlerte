@@ -430,7 +430,7 @@ async def _fetch_live_metrics(
             )
         if collected is None:
             return
-        metrics, _hostname, _netrole = collected
+        metrics, _hostname, _netrole, _model_variant = collected
         if any(v is not None for v in metrics.values()):
             result[lr.id] = metrics
 

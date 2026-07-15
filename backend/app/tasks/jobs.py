@@ -1517,7 +1517,7 @@ async def airos_api_poll_job() -> None:
         if collected is None:
             logger.debug("airOS API no response — %s (%s)", name, ip)
             return
-        metrics, hostname, netrole = collected
+        metrics, hostname, netrole, model_variant = collected
         if not any(v is not None for v in metrics.values()):
             logger.warning("airOS API no data — %s (%s)", name, ip)
             return
@@ -1525,7 +1525,7 @@ async def airos_api_poll_job() -> None:
             "airOS %s (%s) — %s", name, ip,
             " | ".join(f"{k}={v}" for k, v in metrics.items() if v is not None),
         )
-        fetched[dev_id] = (metrics, hostname, netrole)
+        fetched[dev_id] = (metrics, hostname, netrole, model_variant)
 
     tasks = [asyncio.ensure_future(_fetch(*t)) for t in targets]
     try:
@@ -1543,11 +1543,23 @@ async def airos_api_poll_job() -> None:
         )
 
     # ── Phase 2 : persist + alert engine + topologie en série DB ──
-    for dev_id, (metrics, hostname, netrole) in fetched.items():
+    for dev_id, (metrics, hostname, netrole, model_variant) in fetched.items():
         async with async_session_factory() as session:
             dev = await session.get(Device, dev_id)
             if dev is None:
                 continue
+
+            # Correct the LR model_variant from the airOS-reported hardware model
+            # (M5 vs 5AC). airOS is authoritative for the real device, so a peer/
+            # UISP misclassification at creation is fixed here. Restricted to the
+            # two airMAX variants by airmax_variant_from_model → can never flip an
+            # LR out of the airMAX family. LR only (PTP LiteBeam has no variant).
+            if isinstance(dev, Lr) and model_variant and dev.model_variant != model_variant:
+                logger.info(
+                    "airMAX LR model_variant ← airOS devmodel — '%s' (%s) : %s → %s",
+                    dev.name, dev.ip_address, dev.model_variant, model_variant,
+                )
+                dev.model_variant = model_variant
 
             # Sync the stable distance_m column for quick UI display (LR + PTP
             # LiteBeam both carry it; a generic Device does not).

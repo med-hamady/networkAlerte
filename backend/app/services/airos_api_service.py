@@ -200,6 +200,38 @@ def _extract_hostname(raw: dict) -> str | None:
     return name.strip() if isinstance(name, str) and name.strip() else None
 
 
+def _extract_model(raw: dict) -> str | None:
+    """airOS-reported hardware model (``host.devmodel``), e.g. "LBE-M5-23",
+    "LiteBeam 5AC Gen2". Falls back to ``host.model``. Used to auto-correct the
+    LR ``model_variant`` (M5 vs 5AC) from the device itself — airOS is the source
+    of truth for the actual hardware, so a peer/UISP misclassification at creation
+    gets fixed on the next poll."""
+    for key in ("devmodel", "model"):
+        val = _nested(raw, "host", key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
+
+
+def airmax_variant_from_model(model: str | None) -> str | None:
+    """Resolve an airMAX LiteBeam ``model_variant`` from an airOS model string.
+
+    Returns ``"litebeam_m5"`` or ``"litebeam_5ac"`` when the string is
+    unambiguous, else ``None`` (leave the current variant untouched). This is
+    only ever applied to devices already known to be airMAX LiteBeams, so the
+    result is deliberately restricted to those two values — it can never flip an
+    LR out of the airMAX family (which would drop it from the airOS poll).
+    """
+    if not model:
+        return None
+    norm = model.lower()
+    if "m5" in norm:
+        return "litebeam_m5"
+    if "5ac" in norm or "ac" in norm:
+        return "litebeam_5ac"
+    return None
+
+
 def _extract_netrole(raw: dict) -> str | None:
     """Router vs bridge mode (host.netrole). airOS reports "router"/"bridge".
 
@@ -239,11 +271,18 @@ async def collect_airos_channel_width(
 
 async def collect_airos_link_metrics(
     host: str, username: str, password: str, port: int = 443
-) -> tuple[dict[str, float | None], str | None, str | None] | None:
-    """Fetch + parse airOS status. Returns (metrics, hostname, netrole) or
-    None if the device is unreachable / auth fails. ``netrole`` is "router",
-    "bridge", or None (unknown)."""
+) -> tuple[dict[str, float | None], str | None, str | None, str | None] | None:
+    """Fetch + parse airOS status. Returns (metrics, hostname, netrole,
+    model_variant) or None if the device is unreachable / auth fails.
+    ``netrole`` is "router", "bridge", or None (unknown). ``model_variant`` is
+    the airMAX variant resolved from ``host.devmodel`` ("litebeam_m5" /
+    "litebeam_5ac"), or None when the model string is absent/ambiguous."""
     raw = await AirOsApiClient(host, username, password, port).fetch_status()
     if raw is None:
         return None
-    return parse_airos_link_metrics(raw), _extract_hostname(raw), _extract_netrole(raw)
+    return (
+        parse_airos_link_metrics(raw),
+        _extract_hostname(raw),
+        _extract_netrole(raw),
+        airmax_variant_from_model(_extract_model(raw)),
+    )

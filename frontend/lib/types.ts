@@ -863,28 +863,41 @@ export interface FaiJournalResponse {
   attention: FaiAttentionRow[]
 }
 
-// ─── Historique de latence d'un LR (graphe « Plus d'infos » de la fiche) ─────
-// Alimenté par lr_latency_samples : la sonde SSH replie chaque relevé RTT dans
-// un bucket de 5 min. Les fenêtres larges sont re-binnées côté backend.
-export interface LatencyPoint {
+// ─── Historique des courbes de la fiche équipement (lr_metric_samples) ──────
+// Une courbe par métrique (latence, capacité du lien, débits). Alimenté par
+// persist_device_metrics : chaque relevé est replié dans un bucket de 5 min.
+// Les fenêtres larges sont re-binnées côté backend.
+export interface MetricHistPoint {
   bucket_start: string
-  avg_ms: number
+  avg_value: number
   // Extrêmes du bucket : un pic court est noyé par la moyenne, la bande min/max
   // le garde visible.
-  min_ms: number
-  max_ms: number
+  min_value: number
+  max_value: number
   sample_count: number
 }
-export interface LatencyHistory {
+export interface MetricOption {
+  name: string
+  label: string
+  unit: string
+}
+export interface MetricHistory {
   device_id: number
+  metric_name: string
+  label: string
+  unit: string
+  // L'axe Y doit-il partir de 0 (vrai pour une grandeur : ms, Mb/s).
+  zero_based: boolean
   start: string
   end: string
   // Largeur d'un point en secondes (300 sur 24h, plus large au-delà).
   bin_seconds: number
-  // Seuil critique effectif (lr_latency_critical_ms) — le graphe trace la même
-  // ligne que celle qui déclenche l'alerte.
-  threshold_ms: number
-  // Trous volontaires : un bucket sans relevé (LR sans transit) est ABSENT,
-  // il n'est pas ramené à 0.
-  points: LatencyPoint[]
+  // Seuil d'alerte effectif, et son sens : 'max' = alerte au-dessus (latence),
+  // 'min' = alerte en dessous (capacité). null = métrique sans seuil.
+  threshold: number | null
+  threshold_direction: 'max' | 'min' | null
+  // Les seules métriques que CE device a en historique → les onglets du graphe.
+  available_metrics: MetricOption[]
+  // Trous volontaires : un bucket sans relevé est ABSENT, jamais ramené à 0.
+  points: MetricHistPoint[]
 }

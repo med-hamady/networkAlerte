@@ -27,7 +27,7 @@ from app.services import (
     client_block_service,
     device_service,
     lan_discovery,
-    lr_latency_history_service,
+    lr_metric_history_service,
     lr_plan_service,
     ssh_service,
     threshold_service,
@@ -214,26 +214,47 @@ async def get_device_metrics_latest(
     }
 
 
-class LatencyPoint(BaseModel):
+class MetricPointHist(BaseModel):
     bucket_start: datetime.datetime
-    avg_ms: float
-    min_ms: float
-    max_ms: float
+    avg_value: float
+    min_value: float
+    max_value: float
     sample_count: int
 
 
-class LatencyHistory(BaseModel):
+class MetricOption(BaseModel):
+    name: str
+    label: str
+    unit: str
+
+
+class MetricHistory(BaseModel):
     device_id: int
+    metric_name: str
+    label: str
+    unit: str
+    zero_based: bool
     start: datetime.datetime
     end: datetime.datetime
     bin_seconds: int
-    threshold_ms: float
-    points: list[LatencyPoint]
+    # Seuil d'alerte effectif de cette métrique, et son sens : "max" = alerte
+    # au-dessus (latence), "min" = alerte en dessous (capacité). None quand la
+    # métrique n'a pas de seuil (les débits du lien).
+    threshold: float | None
+    threshold_direction: Literal["max", "min"] | None
+    # Les métriques que CE device a réellement en historique — les onglets du
+    # graphe s'y limitent (un LTU LR et un LiteBeam ne rapportent pas le même jeu).
+    available_metrics: list[MetricOption]
+    points: list[MetricPointHist]
 
 
-@router.get("/{device_id}/latency-history", response_model=LatencyHistory)
-async def get_device_latency_history(
+@router.get("/{device_id}/metric-history", response_model=MetricHistory)
+async def get_device_metric_history(
     device_id: int,
+    metric: str = Query(
+        "lr_latency_ms",
+        description="Métrique à tracer — une clé de lr_metric_history_service.GRAPH_METRICS.",
+    ),
     period: Literal["24h", "7d", "30d"] = Query(
         "24h", description="Fenêtre relative. Ignorée si start/end sont fournis.",
     ),
@@ -244,20 +265,24 @@ async def get_device_latency_history(
         None, description="Fin de plage incluse (YYYY-MM-DD, UTC). Requiert `start`."
     ),
     db: AsyncSession = Depends(get_db),
-) -> LatencyHistory:
-    """Latency history (LR → Internet RTT) of one LR, for the device modal chart.
+) -> MetricHistory:
+    """History of one graphable metric for one device — the device-modal charts.
 
     Either a preset ``period`` or a custom ``start``/``end`` date range (inclusive
     of both days, UTC — same convention as /clients/consumption), which wins over
     ``period``. Points are 5-min buckets over 24h, re-binned server-side on wider
     windows so the payload stays a few hundred points.
 
-    Only LRs are probed, so any other device type returns an empty series rather
-    than a 4xx — the modal decides whether to offer the chart, and an error here
-    would be noise, not information.
+    ``metric`` is checked against the GRAPH_METRICS allowlist rather than passed
+    to SQL — an arbitrary metric_name would let a caller mine any series in the
+    table, and would silently return an empty chart for a typo.
 
-    Missing buckets are absent from ``points`` (no zero-filling): the probe stores
-    nothing when the LR has no transit, and the chart draws that as a gap.
+    A device with no history for this metric returns an empty series rather than
+    a 4xx: the modal drives its tabs off ``available_metrics``, and a device that
+    simply hasn't been polled yet is not an error.
+
+    Missing buckets are absent from ``points`` (no zero-filling): nothing was
+    measured then, and a 0 would read as "0 ms" / "0 Mb/s".
     """
     if (start is None) != (end is None):
         raise HTTPException(
@@ -268,30 +293,51 @@ async def get_device_latency_history(
             status_code=422, detail="`end` doit être postérieure ou égale à `start`.",
         )
 
+    spec = lr_metric_history_service.GRAPH_METRICS.get(metric)
+    if spec is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Métrique '{metric}' non traçable. Valeurs acceptées : "
+                f"{', '.join(lr_metric_history_service.GRAPH_METRICS)}."
+            ),
+        )
+
     device = await device_service.get_device(db, device_id)
     if device is None:
         raise HTTPException(status_code=404, detail="Device not found")
 
-    range_start, range_end, bin_seconds = lr_latency_history_service.resolve_range(
+    range_start, range_end, bin_seconds = lr_metric_history_service.resolve_range(
         period, start, end,
     )
+    points = await lr_metric_history_service.get_history(
+        db, device_id, metric,
+        start=range_start, end=range_end, bin_seconds=bin_seconds,
+    )
 
-    points: list[dict] = []
-    if isinstance(device, Lr):
-        points = await lr_latency_history_service.get_history(
-            db, device_id, start=range_start, end=range_end, bin_seconds=bin_seconds,
-        )
+    # Le seuil vient des settings EFFECTIFS (surcharge DB comprise) → le graphe
+    # trace exactement la ligne qui déclenche l'alerte, sans la coder en dur.
+    threshold: float | None = None
+    if spec["threshold_setting"]:
+        settings = await threshold_service.get_effective_settings(db, get_settings())
+        threshold = float(getattr(settings, spec["threshold_setting"]))
 
-    settings = await threshold_service.get_effective_settings(db, get_settings())
-    return LatencyHistory(
+    return MetricHistory(
         device_id=device_id,
+        metric_name=metric,
+        label=spec["label"],
+        unit=spec["unit"],
+        zero_based=spec["zero_based"],
         start=range_start,
         end=range_end,
         bin_seconds=bin_seconds,
-        # Lets the chart draw the same critical line the alerting uses, instead of
-        # hard-coding 100 ms in the frontend.
-        threshold_ms=float(settings.lr_latency_critical_ms),
-        points=[LatencyPoint(**p) for p in points],
+        threshold=threshold,
+        threshold_direction=spec["threshold_direction"],
+        available_metrics=[
+            MetricOption(**m)
+            for m in await lr_metric_history_service.available_metrics(db, device_id)
+        ],
+        points=[MetricPointHist(**p) for p in points],
     )
 
 

@@ -3,7 +3,7 @@
 import React, { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
-import type { Device, LatencyHistory, LatencyPoint } from '@/lib/types'
+import type { Device, MetricHistPoint, MetricHistory } from '@/lib/types'
 
 type Period = '24h' | '7d' | '30d'
 
@@ -17,15 +17,14 @@ const isoDay = (d: Date) => d.toISOString().slice(0, 10)
 
 /** Écart médian entre deux points consécutifs, en ms (0 si moins de 2 points).
  *
- * C'est la **cadence réelle** de la sonde, telle qu'observée dans les données —
- * et pas celle qu'on suppose. Elle ne vaut PAS `bin_seconds` : la sonde SSH fait
- * tout son fan-out sur le parc avant d'écrire, donc un tour complet dicte la
- * cadence (~54 min sur 800 LR en prod), très loin des 5 min du bucket. Un seuil
- * de trou codé sur `bin_seconds` découperait alors chaque point en segment isolé
- * et il n'y aurait plus de courbe du tout.
+ * C'est la **cadence réelle** du poll, telle qu'observée dans les données — et
+ * pas celle qu'on suppose. Elle ne vaut PAS `bin_seconds` : chaque source a la
+ * sienne (la sonde SSH ne rend ses mesures qu'à la fin de son fan-out sur tout
+ * le parc, soit un tour complet). Un seuil de trou codé sur `bin_seconds`
+ * découperait chaque point en segment isolé et il n'y aurait plus de courbe.
  *
- * Médiane et pas moyenne : une vraie coupure (un trou de 3 h) tirerait la moyenne
- * vers le haut et masquerait les coupures suivantes.
+ * Médiane et pas moyenne : une vraie coupure (un trou de 3 h) tirerait la
+ * moyenne vers le haut et masquerait les coupures suivantes.
  */
 function medianGapMs(times: number[]): number {
   if (times.length < 2) return 0
@@ -33,18 +32,20 @@ function medianGapMs(times: number[]): number {
   return deltas[Math.floor(deltas.length / 2)]
 }
 
-/** Graphe de latence LR → Internet d'un client, sur période ou plage de dates.
+/** Graphes d'historique d'un équipement : latence, capacité du lien, débits.
  *
- * Ouvert depuis le bouton « Plus d'infos » de la fiche équipement. Ne s'affiche
- * que pour les LR : ce sont les seuls équipements sondés en RTT.
+ * Ouvert depuis le bouton « Plus d'infos » de la fiche. Les onglets suivent
+ * `available_metrics` renvoyé par l'API : on n'affiche que les courbes que CE
+ * device a réellement (un LTU LR et un LiteBeam ne rapportent pas le même jeu).
  *
- * L'historique démarre au déploiement de lr_latency_samples — un LR plus ancien
- * que ça n'a pas de courbe rétroactive, d'où l'état vide explicite.
+ * L'historique démarre au déploiement — un équipement plus ancien que ça n'a pas
+ * de courbe rétroactive, d'où l'état vide explicite.
  */
-export default function LatencyHistoryModal({ device, onClose }: {
+export default function MetricHistoryModal({ device, onClose }: {
   device: Device
   onClose: () => void
 }) {
+  const [metric, setMetric] = useState('lr_latency_ms')
   const [period, setPeriod] = useState<Period>('24h')
   // `range` est ce qui est appliqué (pilote la requête) ; les `draft` suivent
   // les sélecteurs avant « Appliquer » — même pattern que /clients.
@@ -62,10 +63,10 @@ export default function LatencyHistoryModal({ device, onClose }: {
 
   const rangeInvalid = !draftStart || !draftEnd || draftEnd < draftStart
 
-  const { data, isLoading } = useSWR<LatencyHistory>(
+  const { data, isLoading } = useSWR<MetricHistory>(
     range
-      ? endpoints.deviceLatencyHistoryRange(device.id, range.start, range.end)
-      : endpoints.deviceLatencyHistory(device.id, period),
+      ? endpoints.deviceMetricHistoryRange(device.id, metric, range.start, range.end)
+      : endpoints.deviceMetricHistory(device.id, metric, period),
     fetcher,
     // Auto-refresh seulement sur une fenêtre glissante : une plage de dates
     // passée est figée, la rafraîchir ne ferait que retélécharger l'identique.
@@ -78,6 +79,7 @@ export default function LatencyHistoryModal({ device, onClose }: {
   }
 
   const points = data?.points ?? []
+  const tabs = data?.available_metrics ?? []
 
   return (
     <>
@@ -87,9 +89,11 @@ export default function LatencyHistoryModal({ device, onClose }: {
           {/* Header */}
           <div className="flex items-center justify-between px-6 py-4 border-b border-blue-100 sticky top-0 bg-white z-10">
             <div>
-              <p className="font-bold text-slate-800 text-base">Latence Internet — {device.name}</p>
+              <p className="font-bold text-slate-800 text-base">
+                {data?.label ?? 'Historique'} — {device.name}
+              </p>
               <p className="text-blue-400 text-xs mt-0.5">
-                Temps de réponse mesuré depuis le LR du client vers Internet
+                Mesuré sur le lien radio du client, historique par tranches de 5 min
               </p>
             </div>
             <button
@@ -104,6 +108,25 @@ export default function LatencyHistoryModal({ device, onClose }: {
           </div>
 
           <div className="p-6 space-y-5">
+            {/* Onglets de courbe — uniquement celles que ce device possède */}
+            {tabs.length > 1 && (
+              <div className="flex flex-wrap gap-1.5 border-b border-blue-100 pb-3">
+                {tabs.map(t => (
+                  <button
+                    key={t.name}
+                    onClick={() => setMetric(t.name)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                      metric === t.name
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-blue-50 text-blue-500 hover:bg-blue-100'
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {/* Filtres — une seule rangée au-dessus du graphe */}
             <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
               <div className="flex gap-1.5">
@@ -163,14 +186,22 @@ export default function LatencyHistoryModal({ device, onClose }: {
               <EmptyState />
             ) : (
               <>
-                <LatencyChart
+                <MetricChart
                   points={points}
-                  threshold={data!.threshold_ms}
+                  unit={data!.unit}
+                  zeroBased={data!.zero_based}
+                  threshold={data!.threshold}
+                  thresholdDirection={data!.threshold_direction}
                   binSeconds={data!.bin_seconds}
                   start={new Date(data!.start)}
                   end={new Date(data!.end)}
                 />
-                <Summary points={points} threshold={data!.threshold_ms} />
+                <Summary
+                  points={points}
+                  unit={data!.unit}
+                  threshold={data!.threshold}
+                  thresholdDirection={data!.threshold_direction}
+                />
               </>
             )}
           </div>
@@ -185,34 +216,52 @@ function EmptyState() {
     <div className="h-64 flex flex-col items-center justify-center gap-2 text-center px-6">
       <p className="text-slate-600 text-sm font-semibold">Aucune mesure sur cette période</p>
       <p className="text-blue-400 text-xs max-w-md">
-        La sonde n&apos;enregistre une latence que lorsque le client a du transit.
-        Sur une période sans relevé, le client était hors ligne, sans accès Internet,
-        ou l&apos;historique ne remonte pas encore aussi loin.
+        Rien n&apos;est enregistré quand l&apos;équipement est injoignable — et pour la
+        latence, quand le client n&apos;a pas de transit. Sur une période sans relevé,
+        le client était hors ligne, ou l&apos;historique ne remonte pas encore aussi loin.
       </p>
     </div>
   )
 }
 
-/** Repères de latence, alignés sur le vocabulaire du reste de l'UI. */
-function latencyColor(ms: number, threshold: number): string {
-  if (ms >= threshold) return '#ef4444'          // red-500 — critique
-  if (ms >= threshold * 0.6) return '#eab308'    // yellow-500 — dégradé
-  return '#16a34a'                                // green-600 — sain
+/** Vert/jaune/rouge selon le seuil ET son sens.
+ *
+ * `direction` est indispensable : pour la latence l'alerte est AU-DESSUS du
+ * seuil, pour la capacité elle est EN DESSOUS. Un code couleur qui ignorerait
+ * ça peindrait en rouge un lien excellent.
+ */
+function valueColor(
+  v: number, threshold: number | null, direction: 'max' | 'min' | null,
+): string {
+  if (threshold == null || direction == null) return '#2563eb'  // blue-600 — neutre
+  if (direction === 'max') {
+    if (v >= threshold) return '#ef4444'
+    if (v >= threshold * 0.6) return '#eab308'
+    return '#16a34a'
+  }
+  if (v <= threshold) return '#ef4444'
+  if (v <= threshold * 1.4) return '#eab308'
+  return '#16a34a'
 }
 
 // Graphe en SVG pur (pas de lib de charts, comme les donuts et /traffic).
 // X = temps RÉEL (pas l'index) : les trous de mesure doivent rester des trous,
 // un axe indexé les écraserait et laisserait croire à une mesure continue.
-function LatencyChart({ points, threshold, binSeconds, start, end }: {
-  points: LatencyPoint[]
-  threshold: number
+function MetricChart({
+  points, unit, zeroBased, threshold, thresholdDirection, binSeconds, start, end,
+}: {
+  points: MetricHistPoint[]
+  unit: string
+  zeroBased: boolean
+  threshold: number | null
+  thresholdDirection: 'max' | 'min' | null
   binSeconds: number
   start: Date
   end: Date
 }) {
   const [hover, setHover] = useState<number | null>(null)
 
-  const M = { left: 52, right: 14, top: 12, bottom: 30 }
+  const M = { left: 56, right: 14, top: 12, bottom: 30 }
   const plotW = 880, plotH = 260
   const W = M.left + plotW + M.right
   const H = M.top + plotH + M.bottom
@@ -223,30 +272,28 @@ function LatencyChart({ points, threshold, binSeconds, start, end }: {
 
   const { yMax, yTicks } = useMemo(() => {
     // Le seuil est inclus dans l'échelle pour que sa ligne reste toujours dans
-    // le cadre, même quand le client va très bien.
-    const peak = Math.max(threshold, ...points.map(p => p.max_ms))
+    // le cadre, même quand la métrique est loin de lui.
+    const peak = Math.max(threshold ?? 0, ...points.map(p => p.max_value))
     const top = peak > 0 ? peak * 1.15 : 1
     return { yMax: top, yTicks: Array.from({ length: 5 }, (_, k) => (top / 4) * k) }
   }, [points, threshold])
 
   const xAt = (t: number) => M.left + (t1 === t0 ? plotW / 2 : plotW * ((t - t0) / (t1 - t0)))
-  const yAt = (v: number) => M.top + plotH * (1 - v / yMax)
+  // zeroBased est toujours vrai pour nos métriques (ms, Mb/s sont des grandeurs) :
+  // tronquer l'axe transformerait une variation de 5 % en falaise visuelle.
+  const yAt = (v: number) => M.top + plotH * (1 - (zeroBased ? v / yMax : v / yMax))
 
   // Découpage en segments continus : au-delà d'un certain écart entre deux
   // points, il y a eu un trou de mesure → on coupe la courbe au lieu de la faire
   // traverser le vide en ligne droite (ce qui inventerait des données).
   //
-  // Le seuil suit la **cadence observée**, pas `bin_seconds` : la sonde n'écrit
-  // qu'à la fin de son fan-out sur tout le parc, donc l'écart réel entre deux
-  // points d'un même client est celui d'un tour complet (~54 min sur 800 LR),
-  // pas les 5 min du bucket. Un seuil à `2 × bin` couperait alors partout et il
-  // ne resterait que des points isolés. Le plancher à `2 × bin` garde le cas
-  // d'un parc petit/rapide où la cadence approche la largeur du bucket.
+  // Le seuil suit la cadence OBSERVÉE, pas `bin_seconds` (cf. medianGapMs). Le
+  // plancher à `2 × bin` garde le cas d'un poll rapide et régulier.
   const segments = useMemo(() => {
     const cadence = medianGapMs(times)
     const gapMs = Math.max(binSeconds * 2 * 1000, cadence * 2.5)
-    const out: LatencyPoint[][] = []
-    let current: LatencyPoint[] = []
+    const out: MetricHistPoint[][] = []
+    let current: MetricHistPoint[] = []
     points.forEach((p, i) => {
       if (i > 0 && times[i] - times[i - 1] > gapMs) {
         out.push(current)
@@ -259,11 +306,10 @@ function LatencyChart({ points, threshold, binSeconds, start, end }: {
   }, [points, times, binSeconds])
 
   const cadenceMin = medianGapMs(times) / 60_000
-
   const hovered = hover != null ? points[hover] : null
 
-  // Étiquettes X : ~5 repères de temps. Sur plus de 24 h on date le repère,
-  // sinon l'heure seule suffit (et reste lisible).
+  // Étiquettes X : ~5 repères. Sur plus de 24 h on date le repère, sinon l'heure
+  // seule suffit (et reste lisible).
   const spanHours = (t1 - t0) / 3_600_000
   const fmtX = (t: number) => {
     const d = new Date(t)
@@ -281,7 +327,7 @@ function LatencyChart({ points, threshold, binSeconds, start, end }: {
       <svg
         viewBox={`0 0 ${W} ${H}`} className="block w-full h-auto"
         role="img"
-        aria-label={`Latence Internet du client dans le temps, seuil critique ${threshold} ms`}
+        aria-label={`Historique (${unit}) dans le temps${threshold != null ? `, seuil ${threshold} ${unit}` : ''}`}
         onMouseMove={(e) => {
           const rect = e.currentTarget.getBoundingClientRect()
           if (!rect.width) return
@@ -304,7 +350,7 @@ function LatencyChart({ points, threshold, binSeconds, start, end }: {
           <g key={i}>
             <line x1={M.left} x2={M.left + plotW} y1={yAt(v)} y2={yAt(v)} stroke="#e5edff" strokeWidth={1} />
             <text x={M.left - 8} y={yAt(v) + 4} textAnchor="end" className="fill-blue-300" fontSize={11}>
-              {v.toFixed(0)}
+              {v >= 100 ? v.toFixed(0) : v.toFixed(1)}
             </text>
           </g>
         ))}
@@ -312,46 +358,48 @@ function LatencyChart({ points, threshold, binSeconds, start, end }: {
           x={14} y={M.top + plotH / 2} textAnchor="middle" fontSize={11}
           className="fill-blue-400" transform={`rotate(-90 14 ${M.top + plotH / 2})`}
         >
-          Latence (ms)
+          {unit}
         </text>
 
         {/* Bande min/max : l'amplitude réelle dans chaque bucket. Sans elle, un
             pic de 2 min disparaîtrait dans la moyenne de 5 min. */}
         {segments.map((seg, s) => {
-          const upper = seg.map(p => `${xAt(new Date(p.bucket_start).getTime()).toFixed(1)},${yAt(p.max_ms).toFixed(1)}`)
-          const lower = seg.map(p => `${xAt(new Date(p.bucket_start).getTime()).toFixed(1)},${yAt(p.min_ms).toFixed(1)}`).reverse()
+          const upper = seg.map(p => `${xAt(new Date(p.bucket_start).getTime()).toFixed(1)},${yAt(p.max_value).toFixed(1)}`)
+          const lower = seg.map(p => `${xAt(new Date(p.bucket_start).getTime()).toFixed(1)},${yAt(p.min_value).toFixed(1)}`).reverse()
           return (
             <polygon key={`band-${s}`} points={[...upper, ...lower].join(' ')} fill="#3b82f6" opacity={0.14} />
           )
         })}
 
-        {/* Seuil critique — même valeur que celle qui déclenche l'alerte */}
-        <line
-          x1={M.left} x2={M.left + plotW} y1={yAt(threshold)} y2={yAt(threshold)}
-          stroke="#ef4444" strokeWidth={1.5} strokeDasharray="5 4" opacity={0.75}
-        />
-        <text x={M.left + plotW} y={yAt(threshold) - 5} textAnchor="end" fontSize={10} className="fill-red-500 font-semibold">
-          Seuil critique {threshold} ms
-        </text>
+        {/* Seuil — même valeur que celle qui déclenche l'alerte */}
+        {threshold != null && (
+          <>
+            <line
+              x1={M.left} x2={M.left + plotW} y1={yAt(threshold)} y2={yAt(threshold)}
+              stroke="#ef4444" strokeWidth={1.5} strokeDasharray="5 4" opacity={0.75}
+            />
+            <text x={M.left + plotW} y={yAt(threshold) - 5} textAnchor="end" fontSize={10} className="fill-red-500 font-semibold">
+              {thresholdDirection === 'min' ? 'Plancher' : 'Seuil'} {threshold} {unit}
+            </text>
+          </>
+        )}
 
         {/* Courbe moyenne — un segment par plage continue */}
         {segments.map((seg, s) => (
           <polyline
             key={`line-${s}`}
-            points={seg.map(p => `${xAt(new Date(p.bucket_start).getTime()).toFixed(1)},${yAt(p.avg_ms).toFixed(1)}`).join(' ')}
+            points={seg.map(p => `${xAt(new Date(p.bucket_start).getTime()).toFixed(1)},${yAt(p.avg_value).toFixed(1)}`).join(' ')}
             fill="none" stroke="#2563eb" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round"
           />
         ))}
-        {/* Marqueurs. Sur une série clairsemée (la sonde ne rend qu'un point par
-            tour de fan-out, ~1/h sur un gros parc), une 24 h ne tient qu'en ~30
-            points : sans marqueur on ne voit pas où sont les vraies mesures et
-            on lit la ligne comme une mesure continue. Au-delà, ils empâteraient
-            la courbe → on ne garde que les plages isolées, qui n'ont aucun
-            segment à tracer et seraient sinon invisibles. */}
+        {/* Marqueurs. Sur une série clairsemée, sans marqueur on ne voit pas où
+            sont les vraies mesures et on lit la ligne comme une mesure continue.
+            Au-delà, ils empâteraient la courbe → seules les plages isolées, qui
+            n'ont aucun segment à tracer et seraient sinon invisibles. */}
         {(points.length <= 60 ? points : segments.filter(s => s.length === 1).map(s => s[0])).map((p, i) => (
           <circle
             key={`dot-${i}`}
-            cx={xAt(new Date(p.bucket_start).getTime())} cy={yAt(p.avg_ms)}
+            cx={xAt(new Date(p.bucket_start).getTime())} cy={yAt(p.avg_value)}
             r={2.5} fill="#2563eb"
           />
         ))}
@@ -364,8 +412,9 @@ function LatencyChart({ points, threshold, binSeconds, start, end }: {
               stroke="#93b4fc" strokeWidth={1} strokeDasharray="3 3"
             />
             <circle
-              cx={xAt(times[hover!])} cy={yAt(hovered.avg_ms)} r={4.5}
-              fill={latencyColor(hovered.avg_ms, threshold)} stroke="#fff" strokeWidth={2}
+              cx={xAt(times[hover!])} cy={yAt(hovered.avg_value)} r={4.5}
+              fill={valueColor(hovered.avg_value, threshold, thresholdDirection)}
+              stroke="#fff" strokeWidth={2}
             />
           </g>
         )}
@@ -383,13 +432,13 @@ function LatencyChart({ points, threshold, binSeconds, start, end }: {
       </svg>
 
       {/* Cadence réelle. Affichée parce qu'elle n'est PAS un détail : elle est
-          dictée par la durée d'un tour de sonde (fan-out SSH sur tout le parc),
-          pas par un réglage du graphe. Sans ce repère, on croirait la latence
-          mesurée en continu et on daterait un incident bien trop précisément. */}
+          dictée par la durée d'un tour de poll, pas par un réglage du graphe.
+          Sans ce repère, on croirait la mesure continue et on daterait un
+          incident bien trop précisément. */}
       {cadenceMin > 0 && (
         <p className="text-blue-300 text-[11px] text-right mt-1">
           {points.length} mesure{points.length > 1 ? 's' : ''} · une environ toutes les{' '}
-          {cadenceMin < 1 ? '< 1 min' : `${Math.round(cadenceMin)} min`} (cadence de la sonde)
+          {cadenceMin < 1 ? '< 1 min' : `${Math.round(cadenceMin)} min`} (cadence du relevé)
         </p>
       )}
 
@@ -397,18 +446,18 @@ function LatencyChart({ points, threshold, binSeconds, start, end }: {
       {hovered && (
         <div
           className="absolute -translate-x-1/2 -translate-y-full pointer-events-none bg-white border border-blue-100 rounded-lg shadow-lg px-3 py-2 text-xs whitespace-nowrap z-10"
-          style={{ left: `${(xAt(times[hover!]) / W) * 100}%`, top: `${(yAt(hovered.avg_ms) / H) * 100}%`, marginTop: -10 }}
+          style={{ left: `${(xAt(times[hover!]) / W) * 100}%`, top: `${(yAt(hovered.avg_value) / H) * 100}%`, marginTop: -10 }}
         >
           <p className="text-blue-400 mb-1">
             {new Date(hovered.bucket_start).toLocaleString('fr-FR', {
               day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
             })}
           </p>
-          <p className="font-semibold" style={{ color: latencyColor(hovered.avg_ms, threshold) }}>
-            {hovered.avg_ms.toFixed(1)} ms en moyenne
+          <p className="font-semibold" style={{ color: valueColor(hovered.avg_value, threshold, thresholdDirection) }}>
+            {hovered.avg_value.toFixed(1)} {unit} en moyenne
           </p>
           <p className="text-slate-500">
-            min {hovered.min_ms.toFixed(1)} · max {hovered.max_ms.toFixed(1)} ms
+            min {hovered.min_value.toFixed(1)} · max {hovered.max_value.toFixed(1)} {unit}
           </p>
           <p className="text-blue-300 mt-0.5">
             {hovered.sample_count} mesure{hovered.sample_count > 1 ? 's' : ''}
@@ -420,47 +469,61 @@ function LatencyChart({ points, threshold, binSeconds, start, end }: {
 }
 
 /** Chiffres clés sous le graphe — ce qu'on regarde avant de lire la courbe. */
-function Summary({ points, threshold }: {
-  points: LatencyPoint[]
-  threshold: number
+function Summary({ points, unit, threshold, thresholdDirection }: {
+  points: MetricHistPoint[]
+  unit: string
+  threshold: number | null
+  thresholdDirection: 'max' | 'min' | null
 }) {
   const totalSamples = points.reduce((s, p) => s + p.sample_count, 0)
   // Moyenne pondérée par le nombre de mesures : une moyenne de moyennes
   // sur-pondérerait un bucket qui n'a reçu qu'un seul relevé.
   const avg = totalSamples
-    ? points.reduce((s, p) => s + p.avg_ms * p.sample_count, 0) / totalSamples
+    ? points.reduce((s, p) => s + p.avg_value * p.sample_count, 0) / totalSamples
     : 0
-  const peak = Math.max(...points.map(p => p.max_ms))
-  const best = Math.min(...points.map(p => p.min_ms))
-  // Part du temps mesuré passée au-dessus du seuil — pondérée pareil.
-  const overSamples = points.filter(p => p.avg_ms >= threshold).reduce((s, p) => s + p.sample_count, 0)
-  const overPct = totalSamples ? (overSamples / totalSamples) * 100 : 0
+  const peak = Math.max(...points.map(p => p.max_value))
+  const low = Math.min(...points.map(p => p.min_value))
 
-  // Couverture : quelle part des relevés attendus est réellement là. Un taux bas
-  // veut dire « client souvent hors ligne / sans transit », pas « bon réseau ».
-  //
-  // Attendu calculé sur la cadence OBSERVÉE, pas sur `bin_seconds` : la sonde
-  // n'écrit qu'en fin de fan-out (~54 min/tour sur 800 LR), donc rapporter les
-  // points à des buckets de 5 min afficherait ~9 % de couverture en permanence,
-  // sur un client parfaitement sain. La médiane sert de référence, donc un client
-  // régulier tombe à ~100 % et seuls les vrais trous font descendre le chiffre.
+  // Part du temps mesuré passée du mauvais côté du seuil — pondérée pareil.
+  const bad = threshold == null || thresholdDirection == null
+    ? 0
+    : points
+        .filter(p => thresholdDirection === 'max' ? p.avg_value >= threshold : p.avg_value <= threshold)
+        .reduce((s, p) => s + p.sample_count, 0)
+  const badPct = totalSamples ? (bad / totalSamples) * 100 : 0
+
+  // Couverture : quelle part des relevés attendus est là. Calculée sur la
+  // cadence OBSERVÉE, pas sur bin_seconds — sinon un client parfaitement sain
+  // afficherait une couverture ridicule dès que le poll est plus lent que le
+  // bucket. Un taux bas veut dire « souvent hors ligne », pas « bon réseau ».
   const times = points.map(p => new Date(p.bucket_start).getTime())
   const cadence = medianGapMs(times)
   const spanMs = times[times.length - 1] - times[0]
   const expected = cadence > 0 ? Math.max(1, Math.round(spanMs / cadence) + 1) : points.length
   const coverage = Math.min(100, (points.length / expected) * 100)
 
+  const fmt = (v: number) => `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${unit}`
+
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-      <Stat label="Latence moyenne" value={`${avg.toFixed(1)} ms`} color={latencyColor(avg, threshold)} />
-      <Stat label="Pic maximum" value={`${peak.toFixed(1)} ms`} color={latencyColor(peak, threshold)} />
-      <Stat label="Meilleure mesure" value={`${best.toFixed(1)} ms`} color="#16a34a" />
-      <Stat
-        label="Temps au-dessus du seuil"
-        value={`${overPct.toFixed(0)} %`}
-        color={overPct > 0 ? '#ef4444' : '#16a34a'}
-        hint={coverage < 90 ? `sur ${coverage.toFixed(0)} % de la période mesurée` : undefined}
-      />
+      <Stat label="Moyenne" value={fmt(avg)} color={valueColor(avg, threshold, thresholdDirection)} />
+      <Stat label="Maximum" value={fmt(peak)} color={valueColor(peak, threshold, thresholdDirection)} />
+      <Stat label="Minimum" value={fmt(low)} color={valueColor(low, threshold, thresholdDirection)} />
+      {threshold != null ? (
+        <Stat
+          label={thresholdDirection === 'min' ? 'Temps sous le plancher' : 'Temps au-dessus du seuil'}
+          value={`${badPct.toFixed(0)} %`}
+          color={badPct > 0 ? '#ef4444' : '#16a34a'}
+          hint={coverage < 90 ? `sur ${coverage.toFixed(0)} % de la période mesurée` : undefined}
+        />
+      ) : (
+        <Stat
+          label="Couverture"
+          value={`${coverage.toFixed(0)} %`}
+          color={coverage < 90 ? '#eab308' : '#16a34a'}
+          hint="part de la période réellement mesurée"
+        />
+      )}
     </div>
   )
 }

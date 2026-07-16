@@ -60,7 +60,7 @@ from app.services import (
     discovery_service,
     incident_service,
     lr_health_service,
-    lr_latency_history_service,
+    lr_metric_history_service,
     lr_plan_service,
     ltu_api_service,
     notification_service,
@@ -239,6 +239,19 @@ async def persist_device_metrics(
             unit=units.get(metric_name),
             collected_at=now,
         ))
+        # …et, pour les seules métriques traçables, l'HISTORIQUE des graphes de la
+        # fiche équipement (table dédiée, buckets 5 min). Le collapse ci-dessus ne
+        # garde que la dernière valeur : sans ça, aucune série à tracer.
+        #
+        # C'est ICI qu'on greffe, et pas dans chaque job : ce chokepoint est le
+        # passage obligé de TOUS les polls, donc la latence (sonde SSH), la
+        # capacité et les débits du lien (airOS pour les LiteBeam, fan-out LTU,
+        # wstalist des M5) sont couverts d'un coup, sans toucher un seul job — et
+        # une métrique ajoutée à GRAPH_METRICS devient traçable sans code neuf.
+        if metric_name in lr_metric_history_service.GRAPH_METRICS:
+            await lr_metric_history_service.record_sample(
+                session, device_id, metric_name, float(value), now=now,
+            )
 
 
 # rule_category buckets used to pick SNMP poll variants.
@@ -1982,14 +1995,11 @@ async def lr_internet_probe_job() -> None:
             # lr_latency_ms n'est lu qu'en "latest" (LATERAL dans lr_health) →
             # collapse (1 ligne/LR) via persist_device_metrics.
             if ping_ok and avg_rtt is not None:
+                # persist_device_metrics écrit le collapse ET, pour les métriques
+                # de GRAPH_METRICS (dont lr_latency_ms), l'historique du graphe.
                 await persist_device_metrics(
                     session, dev.id, {"lr_latency_ms": avg_rtt}, {"lr_latency_ms": "ms"}
                 )
-                # …et en parallèle, l'HISTORIQUE (table dédiée, buckets 5 min) qui
-                # alimente le graphe de latence de la fiche équipement. Le collapse
-                # ci-dessus ne garde que la dernière valeur : sans ça, pas de série
-                # à tracer. Upsert → 1 ligne/(LR, 5 min), pas 1 ligne/cycle.
-                await lr_latency_history_service.record_sample(session, dev.id, avg_rtt)
                 await _evaluate_lr_latency(session, dev, avg_rtt, settings)
             elif ping_ok:
                 # Ping a réussi (exit 0) mais RTT non parsé — défensif.
@@ -2221,19 +2231,19 @@ async def traffic_stats_retention_job() -> None:
 
 @_timed_job
 async def lr_latency_retention_job() -> None:
-    """Purge lr_latency_samples buckets older than the retention window.
+    """Purge lr_metric_samples buckets older than the retention window.
 
     The probe upserts 5-min buckets (~600 LRs × 288/day ≈ 173k rows/day), so this
     table grows steadily and needs pruning to stay at its ~5.2M-row steady state.
     Same shape as traffic_stats_retention_job: batched delete on bucket_start
-    (indexed by ix_lr_latency_samples_bucket), committed in small chunks rather
+    (indexed by ix_lr_metric_samples_bucket), committed in small chunks rather
     than one long transaction holding locks over the whole table.
     """
     from sqlalchemy import text
 
     settings = get_settings()
     cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
-        days=settings.lr_latency_history_retention_days
+        days=settings.lr_metric_history_retention_days
     )
     batch = 50_000
     total = 0
@@ -2242,8 +2252,8 @@ async def lr_latency_retention_job() -> None:
             while True:
                 result = await session.execute(
                     text(
-                        "DELETE FROM lr_latency_samples WHERE id IN ("
-                        "  SELECT id FROM lr_latency_samples"
+                        "DELETE FROM lr_metric_samples WHERE id IN ("
+                        "  SELECT id FROM lr_metric_samples"
                         "  WHERE bucket_start < :cutoff"
                         "  LIMIT :batch"
                         ")"
@@ -2257,11 +2267,11 @@ async def lr_latency_retention_job() -> None:
                     break
         if total:
             logger.info(
-                "lr_latency_samples retention — purged %d rows older than %d days",
-                total, settings.lr_latency_history_retention_days,
+                "lr_metric_samples retention — purged %d rows older than %d days",
+                total, settings.lr_metric_history_retention_days,
             )
         else:
-            logger.debug("lr_latency_samples retention — nothing to purge")
+            logger.debug("lr_metric_samples retention — nothing to purge")
     except Exception:
         logger.exception("lr_latency retention job failed")
 
@@ -2853,9 +2863,9 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
     scheduler.add_job(
         lr_latency_retention_job,
         trigger="interval",
-        minutes=settings.lr_latency_history_retention_interval_minutes,
+        minutes=settings.lr_metric_history_retention_interval_minutes,
         id="lr_latency_retention",
-        name="lr_latency_samples retention (purge latency history older than N days)",
+        name="lr_metric_samples retention (purge chart history older than N days)",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

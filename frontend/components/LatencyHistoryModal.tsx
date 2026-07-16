@@ -15,6 +15,24 @@ const PERIOD_LABELS: Record<Period, string> = {
 
 const isoDay = (d: Date) => d.toISOString().slice(0, 10)
 
+/** Écart médian entre deux points consécutifs, en ms (0 si moins de 2 points).
+ *
+ * C'est la **cadence réelle** de la sonde, telle qu'observée dans les données —
+ * et pas celle qu'on suppose. Elle ne vaut PAS `bin_seconds` : la sonde SSH fait
+ * tout son fan-out sur le parc avant d'écrire, donc un tour complet dicte la
+ * cadence (~54 min sur 800 LR en prod), très loin des 5 min du bucket. Un seuil
+ * de trou codé sur `bin_seconds` découperait alors chaque point en segment isolé
+ * et il n'y aurait plus de courbe du tout.
+ *
+ * Médiane et pas moyenne : une vraie coupure (un trou de 3 h) tirerait la moyenne
+ * vers le haut et masquerait les coupures suivantes.
+ */
+function medianGapMs(times: number[]): number {
+  if (times.length < 2) return 0
+  const deltas = times.slice(1).map((t, i) => t - times[i]).sort((a, b) => a - b)
+  return deltas[Math.floor(deltas.length / 2)]
+}
+
 /** Graphe de latence LR → Internet d'un client, sur période ou plage de dates.
  *
  * Ouvert depuis le bouton « Plus d'infos » de la fiche équipement. Ne s'affiche
@@ -152,7 +170,7 @@ export default function LatencyHistoryModal({ device, onClose }: {
                   start={new Date(data!.start)}
                   end={new Date(data!.end)}
                 />
-                <Summary points={points} threshold={data!.threshold_ms} binSeconds={data!.bin_seconds} />
+                <Summary points={points} threshold={data!.threshold_ms} />
               </>
             )}
           </div>
@@ -214,11 +232,19 @@ function LatencyChart({ points, threshold, binSeconds, start, end }: {
   const xAt = (t: number) => M.left + (t1 === t0 ? plotW / 2 : plotW * ((t - t0) / (t1 - t0)))
   const yAt = (v: number) => M.top + plotH * (1 - v / yMax)
 
-  // Découpage en segments continus : deux buckets espacés de plus de 2 bins ont
-  // un trou de mesure entre eux → on coupe la courbe au lieu de la faire
+  // Découpage en segments continus : au-delà d'un certain écart entre deux
+  // points, il y a eu un trou de mesure → on coupe la courbe au lieu de la faire
   // traverser le vide en ligne droite (ce qui inventerait des données).
+  //
+  // Le seuil suit la **cadence observée**, pas `bin_seconds` : la sonde n'écrit
+  // qu'à la fin de son fan-out sur tout le parc, donc l'écart réel entre deux
+  // points d'un même client est celui d'un tour complet (~54 min sur 800 LR),
+  // pas les 5 min du bucket. Un seuil à `2 × bin` couperait alors partout et il
+  // ne resterait que des points isolés. Le plancher à `2 × bin` garde le cas
+  // d'un parc petit/rapide où la cadence approche la largeur du bucket.
   const segments = useMemo(() => {
-    const gapMs = binSeconds * 2 * 1000
+    const cadence = medianGapMs(times)
+    const gapMs = Math.max(binSeconds * 2 * 1000, cadence * 2.5)
     const out: LatencyPoint[][] = []
     let current: LatencyPoint[] = []
     points.forEach((p, i) => {
@@ -231,6 +257,8 @@ function LatencyChart({ points, threshold, binSeconds, start, end }: {
     if (current.length) out.push(current)
     return out
   }, [points, times, binSeconds])
+
+  const cadenceMin = medianGapMs(times) / 60_000
 
   const hovered = hover != null ? points[hover] : null
 
@@ -314,12 +342,16 @@ function LatencyChart({ points, threshold, binSeconds, start, end }: {
             fill="none" stroke="#2563eb" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round"
           />
         ))}
-        {/* Une plage isolée (un seul bucket entre deux trous) n'a pas de segment
-            à tracer : sans ce point elle serait invisible. */}
-        {segments.filter(seg => seg.length === 1).map((seg, s) => (
+        {/* Marqueurs. Sur une série clairsemée (la sonde ne rend qu'un point par
+            tour de fan-out, ~1/h sur un gros parc), une 24 h ne tient qu'en ~30
+            points : sans marqueur on ne voit pas où sont les vraies mesures et
+            on lit la ligne comme une mesure continue. Au-delà, ils empâteraient
+            la courbe → on ne garde que les plages isolées, qui n'ont aucun
+            segment à tracer et seraient sinon invisibles. */}
+        {(points.length <= 60 ? points : segments.filter(s => s.length === 1).map(s => s[0])).map((p, i) => (
           <circle
-            key={`dot-${s}`}
-            cx={xAt(new Date(seg[0].bucket_start).getTime())} cy={yAt(seg[0].avg_ms)}
+            key={`dot-${i}`}
+            cx={xAt(new Date(p.bucket_start).getTime())} cy={yAt(p.avg_ms)}
             r={2.5} fill="#2563eb"
           />
         ))}
@@ -350,6 +382,17 @@ function LatencyChart({ points, threshold, binSeconds, start, end }: {
         ))}
       </svg>
 
+      {/* Cadence réelle. Affichée parce qu'elle n'est PAS un détail : elle est
+          dictée par la durée d'un tour de sonde (fan-out SSH sur tout le parc),
+          pas par un réglage du graphe. Sans ce repère, on croirait la latence
+          mesurée en continu et on daterait un incident bien trop précisément. */}
+      {cadenceMin > 0 && (
+        <p className="text-blue-300 text-[11px] text-right mt-1">
+          {points.length} mesure{points.length > 1 ? 's' : ''} · une environ toutes les{' '}
+          {cadenceMin < 1 ? '< 1 min' : `${Math.round(cadenceMin)} min`} (cadence de la sonde)
+        </p>
+      )}
+
       {/* Infobulle */}
       {hovered && (
         <div
@@ -377,10 +420,9 @@ function LatencyChart({ points, threshold, binSeconds, start, end }: {
 }
 
 /** Chiffres clés sous le graphe — ce qu'on regarde avant de lire la courbe. */
-function Summary({ points, threshold, binSeconds }: {
+function Summary({ points, threshold }: {
   points: LatencyPoint[]
   threshold: number
-  binSeconds: number
 }) {
   const totalSamples = points.reduce((s, p) => s + p.sample_count, 0)
   // Moyenne pondérée par le nombre de mesures : une moyenne de moyennes
@@ -394,11 +436,18 @@ function Summary({ points, threshold, binSeconds }: {
   const overSamples = points.filter(p => p.avg_ms >= threshold).reduce((s, p) => s + p.sample_count, 0)
   const overPct = totalSamples ? (overSamples / totalSamples) * 100 : 0
 
-  // Couverture : combien de buckets attendus ont réellement un relevé. Un taux
-  // bas veut dire « client souvent hors ligne / sans transit », pas « bon réseau ».
-  const spanMs = new Date(points[points.length - 1].bucket_start).getTime()
-    - new Date(points[0].bucket_start).getTime()
-  const expected = Math.max(1, Math.round(spanMs / (binSeconds * 1000)) + 1)
+  // Couverture : quelle part des relevés attendus est réellement là. Un taux bas
+  // veut dire « client souvent hors ligne / sans transit », pas « bon réseau ».
+  //
+  // Attendu calculé sur la cadence OBSERVÉE, pas sur `bin_seconds` : la sonde
+  // n'écrit qu'en fin de fan-out (~54 min/tour sur 800 LR), donc rapporter les
+  // points à des buckets de 5 min afficherait ~9 % de couverture en permanence,
+  // sur un client parfaitement sain. La médiane sert de référence, donc un client
+  // régulier tombe à ~100 % et seuls les vrais trous font descendre le chiffre.
+  const times = points.map(p => new Date(p.bucket_start).getTime())
+  const cadence = medianGapMs(times)
+  const spanMs = times[times.length - 1] - times[0]
+  const expected = cadence > 0 ? Math.max(1, Math.round(spanMs / cadence) + 1) : points.length
   const coverage = Math.min(100, (points.length / expected) * 100)
 
   return (

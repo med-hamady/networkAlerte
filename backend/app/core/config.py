@@ -6,6 +6,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
+# Content-block categories → human label, in UI display order. The domain set
+# for each key lives in Settings.content_block_domains_<key> (env-overridable).
+CONTENT_BLOCK_LABELS: dict[str, str] = {
+    "facebook": "Facebook / Instagram",
+    "whatsapp": "WhatsApp",
+    "tiktok": "TikTok",
+    "snapchat": "Snapchat",
+    "google": "Google / YouTube",
+    "telegram": "Telegram",
+}
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
@@ -347,6 +358,54 @@ class Settings(BaseSettings):
     def blocked_domains_whatsapp_only_list(self) -> list[str]:
         """Parse blocked_domains_whatsapp_only into a clean list of domains."""
         return [d.strip() for d in self.blocked_domains_whatsapp_only.split(",") if d.strip()]
+
+    # ── Content block catalogue (per-category destination filter) ────────────
+    # Independent feature from the whatsapp_only/full block: the operator picks
+    # services to DNS-poison per client (client stays online for everything
+    # else). One CSV of domains per category; a client's `blocked_categories`
+    # (JSON list of the keys below) selects which sets to apply on its LR.
+    # Tune the domain sets here without a redeploy (env override). Blocking
+    # `google` also breaks YouTube/reCAPTCHA and other Google services — the UI
+    # warns about it; it is an accepted operator choice.
+    content_block_domains_facebook: str = (
+        "facebook.com,fbcdn.net,fbsbx.com,fb.com,fb.gg,fb.watch,"
+        "messenger.com,instagram.com,cdninstagram.com,threads.net"
+    )
+    content_block_domains_whatsapp: str = "whatsapp.com,whatsapp.net,wa.me"
+    content_block_domains_tiktok: str = (
+        "tiktok.com,tiktokcdn.com,tiktokv.com,ibytedtos.com,"
+        "byteoversea.com,musical.ly,tiktokcdn-us.com"
+    )
+    content_block_domains_snapchat: str = "snapchat.com,sc-cdn.net,snap.com,snapkit.com"
+    content_block_domains_google: str = (
+        "google.com,googlevideo.com,youtube.com,youtu.be,ytimg.com,"
+        "gstatic.com,googleapis.com,googleusercontent.com,ggpht.com"
+    )
+    content_block_domains_telegram: str = "telegram.org,telegram.me,t.me,telesco.pe,tdesktop.com"
+
+    def content_block_catalog(self) -> dict[str, list[str]]:
+        """Return {category_key: [domains]} for every known content-block service."""
+        return {
+            key: [
+                d.strip()
+                for d in getattr(self, f"content_block_domains_{key}").split(",")
+                if d.strip()
+            ]
+            for key in CONTENT_BLOCK_LABELS
+        }
+
+    def content_block_label(self, key: str) -> str:
+        """Human label for a content-block category key (key itself if unknown)."""
+        return CONTENT_BLOCK_LABELS.get(key, key)
+
+    def content_block_domains_for(self, keys: list[str]) -> list[str]:
+        """Deduplicated union of domains for the given category keys (unknown keys ignored)."""
+        catalog = self.content_block_catalog()
+        seen: dict[str, None] = {}  # dict preserves insertion order, dedups
+        for key in keys:
+            for domain in catalog.get(key, ()):
+                seen.setdefault(domain, None)
+        return list(seen)
 
     # Switch port monitoring is configured per-UispSwitch in the database
     # (max_ports / rocket_port_index / port_min_speed_mbps). No global defaults.

@@ -363,6 +363,10 @@ class LrRead(_DeviceBaseRead):
     lan_interface: str = "eth0"
     client_block_enforced_at: datetime.datetime | None = None
     block_mode: str = "full"
+    # Per-category content filter (independent of block_mode). None/[] = none;
+    # coerced to [] in model_validate so the frontend always gets a list.
+    blocked_categories: list[str] | None = None
+    content_block_enforced_at: datetime.datetime | None = None
     topology_mode: str = "unknown"  # "router" | "bridge" | "unknown"
     # Subscription plan (forfait) cached from the LR's traffic shaper via SSH.
     # None/None = never synced or no shaper on the device. Name is CRM-only.
@@ -375,6 +379,8 @@ class LrRead(_DeviceBaseRead):
         instance = super().model_validate(obj, **kwargs)
         if hasattr(obj, "ssh_password"):
             instance.has_ssh_password = bool(obj.ssh_password)
+        if instance.blocked_categories is None:
+            instance.blocked_categories = []
         return instance
 
 

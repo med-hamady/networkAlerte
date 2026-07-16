@@ -530,6 +530,13 @@ _DNSMASQ_CONF = "/etc/dnsmasq.conf"
 _DNS_BLOCK_BEGIN = "CLIENTBLOCK_BEGIN"
 _DNS_BLOCK_END = "CLIENTBLOCK_END"
 
+# Per-category content filter (independent of whatsapp_only). Uses its OWN
+# dnsmasq marker pair so the two mechanisms never clobber each other's block in
+# /etc/dnsmasq.conf. DNS-poison only (no iptables DROP chain) — the client keeps
+# the rest of the internet; only the selected services resolve to 0.0.0.0.
+_CONTENT_DNS_BEGIN = "CONTENTBLOCK_BEGIN"
+_CONTENT_DNS_END = "CONTENTBLOCK_END"
+
 def _detect_client_context(
     transport: paramiko.Transport,
 ) -> tuple[str | None, str | None]:
@@ -787,6 +794,202 @@ async def set_whatsapp_only(
         _set_whatsapp_only_sync,
         host, port, username, password,
         enable, allow_cidrs, deny_domains, expected_fingerprint,
+        fallback_passwords,
+    )
+
+
+def _set_content_block_sync(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    domains: list[str],
+    keep_dnat: bool,
+    expected_fingerprint: str | None,
+    fallback_passwords: list[str] | None,
+) -> tuple[bool, str, str | None, str | None]:
+    """Apply a per-category content filter on the LR — DNS-poison only, declarative.
+
+    Unlike ``whatsapp_only`` (an allowlist that DROPs everything but a few
+    ranges), this is a *denylist*: the client keeps full internet, only the
+    given ``domains`` resolve to 0.0.0.0. Two layers:
+
+      1. ``iptables -t nat PREROUTING`` DNAT — force the client subnet's DNS to
+         the LR's own dnsmasq so a hardcoded 8.8.8.8 can't bypass the poison.
+         This rule is *shared* with the whatsapp_only mode (identical match), so
+         ``keep_dnat`` tells us whether another mechanism still needs it when we
+         clear the content filter.
+      2. ``/etc/dnsmasq.conf`` — a CONTENTBLOCK-marked block of
+         ``address=/<domain>/0.0.0.0`` for the union of the selected categories'
+         domains, then ``killall dnsmasq`` (NOT SIGHUP — airOS 8 quirk).
+
+    Declarative: the desired ``domains`` set is fingerprinted into the BEGIN
+    marker, so an unchanged filter is a pure no-op (no rewrite, no dnsmasq
+    restart) while a changed selection — or a LR reboot that regenerated
+    dnsmasq.conf — is rebuilt on the next pass. That guard matters: the
+    enforcement job calls this every 120s. An empty ``domains`` list removes the
+    filter entirely. Touches no interface and installs no DROP rule → cannot
+    lock the supervisor out.
+
+    Returns (ok, message, observed_fp, used_password).
+    """
+    try:
+        transport, observed, used_pw = _open_transport(
+            host, port, username, password, expected_fingerprint,
+            fallback_passwords=fallback_passwords,
+        )
+    except _FingerprintMismatchError as exc:
+        logger.error("content_block host-key mismatch — %s — %s", host, exc)
+        return False, str(exc), None, None
+    except Exception as exc:
+        logger.debug("content_block SSH connect failed — %s — %s", host, exc)
+        return False, str(exc), None, None
+
+    try:
+        subnet, lr_ip = _detect_client_context(transport)
+        if subnet is None or lr_ip is None:
+            return (
+                False,
+                "Sous-réseau client introuvable sur le LR — impossible de poser "
+                "le filtre de contenu. Vérifie que le LR route bien un réseau "
+                "client privé (mode routeur).",
+                observed,
+                used_pw,
+            )
+
+        valid_domains: list[str] = [
+            d.strip() for d in domains if d and _DOMAIN_RE.match(d.strip())
+        ]
+
+        net_q = shlex.quote(subnet)
+        lr_q = shlex.quote(lr_ip)
+        domains_str = " ".join(shlex.quote(d) for d in valid_domains)
+        begin = _CONTENT_DNS_BEGIN
+        end = _CONTENT_DNS_END
+        conf = shlex.quote(_DNSMASQ_CONF)
+        enable = bool(valid_domains)
+
+        # Fingerprint of the desired domain set, stamped into the BEGIN marker.
+        # The enforcement job runs every 120s: without this, every cycle would
+        # rewrite the block and `killall dnsmasq`, cutting the client's DNS
+        # every 2 minutes. Grepping for the exact stamp makes an unchanged
+        # filter a pure no-op, while a *changed* category selection produces a
+        # different stamp and is therefore re-applied (which is why we stamp a
+        # hash rather than just grepping for the plain marker).
+        digest = hashlib.sha1(
+            ",".join(sorted(valid_domains)).encode()
+        ).hexdigest()[:12]
+        begin_tag = f"{begin} {digest}"
+        tag_q = shlex.quote(begin_tag)
+        marker_q = shlex.quote(begin)
+
+        if enable:
+            script = (
+                f"{_IPT_PATH}; "
+                f"SUBNET={net_q}; LR_IP={lr_q}; "
+                f'DOMAINS="{domains_str}"; '
+                # 1) DNAT — capture DNS bypass attempts (shared, idempotent)
+                f"for p in udp tcp; do "
+                f"  iptables -t nat -C PREROUTING -s $SUBNET -p $p --dport 53 "
+                f"  ! -d $LR_IP -j DNAT --to-destination $LR_IP 2>/dev/null "
+                f"  || iptables -t nat -I PREROUTING 1 -s $SUBNET -p $p "
+                f"  --dport 53 ! -d $LR_IP -j DNAT --to-destination $LR_IP; "
+                f"done; "
+                # 2) dnsmasq — rebuild the block ONLY when the desired set changed
+                f"if ! grep -q {tag_q} {conf} 2>/dev/null; then "
+                f"  sed -i '/{begin}/,/{end}/d' {conf} 2>/dev/null; "
+                f"  echo '' >> {conf}; "
+                f"  echo '# >>> {begin_tag} (auto) >>>' >> {conf}; "
+                f"  for d in $DOMAINS; do "
+                f'    echo "address=/$d/0.0.0.0" >> {conf}; '
+                f"  done; "
+                f"  echo '# <<< {end} <<<' >> {conf}; "
+                # killall (NOT SIGHUP) — field-verified necessity on airOS 8
+                f"  killall dnsmasq 2>/dev/null || true; "
+                f"fi"
+            )
+            verify = f"grep -q {tag_q} {conf}"
+        else:
+            # Clear the content filter — remove its dnsmasq block, and the shared
+            # DNAT only if no other mechanism (whatsapp_only) still needs it.
+            dnat_removal = (
+                ""
+                if keep_dnat
+                else (
+                    "for p in udp tcp; do "
+                    "  while iptables -t nat -D PREROUTING -s $SUBNET -p $p "
+                    "  --dport 53 ! -d $LR_IP -j DNAT --to-destination $LR_IP "
+                    "  2>/dev/null; do :; done; "
+                    "done; "
+                )
+            )
+            script = (
+                f"{_IPT_PATH}; "
+                f"SUBNET={net_q}; LR_IP={lr_q}; "
+                # Only touch dnsmasq (and restart it) if a block is actually there
+                f"if grep -q {marker_q} {conf} 2>/dev/null; then "
+                f"  sed -i '/{begin}/,/{end}/d' {conf} 2>/dev/null; "
+                f"  killall dnsmasq 2>/dev/null || true; "
+                f"fi; "
+                f"{dnat_removal}"
+                f"true"
+            )
+            verify = f"! grep -q {marker_q} {conf}"
+
+        code = _exec(transport, f"sh -c {shlex.quote(script)}", timeout=25)
+        if code != 0 and enable:
+            return (
+                False,
+                f"Échec de l'application du filtre de contenu (code {code}) — "
+                f"vérifier que l'utilisateur SSH est root et qu'iptables existe.",
+                observed,
+                used_pw,
+            )
+        vcode = _exec(transport, f"sh -c {shlex.quote(verify)}", timeout=12)
+        if vcode != 0:
+            state = "posé" if enable else "retiré"
+            return (
+                False,
+                f"Commande acceptée mais le filtre de contenu n'a pas été {state} "
+                f"correctement (vérification KO).",
+                observed,
+                used_pw,
+            )
+        if enable:
+            msg = (
+                f"Filtre de contenu appliqué sur {subnet} : {len(valid_domains)} "
+                f"domaine(s) résolus en 0.0.0.0, DNS redirigé vers {lr_ip}."
+            )
+        else:
+            msg = f"Filtre de contenu retiré sur {subnet}."
+        return True, msg, observed, used_pw
+    finally:
+        transport.close()
+
+
+async def set_content_block(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    domains: list[str],
+    keep_dnat: bool = False,
+    expected_fingerprint: str | None = None,
+    fallback_passwords: list[str] | None = None,
+) -> tuple[bool, str, str | None, str | None]:
+    """SSH into the LR and apply/remove a per-category DNS content filter.
+
+    ``domains`` is the union of the selected categories' domains (empty = clear
+    the filter). ``keep_dnat`` should be True when a ``whatsapp_only`` block is
+    also active on the LR, so clearing the content filter doesn't tear down the
+    shared DNS-redirect rule. See ``_set_content_block_sync`` for the mechanism.
+
+    Returns (ok, message, observed_fp, used_password).
+    """
+    return await asyncio.to_thread(
+        _set_content_block_sync,
+        host, port, username, password,
+        domains, keep_dnat, expected_fingerprint,
         fallback_passwords,
     )
 

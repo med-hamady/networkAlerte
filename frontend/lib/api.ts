@@ -52,6 +52,8 @@ export const endpoints = {
   discoverModems:       (lrId: number) => `${API_BASE}/devices/${lrId}/discover-modems`,
   blockClient:          (lrId: number) => `${API_BASE}/devices/${lrId}/block-client`,
   unblockClient:        (lrId: number) => `${API_BASE}/devices/${lrId}/unblock-client`,
+  contentBlockCategories: `${API_BASE}/devices/content-block/categories`,
+  contentBlock:         (lrId: number) => `${API_BASE}/devices/${lrId}/content-block`,
   systemInfo:           `${API_BASE}/system/info`,
   thresholds:           `${API_BASE}/system/thresholds`,
   badInstallations:     `${API_BASE}/lr-health/bad-installations`,
@@ -168,6 +170,40 @@ export async function setClientBlock(
     throw new Error(err.detail ?? `HTTP ${res.status}`)
   }
   return res.json() as Promise<ClientBlockResult>
+}
+
+// ---------------------------------------------------------------------------
+// Content block (per-category destination filter, independent of block-client)
+// ---------------------------------------------------------------------------
+
+export interface ContentBlockCategory {
+  key: string
+  label: string
+  domain_count: number
+}
+
+export interface ContentBlockResult {
+  ok: boolean
+  message: string
+  blocked_categories: string[]
+  content_block_enforced_at: string | null
+}
+
+// Set a client's full set of blocked categories on its LR (empty = clear).
+export async function setContentBlock(
+  lrId: number,
+  categories: string[],
+): Promise<ContentBlockResult> {
+  const res = await fetch(endpoints.contentBlock(lrId), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ categories }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
+  }
+  return res.json() as Promise<ContentBlockResult>
 }
 
 async function jsonOrThrow<T>(res: Response): Promise<T> {

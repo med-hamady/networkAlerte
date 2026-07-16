@@ -39,7 +39,7 @@ import logging
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from app.core.config import CONTENT_BLOCK_LABELS, get_settings
 from app.models.device import Lr
 from app.schemas.device import normalize_mac
 from app.services import fai_audit, ssh_service
@@ -50,6 +50,10 @@ logger = logging.getLogger(__name__)
 MODE_FULL = "full"
 MODE_WHATSAPP = "whatsapp_only"
 VALID_MODES = (MODE_FULL, MODE_WHATSAPP)
+
+# Content-block categories the operator can toggle per client (keys of the
+# config catalogue). Independent of the block_mode above.
+VALID_CONTENT_CATEGORIES = tuple(CONTENT_BLOCK_LABELS)
 
 # Per-family default client LAN interface, field-verified 2026-05-19:
 #   LTU LR family terminates the customer on a VLAN sub-interface (eth0.1 → br1).
@@ -489,6 +493,167 @@ async def enforce_blocked_clients(session: AsyncSession) -> int:
                 "enforce: LR '%s' (id=%d) %s non appliqué : %s — nouvelle "
                 "tentative au prochain cycle",
                 lr.name, lr.id, action, msg,
+            )
+        await session.commit()
+
+    return enforced
+
+
+# ── Content block (per-category destination filter) ─────────────────────────
+# A dimension independent of block_mode above: the client stays fully online
+# except toward the selected services. `Lr.blocked_categories` is the desired
+# state, using NULL as the terminal "nothing to manage" marker (mirrors the
+# unblock_pending idea without a new column):
+#   None  → never used / fully cleared → the enforce loop ignores it.
+#   []    → "ensure the filter is removed" → enforce retries the clear until it
+#           succeeds, then flips the column back to None.
+#   [...] → "ensure these categories are DNS-poisoned" → enforce re-asserts them.
+
+
+def _normalize_categories(categories: list[str] | None) -> list[str]:
+    """Keep only known category keys, deduplicated, in catalogue display order."""
+    requested = {c.strip().lower() for c in (categories or []) if c and c.strip()}
+    return [key for key in VALID_CONTENT_CATEGORIES if key in requested]
+
+
+def _keep_dnat(lr: Lr) -> bool:
+    """True when a whatsapp_only block is active — it shares the DNS-redirect rule."""
+    return bool(lr.client_blocked and lr.block_mode == MODE_WHATSAPP)
+
+
+async def _apply_content_block(lr: Lr, categories: list[str]) -> tuple[bool, str]:
+    """Push the current content filter (or its removal) to the LR over SSH."""
+    settings = get_settings()
+    domains = settings.content_block_domains_for(categories)
+    primary_pw = lr.ssh_password
+    async with _SSH_CONCURRENCY:
+        ok, msg, observed_fp, used_pw = await ssh_service.set_content_block(
+            host=lr.ip_address,
+            port=lr.ssh_port or 22,
+            username=lr.ssh_username,
+            password=primary_pw,
+            domains=domains,
+            keep_dnat=_keep_dnat(lr),
+            expected_fingerprint=lr.ssh_host_fingerprint,
+            fallback_passwords=settings.lr_fallback_password_list,
+        )
+    _pin_fp(lr, ok, observed_fp)
+    _promote_password(lr, primary_pw, used_pw)
+    return ok, msg
+
+
+async def set_content_block(
+    session: AsyncSession, lr: Lr, categories: list[str] | None
+) -> tuple[bool, str]:
+    """Set a client's per-category content filter and enforce it immediately.
+
+    ``categories`` is the full desired set (an empty list clears the filter).
+    Records the desired state, then tries to enforce it over SSH; if the LR is
+    unreachable the intent persists and ``enforce_content_blocks`` retries — so
+    the returned ``ok`` reflects *enforcement*, not intent. Refuses when the LR
+    has no SSH credentials (an unenforceable filter is the trap we avoid).
+    """
+    if not _has_ssh(lr):
+        return (
+            False,
+            f"Le LR {lr.name} n'a pas d'identifiants SSH — impossible de poser "
+            f"le filtre de contenu. Configure ssh_username/ssh_password via "
+            f"PUT /api/v1/devices/{lr.id}.",
+        )
+
+    normalized = _normalize_categories(categories)
+    # [] signals "ensure cleared" so the enforce loop retries a failed removal;
+    # it becomes None once the clear is confirmed.
+    lr.blocked_categories = normalized if normalized else []
+    await session.commit()  # acquit intent + release DB conn before the SSH round-trip
+
+    ok, msg = await _apply_content_block(lr, normalized)
+    label = (
+        ", ".join(get_settings().content_block_label(c) for c in normalized)
+        if normalized
+        else "aucun"
+    )
+    if ok:
+        lr.blocked_categories = normalized if normalized else None
+        lr.content_block_enforced_at = _now() if normalized else None
+        lr.block_unenforceable_reason = None
+        await session.commit()
+        logger.warning(
+            "CONTENT BLOCK appliqué — LR '%s' (id=%d, %s) — services: %s",
+            lr.name, lr.id, lr.ip_address, label,
+        )
+        return True, f"Filtre de contenu appliqué pour {lr.name} (services: {label}). {msg}"
+
+    structural = _structural_failure(msg)
+    lr.block_unenforceable_reason = structural  # None = transitoire → enforce réessaiera
+    await session.commit()
+    if structural:
+        logger.error(
+            "CONTENT BLOCK ABANDONNÉ — LR '%s' (id=%d, %s) : %s — échec SSH "
+            "structurel, intervention technique requise",
+            lr.name, lr.id, lr.ip_address, msg,
+        )
+        return (
+            False,
+            f"Filtre de contenu enregistré pour {lr.name} mais IMPOSSIBLE à "
+            f"appliquer ({msg}). Connexion au LR refusée — intervention technique "
+            f"requise, aucune nouvelle tentative automatique.",
+        )
+    logger.warning(
+        "CONTENT BLOCK enregistré mais NON appliqué — LR '%s' (id=%d) : %s — "
+        "le job de renforcement réessaiera",
+        lr.name, lr.id, msg,
+    )
+    return (
+        False,
+        f"Filtre de contenu enregistré pour {lr.name} mais NON appliqué ({msg}). "
+        f"Le job de renforcement réessaiera dès que le LR sera joignable.",
+    )
+
+
+async def enforce_content_blocks(session: AsyncSession) -> int:
+    """Re-assert the desired content filter on every LR that has one pending.
+
+    Declarative and idempotent: re-writing the same dnsmasq block is a no-op,
+    and a rebooted LR (which regenerates /etc/dnsmasq.conf) is re-poisoned within
+    one cycle. Also retries removals recorded while the LR was unreachable —
+    those carry ``blocked_categories == []`` and flip to None once confirmed.
+    Skips LRs abandoned for a structural SSH failure. Returns the count applied.
+    """
+    result = await session.execute(
+        select(Lr).where(
+            Lr.blocked_categories.isnot(None),
+            Lr.block_unenforceable_reason.is_(None),
+        )
+    )
+    pending = list(result.scalars().all())
+    if not pending:
+        return 0
+
+    enforced = 0
+    for lr in pending:
+        if not _has_ssh(lr):
+            continue
+        categories = _normalize_categories(lr.blocked_categories)
+        ok, msg = await _apply_content_block(lr, categories)
+        if ok:
+            enforced += 1
+            if categories:
+                lr.content_block_enforced_at = _now()
+            else:
+                lr.blocked_categories = None  # clear confirmed → drop out of the loop
+                lr.content_block_enforced_at = None
+        elif structural := _structural_failure(msg):
+            lr.block_unenforceable_reason = structural
+            logger.error(
+                "enforce content: LR '%s' (id=%d, %s) ABANDONNÉ : %s",
+                lr.name, lr.id, lr.ip_address, structural,
+            )
+        else:
+            logger.warning(
+                "enforce content: LR '%s' (id=%d) non appliqué : %s — nouvelle "
+                "tentative au prochain cycle",
+                lr.name, lr.id, msg,
             )
         await session.commit()
 

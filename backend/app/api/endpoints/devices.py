@@ -596,6 +596,80 @@ async def unblock_client(
     return _block_result(device, ok, message)
 
 
+# ── Content block (per-category destination filter) ─────────────────────────
+class ContentBlockCategory(BaseModel):
+    key: str
+    label: str
+    domain_count: int
+
+
+class ContentBlockRequest(BaseModel):
+    # Full desired set of category keys to block (empty = clear the filter).
+    categories: list[str] = []
+
+
+class ContentBlockResult(BaseModel):
+    ok: bool
+    message: str
+    blocked_categories: list[str]
+    content_block_enforced_at: datetime.datetime | None
+
+
+@router.get("/content-block/categories", response_model=list[ContentBlockCategory])
+async def content_block_categories() -> list[ContentBlockCategory]:
+    """List the content-filter categories the operator can toggle per client."""
+    settings = get_settings()
+    return [
+        ContentBlockCategory(
+            key=key,
+            label=settings.content_block_label(key),
+            domain_count=len(domains),
+        )
+        for key, domains in settings.content_block_catalog().items()
+    ]
+
+
+@router.put("/{device_id}/content-block", response_model=ContentBlockResult)
+async def set_content_block(
+    device_id: int,
+    body: ContentBlockRequest,
+    db: AsyncSession = Depends(get_db),
+) -> ContentBlockResult:
+    """Set a client's per-category content filter (DNS-poison on its LR).
+
+    Independent of block-client: the client keeps full internet except toward
+    the selected services (e.g. TikTok). ``categories`` is the complete desired
+    set — an empty list clears the filter. Persisted and re-asserted by the
+    enforcement job (survives an LR reboot). Only valid on LR devices in router
+    mode.
+    """
+    device = await device_service.get_device(db, device_id)
+    if not isinstance(device, Lr):
+        raise HTTPException(
+            status_code=400,
+            detail="Le filtre de contenu n'est disponible que sur les LR.",
+        )
+    if device.topology_mode == "bridge":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Le LR '{device.name}' est en mode bridge. Le filtre de contenu "
+                f"ne peut pas fonctionner (le LR est L2-transparent, dnsmasq est "
+                f"contourné). Reconfigurer le LR en mode routeur via airOS, puis "
+                f"réessayer."
+            ),
+        )
+    ok, message = await client_block_service.set_content_block(
+        db, device, body.categories
+    )
+    return ContentBlockResult(
+        ok=ok,
+        message=message,
+        blocked_categories=device.blocked_categories or [],
+        content_block_enforced_at=device.content_block_enforced_at,
+    )
+
+
 @router.post("/{device_id}/check-ping", response_model=DiagResult)
 async def check_ping(
     device_id: int,

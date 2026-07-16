@@ -2190,7 +2190,9 @@ async def client_block_enforcement_job() -> None:
     the client would silently regain internet. This job re-applies the active
     block (port shutdown or WhatsApp-only filter, per Lr.block_mode) on every
     LR still marked client_blocked, and retries blocks that couldn't be applied
-    at click time. Idempotent: a no-op when nothing changed.
+    at click time. It also re-asserts the independent per-category content
+    filter (blocked_categories) the same way. Idempotent: a no-op when nothing
+    changed.
     """
     async with async_session_factory() as session:
         try:
@@ -2199,6 +2201,15 @@ async def client_block_enforcement_job() -> None:
                 logger.info("Client-block enforcement — %d LR(s) renforcé(s)", n)
             else:
                 logger.debug("Client-block enforcement — rien à renforcer")
+        except Exception:
+            await session.rollback()
+            raise
+        try:
+            c = await client_block_service.enforce_content_blocks(session)
+            if c:
+                logger.info("Content-block enforcement — %d LR(s) renforcé(s)", c)
+            else:
+                logger.debug("Content-block enforcement — rien à renforcer")
         except Exception:
             await session.rollback()
             raise

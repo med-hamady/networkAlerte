@@ -224,6 +224,23 @@ class Lr(Device):
     block_unenforceable_reason: Mapped[str | None] = mapped_column(
         String(255), nullable=True,
     )
+    # ── Content block (per-category destination filter) ──────────────────────
+    # Independent of `block_mode`: the client stays fully online EXCEPT toward
+    # the selected services (e.g. ["tiktok","google"]). Enforced DNS-only on the
+    # LR — dnsmasq `address=/<domain>/0.0.0.0` for the union of the categories'
+    # domains (catalogue in config), under its OWN dnsmasq marker so it coexists
+    # with a `whatsapp_only` block. NULL/[] = no content filtering. Re-asserted
+    # every cycle by `enforce_content_blocks` so it survives an LR reboot (which
+    # regenerates /etc/dnsmasq.conf). `content_block_enforced_at` = last success.
+    # none_as_null=True so Python None persists as SQL NULL (the terminal "no
+    # content filter" state the enforce query filters on with isnot(None)) —
+    # NOT the JSON scalar 'null', which would keep the row in the enforce set.
+    blocked_categories: Mapped[list | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True,
+    )
+    content_block_enforced_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
     # Router vs bridge mode — read from each LR's HTTP poll (airMAX: airOS
     # status.cgi host.netrole; LTU: Rocket API peer.remote.netMode), no SSH.
     # The client-block feature only works in router mode (the LR must be in

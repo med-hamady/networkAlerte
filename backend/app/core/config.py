@@ -662,6 +662,13 @@ class Settings(BaseSettings):
     traffic_stats_retention_days: int = 90
     traffic_stats_retention_interval_minutes: int = 360  # every 6 h
 
+    # LR → Internet latency history (lr_latency_samples) backing the per-device
+    # latency chart. Rows are 5-min buckets written by lr_internet_probe_job:
+    # ~600 LRs × 288 buckets/day ≈ 5.2M rows at 30 days. Purged in batches by
+    # lr_latency_retention_job.
+    lr_latency_history_retention_days: int = 30
+    lr_latency_history_retention_interval_minutes: int = 360  # every 6 h
+
     @property
     def netflow_internal_prefix_list(self) -> list[str]:
         return [p.strip() for p in self.netflow_internal_prefixes.split(",") if p.strip()]

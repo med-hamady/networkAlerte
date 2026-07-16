@@ -45,6 +45,13 @@ export const endpoints = {
   incidents:            `${API_BASE}/incidents`,
   incident:             (id: number) => `${API_BASE}/incidents/${id}`,
   deviceMetrics:        (id: number) => `${API_BASE}/devices/${id}/metrics/latest`,
+  // Historique de latence d'un LR (graphe « Plus d'infos » de la fiche) : soit
+  // une fenêtre relative, soit une plage de dates libre.
+  deviceLatencyHistory: (id: number, period: '24h' | '7d' | '30d') =>
+    `${API_BASE}/devices/${id}/latency-history?period=${period}`,
+  // start/end en YYYY-MM-DD (UTC), fin incluse — même convention que /clients.
+  deviceLatencyHistoryRange: (id: number, start: string, end: string) =>
+    `${API_BASE}/devices/${id}/latency-history?start=${start}&end=${end}`,
   checkSsh:             (id: number) => `${API_BASE}/devices/${id}/check-ssh`,
   checkPing:            (id: number) => `${API_BASE}/devices/${id}/check-ping`,
   pingFromLr:           (id: number) => `${API_BASE}/devices/${id}/ping-from-lr`,

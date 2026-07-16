@@ -9,6 +9,7 @@ import { deviceLabel, formatDate, timeAgo, formatBytes, formatUptime, parentRock
 import { useThresholds } from '@/lib/useThresholds'
 import DeviceImage, { devicePhotoVariant } from './DeviceImage'
 import IpLink from './IpLink'
+import LatencyHistoryModal from './LatencyHistoryModal'
 
 const RADIO_TYPES = new Set(['rocket', 'lr', 'airfiber', 'ptp_litebeam'])
 const REFRESH      = 15_000
@@ -70,8 +71,10 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
   // airMAX P2P backhaul: surveillé sur sa capacité de lien (comme un AF60),
   // pas sur des clients — d'où une section dédiée et pas de "LR associés".
   const isBackhaul = device.device_type === 'ptp_litebeam'
+  const isLr = device.device_type === 'lr'
 
   const thresholds = useThresholds()
+  const [showLatency, setShowLatency] = React.useState(false)
 
   // Children LRs linked to this Rocket
   const linkedLRs = isRocket
@@ -224,6 +227,18 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
                 />
               }
             />
+          )}
+          {/* Seuls les LR sont sondés en RTT → le graphe n'a de sens que là. */}
+          {isLr && (
+            <button
+              onClick={() => setShowLatency(true)}
+              className="w-full flex items-center justify-center gap-2 mt-1 px-3 py-2 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 text-xs font-semibold transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 17l6-6 4 4 8-8" />
+              </svg>
+              Plus d&apos;infos — graphe de latence
+            </button>
           )}
         </Section>
 
@@ -534,6 +549,10 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
           </Section>
         )}
       </div>
+
+      {showLatency && (
+        <LatencyHistoryModal device={device} onClose={() => setShowLatency(false)} />
+      )}
     </>
   )
 }

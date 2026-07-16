@@ -27,8 +27,10 @@ from app.services import (
     client_block_service,
     device_service,
     lan_discovery,
+    lr_latency_history_service,
     lr_plan_service,
     ssh_service,
+    threshold_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -210,6 +212,87 @@ async def get_device_metrics_latest(
         )
         for row in result
     }
+
+
+class LatencyPoint(BaseModel):
+    bucket_start: datetime.datetime
+    avg_ms: float
+    min_ms: float
+    max_ms: float
+    sample_count: int
+
+
+class LatencyHistory(BaseModel):
+    device_id: int
+    start: datetime.datetime
+    end: datetime.datetime
+    bin_seconds: int
+    threshold_ms: float
+    points: list[LatencyPoint]
+
+
+@router.get("/{device_id}/latency-history", response_model=LatencyHistory)
+async def get_device_latency_history(
+    device_id: int,
+    period: Literal["24h", "7d", "30d"] = Query(
+        "24h", description="Fenêtre relative. Ignorée si start/end sont fournis.",
+    ),
+    start: datetime.date | None = Query(
+        None, description="Début de plage personnalisée (YYYY-MM-DD, UTC). Requiert `end`."
+    ),
+    end: datetime.date | None = Query(
+        None, description="Fin de plage incluse (YYYY-MM-DD, UTC). Requiert `start`."
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> LatencyHistory:
+    """Latency history (LR → Internet RTT) of one LR, for the device modal chart.
+
+    Either a preset ``period`` or a custom ``start``/``end`` date range (inclusive
+    of both days, UTC — same convention as /clients/consumption), which wins over
+    ``period``. Points are 5-min buckets over 24h, re-binned server-side on wider
+    windows so the payload stays a few hundred points.
+
+    Only LRs are probed, so any other device type returns an empty series rather
+    than a 4xx — the modal decides whether to offer the chart, and an error here
+    would be noise, not information.
+
+    Missing buckets are absent from ``points`` (no zero-filling): the probe stores
+    nothing when the LR has no transit, and the chart draws that as a gap.
+    """
+    if (start is None) != (end is None):
+        raise HTTPException(
+            status_code=422, detail="`start` et `end` doivent être fournis ensemble.",
+        )
+    if start is not None and end is not None and end < start:
+        raise HTTPException(
+            status_code=422, detail="`end` doit être postérieure ou égale à `start`.",
+        )
+
+    device = await device_service.get_device(db, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    range_start, range_end, bin_seconds = lr_latency_history_service.resolve_range(
+        period, start, end,
+    )
+
+    points: list[dict] = []
+    if isinstance(device, Lr):
+        points = await lr_latency_history_service.get_history(
+            db, device_id, start=range_start, end=range_end, bin_seconds=bin_seconds,
+        )
+
+    settings = await threshold_service.get_effective_settings(db, get_settings())
+    return LatencyHistory(
+        device_id=device_id,
+        start=range_start,
+        end=range_end,
+        bin_seconds=bin_seconds,
+        # Lets the chart draw the same critical line the alerting uses, instead of
+        # hard-coding 100 ms in the frontend.
+        threshold_ms=float(settings.lr_latency_critical_ms),
+        points=[LatencyPoint(**p) for p in points],
+    )
 
 
 @router.delete("/{device_id}", status_code=204)

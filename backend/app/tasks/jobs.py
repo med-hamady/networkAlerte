@@ -60,6 +60,7 @@ from app.services import (
     discovery_service,
     incident_service,
     lr_health_service,
+    lr_latency_history_service,
     lr_plan_service,
     ltu_api_service,
     notification_service,
@@ -1953,6 +1954,11 @@ async def lr_internet_probe_job() -> None:
                 await persist_device_metrics(
                     session, dev.id, {"lr_latency_ms": avg_rtt}, {"lr_latency_ms": "ms"}
                 )
+                # …et en parallèle, l'HISTORIQUE (table dédiée, buckets 5 min) qui
+                # alimente le graphe de latence de la fiche équipement. Le collapse
+                # ci-dessus ne garde que la dernière valeur : sans ça, pas de série
+                # à tracer. Upsert → 1 ligne/(LR, 5 min), pas 1 ligne/cycle.
+                await lr_latency_history_service.record_sample(session, dev.id, avg_rtt)
                 await _evaluate_lr_latency(session, dev, avg_rtt, settings)
             elif ping_ok:
                 # Ping a réussi (exit 0) mais RTT non parsé — défensif.
@@ -2180,6 +2186,53 @@ async def traffic_stats_retention_job() -> None:
             logger.debug("traffic_dest_stats retention — nothing to purge")
     except Exception:
         logger.exception("traffic_stats retention job failed")
+
+
+@_timed_job
+async def lr_latency_retention_job() -> None:
+    """Purge lr_latency_samples buckets older than the retention window.
+
+    The probe upserts 5-min buckets (~600 LRs × 288/day ≈ 173k rows/day), so this
+    table grows steadily and needs pruning to stay at its ~5.2M-row steady state.
+    Same shape as traffic_stats_retention_job: batched delete on bucket_start
+    (indexed by ix_lr_latency_samples_bucket), committed in small chunks rather
+    than one long transaction holding locks over the whole table.
+    """
+    from sqlalchemy import text
+
+    settings = get_settings()
+    cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
+        days=settings.lr_latency_history_retention_days
+    )
+    batch = 50_000
+    total = 0
+    try:
+        async with async_session_factory() as session:
+            while True:
+                result = await session.execute(
+                    text(
+                        "DELETE FROM lr_latency_samples WHERE id IN ("
+                        "  SELECT id FROM lr_latency_samples"
+                        "  WHERE bucket_start < :cutoff"
+                        "  LIMIT :batch"
+                        ")"
+                    ),
+                    {"cutoff": cutoff, "batch": batch},
+                )
+                await session.commit()
+                deleted = result.rowcount or 0
+                total += deleted
+                if deleted < batch:
+                    break
+        if total:
+            logger.info(
+                "lr_latency_samples retention — purged %d rows older than %d days",
+                total, settings.lr_latency_history_retention_days,
+            )
+        else:
+            logger.debug("lr_latency_samples retention — nothing to purge")
+    except Exception:
+        logger.exception("lr_latency retention job failed")
 
 
 @_timed_job
@@ -2636,7 +2689,7 @@ _FAST_JOB_IDS = {
     "infra_ping", "client_ping", "warning_digest", "flap_detection",
     "network_latency_aggregate", "client_consumption_matview_refresh",
     "client_consumption_7d_refresh",
-    "traffic_stats_retention",
+    "traffic_stats_retention", "lr_latency_retention",
     "security_anomaly_detection", "rocket_saturation_report",
     "site_infra_report",
 }
@@ -2761,6 +2814,17 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         minutes=settings.traffic_stats_retention_interval_minutes,
         id="traffic_stats_retention",
         name="traffic_dest_stats retention (purge NetFlow aggregates older than N days)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=300,
+    )
+    scheduler.add_job(
+        lr_latency_retention_job,
+        trigger="interval",
+        minutes=settings.lr_latency_history_retention_interval_minutes,
+        id="lr_latency_retention",
+        name="lr_latency_samples retention (purge latency history older than N days)",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

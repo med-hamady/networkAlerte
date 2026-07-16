@@ -862,3 +862,29 @@ export interface FaiJournalResponse {
   stats: FaiJournalStats
   attention: FaiAttentionRow[]
 }
+
+// ─── Historique de latence d'un LR (graphe « Plus d'infos » de la fiche) ─────
+// Alimenté par lr_latency_samples : la sonde SSH replie chaque relevé RTT dans
+// un bucket de 5 min. Les fenêtres larges sont re-binnées côté backend.
+export interface LatencyPoint {
+  bucket_start: string
+  avg_ms: number
+  // Extrêmes du bucket : un pic court est noyé par la moyenne, la bande min/max
+  // le garde visible.
+  min_ms: number
+  max_ms: number
+  sample_count: number
+}
+export interface LatencyHistory {
+  device_id: number
+  start: string
+  end: string
+  // Largeur d'un point en secondes (300 sur 24h, plus large au-delà).
+  bin_seconds: number
+  // Seuil critique effectif (lr_latency_critical_ms) — le graphe trace la même
+  // ligne que celle qui déclenche l'alerte.
+  threshold_ms: number
+  // Trous volontaires : un bucket sans relevé (LR sans transit) est ABSENT,
+  // il n'est pas ramené à 0.
+  points: LatencyPoint[]
+}

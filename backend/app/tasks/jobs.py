@@ -209,9 +209,23 @@ async def persist_device_metrics(
     # and Postgres killed one with `deadlock detected` (40P01) — the SNMP/LTU jobs
     # failed a whole cycle each time. A per-device transaction-level advisory lock
     # makes the two passes serialize on the device instead of deadlocking; it is
-    # released automatically at COMMIT/ROLLBACK. No new cycle is possible: every
-    # writer holds the Rocket's key first (ltu before its LR fan-out), so two
-    # transactions never grab a shared pair of keys in opposite order.
+    # released automatically at COMMIT/ROLLBACK.
+    #
+    # ⚠️ RÈGLE À TENIR POUR TOUT NOUVEAU JOB QUI ÉCRIT UN DEVICE — la voici en
+    # entier, parce que ce lock seul ne suffit PAS à s'en passer :
+    #   La clé est celle du ROCKET, et elle couvre tout son sous-arbre (le Rocket
+    #   ET ses LR). ltu_api_poll_job / snmp_poll_job écrivent les lignes de leurs
+    #   LR (reconcile_peers, distance_m, topologie) en ne tenant QUE la clé de
+    #   leur Rocket. Donc un job qui touche un LR doit prendre la clé du ROCKET
+    #   PARENT (pas celle du LR), et la prendre AVANT sa première écriture.
+    # Sinon les deux transactions s'entrelacent sur les mêmes lignes et prennent
+    # {row(LR), advisory(LR)} dans des ordres opposés → `deadlock detected`.
+    # Piège : une mutation ORM (`dev.name = …`) part en UPDATE dès l'autoflush du
+    # prochain execute() — poser le lock « juste avant persist » est donc TROP
+    # TARD, il doit être en tête de transaction.
+    # Régression vécue : airos_api_poll_job, ajouté après le fix de juin, ne
+    # verrouillait que le LR → 17 deadlocks en 6 h (prod, 2026-07-16), un tour de
+    # SNMP/LTU/airOS perdu à chaque fois.
     await session.execute(
         text("SELECT pg_advisory_xact_lock(:k)"), {"k": int(device_id)},
     )
@@ -1571,6 +1585,17 @@ async def airos_api_poll_job() -> None:
             dev = await session.get(Device, dev_id)
             if dev is None:
                 continue
+
+            # Ce LR est aussi écrit par le fan-out de ltu_api_poll_job /
+            # snmp_poll_job, qui ne tiennent que la clé de leur Rocket → on prend
+            # LA MÊME, avant la 1re écriture (les mutations ORM ci-dessous partent
+            # dès l'autoflush du prochain execute()). Voir la règle complète dans
+            # persist_device_metrics. Fallback sur l'id du device sans parent (PTP
+            # LiteBeam, LR orphelin) : aucun autre job n'écrit ces lignes.
+            lock_key = dev.rocket_id if isinstance(dev, Lr) and dev.rocket_id else dev.id
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(:k)"), {"k": int(lock_key)},
+            )
 
             # Correct the LR model_variant from the airOS-reported hardware model
             # (M5 vs 5AC). airOS is authoritative for the real device, so a peer/

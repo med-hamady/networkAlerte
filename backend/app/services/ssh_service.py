@@ -26,6 +26,7 @@ never sends `auth_none`. We open a `Transport` ourselves and call
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import ipaddress
 import json
@@ -33,6 +34,7 @@ import logging
 import re
 import shlex
 import socket
+import threading
 
 import paramiko
 
@@ -166,6 +168,50 @@ def _exec(transport: paramiko.Transport, command: str, timeout: int) -> int:
         channel.close()
 
 
+# Plafond dur d'une session de sonde, une fois le SSH établi et authentifié.
+# Budget réel : board.info 5 s + wstalist 8 s + ping 20 s ≈ 33 s → 60 s est large.
+_PROBE_SESSION_HARD_LIMIT_S = 60
+
+
+def _start_session_watchdog(
+    transport: paramiko.Transport, host: str, limit: int
+) -> threading.Timer:
+    """Arme un timer qui ferme de force le transport après ``limit`` s.
+
+    Garantie de sortie du thread. Pourquoi un watchdog plutôt que des timeouts :
+    paramiko a des attentes qu'on ne **peut pas** borner par paramètre.
+    ``Channel.exec_command()`` appelle ``_wait_for_event()`` → ``self.event.wait()``
+    — sans timeout, et sans moyen d'en passer un. Elle ne rend la main que si le
+    transport meurt. Or un LR dont le lien radio tombe garde son TCP vivant côté
+    serveur : le transport reste ``active`` et le thread attend pour toujours.
+
+    Fermer le transport depuis un autre thread met ``active=False``, ce qui
+    débloque **toutes** ces attentes d'un coup (open_channel, _wait_for_event,
+    recv_exit_status) : elles lèvent, l'appelant remonte, le thread du pool est
+    rendu. C'est le seul levier qui couvre les attentes qu'on ne maîtrise pas.
+
+    Terrain (2026-07-16) : après avoir borné ``recv_exit_status``, il restait
+    **1 LR sur 696** qui ne revenait jamais et retenait tout le fan-out jusqu'à la
+    deadline globale de 600 s. C'était l'une de ces attentes-là.
+
+    L'appelant DOIT faire ``.cancel()`` dans son ``finally`` (sinon le transport
+    d'une session saine serait fermé sous ses pieds au bout de ``limit``).
+    """
+    def _force_close() -> None:
+        logger.warning(
+            "SSH watchdog: session %s bloquée > %ss — fermeture forcée du "
+            "transport (lien radio probablement tombé en cours de session).",
+            host, limit,
+        )
+        with contextlib.suppress(Exception):
+            transport.close()
+
+    timer = threading.Timer(limit, _force_close)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
 class SshExecTimeoutError(TimeoutError):
     """Le pair n'a jamais renvoyé l'exit-status de la commande.
 
@@ -186,10 +232,12 @@ def _exec_capture(
     ``timeout`` bounds BOTH the read and the exit-status wait — see below. It is
     a wall-clock bound per step, not for the whole call.
     """
-    channel = transport.open_session()
+    # `timeout=` est indispensable : sans lui, open_channel compare
+    # `start_ts + None` et part en TypeError dès que le pair tarde.
+    channel = transport.open_session(timeout=timeout)
     try:
         channel.settimeout(timeout)
-        channel.exec_command(command)
+        channel.exec_command(command)  # cf. _probe_session_watchdog : attente non bornée
         out = channel.makefile("rb").read().decode("utf-8", errors="replace")
         # `settimeout` covers recv() — it does NOT cover recv_exit_status(),
         # which waits on an Event with NO timeout. Paramiko's own docstring says
@@ -1283,6 +1331,10 @@ def _measure_latency_via_ssh_sync(
         logger.debug("measure_latency SSH connect failed %s — %s", host, exc)
         return False, False, None, str(exc), None, None, None, None
 
+    # Garantie de sortie du thread : cf. _probe_session_watchdog. Les timeouts de
+    # commande ci-dessous ne couvrent PAS toutes les attentes de paramiko, et un
+    # thread bloqué ici retient tout le fan-out de la sonde.
+    watchdog = _start_session_watchdog(transport, host, _PROBE_SESSION_HARD_LIMIT_S)
     try:
         # Hardware model, read on the same session (cheap local file) so an
         # airMAX LR mis-inferred as the wrong variant self-heals — this is the
@@ -1349,6 +1401,7 @@ def _measure_latency_via_ssh_sync(
         logger.debug("measure_latency exec failed %s — %s", host, exc)
         return True, False, None, str(exc), observed, used_pw, None, None
     finally:
+        watchdog.cancel()
         transport.close()
 
 

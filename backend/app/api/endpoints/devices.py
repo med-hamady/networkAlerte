@@ -317,10 +317,13 @@ async def get_device_metric_history(
 
     # Le seuil vient des settings EFFECTIFS (surcharge DB comprise) → le graphe
     # trace exactement la ligne qui déclenche l'alerte, sans la coder en dur.
+    # Résolu PAR DEVICE : le plancher du potentiel de lien dépend de la famille
+    # radio (50 % LTU / 40 % airMAX).
     threshold: float | None = None
-    if spec["threshold_setting"]:
+    setting_name = lr_metric_history_service.threshold_setting_for(spec, device)
+    if setting_name:
         settings = await threshold_service.get_effective_settings(db, get_settings())
-        threshold = float(getattr(settings, spec["threshold_setting"]))
+        threshold = float(getattr(settings, setting_name))
 
     return MetricHistory(
         device_id=device_id,

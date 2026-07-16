@@ -47,6 +47,19 @@ GRAPH_METRICS: dict[str, dict] = {
         "threshold_setting": "lr_total_capacity_min_mbps",
         "threshold_direction": "min",
     },
+    "link_potential_pct": {
+        "label": "Potentiel du lien",
+        "unit": "%",
+        "zero_based": True,
+        # Plancher PAR FAMILLE : les deux radios n'ont pas le même rendement, et
+        # l'alerting le sait déjà (50 % en LTU, 40 % en airMAX). Un seuil unique
+        # peindrait en rouge un LiteBeam parfaitement sain à 45 %.
+        "threshold_setting": {
+            "ltu": "lr_link_potential_min_pct_ltu",
+            "airmax": "lr_link_potential_min_pct_airmax",
+        },
+        "threshold_direction": "min",
+    },
     "tx_rate_mbps": {
         "label": "Débit descendant du lien",
         "unit": "Mb/s",
@@ -62,6 +75,28 @@ GRAPH_METRICS: dict[str, dict] = {
         "threshold_direction": None,
     },
 }
+
+
+def threshold_setting_for(spec: dict, device) -> str | None:
+    """Nom du réglage de seuil applicable à ``device`` pour cette métrique.
+
+    ``threshold_setting`` vaut None (pas de seuil), une chaîne (seuil unique), ou
+    un dict par famille radio. Ce dernier cas existe pour le potentiel du lien,
+    dont le plancher dépend de la famille.
+
+    La famille est résolue avec la définition de ``alert_rules`` — importée, pas
+    recopiée : la ligne tracée doit être exactement celle qui déclenche l'alerte,
+    et deux listes de variantes qui divergent donneraient un graphe qui ment.
+    """
+    setting = spec["threshold_setting"]
+    if setting is None or isinstance(setting, str):
+        return setting
+
+    from app.services.alert_rules import _AIRMAX_LR_VARIANTS
+
+    variant = getattr(device, "model_variant", None)
+    family = "airmax" if variant in _AIRMAX_LR_VARIANTS else "ltu"
+    return setting[family]
 
 # Width of a stored bucket. Changing this does NOT rewrite existing rows: old
 # buckets keep their original width, so only touch it with a backfill in mind.

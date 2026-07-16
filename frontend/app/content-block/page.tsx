@@ -82,12 +82,14 @@ export default function ContentBlockPage() {
     setResult(null)
   }
 
-  const onApply = async () => {
+  // Single write path for both "Appliquer" and "Tout retirer" — the backend
+  // takes the complete desired set, so removal is just applying an empty one.
+  const push = async (categories: string[]) => {
     if (!lr) return
     setApplying(true)
     setResult(null)
     try {
-      const r = await setContentBlock(lr.id, [...selected])
+      const r = await setContentBlock(lr.id, categories)
       setResult({ ok: r.ok, message: r.message })
       await mutateDevice()
     } catch (e) {
@@ -96,6 +98,9 @@ export default function ContentBlockPage() {
       setApplying(false)
     }
   }
+
+  const onApply = () => push([...selected])
+  const onRemoveAll = () => push([])
 
   const pickClient = (id: number) => {
     setSelectedId(id)
@@ -227,6 +232,24 @@ export default function ContentBlockPage() {
             >
               {applying ? 'Application…' : 'Appliquer'}
             </button>
+
+            {/* One-click removal of every rule on this LR. Only shown when
+                something is actually applied — it acts on the LR's real state,
+                not on the checkboxes, so it works even mid-edit. */}
+            {lr.blocked_categories.length > 0 && (
+              <button
+                onClick={onRemoveAll}
+                disabled={!canApply}
+                className={`px-4 py-2 rounded-lg text-sm font-semibold border transition-colors ${
+                  canApply
+                    ? 'border-red-300 text-red-700 hover:bg-red-50'
+                    : 'border-blue-100 text-blue-300 cursor-not-allowed'
+                }`}
+              >
+                Tout retirer
+              </button>
+            )}
+
             {selected.size === 0 && lr.blocked_categories.length > 0 && (
               <span className="text-xs text-blue-400">Aucun service coché → le filtre sera retiré.</span>
             )}

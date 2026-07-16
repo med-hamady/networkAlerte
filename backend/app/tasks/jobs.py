@@ -1763,6 +1763,26 @@ _lr_probe_cycle = 0
 _lr_probe_pool: ThreadPoolExecutor | None = None
 
 
+# Phase 1 (fan-out SSH) global deadline. Filet de sécurité : la cause racine des
+# tours qui gelaient ~1 h est corrigée dans ssh_service._exec_capture (attente du
+# exit-status bornée), mais le job ne persiste RIEN tant que le gather n'a pas
+# rendu la main sur les ~800 LR — un seul thread bloqué gèle donc tout le cycle,
+# et avec lui la métrique de latence + la détection de transit. On borne, comme
+# ltu_api_poll_job / airos_api_poll_job.
+#
+# 600 s est délibérément large : c'est un FILET, pas un couperet. Un tour sain
+# coûte 95-450 s (mesuré en prod : 807 LR ÷ concurrence 80 ≈ 10 vagues × ≤45 s au
+# pire), donc la deadline ne coupe jamais une sonde légitime — elle ne mord que
+# sur un blocage anormal. La borner à l'intervalle (180 s) amputerait au contraire
+# une grosse partie du parc à chaque cycle.
+#
+# NB : annuler la task ne tue PAS le thread du pool (run_in_executor n'est pas
+# interruptible). C'est acceptable UNIQUEMENT parce que _exec_capture est
+# désormais borné : le thread se libère seul. Sans ce correctif, les threads
+# fuiraient et le pool s'épuiserait.
+_LR_PROBE_DEADLINE_S = 600.0
+
+
 def _get_lr_probe_pool(max_workers: int) -> ThreadPoolExecutor:
     global _lr_probe_pool
     if _lr_probe_pool is None:
@@ -1886,9 +1906,20 @@ async def lr_internet_probe_job() -> None:
             logger.exception("lr_internet_probe: sonde %s (%s) a crashé", name, ip)
 
     pool = _get_lr_probe_pool(settings.lr_probe_concurrency)
-    await asyncio.gather(
-        *[_probe(t, pool) for t in targets], return_exceptions=True,
-    )
+    tasks = [asyncio.create_task(_probe(t, pool)) for t in targets]
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True),
+            timeout=_LR_PROBE_DEADLINE_S,
+        )
+    except TimeoutError:  # asyncio.TimeoutError est un alias du builtin en 3.11+
+        for t in tasks:
+            t.cancel()
+        logger.warning(
+            "lr_internet_probe : délai global de %.0fs atteint — %d/%d LR "
+            "sondé(s), le reste sera repris au prochain cycle.",
+            _LR_PROBE_DEADLINE_S, len(results), len(tasks),
+        )
 
     # ── Phase 2 : traitement DB séquentiel des résultats récupérés ──
     # LR "up" (ping OK) mais dont la poignée SSH échoue : creds erronés, SSH

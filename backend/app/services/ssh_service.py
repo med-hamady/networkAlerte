@@ -144,12 +144,34 @@ def _exec(transport: paramiko.Transport, command: str, timeout: int) -> int:
 def _exec_capture(
     transport: paramiko.Transport, command: str, timeout: int
 ) -> tuple[int, str]:
-    """Run a command and return (exit_code, stdout stripped)."""
+    """Run a command and return (exit_code, stdout stripped).
+
+    ``timeout`` bounds BOTH the read and the exit-status wait — see below. It is
+    a wall-clock bound per step, not for the whole call.
+    """
     channel = transport.open_session()
     try:
         channel.settimeout(timeout)
         channel.exec_command(command)
         out = channel.makefile("rb").read().decode("utf-8", errors="replace")
+        # `settimeout` covers recv() — it does NOT cover recv_exit_status(),
+        # which waits on an Event with NO timeout. Paramiko's own docstring says
+        # it "will hang indefinitely". So a peer that goes silent right after the
+        # command was sent (a radio link dropping mid-session — routine here)
+        # parks this thread forever.
+        #
+        # That is not a local nuisance: lr_internet_probe_job gathers over ALL
+        # ~800 LRs and only persists once every probe returned, so ONE such LR
+        # froze the whole cycle. Field evidence (2026-07-16): cycles at 3263 s /
+        # 3690 s / 3898 s against a 95-450 s norm, which stalled the latency
+        # metric for an hour at a time.
+        #
+        # status_event is what paramiko itself waits on; we wait on it with a
+        # bound, then read the status it guards.
+        if not channel.status_event.wait(timeout):
+            raise TimeoutError(
+                f"exit status non reçu après {timeout}s — commande: {command}"
+            )
         return channel.recv_exit_status(), out.strip()
     finally:
         channel.close()

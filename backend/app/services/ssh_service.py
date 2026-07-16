@@ -141,6 +141,18 @@ def _exec(transport: paramiko.Transport, command: str, timeout: int) -> int:
         channel.close()
 
 
+class SshExecTimeoutError(TimeoutError):
+    """Le pair n'a jamais renvoyé l'exit-status de la commande.
+
+    Sous-classe ``TimeoutError`` **volontairement** : tous les ``except Exception``
+    / ``except OSError`` déjà en place continuent de l'attraper exactement comme
+    avant, donc aucun appelant existant ne change de comportement. Le type dédié
+    n'existe que pour les appelants qui doivent la distinguer d'un vrai échec de
+    commande — cf. :func:`_measure_latency_via_ssh_sync`, où « pas d'exit-status »
+    veut dire « je ne sais pas », surtout pas « le client n'a pas de transit ».
+    """
+
+
 def _exec_capture(
     transport: paramiko.Transport, command: str, timeout: int
 ) -> tuple[int, str]:
@@ -169,7 +181,7 @@ def _exec_capture(
         # status_event is what paramiko itself waits on; we wait on it with a
         # bound, then read the status it guards.
         if not channel.status_event.wait(timeout):
-            raise TimeoutError(
+            raise SshExecTimeoutError(
                 f"exit status non reçu après {timeout}s — commande: {command}"
             )
         return channel.recv_exit_status(), out.strip()
@@ -1294,6 +1306,20 @@ def _measure_latency_via_ssh_sync(
             f"{target} avg={avg:.1f} ms",
             observed, used_pw, model, radio,
         )
+    except SshExecTimeoutError as exc:
+        # Le ping a bien été lancé mais le LR n'a jamais renvoyé son exit-status :
+        # on ne SAIT PAS s'il a du transit. Le rendre en `ping_ok=False` (ce que
+        # ferait le `except Exception` ci-dessous) inventerait une conclusion —
+        # ça ferait monter le compteur AT_LR_NO_TRANSIT et purgerait la latence
+        # du LR sur la foi d'une mesure ratée.
+        #
+        # `ssh_ok=False` est le canal « indéterminé » du contrat de retour : le
+        # caller saute le LR (pas d'évaluation de transit) et le reprend au cycle
+        # suivant. Si ça devient chronique, le backoff SSH par LR espacera les
+        # tentatives, ce qui est exactement le bon traitement pour un LR dont la
+        # session meurt en route.
+        logger.debug("measure_latency exit-status timeout %s — %s", host, exc)
+        return False, False, None, str(exc), observed, used_pw, None, None
     except Exception as exc:
         logger.debug("measure_latency exec failed %s — %s", host, exc)
         return True, False, None, str(exc), observed, used_pw, None, None

@@ -131,11 +131,36 @@ def _open_transport(
 
 
 def _exec(transport: paramiko.Transport, command: str, timeout: int) -> int:
-    """Run a command on a new channel and return its exit code."""
+    """Run a command on a new channel and return its exit code (-1 on timeout).
+
+    Same unbounded-wait trap as :func:`_exec_capture` — ``settimeout`` does not
+    cover ``recv_exit_status()``, which waits on an Event with NO timeout
+    ("will hang indefinitely", per paramiko's own docstring). A peer whose radio
+    link dies mid-session never sends its exit-status and parks this thread for
+    good. Here that would freeze ``client_block_enforcement_job`` (it re-asserts
+    every client block every 120 s, over SSH, and gates paying customers'
+    internet), and ``lan_discovery``.
+
+    Returns **-1** rather than raising, deliberately: paramiko itself returns -1
+    for "no exit status provided", and every caller already reads a non-zero code
+    as "command failed" → ``(False, msg)`` → which
+    ``client_block_service._structural_failure`` classifies as **transient**
+    (it only matches auth / host-key), i.e. *keep retrying*. That is exactly the
+    right verdict for a dead session — and it needs no change at any call site,
+    which is what we want on the path that cuts a customer's internet. Raising
+    instead would propagate uncaught: none of the five call sites wraps _exec.
+    """
     channel = transport.open_session()
     try:
         channel.settimeout(timeout)
         channel.exec_command(command)
+        if not channel.status_event.wait(timeout):
+            logger.warning(
+                "SSH exec: exit-status non reçu après %ss — session probablement "
+                "morte (lien radio tombé en cours) — commande: %s",
+                timeout, command,
+            )
+            return -1
         return channel.recv_exit_status()
     finally:
         channel.close()

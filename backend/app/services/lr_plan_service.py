@@ -11,6 +11,13 @@ feature already uses.
 Caveat: the LR knows the *speeds*, not the commercial plan *name* — that lives
 only in the UISP CRM. If a label is needed, map (download, upload) → name on our
 side, or join to the CRM separately.
+
+This sync ALSO caches the LR's provisioned GPS coordinates
+(`system.latitude`/`system.longitude`), because they sit in the very same
+/tmp/system.cfg: one grep on the session we already open, instead of a second
+SSH round-trip per LR for two lines. See `ssh_service.parse_system_location` —
+it is provisioned data, NOT a GPS fix, and all three firmware families (LTU,
+airMAX AC, M5) carry it when the installer filled it in.
 """
 
 import asyncio
@@ -102,7 +109,10 @@ async def sync_all_lr_plans(session: AsyncSession) -> dict:
         for lr in result.scalars().all()
     ]
 
-    summary = {"eligible": len(targets), "updated": 0, "no_shaper": 0, "failed": 0}
+    summary = {
+        "eligible": len(targets), "updated": 0, "no_shaper": 0, "failed": 0,
+        "location_updated": 0, "no_location": 0,
+    }
     if not targets:
         logger.debug("lr_plan sync: aucun LR up avec credentials SSH — ignoré")
         return summary
@@ -157,6 +167,20 @@ async def sync_all_lr_plans(session: AsyncSession) -> dict:
         dev.plan_download_mbps = dl
         dev.plan_upload_mbps = ul
         dev.plan_synced_at = now
+        # Coordinates ride on the same system.cfg read. Every family carries the
+        # key when provisioned; a None just means this unit has none (absent, or
+        # present-but-empty as on the M5), so never clear a known position on a
+        # None — an unprovisioned read must not wipe a value some other pass, or
+        # a human, put there.
+        lat = plan.get("latitude") if plan else None
+        lon = plan.get("longitude") if plan else None
+        if lat is not None and lon is not None:
+            if dev.latitude != lat or dev.longitude != lon:
+                summary["location_updated"] += 1
+            dev.latitude = lat
+            dev.longitude = lon
+        else:
+            summary["no_location"] += 1
         if dl is None and ul is None:
             summary["no_shaper"] += 1
         else:
@@ -164,8 +188,9 @@ async def sync_all_lr_plans(session: AsyncSession) -> dict:
         await session.commit()
 
     logger.info(
-        "lr_plan sync terminé — eligible=%d updated=%d no_shaper=%d failed=%d",
+        "lr_plan sync terminé — eligible=%d updated=%d no_shaper=%d failed=%d "
+        "location_updated=%d no_location=%d",
         summary["eligible"], summary["updated"], summary["no_shaper"],
-        summary["failed"],
+        summary["failed"], summary["location_updated"], summary["no_location"],
     )
     return summary

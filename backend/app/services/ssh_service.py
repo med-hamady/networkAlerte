@@ -1532,6 +1532,43 @@ def parse_tshaper_config(raw: str) -> dict:
     return result
 
 
+def parse_system_location(raw: str) -> tuple[float | None, float | None]:
+    """Parse ``system.latitude`` / ``system.longitude`` from airOS config lines.
+
+    These are the coordinates PROVISIONED on the device, **not a GPS fix**: even
+    on an LTU-LR — which does run ``ubnt-gps-reader`` on /dev/ttyAMA0 — the live
+    fix is void (``gps_info`` = ``,,V,,...``, 0 satellites, ``gpsFixed=0``), so
+    this value is whatever the operator/UISP wrote in. Field-checked 2026-07-17.
+
+    All three firmware families carry these keys — LTU (``afltu``), airMAX AC
+    (``WA``) and LiteBeam M5 (``XW``/airOS-M). A missing key, or one present but
+    EMPTY (``system.latitude=``, seen on the M5), means that individual device
+    was never provisioned, not that its family can't hold one — verified on a
+    LiteBeam 5AC with ``system.latitude=18.135`` and on an LTU-Lite with none.
+    (None, None) is therefore a normal, per-device outcome.
+
+    Do NOT read ``mca-status`` instead: its meaning flips per family. On airMAX
+    it mirrors this config value, but on LTU it reports the *live GPS* — which
+    is 0.000000 on every unit here, since none has a fix.
+
+    Both values are required: a half-filled pair is meaningless → (None, None).
+    """
+    kv: dict[str, str] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("system.") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        kv[key.strip()] = val.strip()
+
+    try:
+        lat = float(kv["system.latitude"])
+        lon = float(kv["system.longitude"])
+    except (KeyError, ValueError):
+        return None, None
+    return lat, lon
+
+
 def _read_traffic_shaper_sync(
     host: str,
     port: int,
@@ -1540,12 +1577,16 @@ def _read_traffic_shaper_sync(
     expected_fingerprint: str | None,
     fallback_passwords: list[str] | None,
 ) -> tuple[bool, dict | None, str, str | None, str | None]:
-    """SSH into the LR and read its airOS traffic-shaper config (the rate plan).
+    """SSH into the LR and read what /tmp/system.cfg provisions on it.
 
     Returns ``(ok, plan|None, message, observed_fp, used_pw)``. ``plan`` has the
-    shape documented on :func:`parse_tshaper_config`. ok=False only on a
-    connect/auth/read failure — a reachable LR with no shaper returns ok=True
-    and an all-None plan (no forfait provisioned on the device).
+    shape documented on :func:`parse_tshaper_config` (the rate caps) PLUS the
+    ``latitude``/``longitude`` keys from :func:`parse_system_location` — both
+    live in the same config file, so one grep on one session gets them.
+
+    ok=False only on a connect/auth/read failure — a reachable LR with no shaper
+    returns ok=True and all-None rate caps (no forfait provisioned), and the
+    coordinates are still reported in that case.
     """
     try:
         transport, observed, used_pw = _open_transport(
@@ -1563,12 +1604,17 @@ def _read_traffic_shaper_sync(
         # tshaper config is flat key=value in the running config. Cover both
         # filenames airOS uses across firmware (system.cfg / running.cfg).
         # grep exits 1 on no match — not an error, just an unshaped LR.
+        # Same file also carries the provisioned GPS coordinates (system.latitude
+        # / system.longitude) — read both in ONE grep on this session rather than
+        # opening a second SSH connection per LR just for two lines.
         _code, out = _exec_capture(
             transport,
-            "grep -h '^tshaper' /tmp/system.cfg /tmp/running.cfg 2>/dev/null",
+            "grep -hE '^tshaper|^system\\.(latitude|longitude)=' "
+            "/tmp/system.cfg /tmp/running.cfg 2>/dev/null",
             timeout=10,
         )
         plan = parse_tshaper_config(out)
+        plan["latitude"], plan["longitude"] = parse_system_location(out)
         if not plan["shaper_enabled"] and not plan["rules"]:
             return (
                 True, plan,

@@ -44,6 +44,16 @@ class Device(Base):
     # device uses its own `location`; fallback 'Sans site'. Read-only from the
     # app's point of view — never assign it in Python, the triggers own it.
     site: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Coordinates PROVISIONED on the device itself (airOS system.latitude /
+    # system.longitude), read over SSH by lr_plan_service. NOT a GPS fix: the
+    # radios have no working fix (gpsFixed=0), an operator typed these in. NULL
+    # means that unit was never provisioned — all three firmware families (LTU,
+    # airMAX AC, LiteBeam M5) do carry the key. Deliberately NOT sourced from
+    # UISP: the two disagree by up to ~9 km and the device is the chosen source
+    # of truth (2026-07-17).
+    # ⚠️ Do not confuse with `location` above, which holds the SITE NAME.
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     snmp_community: Mapped[str | None] = mapped_column(String(100))
     notes: Mapped[str | None] = mapped_column(Text)
     last_seen: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))

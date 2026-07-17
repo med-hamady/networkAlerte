@@ -30,6 +30,12 @@ CMD ["npm", "run", "dev"]
 # ---------------------------------------------------------------------------
 FROM deps AS builder
 COPY . .
+# NEXT_PUBLIC_* is inlined into the client bundle AT BUILD TIME — passing it at
+# runtime does nothing. The map page reads NEXT_PUBLIC_GOOGLE_MAPS_API_KEY, so
+# it must be a build arg or the built image ships an empty key and the map shows
+# its "clé absente" banner. Empty default = the rest of the app still builds.
+ARG NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=""
+ENV NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=$NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
 RUN npm run build
 
 # ---------------------------------------------------------------------------

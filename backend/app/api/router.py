@@ -7,6 +7,7 @@ from app.api.endpoints import (
     client_signal,
     clients,
     dashboard,
+    device_map,
     devices,
     fai,
     fai_journal,
@@ -36,6 +37,7 @@ _auth = [Depends(require_user_or_api_key)]
 api_router.include_router(devices.router, prefix="/devices", tags=["devices"], dependencies=_auth)
 api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"], dependencies=_auth)
 api_router.include_router(sites.router, prefix="/sites", tags=["sites"], dependencies=_auth)
+api_router.include_router(device_map.router, prefix="/map", tags=["map"], dependencies=_auth)
 api_router.include_router(access.router, prefix="/access", tags=["access"], dependencies=_auth)
 # /fai additionally accepts FAI_API_KEY — a key scoped to these routes only, held
 # by the external payment system (see require_fai_client).

@@ -162,6 +162,10 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       target: runner
+      args:
+        # Inlined into the client bundle at build time (see frontend/Dockerfile).
+        # Changing the key in .env requires a rebuild, not just a restart.
+        NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ${NEXT_PUBLIC_GOOGLE_MAPS_API_KEY:-}
     volumes: !reset []
     ports: !reset []
     deploy:

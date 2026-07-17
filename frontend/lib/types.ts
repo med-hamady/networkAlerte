@@ -901,3 +901,38 @@ export interface MetricHistory {
   // Trous volontaires : un bucket sans relevé est ABSENT, jamais ramené à 0.
   points: MetricHistPoint[]
 }
+
+// ── Carte des clients (/map) ─────────────────────────────────────────────────
+// Position lue SUR l'équipement (airOS system.cfg) par lr_plan_sync, stockée
+// verbatim. Le backend sépare ce qui est plaçable de ce qui est faux : il ne
+// filtre pas en silence, il rend les deux listes.
+export interface ClientMapPoint {
+  id: number
+  name: string
+  ip_address: string | null
+  status: string
+  site: string | null
+  model_variant: string
+  ap_name: string | null
+  client_blocked: boolean
+  plan_download_mbps: number | null
+  plan_upload_mbps: number | null
+  latitude: number
+  longitude: number
+}
+
+// Un point hors Mauritanie : gardé et nommé pour que le terrain le corrige.
+export type ClientMapOutlier = ClientMapPoint & { reason: string }
+
+export interface ClientMapResponse {
+  points: ClientMapPoint[]
+  outliers: ClientMapOutlier[]
+  stats: {
+    total: number
+    with_position: number
+    plotted: number
+    outliers: number
+    without_position: number
+  }
+  bbox: { lat_min: number; lat_max: number; lon_min: number; lon_max: number }
+}

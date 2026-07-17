@@ -69,6 +69,8 @@ export const endpoints = {
   clientsConsumption:   (period: '24h' | '7d' | '30d' | 'lifetime') => `${API_BASE}/clients/consumption?period=${period}`,
   clientsConsumptionRange: (start: string, end: string) => `${API_BASE}/clients/consumption?period=custom&start=${start}&end=${end}`,
   networkCapacity:      `${API_BASE}/network-capacity`,
+  // Carte des clients : points plaçables + positions aberrantes à corriger.
+  clientMap:            `${API_BASE}/map`,
   uispSync:             `${API_BASE}/uisp/sync`,
   uispSyncStations:     `${API_BASE}/uisp/sync?stations=true`,
   topDestinations:      (period: '24h' | '7d' | '30d') => `${API_BASE}/traffic/top-destinations?period=${period}`,

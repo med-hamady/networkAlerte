@@ -67,11 +67,16 @@ class Settings(BaseSettings):
     # PROCESS séparés (un seul GIL/event-loop par process). À ~1000+ devices, la
     # sonde SSH (ThreadPoolExecutor) saturait le GIL et affamait le device_ping
     # → last_seen figé pendant ~20 min. Voir register_jobs().
-    #   - "all"   : tous les jobs (dev, process unique — défaut, comportement legacy)
-    #   - "fast"  : disponibilité + maintenance, tout async léger (ping, digest,
-    #               flap, latency-aggregate, matviews, rétention)
-    #   - "heavy" : SSH + gros fan-outs API (lr_probe, lr_plan, client_block,
-    #               snmp, ltu, airos, af60, power, uisp_sync)
+    #   - "all"     : tous les jobs (dev, process unique — défaut, comportement legacy)
+    #   - "fast"    : disponibilité de l'INFRA + maintenance, tout async léger
+    #                 (infra_ping, digest, flap, latency-aggregate, matviews,
+    #                 rétention, rapports)
+    #   - "heavy"   : SSH + gros fan-outs API (lr_probe, lr_plan, client_block,
+    #                 snmp, ltu, airos, af60, power, uisp_sync)
+    #   - "ping-lr" : le ping des LR clients, SEUL. Isolé de "fast" pour que sa
+    #                 rafale de re-confirmation (des centaines de `ping` quand
+    #                 beaucoup de LR sont down côté abonné) ne dispute jamais le
+    #                 CPU au sweep infra, qui est la seule source d'incidents.
     scheduler_group: str = "all"
 
     # Polling intervals (seconds)
@@ -144,15 +149,36 @@ class Settings(BaseSettings):
     ping_infra_retries: int = 2        # fping -r : 3 tentatives au total
     ping_infra_timeout_ms: int = 1200  # fping -t : timeout par sonde (ms)
 
-    # Re-confirmation ISOLÉE des infra suspectées down. Le faux "down" d'un
-    # Rocket sain vient du BURST fping (la radio rate-limite TOUS les ICMP du
-    # paquet d'un coup). Avant de compter un échec, on re-pingue chaque hôte
-    # suspect SEUL, hors burst, avec un `ping` dédié : un équipement sain répond
-    # du premier coup. "down" reste 100% basé sur le ping — mais sur un ping
-    # fiable (isolé). Coût NUL quand l'infra est saine (aucun suspect). Ne
-    # s'applique qu'à l'infra (les LR clients gardent le sweep groupé tolérant).
+    # Re-confirmation ISOLÉE des devices suspectés down, sur les DEUX sweeps
+    # (infra ET LR clients). Le faux "down" d'une radio saine vient du BURST
+    # fping (la radio rate-limite TOUS les ICMP du paquet d'un coup). Avant de
+    # compter un échec, on re-pingue chaque hôte suspect SEUL, hors burst, avec
+    # un `ping` dédié : un équipement sain répond du premier coup. "down" reste
+    # 100% basé sur le ping — mais sur un ping fiable (isolé). Coût NUL quand
+    # tout répond (aucun suspect). Le fping groupé n'est plus qu'un PRÉ-FILTRE
+    # rapide : il ne décide jamais seul qu'un device est down.
+    #
+    # Les LR en avaient encore plus besoin que l'infra : leur sweep tourne avec
+    # les défauts tolérants/rapides de ping_hosts_bulk (-r 1 -t 800), et le
+    # paquet est bien plus gros (~600 LR) → un LR sain, joignable en HTTPS,
+    # restait "HORS LIGNE" des heures (constaté 2026-07-17).
+    #
+    # Réglages SÉPARÉS par famille : les deux sweeps tournent dans des process
+    # distincts (scheduler_group "fast" vs "ping-lr") et n'ont ni le même profil
+    # ni le même enjeu — l'infra seule ouvre des incidents. Aucun budget partagé,
+    # donc régler les LR ne peut pas dégrader la mesure de l'infra.
     ping_infra_reconfirm_count: int = 2      # ping -c : sondes du re-check isolé
     ping_infra_reconfirm_timeout_s: int = 2  # ping -W : timeout par sonde (s)
+    # Lot infra petit (quelques dizaines) → une seule vague suffit.
+    ping_infra_reconfirm_concurrency: int = 50
+
+    # LR clients : mêmes sondes, mais concurrence dimensionnée pour un GROS lot de
+    # suspects (les vrais LR down côté abonné sont nombreux et c'est normal).
+    # ~3 s par hôte mort × ceil(suspects/concurrence) doit rester <
+    # client_ping_interval_seconds (ex. 400 suspects / 150 ≈ 3 lots ≈ 9 s).
+    ping_client_reconfirm_count: int = 2
+    ping_client_reconfirm_timeout_s: int = 2
+    ping_client_reconfirm_concurrency: int = 150
 
     # Sonde LR → Internet — un seul job (`lr_internet_probe_job`) ouvre une
     # session SSH par LR par cycle et exécute `ping -c N` vers la cible

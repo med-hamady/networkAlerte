@@ -44,13 +44,6 @@ class Device(Base):
     # device uses its own `location`; fallback 'Sans site'. Read-only from the
     # app's point of view — never assign it in Python, the triggers own it.
     site: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # GPS coordinates as reported by UISP (`location.latitude/longitude`), NOT by
-    # the radio: no LiteBeam/LTU has a GPS receiver, the installer types these in.
-    # Imported verbatim — UISP is the source of truth and ~5% of the roster sits
-    # outside Mauritania (installer phone geoloc gone wrong). Consumers must not
-    # assume the point is plausible.
-    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
-    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     snmp_community: Mapped[str | None] = mapped_column(String(100))
     notes: Mapped[str | None] = mapped_column(Text)
     last_seen: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))

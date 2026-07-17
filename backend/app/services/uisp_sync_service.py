@@ -104,6 +104,22 @@ def _strip_ip(ip_cidr: str | None) -> str | None:
     return ip_cidr.split("/")[0].strip() or None
 
 
+def _coords(raw: dict) -> tuple[float | None, float | None]:
+    """Read (latitude, longitude) from a raw UISP device, or (None, None).
+
+    Imported verbatim, with no plausibility check: UISP is the source of truth
+    (operator decision, 2026-07-17). Note ~5% of the roster carries coordinates
+    outside Mauritania — installer-phone geoloc, not a bad parse. Both values are
+    required; a half-filled pair is meaningless so it degrades to (None, None).
+    Sites are never geolocated in this controller (0/1398) — devices only.
+    """
+    loc = raw.get("location") or {}
+    lat, lon = loc.get("latitude"), loc.get("longitude")
+    if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+        return float(lat), float(lon)
+    return None, None
+
+
 def _build_create_schema(device_type: str, radio_tech: str | None, common: dict, site_name: str | None):
     """Build the right *Create schema with the per-family/site credential convention."""
     settings = get_settings()
@@ -274,6 +290,7 @@ async def sync_uisp_devices(session: AsyncSession, *, dry_run: bool = False) -> 
         summary["infra_matched"] += 1
 
         ip = _strip_ip(raw.get("ipAddress"))
+        lat, lon = _coords(raw)
         name = ident.get("name") or ident.get("hostname") or ident.get("displayName")
         mac_raw = ident.get("mac")
         try:
@@ -330,6 +347,11 @@ async def sync_uisp_devices(session: AsyncSession, *, dry_run: bool = False) -> 
                 and match.uisp_channel_width_mhz != channel_width
             ):
                 changes["uisp_channel_width_mhz"] = channel_width
+            # GPS coordinates: UISP owns them (nobody edits them here), so they
+            # track the controller — including back to NULL if it clears them.
+            if match.latitude != lat or match.longitude != lon:
+                changes["latitude"] = lat
+                changes["longitude"] = lon
             if not changes:
                 summary["unchanged"] += 1
                 continue
@@ -366,7 +388,10 @@ async def sync_uisp_devices(session: AsyncSession, *, dry_run: bool = False) -> 
             # fallback) — not part of the create schema, set directly on the row.
             if device_type == "rocket" and channel_width is not None:
                 created.uisp_channel_width_mhz = channel_width
-                await session.flush()
+            if lat is not None:
+                created.latitude = lat
+                created.longitude = lon
+            await session.flush()
             if created.ip_address:
                 by_ip[created.ip_address] = created
             if created.mac_address:
@@ -535,6 +560,7 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
 
         name = ident.get("name") or ident.get("hostname") or ident.get("displayName")
         ip = _strip_ip(dev.get("ipAddress"))
+        lat, lon = _coords(dev)
         uisp_mode = dev.get("mode")  # 'router' | 'bridge'
         uisp_status = (dev.get("overview") or {}).get("status")  # 'active'|'disconnected'
         # Prefer the data-link attribution (covers stations whose apDevice is
@@ -559,6 +585,8 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
                 match.uisp_last_seen = last_seen
                 match.uisp_ap_name = ap_name
                 match.uisp_synced_at = now
+                match.latitude = lat
+                match.longitude = lon
             summary["updated"] += 1
             if len(summary["samples"]["update"]) < _SAMPLE_CAP:
                 summary["samples"]["update"].append(
@@ -587,6 +615,8 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
                 ssh_password=settings.lr_default_ssh_password or None,
                 ssh_port=settings.lr_default_ssh_port,
                 lan_interface=client_block_service.default_lan_interface(model_variant),
+                latitude=lat,
+                longitude=lon,
                 uisp_mode=uisp_mode,
                 uisp_status=uisp_status,
                 uisp_last_seen=last_seen,

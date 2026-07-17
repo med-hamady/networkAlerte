@@ -515,22 +515,23 @@ async def heartbeat_job() -> None:
 
 
 async def _reconfirm_unreachable(
-    ips: list[str], settings,
+    ips: list[str], settings, *, infra: bool,
 ) -> dict[str, bool]:
     """Re-pingue chaque IP suspecte ISOLÉMENT (un `ping` dédié par hôte, hors
     burst) → {ip: reachable}. Sert à dissiper les faux "down" du sweep groupé :
     une radio Ubiquiti rate-limite tout le burst ICMP d'un coup, mais répond à un
-    ping isolé. Concurrence bornée (réutilise ping_concurrency) pour ne pas
-    re-créer une rafale ; les suspects sont normalement peu nombreux."""
-    sem = asyncio.Semaphore(settings.ping_concurrency)
+    ping isolé. Concurrence bornée pour ne pas re-créer une rafale.
+
+    Les réglages (sondes/timeout/concurrence) sont propres à chaque famille : les
+    deux sweeps tournent dans des process séparés et ne partagent aucun budget."""
+    prefix = "ping_infra_reconfirm" if infra else "ping_client_reconfirm"
+    count = getattr(settings, f"{prefix}_count")
+    timeout_s = getattr(settings, f"{prefix}_timeout_s")
+    sem = asyncio.Semaphore(getattr(settings, f"{prefix}_concurrency"))
 
     async def _one(ip: str) -> tuple[str, bool]:
         async with sem:
-            reachable, _ = await poller.ping_host(
-                ip,
-                timeout=settings.ping_infra_reconfirm_timeout_s,
-                count=settings.ping_infra_reconfirm_count,
-            )
+            reachable, _ = await poller.ping_host(ip, timeout=timeout_s, count=count)
         return ip, reachable
 
     results = await asyncio.gather(
@@ -558,6 +559,11 @@ async def _ping_sweep(*, infra: bool) -> None:
         (plus de retries + timeout large) sur un petit lot.
       - CHARGE : les LR clients (nombreux ; un LR down = panne côté abonné SANS
         incident infra) sont sondés moins souvent (client_ping_interval_seconds).
+
+    Dans les DEUX cas, le fping groupé n'est qu'un **pré-filtre** : tout hôte
+    qu'il déclare injoignable est re-pingé ISOLÉMENT (`_reconfirm_unreachable`)
+    avant d'être compté KO. C'est ce qui rend le down fiable malgré le
+    rate-limit ICMP des radios, qui frappe le burst entier d'un coup.
 
     Anti-flapping: an incident is only opened after ping_down_threshold consecutive
     failures (default 3 = 90 s). A single successful ping resolves the incident.
@@ -601,20 +607,30 @@ async def _ping_sweep(*, infra: bool) -> None:
             retries=settings.ping_infra_retries,
             timeout_ms=settings.ping_infra_timeout_ms,
         )
-        # Re-confirmation ISOLÉE des suspects : le faux "down" vient du burst
-        # fping. On re-pingue chaque hôte injoignable TOUT SEUL (hors burst) ;
-        # un équipement sain répond du premier coup → on le re-marque UP. "down"
-        # reste basé sur le ping, mais sur un ping fiable. Coût nul si infra saine.
-        suspects = [ip for ip in ips if not reachable_by_ip.get(ip, False)]
-        if suspects:
-            logger.info(
-                "Ping infra — %d suspect(s) down, re-confirmation isolée", len(suspects)
-            )
-            confirmed = await _reconfirm_unreachable(suspects, settings)
-            for ip in suspects:
-                reachable_by_ip[ip] = confirmed.get(ip, False)
     else:
         reachable_by_ip = await poller.ping_hosts_bulk(ips)
+
+    # Le fping groupé n'est qu'un PRÉ-FILTRE : il ne décide jamais seul qu'un
+    # device est down. Chaque suspect est re-pingé TOUT SEUL (hors burst) ; un
+    # équipement sain répond du premier coup → re-marqué UP. "down" reste basé
+    # sur le ping, mais sur un ping fiable. Coût nul quand tout répond.
+    suspects = [ip for ip in ips if not reachable_by_ip.get(ip, False)]
+    if suspects:
+        logger.info(
+            "Ping %s — %d suspect(s) down, re-confirmation isolée", label, len(suspects)
+        )
+        confirmed = await _reconfirm_unreachable(suspects, settings, infra=infra)
+        recovered = 0
+        for ip in suspects:
+            reachable_by_ip[ip] = confirmed.get(ip, False)
+            if reachable_by_ip[ip]:
+                recovered += 1
+        if recovered:
+            # Ces devices auraient été comptés KO à tort par le sweep groupé.
+            logger.info(
+                "Ping %s — %d/%d suspect(s) répondent au ping isolé (faux down du burst)",
+                label, recovered, len(suspects),
+            )
 
     now = datetime.datetime.now(datetime.UTC)
     ids = [i for i, _ip in rows]
@@ -2746,13 +2762,23 @@ async def lr_plan_sync_job() -> None:
 # ── Classification des jobs par groupe de process (scheduler_group) ───────────
 # À ~1000+ devices, faire tourner TOUS les jobs dans un seul process saturait le
 # GIL : la sonde SSH (ThreadPoolExecutor) affamait le device_ping → last_seen
-# figé ~20 min. On scinde la charge sur 2 process (containers) : "fast" porte la
-# disponibilité + la maintenance (tout async léger, latence-critique) ; "heavy"
-# porte le SSH et les gros fan-outs API. Le heartbeat tourne dans CHAQUE process
-# (liveness). En "all" (dev, process unique) rien n'est élagué.
+# figé ~20 min. On scinde la charge sur 3 process (containers) :
+#   - "fast"    : disponibilité de l'INFRA + maintenance (async léger, latence-critique)
+#   - "heavy"   : SSH et gros fan-outs API
+#   - "ping-lr" : le ping des LR clients, SEUL
+# Le heartbeat tourne dans CHAQUE process (liveness). En "all" (dev, process
+# unique) rien n'est élagué.
+#
+# Pourquoi "ping-lr" a son propre process : le sweep LR porte ~600 hôtes et, quand
+# beaucoup sont réellement down (panne côté abonné = normal), sa re-confirmation
+# isolée lance des centaines de sous-process `ping`. Dans le même process que le
+# sweep infra, cette rafale lui disputait le CPU et l'event loop — exactement le
+# mode de panne qui avait déjà imposé le split fast/heavy. L'infra est peu
+# nombreuse et critique (elle SEULE ouvre des incidents) : sa mesure de
+# disponibilité ne doit dépendre de rien d'autre.
 _ALWAYS_JOB_IDS = {"heartbeat"}
 _FAST_JOB_IDS = {
-    "infra_ping", "client_ping", "warning_digest", "flap_detection",
+    "infra_ping", "warning_digest", "flap_detection",
     "network_latency_aggregate", "client_consumption_matview_refresh",
     "client_consumption_7d_refresh",
     "traffic_stats_retention", "lr_latency_retention",
@@ -2763,6 +2789,14 @@ _HEAVY_JOB_IDS = {
     "snmp_poll", "power_poll", "lr_internet_probe", "ltu_api_poll",
     "airos_api_poll", "af60_api_poll", "lr_plan_sync",
     "client_block_enforcement", "uisp_sync",
+}
+_PING_LR_JOB_IDS = {"client_ping"}
+
+# Groupe → jobs actifs. Un groupe absent d'ici = "all" (aucun élagage).
+_JOBS_BY_GROUP = {
+    "fast": _FAST_JOB_IDS,
+    "heavy": _HEAVY_JOB_IDS,
+    "ping-lr": _PING_LR_JOB_IDS,
 }
 
 
@@ -2987,13 +3021,13 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         )
 
     # ── Élagage par groupe de process ────────────────────────────────────────
-    # "all" → on garde tout (dev, process unique). "fast"/"heavy" → on retire les
-    # jobs hors groupe. Un job non classé est conservé en "fast" par défaut (plus
-    # sûr que de le perdre silencieusement dans les deux process).
+    # "all" → on garde tout (dev, process unique). Sinon → on retire les jobs
+    # hors groupe. Un job non classé est conservé en "fast" par défaut (plus sûr
+    # que de le perdre silencieusement dans tous les process).
     group = (settings.scheduler_group or "all").lower()
-    if group in ("fast", "heavy"):
-        classified = _ALWAYS_JOB_IDS | _FAST_JOB_IDS | _HEAVY_JOB_IDS
-        active = _FAST_JOB_IDS if group == "fast" else _HEAVY_JOB_IDS
+    if group in _JOBS_BY_GROUP:
+        classified = _ALWAYS_JOB_IDS.union(*_JOBS_BY_GROUP.values())
+        active = _JOBS_BY_GROUP[group]
 
         def _drop(job_id: str) -> None:
             # remove_job sur un job pending (avant start) est supporté ; on blinde

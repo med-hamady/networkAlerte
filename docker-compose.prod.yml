@@ -71,6 +71,43 @@ services:
         max-size: "50m"
         max-file: "5"
 
+  # Scheduler "ping-lr" : le ping des LR CLIENTS, seul dans son process. Le sweep
+  # LR porte ~600 hôtes et, quand beaucoup sont réellement down (panne côté
+  # abonné = normal), sa re-confirmation isolée lance des centaines de sous-
+  # process `ping`. Dans le container "fast", cette rafale disputait le CPU et
+  # l'event loop au sweep infra — or l'infra est peu nombreuse, critique, et la
+  # SEULE à ouvrir des incidents : sa mesure de disponibilité ne doit dépendre de
+  # rien d'autre. Même raison que le split fast/heavy, un cran plus fin.
+  scheduler-ping-lr:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    # Même bind-mount que backend (image partagée) : code à chaud, restart suffit.
+    volumes:
+      - ./backend:/app
+    environment:
+      SCHEDULER_ENABLED: "true"
+      RUN_MODE: "scheduler"
+      SCHEDULER_GROUP: "ping-lr"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          # Un seul job async + des sous-process `ping` de courte vie.
+          memory: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
   # Scheduler "heavy" : SSH (sonde transit/latence LR, lr_plan, client_block) +
   # gros fan-outs API (snmp/ltu/airos/af60/power/uisp_sync). Sa pression
   # GIL/threads reste confinée ici → n'impacte plus la disponibilité.

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
-import type { ClientMapPoint, ClientMapResponse } from '@/lib/types'
+import type { ClientMapPoint, ClientMapResponse, MapSite } from '@/lib/types'
 
 // La clé Google Maps est PUBLIQUE par nature (le script tourne dans le
 // navigateur) — d'où NEXT_PUBLIC_. Elle doit donc être restreinte par référent
@@ -49,6 +49,38 @@ function markerColor(p: ClientMapPoint): string {
   return STATUS_COLOR[p.status] ?? STATUS_COLOR.unknown
 }
 
+// Icône « antenne » d'un site — un pictogramme SVG inline (data URI), pas une
+// image externe : la page doit rester autonome et le rendu identique hors ligne.
+function antennaIcon(g: any) {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="34" height="40" viewBox="0 0 34 40">
+      <path d="M17 6 L27 34 H7 Z" fill="#1d4ed8" fill-opacity=".92" stroke="#fff" stroke-width="1.6"/>
+      <circle cx="17" cy="5" r="3.6" fill="#1d4ed8" stroke="#fff" stroke-width="1.4"/>
+      <path d="M9.5 3.5a10 10 0 000 3M24.5 3.5a10 10 0 010 3" stroke="#1d4ed8"
+            stroke-width="1.6" fill="none" stroke-linecap="round"/>
+    </svg>`
+  return {
+    url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg.trim())}`,
+    scaledSize: new g.maps.Size(34, 40),
+    anchor: new g.maps.Point(17, 36),
+  }
+}
+
+function sitePopupHtml(s: MapSite): string {
+  const esc = (v: unknown) =>
+    String(v ?? '—').replace(/[&<>"]/g, (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string))
+  return `
+    <div style="font:13px/1.5 system-ui;min-width:190px">
+      <div style="font-weight:600;margin-bottom:4px">📡 ${esc(s.site)}</div>
+      <div>Clients placés : <b>${s.client_count}</b></div>
+      <div style="color:#6b7280;margin-top:4px">${s.latitude.toFixed(5)}, ${s.longitude.toFixed(5)}</div>
+      <div style="color:#9ca3af;font-size:11px;margin-top:2px">
+        Position du pylône (source : ${esc(s.source)})
+      </div>
+    </div>`
+}
+
 function popupHtml(p: ClientMapPoint): string {
   const esc = (v: unknown) =>
     String(v ?? '—').replace(/[&<>"]/g, (c) =>
@@ -76,9 +108,15 @@ export default function MapPage() {
   const divRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<any>(null)
   const markersRef = useRef<any[]>([])
+  const linesRef = useRef<any[]>([])
   const infoRef = useRef<any>(null)
   const [mapsError, setMapsError] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
+  // Filtre par site : à 1100 clients la carte devient un nuage illisible et le
+  // faisceau de liaisons se change en bouillie. Isoler un site est le geste
+  // naturel de l'exploitant ("qui est accroché à ce pylône ?").
+  const [siteFilter, setSiteFilter] = useState<string>('')
+  const [showLinks, setShowLinks] = useState(true)
 
   useEffect(() => {
     if (!MAPS_KEY) {
@@ -106,10 +144,37 @@ export default function MapPage() {
       infoRef.current = new g.maps.InfoWindow()
     }
     markersRef.current.forEach((m) => m.setMap(null))
+    linesRef.current.forEach((l) => l.setMap(null))
     markersRef.current = []
+    linesRef.current = []
 
+    const sites = siteFilter ? data.sites.filter((s) => s.site === siteFilter) : data.sites
+    const points = siteFilter ? data.points.filter((p) => p.site === siteFilter) : data.points
+    const siteByName = new Map(data.sites.map((s) => [s.site, s]))
     const bounds = new g.maps.LatLngBounds()
-    data.points.forEach((p) => {
+
+    // 1) Les liaisons d'abord, pour qu'elles passent SOUS les marqueurs.
+    if (showLinks) {
+      points.forEach((p) => {
+        const s = p.site ? siteByName.get(p.site) : undefined
+        if (!s) return // site sans position connue : pas de liaison traçable
+        const line = new g.maps.Polyline({
+          path: [
+            { lat: s.latitude, lng: s.longitude },
+            { lat: p.latitude, lng: p.longitude },
+          ],
+          map: mapRef.current,
+          strokeColor: '#3b82f6',
+          strokeOpacity: 0.28,
+          strokeWeight: 1,
+          clickable: false,
+        })
+        linesRef.current.push(line)
+      })
+    }
+
+    // 2) Les clients.
+    points.forEach((p) => {
       const marker = new g.maps.Marker({
         position: { lat: p.latitude, lng: p.longitude },
         map: mapRef.current,
@@ -130,9 +195,27 @@ export default function MapPage() {
       markersRef.current.push(marker)
       bounds.extend(marker.getPosition()!)
     })
-    // Cadrer sur les clients réels. Sans points, on reste sur Nouakchott.
-    if (data.points.length) mapRef.current.fitBounds(bounds)
-  }, [ready, data])
+
+    // 3) Les sites par-dessus (zIndex) : ce sont les repères de lecture.
+    sites.forEach((s) => {
+      const marker = new g.maps.Marker({
+        position: { lat: s.latitude, lng: s.longitude },
+        map: mapRef.current,
+        title: `${s.site} — ${s.client_count} client(s)`,
+        icon: antennaIcon(g),
+        zIndex: 1000,
+      })
+      marker.addListener('click', () => {
+        infoRef.current.setContent(sitePopupHtml(s))
+        infoRef.current.open(mapRef.current, marker)
+      })
+      markersRef.current.push(marker)
+      bounds.extend(marker.getPosition()!)
+    })
+
+    // Cadrer sur ce qui est affiché. Sans rien, on reste sur Nouakchott.
+    if (points.length || sites.length) mapRef.current.fitBounds(bounds)
+  }, [ready, data, siteFilter, showLinks])
 
   const stats = data?.stats
   const coverage = useMemo(() => {
@@ -153,10 +236,45 @@ export default function MapPage() {
 
       {stats && (
         <div className="flex flex-wrap gap-3 text-sm">
+          <Stat label="Sites" value={`${stats.sites}`} />
           <Stat label="Clients placés" value={`${stats.plotted}`} tone="ok" />
           <Stat label="Couverture" value={`${coverage} %`} />
           <Stat label="Sans position" value={`${stats.without_position}`} tone="muted" />
           <Stat label="À corriger" value={`${stats.outliers}`} tone={stats.outliers ? 'warn' : undefined} />
+        </div>
+      )}
+
+      {!!data?.sites.length && (
+        <div className="flex flex-wrap items-center gap-4 rounded-md border border-gray-200 bg-white px-3 py-2 text-sm">
+          <label className="flex items-center gap-2">
+            <span className="text-gray-600">Site :</span>
+            <select
+              className="rounded border border-gray-300 px-2 py-1"
+              value={siteFilter}
+              onChange={(e) => setSiteFilter(e.target.value)}
+            >
+              <option value="">Tous ({data.sites.length})</option>
+              {data.sites.map((s) => (
+                <option key={s.site} value={s.site}>
+                  {s.site} ({s.client_count})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-2 text-gray-600">
+            <input
+              type="checkbox"
+              checked={showLinks}
+              onChange={(e) => setShowLinks(e.target.checked)}
+            />
+            Afficher les liaisons
+          </label>
+          <span className="ml-auto flex flex-wrap items-center gap-3 text-xs text-gray-500">
+            <Legend color="#1d4ed8" label="Site (pylône)" square />
+            <Legend color="#22c55e" label="Client en ligne" />
+            <Legend color="#ef4444" label="Hors ligne" />
+            <Legend color="#f97316" label="Bloqué" />
+          </span>
         </div>
       )}
 
@@ -230,6 +348,14 @@ export default function MapPage() {
         </section>
       )}
 
+      {!!stats && stats.plotted > stats.linked && (
+        <p className="text-sm text-gray-500">
+          {stats.plotted - stats.linked} client(s) sont placés mais sans liaison : leur site
+          n&apos;a pas encore de position connue. Ajoute-la dans{' '}
+          <code>site_locations</code> pour que le trait apparaisse.
+        </p>
+      )}
+
       {!!stats?.without_position && (
         <p className="text-sm text-gray-500">
           {stats.without_position} client(s) n&apos;ont aucune position sur leur équipement — le
@@ -238,6 +364,18 @@ export default function MapPage() {
         </p>
       )}
     </div>
+  )
+}
+
+function Legend({ color, label, square }: { color: string; label: string; square?: boolean }) {
+  return (
+    <span className="flex items-center gap-1.5">
+      <span
+        className={square ? 'inline-block h-3 w-3' : 'inline-block h-2.5 w-2.5 rounded-full'}
+        style={{ background: color }}
+      />
+      {label}
+    </span>
   )
 }
 

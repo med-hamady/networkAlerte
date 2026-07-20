@@ -919,12 +919,26 @@ export interface ClientMapPoint {
   plan_upload_mbps: number | null
   latitude: number
   longitude: number
+  // false = le site de ce client n'a pas de position connue → aucune liaison
+  // ne peut être tracée (le marqueur reste visible).
+  linked?: boolean
 }
 
 // Un point hors Mauritanie : gardé et nommé pour que le terrain le corrige.
 export type ClientMapOutlier = ClientMapPoint & { reason: string }
 
+// Un site = un pylône. Tous ses secteurs partagent cette position (dispersion
+// mesurée : 4 à 29 m), d'où UN marqueur par site et non un par Rocket.
+export interface MapSite {
+  site: string
+  latitude: number
+  longitude: number
+  source: string
+  client_count: number
+}
+
 export interface ClientMapResponse {
+  sites: MapSite[]
   points: ClientMapPoint[]
   outliers: ClientMapOutlier[]
   stats: {
@@ -933,6 +947,8 @@ export interface ClientMapResponse {
     plotted: number
     outliers: number
     without_position: number
+    sites: number
+    linked: number
   }
   bbox: { lat_min: number; lat_max: number; lon_min: number; lon_max: number }
 }

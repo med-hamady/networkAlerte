@@ -29,6 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.device import Lr
+from app.models.site_location import SiteLocation
 
 logger = logging.getLogger(__name__)
 
@@ -60,22 +61,34 @@ def _reason(lat: float, lon: float) -> str:
 
 
 async def get_client_map(session: AsyncSession) -> dict:
-    """Return the plottable client points, the outliers, and the coverage stats.
+    """Return the sites, the plottable client points, the outliers and the stats.
 
     Shape::
 
         {
+          "sites":    [ {site, latitude, longitude, client_count, ...}, ... ],
           "points":   [ {id, name, latitude, longitude, status, site, ...}, ... ],
           "outliers": [ {id, name, latitude, longitude, reason, ...}, ... ],
-          "stats":    {total, with_position, plotted, outliers, without_position},
+          "stats":    {total, with_position, plotted, outliers, without_position,
+                       sites, linked},
           "bbox":     {lat_min, lat_max, lon_min, lon_max},
         }
+
+    Each plotted client carries the ``site`` it belongs to; the UI draws the link
+    from the client to that site's marker. The link is by SITE, not by sector
+    Rocket: every sector of a mast shares one position, so which sector serves
+    the client changes nothing on the map.
     """
     rows = (await session.execute(select(Lr))).scalars().all()
+    site_rows = (await session.execute(select(SiteLocation))).scalars().all()
+    # Exact-string join on `devices.site` — site names carry oddities such as
+    # the double space in "A2  ARF1", so they are never normalised here.
+    site_coords = {s.site: s for s in site_rows}
 
     points: list[dict] = []
     outliers: list[dict] = []
     without_position = 0
+    per_site_clients: dict[str, int] = {}
 
     for lr in rows:
         if lr.latitude is None or lr.longitude is None:
@@ -96,9 +109,26 @@ async def get_client_map(session: AsyncSession) -> dict:
             "longitude": lr.longitude,
         }
         if is_plausible(lr.latitude, lr.longitude):
+            # A link can be drawn only when we also know where the site is.
+            entry["linked"] = lr.site in site_coords
             points.append(entry)
+            if entry["linked"]:
+                per_site_clients[lr.site] = per_site_clients.get(lr.site, 0) + 1
         else:
             outliers.append({**entry, "reason": _reason(lr.latitude, lr.longitude)})
+
+    sites = [
+        {
+            "site": s.site,
+            "latitude": s.latitude,
+            "longitude": s.longitude,
+            "source": s.source,
+            # Clients actually drawn for this site — not the full roster: a
+            # client with no position of its own cannot be linked to anything.
+            "client_count": per_site_clients.get(s.site, 0),
+        }
+        for s in sorted(site_rows, key=lambda x: x.site)
+    ]
 
     stats = {
         "total": len(rows),
@@ -106,9 +136,12 @@ async def get_client_map(session: AsyncSession) -> dict:
         "plotted": len(points),
         "outliers": len(outliers),
         "without_position": without_position,
+        "sites": len(sites),
+        "linked": sum(1 for p in points if p["linked"]),
     }
     logger.debug("client map: %s", stats)
     return {
+        "sites": sites,
         "points": points,
         "outliers": outliers,
         "stats": stats,

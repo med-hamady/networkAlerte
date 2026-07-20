@@ -32,6 +32,44 @@ function medianGapMs(times: number[]): number {
   return deltas[Math.floor(deltas.length / 2)]
 }
 
+function median(values: number[]): number {
+  if (!values.length) return 0
+  const s = [...values].sort((a, b) => a - b)
+  const m = Math.floor(s.length / 2)
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
+}
+
+/** Quantile (0-1) d'une série, pour mesurer la dispersion sans se faire piéger
+ *  par un pic isolé (contrairement à min/max). */
+function quantile(values: number[], q: number): number {
+  if (!values.length) return 0
+  const s = [...values].sort((a, b) => a - b)
+  const pos = (s.length - 1) * q
+  const lo = Math.floor(pos)
+  return s[lo] + (s[Math.min(lo + 1, s.length - 1)] - s[lo]) * (pos - lo)
+}
+
+/** Tendance : médiane glissante centrée sur `window` points.
+ *
+ * MÉDIANE et pas moyenne : un seul pic à 400 ms tirerait une moyenne glissante
+ * vers le haut sur toute sa fenêtre et créerait une bosse de tendance là où il
+ * n'y a qu'un accident. La médiane l'ignore — c'est précisément ce qu'on veut
+ * d'une ligne censée dire « le niveau habituel est ici ».
+ *
+ * La tendance NE REMPLACE PAS la mesure brute : celle-ci reste tracée en fond.
+ * Lisser en écrasant les pics ferait disparaître exactement ce qu'on cherche
+ * quand un client se plaint.
+ */
+function rollingMedian(values: number[], window: number): number[] {
+  if (values.length < 3 || window < 3) return values
+  const half = Math.floor(window / 2)
+  return values.map((_, i) => {
+    const from = Math.max(0, i - half)
+    const to = Math.min(values.length, i + half + 1)
+    return median(values.slice(from, to))
+  })
+}
+
 /** Graphes d'historique d'un équipement : latence, capacité du lien, débits.
  *
  * Ouvert depuis le bouton « Plus d'infos » de la fiche. Les onglets suivent
@@ -186,6 +224,12 @@ export default function MetricHistoryModal({ device, onClose }: {
               <EmptyState />
             ) : (
               <>
+                <VerdictBanner
+                  points={points}
+                  unit={data!.unit}
+                  threshold={data!.threshold}
+                  thresholdDirection={data!.threshold_direction}
+                />
                 <MetricChart
                   points={points}
                   unit={data!.unit}
@@ -211,6 +255,22 @@ export default function MetricHistoryModal({ device, onClose }: {
   )
 }
 
+/** Bannière de lecture — la conclusion, avant la courbe. */
+function VerdictBanner({ points, unit, threshold, thresholdDirection }: {
+  points: MetricHistPoint[]
+  unit: string
+  threshold: number | null
+  thresholdDirection: 'max' | 'min' | null
+}) {
+  const v = verdict(points, unit, threshold, thresholdDirection)
+  return (
+    <div className={`flex flex-wrap items-baseline gap-x-3 gap-y-1 border rounded-xl px-4 py-3 ${v.bg}`}>
+      <span className="font-bold text-sm" style={{ color: v.color }}>{v.text}</span>
+      <span className="text-slate-600 text-xs">{v.detail}</span>
+    </div>
+  )
+}
+
 function EmptyState() {
   return (
     <div className="h-64 flex flex-col items-center justify-center gap-2 text-center px-6">
@@ -222,6 +282,101 @@ function EmptyState() {
       </p>
     </div>
   )
+}
+
+/** Lecture en une phrase : « stable », « instable », « élevée »…
+ *
+ * C'est la question qu'on se pose en ouvrant le graphe. La répondre en clair
+ * évite que chacun interprète la même courbe différemment.
+ *
+ * Bâti sur des statistiques ROBUSTES (médiane, écart interquartile) et pas sur
+ * moyenne/écart-type : un unique pic à 400 ms suffirait à faire déclarer
+ * « instable » un lien parfaitement régulier.
+ */
+function verdict(
+  points: MetricHistPoint[],
+  unit: string,
+  threshold: number | null,
+  direction: 'max' | 'min' | null,
+): { text: string; detail: string; color: string; bg: string } {
+  const vals = points.map(p => p.avg_value)
+  const med = median(vals)
+  const q1 = quantile(vals, 0.25)
+  const q3 = quantile(vals, 0.75)
+  // Dispersion relative : l'écart interquartile rapporté au niveau habituel.
+  // En relatif, parce que ±10 ms sur 20 ms est erratique alors que ±10 ms sur
+  // 300 ms ne se remarque pas.
+  const spread = med > 0 ? (q3 - q1) / med : 0
+
+  const breaching = threshold == null || direction == null
+    ? 0
+    : points.filter(p =>
+        direction === 'max' ? p.avg_value >= threshold : p.avg_value <= threshold,
+      ).length
+  const breachPct = points.length ? (breaching / points.length) * 100 : 0
+
+  const fmt = (v: number) => `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${unit}`
+  const level = `Niveau habituel ${fmt(med)}`
+
+  // « Ça s'est dégradé récemment » se traite AVANT le reste : c'est une panne
+  // qui commence, pas un état. Un lien sain puis mauvais et un lien mauvais
+  // depuis toujours donnent le même « % hors seuil », mais appellent des
+  // actions différentes — les confondre ferait passer une dégradation en cours
+  // pour une fatalité. On compare le dernier quart au reste (médianes, donc
+  // insensible aux pics), et seulement si l'écart est net (>35 %).
+  const cut = Math.floor(vals.length * 0.75)
+  if (vals.length >= 12) {
+    const before = median(vals.slice(0, cut))
+    const recent = median(vals.slice(cut))
+    const worse = direction === 'min'
+      ? before > 0 && recent < before * 0.65
+      : before > 0 && recent > before * 1.35
+    if (worse) {
+      return {
+        text: 'Dégradation récente',
+        detail: `passé de ${fmt(before)} à ${fmt(recent)} sur la fin de la période`,
+        color: '#b91c1c', bg: 'bg-red-50 border-red-200',
+      }
+    }
+  }
+
+  // Franchir le seuil prime sur la régularité : un lien régulièrement mauvais
+  // reste mauvais, même s'il est « stable ».
+  if (breachPct >= 50) {
+    return {
+      // Pas « en permanence » : à 50 % ce serait faux. Le pourcentage exact est
+      // juste à côté, il dit la nuance mieux qu'un adverbe.
+      text: direction === 'min' ? 'En dessous du seuil' : 'Élevée',
+      detail: `${level} — hors seuil ${breachPct.toFixed(0)} % du temps`,
+      color: '#b91c1c', bg: 'bg-red-50 border-red-200',
+    }
+  }
+  if (breachPct >= 10) {
+    return {
+      text: 'Dégradations fréquentes',
+      detail: `${level} — hors seuil ${breachPct.toFixed(0)} % du temps`,
+      color: '#b45309', bg: 'bg-amber-50 border-amber-200',
+    }
+  }
+  if (breachPct > 0) {
+    return {
+      text: 'Quelques pics',
+      detail: `${level} — hors seuil ${breachPct.toFixed(0)} % du temps`,
+      color: '#b45309', bg: 'bg-amber-50 border-amber-200',
+    }
+  }
+  if (spread > 0.4) {
+    return {
+      text: 'Irrégulière',
+      detail: `${level}, mais fortes variations`,
+      color: '#b45309', bg: 'bg-amber-50 border-amber-200',
+    }
+  }
+  return {
+    text: 'Stable',
+    detail: `${level}, peu de variations`,
+    color: '#15803d', bg: 'bg-green-50 border-green-200',
+  }
 }
 
 /** Vert/jaune/rouge selon le seuil ET son sens.
@@ -305,6 +460,25 @@ function MetricChart({
     return out
   }, [points, times, binSeconds])
 
+  // Tendance calculée PAR SEGMENT : lisser à travers un trou de mesure ferait
+  // traverser le vide à la ligne de tendance, ce que le découpage en segments
+  // sert précisément à éviter.
+  //
+  // Fenêtre ~5 % des points (impaire, bornée 3-15) : assez large pour gommer
+  // l'oscillation d'un relevé à l'autre, assez courte pour qu'une vraie
+  // dégradation d'une heure reste visible au lieu d'être moyennée.
+  const trendSegments = useMemo(() => {
+    const w = Math.min(15, Math.max(3, Math.round(points.length * 0.05) | 1))
+    return segments
+      .filter(seg => seg.length >= 3)
+      .map(seg => {
+        const smooth = rollingMedian(seg.map(p => p.avg_value), w)
+        return seg.map((p, i) =>
+          `${xAt(new Date(p.bucket_start).getTime()).toFixed(1)},${yAt(smooth[i]).toFixed(1)}`,
+        )
+      })
+  }, [segments, points.length, yMax])
+
   const cadenceMin = medianGapMs(times) / 60_000
   const hovered = hover != null ? points[hover] : null
 
@@ -384,12 +558,26 @@ function MetricChart({
           </>
         )}
 
-        {/* Courbe moyenne — un segment par plage continue */}
+        {/* DEUX COUCHES.
+            1) La mesure brute, en trait fin et pâle : c'est la vérité, pics
+               compris. On ne la remplace jamais par du lissé — un pic de 2 min
+               est souvent l'explication de la plainte du client.
+            2) La TENDANCE (médiane glissante) par-dessus, en trait franc : c'est
+               elle qui rend le graphe lisible et répond à « stable ou élevée ? ».
+            Une seule couche lissée mentirait ; une seule couche brute est
+            illisible dès que la métrique oscille. */}
         {segments.map((seg, s) => (
           <polyline
-            key={`line-${s}`}
+            key={`raw-${s}`}
             points={seg.map(p => `${xAt(new Date(p.bucket_start).getTime()).toFixed(1)},${yAt(p.avg_value).toFixed(1)}`).join(' ')}
-            fill="none" stroke="#2563eb" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round"
+            fill="none" stroke="#93b4fc" strokeWidth={1} strokeLinejoin="round" strokeLinecap="round"
+          />
+        ))}
+        {trendSegments.map((seg, s) => (
+          <polyline
+            key={`trend-${s}`}
+            points={seg.join(' ')}
+            fill="none" stroke="#1d4ed8" strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round"
           />
         ))}
         {/* Marqueurs. Sur une série clairsemée, sans marqueur on ne voit pas où
@@ -435,12 +623,25 @@ function MetricChart({
           dictée par la durée d'un tour de poll, pas par un réglage du graphe.
           Sans ce repère, on croirait la mesure continue et on daterait un
           incident bien trop précisément. */}
-      {cadenceMin > 0 && (
-        <p className="text-blue-300 text-[11px] text-right mt-1">
-          {points.length} mesure{points.length > 1 ? 's' : ''} · une environ toutes les{' '}
-          {cadenceMin < 1 ? '< 1 min' : `${Math.round(cadenceMin)} min`} (cadence du relevé)
-        </p>
-      )}
+      <div className="flex flex-wrap items-center justify-between gap-2 mt-1">
+        {/* Légende : deux traits de la même couleur seraient indéchiffrables. */}
+        <div className="flex items-center gap-4 text-[11px] text-blue-400">
+          <span className="flex items-center gap-1.5">
+            <svg width="18" height="4" aria-hidden="true"><line x1="0" y1="2" x2="18" y2="2" stroke="#1d4ed8" strokeWidth="2.5" /></svg>
+            Tendance
+          </span>
+          <span className="flex items-center gap-1.5">
+            <svg width="18" height="4" aria-hidden="true"><line x1="0" y1="2" x2="18" y2="2" stroke="#93b4fc" strokeWidth="1" /></svg>
+            Mesures brutes
+          </span>
+        </div>
+        {cadenceMin > 0 && (
+          <p className="text-blue-300 text-[11px]">
+            {points.length} mesure{points.length > 1 ? 's' : ''} · une environ toutes les{' '}
+            {cadenceMin < 1 ? '< 1 min' : `${Math.round(cadenceMin)} min`} (cadence du relevé)
+          </p>
+        )}
+      </div>
 
       {/* Infobulle */}
       {hovered && (

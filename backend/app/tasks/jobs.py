@@ -1965,6 +1965,7 @@ async def lr_internet_probe_job() -> None:
             logger.exception("lr_internet_probe: sonde %s (%s) a crashé", name, ip)
 
     pool = _get_lr_probe_pool(settings.lr_probe_concurrency)
+    _t_phase1 = time.monotonic()
     tasks = [asyncio.create_task(_probe(t, pool)) for t in targets]
     try:
         await asyncio.wait_for(
@@ -1979,6 +1980,14 @@ async def lr_internet_probe_job() -> None:
             "sondé(s), le reste sera repris au prochain cycle.",
             _LR_PROBE_DEADLINE_S, len(results), len(tasks),
         )
+
+    # Décompte phase 1 (SSH) / phase 2 (DB) : sans lui, une durée de tour ne dit
+    # pas OÙ elle est passée. Mesure terrain 2026-07-20 : une session SSH coûte
+    # 5,2 s (p90 6,3 — parc homogène, aucune traîne), donc 800 LR à concurrence
+    # 110 ne devraient coûter que ~38 s de SSH. Tout écart est ailleurs, et la
+    # phase 2 est séquentielle avec un commit par LR.
+    _d_phase1 = time.monotonic() - _t_phase1
+    _t_phase2 = time.monotonic()
 
     # ── Phase 2 : traitement DB séquentiel des résultats récupérés ──
     # LR "up" (ping OK) mais dont la poignée SSH échoue : creds erronés, SSH
@@ -2077,6 +2086,11 @@ async def lr_internet_probe_job() -> None:
                 )
 
             await session.commit()
+
+    logger.info(
+        "lr_internet_probe — phase 1 (SSH, %d LR) %.1f s | phase 2 (DB) %.1f s",
+        len(results), _d_phase1, time.monotonic() - _t_phase2,
+    )
 
     # Récap actionnable : quels LR sont up (ping OK) mais injoignables en SSH.
     # Une seule ligne WARNING par cycle (pas un flood par device), capée pour

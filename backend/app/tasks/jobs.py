@@ -1943,6 +1943,10 @@ async def lr_internet_probe_job() -> None:
         # HTTP status.cgi, so this SSH session (already open for the ping) is
         # their only metric source. 5AC LRs get metrics from airos_api_poll_job.
         collect_radio = model_variant == "litebeam_m5"
+        # board.info n'est exploité que pour corriger M5 vs 5AC → inutile de le
+        # lire sur les LTU (69 % du parc). Un aller-retour SSH de moins par tour
+        # sur ~557 LR, autant de rendu au budget du tour.
+        collect_model = model_variant in AIRMAX_LR_VARIANTS
         try:
             results[dev_id] = await loop.run_in_executor(
                 pool,
@@ -1954,6 +1958,7 @@ async def lr_internet_probe_job() -> None:
                     fp,
                     settings.lr_fallback_password_list,
                     collect_radio,
+                    collect_model,
                 ),
             )
         except Exception:

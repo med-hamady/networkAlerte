@@ -1286,6 +1286,7 @@ def _measure_latency_via_ssh_sync(
     expected_fingerprint: str | None,
     fallback_passwords: list[str] | None,
     collect_radio: bool = False,
+    collect_model: bool = False,
 ) -> tuple[
     bool, bool, float | None, str, str | None, str | None, str | None,
     dict[str, float | None] | None,
@@ -1339,7 +1340,11 @@ def _measure_latency_via_ssh_sync(
         # Hardware model, read on the same session (cheap local file) so an
         # airMAX LR mis-inferred as the wrong variant self-heals — this is the
         # only model source for M5 LRs that don't answer the HTTP API.
-        model = _read_board_model(transport)
+        # UNIQUEMENT pour les airMAX : eux seuls exploitent ce modèle (correction
+        # M5 vs 5AC côté caller). Le lire sur les ~557 LTU LR coûtait un canal SSH
+        # + exec + attente d'exit-status par tour, pour un résultat jeté — du temps
+        # pris sur le budget du tour, donc sur la cadence de la mesure de latence.
+        model = _read_board_model(transport) if collect_model else None
         # Radio metrics via wstalist — only for M5 LRs (no HTTP status.cgi).
         radio = _read_wstalist_metrics(transport) if collect_radio else None
 
@@ -1415,6 +1420,7 @@ async def measure_latency_via_ssh(
     expected_fingerprint: str | None = None,
     fallback_passwords: list[str] | None = None,
     collect_radio: bool = False,
+    collect_model: bool = False,
 ) -> tuple[
     bool, bool, float | None, str, str | None, str | None, str | None,
     dict[str, float | None] | None,
@@ -1427,7 +1433,7 @@ async def measure_latency_via_ssh(
     return await asyncio.to_thread(
         _measure_latency_via_ssh_sync,
         host, port, username, password, target, count,
-        expected_fingerprint, fallback_passwords, collect_radio,
+        expected_fingerprint, fallback_passwords, collect_radio, collect_model,
     )
 
 

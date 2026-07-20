@@ -68,11 +68,16 @@ async def get_client_map(session: AsyncSession) -> dict:
         {
           "sites":    [ {site, latitude, longitude, client_count, ...}, ... ],
           "points":   [ {id, name, latitude, longitude, status, site, ...}, ... ],
+          "clusters": [ {latitude, longitude, count, sites[], clients[]}, ... ],
           "outliers": [ {id, name, latitude, longitude, reason, ...}, ... ],
-          "stats":    {total, with_position, plotted, outliers, without_position,
-                       sites, linked},
+          "stats":    {total, with_position, plotted, stacked_points,
+                       stacked_clients, outliers, without_position, sites, linked},
           "bbox":     {lat_min, lat_max, lon_min, lon_max},
         }
+
+    ``points`` holds only positions carried by ONE client — the ones that really
+    locate somebody. Positions shared by several clients land in ``clusters``:
+    they are copy-paste provisioning artefacts, not addresses.
 
     Each plotted client carries the ``site`` it belongs to; the UI draws the link
     from the client to that site's marker. The link is by SITE, not by sector
@@ -117,6 +122,44 @@ async def get_client_map(session: AsyncSession) -> dict:
         else:
             outliers.append({**entry, "reason": _reason(lr.latitude, lr.longitude)})
 
+    # ── Positions partagées par plusieurs clients ────────────────────────────
+    # Un point porté par N clients n'est pas une adresse : c'est une valeur
+    # recopiée au provisioning. Mesuré en prod : 26 clients sur un seul point,
+    # rattachés à 10 sites différents — impossible physiquement. Le filtre de
+    # plausibilité ne les voit PAS (ils sont en Mauritanie et corrects pris un
+    # par un), donc sans ce regroupement la carte les affiche comme des adresses
+    # réelles et le faisceau de liaisons devient illisible.
+    #
+    # On les sort donc des points « fiables » : un marqueur compté, sans
+    # liaison — tracer N traits depuis une position fausse propagerait l'erreur.
+    grouped: dict[tuple[float, float], list[dict]] = {}
+    for p in points:
+        grouped.setdefault((p["latitude"], p["longitude"]), []).append(p)
+
+    singles = [g[0] for g in grouped.values() if len(g) == 1]
+    clusters = [
+        {
+            "latitude": lat,
+            "longitude": lon,
+            "count": len(members),
+            "sites": sorted({m["site"] for m in members if m["site"]}),
+            "clients": [
+                {"id": m["id"], "name": m["name"], "site": m["site"], "status": m["status"]}
+                for m in members
+            ],
+        }
+        for (lat, lon), members in grouped.items()
+        if len(members) > 1
+    ]
+    clusters.sort(key=lambda c: c["count"], reverse=True)
+    stacked_clients = sum(c["count"] for c in clusters)
+
+    # Seuls les points uniques comptent comme clients réellement localisés.
+    per_site_clients = {}
+    for p in singles:
+        if p["linked"] and p["site"]:
+            per_site_clients[p["site"]] = per_site_clients.get(p["site"], 0) + 1
+
     sites = [
         {
             "site": s.site,
@@ -133,16 +176,21 @@ async def get_client_map(session: AsyncSession) -> dict:
     stats = {
         "total": len(rows),
         "with_position": len(points) + len(outliers),
-        "plotted": len(points),
+        # `plotted` ne compte plus que les positions UNIQUES : une position
+        # partagée par 26 clients ne localise personne.
+        "plotted": len(singles),
+        "stacked_points": len(clusters),
+        "stacked_clients": stacked_clients,
         "outliers": len(outliers),
         "without_position": without_position,
         "sites": len(sites),
-        "linked": sum(1 for p in points if p["linked"]),
+        "linked": sum(1 for p in singles if p["linked"]),
     }
     logger.debug("client map: %s", stats)
     return {
         "sites": sites,
-        "points": points,
+        "points": singles,
+        "clusters": clusters,
         "outliers": outliers,
         "stats": stats,
         "bbox": {

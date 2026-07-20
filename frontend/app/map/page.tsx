@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
-import type { ClientMapPoint, ClientMapResponse, MapSite } from '@/lib/types'
+import type { ClientMapPoint, ClientMapResponse, MapCluster, MapSite } from '@/lib/types'
 
 // La clé Google Maps est PUBLIQUE par nature (le script tourne dans le
 // navigateur) — d'où NEXT_PUBLIC_. Elle doit donc être restreinte par référent
@@ -78,6 +78,28 @@ function sitePopupHtml(s: MapSite): string {
       <div style="color:#9ca3af;font-size:11px;margin-top:2px">
         Position du pylône (source : ${esc(s.source)})
       </div>
+    </div>`
+}
+
+function clusterPopupHtml(c: MapCluster): string {
+  const esc = (v: unknown) =>
+    String(v ?? '—').replace(/[&<>"]/g, (ch) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch] as string))
+  const list = c.clients
+    .slice(0, 12)
+    .map((x) => `<li>${esc(x.name)} <span style="color:#9ca3af">— ${esc(x.site)}</span></li>`)
+    .join('')
+  const more = c.clients.length > 12 ? `<li style="color:#9ca3af">… et ${c.clients.length - 12} autre(s)</li>` : ''
+  return `
+    <div style="font:13px/1.5 system-ui;max-width:290px">
+      <div style="font-weight:600;color:#b45309">⚠️ ${c.count} clients à cette position</div>
+      <div style="margin:4px 0;color:#374151">
+        Rattachés à <b>${c.sites.length} site(s) différents</b> — une même adresse ne peut pas
+        être servie par autant de pylônes. Cette position a été <b>recopiée au provisioning</b> :
+        elle ne localise personne. Aucune liaison n'est tracée.
+      </div>
+      <ul style="margin:6px 0 0 16px;padding:0">${list}${more}</ul>
+      <div style="color:#6b7280;margin-top:6px">${c.latitude.toFixed(5)}, ${c.longitude.toFixed(5)}</div>
     </div>`
 }
 
@@ -196,6 +218,36 @@ export default function MapPage() {
       bounds.extend(marker.getPosition()!)
     })
 
+    // 2 bis) Les positions PARTAGÉES : un marqueur compté, en ambre, sans
+    // liaison. Elles ne localisent personne — les tracer ferait croire à des
+    // adresses réelles et produirait le faisceau qui rend la carte illisible.
+    const clusters = siteFilter
+      ? data.clusters.filter((c) => c.sites.includes(siteFilter))
+      : data.clusters
+    clusters.forEach((c) => {
+      const marker = new g.maps.Marker({
+        position: { lat: c.latitude, lng: c.longitude },
+        map: mapRef.current,
+        title: `${c.count} clients à cette position — position recopiée`,
+        label: { text: String(c.count), color: '#ffffff', fontSize: '11px', fontWeight: '600' },
+        icon: {
+          path: g.maps.SymbolPath.CIRCLE,
+          scale: 11,
+          fillColor: '#f59e0b',
+          fillOpacity: 0.95,
+          strokeColor: '#ffffff',
+          strokeWeight: 2,
+        },
+        zIndex: 500,
+      })
+      marker.addListener('click', () => {
+        infoRef.current.setContent(clusterPopupHtml(c))
+        infoRef.current.open(mapRef.current, marker)
+      })
+      markersRef.current.push(marker)
+      bounds.extend(marker.getPosition()!)
+    })
+
     // 3) Les sites par-dessus (zIndex) : ce sont les repères de lecture.
     sites.forEach((s) => {
       const marker = new g.maps.Marker({
@@ -214,7 +266,7 @@ export default function MapPage() {
     })
 
     // Cadrer sur ce qui est affiché. Sans rien, on reste sur Nouakchott.
-    if (points.length || sites.length) mapRef.current.fitBounds(bounds)
+    if (points.length || sites.length || clusters.length) mapRef.current.fitBounds(bounds)
   }, [ready, data, siteFilter, showLinks])
 
   const stats = data?.stats
@@ -237,8 +289,13 @@ export default function MapPage() {
       {stats && (
         <div className="flex flex-wrap gap-3 text-sm">
           <Stat label="Sites" value={`${stats.sites}`} />
-          <Stat label="Clients placés" value={`${stats.plotted}`} tone="ok" />
+          <Stat label="Clients localisés" value={`${stats.plotted}`} tone="ok" />
           <Stat label="Couverture" value={`${coverage} %`} />
+          <Stat
+            label="Positions recopiées"
+            value={`${stats.stacked_clients}`}
+            tone={stats.stacked_clients ? 'warn' : undefined}
+          />
           <Stat label="Sans position" value={`${stats.without_position}`} tone="muted" />
           <Stat label="À corriger" value={`${stats.outliers}`} tone={stats.outliers ? 'warn' : undefined} />
         </div>
@@ -274,6 +331,7 @@ export default function MapPage() {
             <Legend color="#22c55e" label="Client en ligne" />
             <Legend color="#ef4444" label="Hors ligne" />
             <Legend color="#f97316" label="Bloqué" />
+            <Legend color="#f59e0b" label="Position recopiée (N clients)" />
           </span>
         </div>
       )}
@@ -340,6 +398,42 @@ export default function MapPage() {
                       {o.latitude.toFixed(4)}, {o.longitude.toFixed(4)}
                     </td>
                     <td className="py-1 text-amber-800">{o.reason}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {!!data?.clusters.length && (
+        <section className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+          <h2 className="font-semibold text-amber-900">
+            Positions recopiées ({stats?.stacked_clients} clients sur {data.clusters.length} points)
+          </h2>
+          <p className="mt-1 text-sm text-amber-800">
+            Ces coordonnées sont portées par plusieurs clients à la fois, souvent rattachés à des
+            sites différents — une même adresse ne peut pas être servie par autant de pylônes.
+            Ce sont des valeurs dupliquées au provisioning : elles ne localisent personne, donc
+            aucune liaison n&apos;est tracée. Un point ambré marque leur emplacement.
+          </p>
+          <div className="mt-3 overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left text-amber-900">
+                  <th className="py-1 pr-4">Position</th>
+                  <th className="py-1 pr-4">Clients</th>
+                  <th className="py-1">Sites concernés</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.clusters.slice(0, 15).map((c) => (
+                  <tr key={`${c.latitude},${c.longitude}`} className="border-t border-amber-200/70">
+                    <td className="py-1 pr-4 font-mono text-xs">
+                      {c.latitude.toFixed(4)}, {c.longitude.toFixed(4)}
+                    </td>
+                    <td className="py-1 pr-4 font-semibold">{c.count}</td>
+                    <td className="py-1 text-amber-800">{c.sites.join(', ') || '—'}</td>
                   </tr>
                 ))}
               </tbody>

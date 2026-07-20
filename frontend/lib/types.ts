@@ -937,14 +937,29 @@ export interface MapSite {
   client_count: number
 }
 
+// Une position portée par PLUSIEURS clients : ce n'est pas une adresse mais une
+// valeur recopiée au provisioning (mesuré : 26 clients sur un point, rattachés
+// à 10 sites). Affichée comptée et SANS liaison — tracer N traits depuis une
+// position fausse propagerait l'erreur.
+export interface MapCluster {
+  latitude: number
+  longitude: number
+  count: number
+  sites: string[]
+  clients: { id: number; name: string; site: string | null; status: string }[]
+}
+
 export interface ClientMapResponse {
   sites: MapSite[]
   points: ClientMapPoint[]
+  clusters: MapCluster[]
   outliers: ClientMapOutlier[]
   stats: {
     total: number
     with_position: number
     plotted: number
+    stacked_points: number
+    stacked_clients: number
     outliers: number
     without_position: number
     sites: number

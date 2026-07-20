@@ -591,6 +591,13 @@ class Settings(BaseSettings):
     # /clients/consumption?period=30d serves <100 ms instead of ~36 s.
     # Same 15-min cadence as lr-health: cumulative byte deltas don't change
     # perceptibly in 15 min for a daily/weekly/monthly usage report.
+    # Heure UTC du recalcul QUOTIDIEN des matviews de consommation (30 j a cette
+    # heure, 7 j une heure plus tard pour ne pas se disputer le disque). 3 h UTC
+    # = creux d'activite en Mauritanie (GMT). Voir register_jobs() pour pourquoi
+    # ce n'est plus un intervalle.
+    client_consumption_refresh_hour: int = 3
+    # Legacy — plus utilises depuis le passage en cron quotidien. Conserves pour
+    # ne pas casser un .env qui les definit encore.
     client_consumption_matview_refresh_interval_minutes: int = 15
 
     # Same idea for the 7-day window (`client_consumption_7d`). The 7d

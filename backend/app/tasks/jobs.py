@@ -2907,25 +2907,40 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
     )
     scheduler.add_job(
         client_consumption_matview_refresh_job,
-        trigger="interval",
-        minutes=settings.client_consumption_matview_refresh_interval_minutes,
+        # CRON quotidien, pas un intervalle. Diagnostic prod 2026-07-20 : ce
+        # REFRESH doit relire device_metrics (6,8 Go / 20 M lignes) et prenait
+        # > 19 min, alors qu'il etait planifie toutes les 15 min — il tournait
+        # donc EN PERMANENCE ("skipped: maximum instances" a chaque tick) et
+        # saturait l'E/S disque. Degats collateraux : la phase 2 de la sonde LR
+        # (800 commits fsync) passait a ~40 min/tour, et ltu_api_poll rendait
+        # "0/60 Rocket(s)". Un cumul sur 30 jours bouge de ~0,03 % en 15 min :
+        # ce recalcul 96x/jour ne servait a rien.
+        #
+        # Cron et pas interval=1440 : un intervalle se cale sur le dernier
+        # redemarrage du conteneur, donc la fenetre de 19 min d'E/S tomberait a
+        # une heure imprevisible, potentiellement en pleine journee.
+        trigger="cron", hour=settings.client_consumption_refresh_hour, minute=0,
+        timezone="UTC",
         id="client_consumption_matview_refresh",
-        name="Client consumption matview refresh (30-day byte deltas)",
+        name="Client consumption matview refresh (30-day byte deltas) — daily",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=120,
+        misfire_grace_time=3600,
     )
     scheduler.add_job(
         client_consumption_7d_refresh_job,
-        trigger="interval",
-        minutes=settings.client_consumption_7d_refresh_interval_minutes,
+        # Meme cron, decale d'une heure : les deux REFRESH lisent la meme table
+        # et se disputeraient le disque s'ils partaient ensemble. Celui-ci ne
+        # coute que ~75 s (fenetre 7 j), mais autant ne pas les superposer.
+        trigger="cron", hour=(settings.client_consumption_refresh_hour + 1) % 24,
+        minute=0, timezone="UTC",
         id="client_consumption_7d_refresh",
-        name="Client consumption matview refresh (7-day byte deltas)",
+        name="Client consumption matview refresh (7-day byte deltas) — daily",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=120,
+        misfire_grace_time=3600,
     )
     scheduler.add_job(
         traffic_stats_retention_job,

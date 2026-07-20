@@ -694,6 +694,11 @@ class Settings(BaseSettings):
     # lr_metric_history_service.GRAPH_METRICS — so the cost scales with the
     # NUMBER OF METRICS: ~800 LRs × 288 buckets/day × N metrics. Purged in
     # batches by lr_latency_retention_job.
+    # Largeur d'un bucket de l'historique des courbes, en secondes. 60 = un point
+    # par relevé de poll (résolution maximale permise par les données). 300 (5 min)
+    # divise le volume par ~3 si la table devient trop lourde. Changer la valeur ne
+    # réécrit PAS les lignes déjà stockées — elles gardent leur largeur d'origine.
+    lr_metric_history_bucket_seconds: int = 60
     lr_metric_history_retention_days: int = 30
     lr_metric_history_retention_interval_minutes: int = 360  # every 6 h
 

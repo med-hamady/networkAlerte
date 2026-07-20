@@ -131,7 +131,7 @@ export default function MetricHistoryModal({ device, onClose }: {
                 {data?.label ?? 'Historique'} — {device.name}
               </p>
               <p className="text-blue-400 text-xs mt-0.5">
-                Mesuré sur le lien radio du client, historique par tranches de 5 min
+                Mesuré sur le lien radio du client, historique agrégé par tranches courtes
               </p>
             </div>
             <button

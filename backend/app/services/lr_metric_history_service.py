@@ -2,9 +2,9 @@
 
 Write side: :func:`record_sample` is called from ``persist_device_metrics`` — the
 chokepoint every polling job already goes through — for the metrics in
-:data:`GRAPH_METRICS`. It folds the reading into the current 5-minute bucket
-(upsert + running average) instead of appending a row per poll, which at 30-60 s
-cadence over ~800 LRs would mean ~1M rows/day.
+:data:`GRAPH_METRICS`. It folds the reading into the current time bucket
+(upsert + running average, width = `lr_metric_history_bucket_seconds`) instead of
+appending a row per poll unbounded.
 
 Read side: :func:`get_history` serves the charts, re-binning wide windows so a
 30-day request returns ~360 points rather than 8640.
@@ -16,6 +16,7 @@ from sqlalchemy import func, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.models.lr_metric_sample import LrMetricSample
 
 logger = logging.getLogger(__name__)
@@ -98,17 +99,34 @@ def threshold_setting_for(spec: dict, device) -> str | None:
     family = "airmax" if variant in _AIRMAX_LR_VARIANTS else "ltu"
     return setting[family]
 
-# Width of a stored bucket. Changing this does NOT rewrite existing rows: old
-# buckets keep their original width, so only touch it with a backfill in mind.
-BUCKET_SECONDS = 300  # 5 min
+# Largeur d'un bucket stocké, en secondes (env `LR_METRIC_HISTORY_BUCKET_SECONDS`).
+#
+# 60 s = la cadence des polls (SNMP/airOS/LTU), donc chaque relevé a son propre
+# point : c'est la résolution maximale que les données permettent. Le bucket
+# n'est PAS le facteur limitant pour la latence — sa sonde SSH tourne toutes les
+# 3 min (`lr_latency_interval`) et un tour dure 100-480 s sur ~800 LR, donc un
+# client produit une mesure toutes les 3-8 min quoi qu'on fasse ici. Ses buckets
+# resteront à ~1 mesure ; ceux des métriques de poll en auront une par minute.
+#
+# Coût : ~3× le volume d'un bucket 5 min (~110 M lignes à 30 j de rétention).
+# Assumé — surveiller l'autovacuum, cf. l'épisode de bloat de device_metrics.
+#
+# Changer cette valeur NE réécrit PAS les lignes existantes : les anciens buckets
+# gardent leur largeur d'origine (une série peut donc mélanger deux résolutions à
+# la charnière du déploiement, ce qui est visuellement inoffensif).
+def bucket_seconds() -> int:
+    return get_settings().lr_metric_history_bucket_seconds
 
-# Relative windows offered by the charts, and the bin width used to render each.
-# 5-min rows are returned as-is over 24h (288 points); wider windows are re-binned
-# server-side to keep the payload and the SVG path a sane size.
-#   7d  → 30-min bins → 336 points
-#   30d → 2-h bins    → 360 points
+# Fenêtres proposées par les graphes, et la largeur de bin utilisée pour chacune.
+# 24h sort à la résolution native (1440 points à 60 s) ; au-delà on re-binne côté
+# serveur pour garder un payload et un tracé SVG raisonnables :
+#   7d  → bins 30 min → 336 points
+#   30d → bins 2 h    → 360 points
 _PERIODS: dict[str, tuple[datetime.timedelta, int]] = {
-    "24h": (datetime.timedelta(hours=24), BUCKET_SECONDS),
+    # 24h : résolution NATIVE (pas de re-binning) — c'est la fenêtre de
+    # diagnostic, on y veut chaque relevé. 0 = "prendre bucket_seconds()",
+    # résolu à l'appel : la largeur est un réglage, pas une constante.
+    "24h": (datetime.timedelta(hours=24), 0),
     "7d": (datetime.timedelta(days=7), 1800),
     "30d": (datetime.timedelta(days=30), 7200),
 }
@@ -119,7 +137,7 @@ def _bin_seconds_for_span(span: datetime.timedelta) -> int:
     count stays in the same ballpark as the presets."""
     hours = span.total_seconds() / 3600
     if hours <= 24:
-        return BUCKET_SECONDS
+        return bucket_seconds()
     if hours <= 24 * 7:
         return 1800
     if hours <= 24 * 30:
@@ -128,7 +146,7 @@ def _bin_seconds_for_span(span: datetime.timedelta) -> int:
 
 
 def floor_bucket(
-    moment: datetime.datetime, *, width_seconds: int = BUCKET_SECONDS
+    moment: datetime.datetime, *, width_seconds: int | None = None
 ) -> datetime.datetime:
     """Floor a timestamp to the start of its bucket (UTC, epoch-aligned).
 
@@ -136,9 +154,10 @@ def floor_bucket(
     of when its poll cycle happens to fire — matching the date_bin() origin used
     on the read side.
     """
+    width = width_seconds or bucket_seconds()
     epoch = datetime.datetime(1970, 1, 1, tzinfo=datetime.UTC)
     elapsed = int((moment - epoch).total_seconds())
-    return epoch + datetime.timedelta(seconds=elapsed - (elapsed % width_seconds))
+    return epoch + datetime.timedelta(seconds=elapsed - (elapsed % width))
 
 
 async def record_sample(
@@ -149,7 +168,7 @@ async def record_sample(
     *,
     now: datetime.datetime | None = None,
 ) -> None:
-    """Fold one reading into its 5-minute bucket. Caller owns the transaction.
+    """Fold one reading into its time bucket. Caller owns the transaction.
 
     First reading of a bucket inserts it; later ones update in place, recomputing
     the mean incrementally as ``(avg*n + value) / (n+1)`` and widening min/max.
@@ -210,7 +229,7 @@ def resolve_range(
         return range_start, range_end, _bin_seconds_for_span(range_end - range_start)
 
     window, step = _PERIODS.get(period or "24h", _PERIODS["24h"])
-    return now - window, now, step
+    return now - window, now, step or bucket_seconds()
 
 
 async def get_history(
@@ -239,7 +258,7 @@ async def get_history(
         "device_id": device_id, "metric_name": metric_name,
         "start": start, "end": end,
     }
-    if bin_seconds <= BUCKET_SECONDS:
+    if bin_seconds <= bucket_seconds():
         rows = (
             await db.execute(
                 text(

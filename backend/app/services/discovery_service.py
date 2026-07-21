@@ -30,16 +30,18 @@ import logging
 from dataclasses import dataclass, field
 from typing import TypedDict
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.alert_constants import (
     AT_LR_DISCOVERED,
     AT_LR_IP_CHANGED,
     AT_LR_REASSIGNED,
+    PING_FAILURE_STATE_KEY,
     Severity,
 )
 from app.core.config import get_settings
+from app.models.alert_state import AlertState
 from app.models.device import Device, Lr, Rocket
 from app.schemas.device import normalize_mac
 from app.services import client_block_service, incident_service, notification_service
@@ -194,6 +196,15 @@ async def _release_ip_if_held(
 
     Returns True if the IP is now free to use, False if it is held by a non-LR
     device (operator-created Rocket/Switch/Power) which must never be touched.
+
+    Nulling the IP also RESETS the holder's `status` to "unknown". Without an IP
+    the device drops out of `_ping_sweep` (which filters `ip_address IS NOT NULL`),
+    so NOTHING writes its status any more: it stayed frozen on its last known
+    value — a LR that lost its IP while up displayed "EN LIGNE" forever, long
+    after it had gone. "unknown" is the honest state (we can no longer measure
+    it), and it is what the model already defaults to. Its ping-failure counter
+    is dropped with it so rediscovery restarts from a clean anti-flap count
+    instead of tripping "down" on the first lost packet.
     """
     res = await session.execute(select(Device).where(Device.ip_address == ip))
     holder = res.scalar_one_or_none()
@@ -202,10 +213,18 @@ async def _release_ip_if_held(
     if holder.device_type != "lr":
         return False
     logger.info(
-        "Discovery: IP %s libérée du LR stale '%s' (id=%s) — réattribuée (churn DHCP)",
+        "Discovery: IP %s libérée du LR stale '%s' (id=%s) — réattribuée (churn DHCP),"
+        " statut remis à 'unknown' (plus pingeable)",
         ip, holder.name, holder.id,
     )
     holder.ip_address = None
+    holder.status = "unknown"
+    await session.execute(
+        delete(AlertState).where(
+            AlertState.device_id == holder.id,
+            AlertState.alert_type == PING_FAILURE_STATE_KEY,
+        )
+    )
     await session.flush()
     return True
 

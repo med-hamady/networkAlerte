@@ -35,6 +35,7 @@ from app.core.alert_constants import (
     AT_ROCKET_DOWN,
     AT_SWITCH_DOWN,
     AVAILABILITY_ALERT_TYPES,
+    PING_FAILURE_STATE_KEY,
 )
 from app.core.alert_constants import AT_BATTERY_LOW_CRIT as AT_BATT_CRIT
 from app.core.alert_constants import AT_BATTERY_LOW_WARN as AT_BATT_WARN
@@ -150,9 +151,9 @@ def _timed_job(fn):
 
 
 # alert_type sentinel used to persist the consecutive-ping-failure counter in
-# AlertState. Picking a leading underscore keeps it out of the regular alert
-# vocabulary (no policy, no incident, no formatter touches it).
-_PING_FAILURE_STATE_KEY = "_ping_failures"
+# AlertState. Defined in alert_constants (shared with discovery_service, which
+# clears the counter when an LR loses its IP); aliased here for the local reads.
+_PING_FAILURE_STATE_KEY = PING_FAILURE_STATE_KEY
 
 
 # ── device_metrics persistence policy ───────────────────────────────────────

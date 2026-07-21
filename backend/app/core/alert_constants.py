@@ -161,6 +161,15 @@ AT_ROCKET_CLIENT_OVERLOAD = "rocket_client_overload"
 # resolved_at. Every OTHER resolved incident is hard-deleted on resolution
 # (there is no /archive view anymore). Keep this in sync with the journal's
 # query — network_uptime_service imports this set.
+# Sentinelle d'`AlertState.alert_type` servant à persister le compteur d'échecs
+# de ping consécutifs (anti-flap du sweep). L'underscore de tête la garde HORS
+# du vocabulaire d'alerting : aucune policy, aucun incident, aucun formatter ne
+# la touche — et elle n'est volontairement PAS dans KNOWN_ALERT_TYPES. Elle vit
+# ici parce que deux modules doivent s'accorder dessus : `tasks/jobs.py` qui
+# l'incrémente, et `discovery_service` qui la purge quand un LR perd son IP.
+PING_FAILURE_STATE_KEY = "_ping_failures"
+
+
 AVAILABILITY_ALERT_TYPES: frozenset[str] = frozenset({
     AT_ROCKET_DOWN, AT_SWITCH_DOWN, AT_DEVICE_UNREACHABLE,
     AT_UISP_POWER_UNREACH, AT_AIRMAX_DOWN,

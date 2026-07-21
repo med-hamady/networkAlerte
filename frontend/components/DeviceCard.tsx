@@ -110,10 +110,12 @@ function StatusPill({ status }: { status: string }) {
       <span className="text-red-500 text-xs font-bold">DOWN</span>
     </div>
   )
+  // Statut non mesurable (LR sans IP après churn DHCP) : rouge, pas un tiret
+  // neutre. Il n'est pas joignable — le "—" le rendait invisible dans la liste.
   return (
     <div className="flex items-center gap-1.5 shrink-0">
-      <span className="inline-flex h-2.5 w-2.5 rounded-full bg-blue-200" />
-      <span className="text-blue-300 text-xs font-bold">—</span>
+      <span className="inline-flex h-2.5 w-2.5 rounded-full bg-red-400" />
+      <span className="text-red-500 text-xs font-bold">INCONNU</span>
     </div>
   )
 }

@@ -141,10 +141,12 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
             <span className="text-red-500 text-sm font-bold">HORS LIGNE</span>
           </div>
         )}
+        {/* Statut non mesurable — rouge comme un down : sans IP le device sort
+            du sweep de ping, donc rien ne peut plus confirmer qu'il est là. */}
         {!isUp && !isDown && (
-          <div className="flex items-center gap-2 bg-white border border-blue-200 px-4 py-1.5 rounded-full shadow-sm">
-            <span className="inline-flex h-2.5 w-2.5 rounded-full bg-blue-300" />
-            <span className="text-blue-400 text-sm font-bold">INCONNU</span>
+          <div className="flex items-center gap-2 bg-white border border-red-200 px-4 py-1.5 rounded-full shadow-sm">
+            <span className="inline-flex h-2.5 w-2.5 rounded-full bg-red-400" />
+            <span className="text-red-500 text-sm font-bold">INCONNU</span>
           </div>
         )}
       </div>

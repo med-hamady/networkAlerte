@@ -188,6 +188,8 @@ export async function setClientBlock(
 export interface ContentBlockCategory {
   key: string
   label: string
+  description: string
+  domains: string[]
   domain_count: number
 }
 

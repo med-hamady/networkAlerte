@@ -732,6 +732,11 @@ async def unblock_client(
 class ContentBlockCategory(BaseModel):
     key: str
     label: str
+    # What the category actually covers, and the exact domains behind it — the
+    # UI shows both so the operator can tell e.g. YouTube from Google without
+    # having to trust the label.
+    description: str
+    domains: list[str]
     domain_count: int
 
 
@@ -759,6 +764,8 @@ async def content_block_categories() -> list[ContentBlockCategory]:
         ContentBlockCategory(
             key=key,
             label=settings.content_block_label(key),
+            description=settings.content_block_description(key),
+            domains=domains,
             domain_count=len(domains),
         )
         for key, domains in settings.content_block_catalog().items()

@@ -14,8 +14,22 @@ CONTENT_BLOCK_LABELS: dict[str, str] = {
     "tiktok": "TikTok",
     "snapchat": "Snapchat",
     "youtube": "YouTube",
-    "google": "Google (recherche, Drive, Maps…)",
+    "google": "Google",
     "telegram": "Telegram",
+}
+
+# One-line "what this actually covers", shown under each label in the UI. The
+# operator cannot be expected to know that YouTube and Google are separable but
+# Snapchat and Google Cloud are not — so each caveat is stated where it is acted
+# upon rather than left in the docs.
+CONTENT_BLOCK_DESCRIPTIONS: dict[str, str] = {
+    "facebook": "Facebook, Instagram, Messenger, Threads",
+    "whatsapp": "Messages, appels et médias WhatsApp",
+    "tiktok": "TikTok et ses serveurs vidéo",
+    "snapchat": "Snapchat",
+    "youtube": "Vidéos, appli mobile, vignettes — laisse Google intact",
+    "google": "Recherche, Drive, Maps — YouTube NON inclus",
+    "telegram": "Telegram (messages et médias)",
 }
 
 
@@ -442,6 +456,10 @@ class Settings(BaseSettings):
     def content_block_label(self, key: str) -> str:
         """Human label for a content-block category key (key itself if unknown)."""
         return CONTENT_BLOCK_LABELS.get(key, key)
+
+    def content_block_description(self, key: str) -> str:
+        """One-line description of what a content-block category covers."""
+        return CONTENT_BLOCK_DESCRIPTIONS.get(key, "")
 
     def content_block_domains_for(self, keys: list[str]) -> list[str]:
         """Deduplicated union of domains for the given category keys (unknown keys ignored)."""

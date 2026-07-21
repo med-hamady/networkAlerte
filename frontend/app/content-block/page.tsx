@@ -242,7 +242,10 @@ export default function ContentBlockPage() {
                   return (
                     <label
                       key={cat.key}
-                      className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border cursor-pointer transition-colors ${
+                      // Exact domain list on hover: the label is a summary, this
+                      // is the ground truth of what the LR will actually block.
+                      title={`${cat.domain_count} domaine(s) : ${cat.domains.join(', ')}`}
+                      className={`flex items-start gap-3 px-3 py-2.5 rounded-lg border cursor-pointer transition-colors ${
                         checked ? tone : 'border-blue-100 hover:bg-blue-50/60'
                       } ${isBridge || noSsh ? 'opacity-60 cursor-not-allowed' : ''}`}
                     >
@@ -250,9 +253,20 @@ export default function ContentBlockPage() {
                         type="checkbox"
                         checked={checked}
                         onChange={() => toggle(cat.key)}
-                        className={`w-4 h-4 ${isAllow ? 'accent-green-600' : 'accent-red-600'}`}
+                        className={`w-4 h-4 mt-0.5 shrink-0 ${
+                          isAllow ? 'accent-green-600' : 'accent-red-600'
+                        }`}
                       />
-                      <span className="text-sm text-slate-800 font-medium">{cat.label}</span>
+                      <span className="min-w-0">
+                        <span className="block text-sm text-slate-800 font-medium leading-tight">
+                          {cat.label}
+                        </span>
+                        {cat.description && (
+                          <span className="block text-[11px] text-blue-400 mt-0.5 leading-snug">
+                            {cat.description}
+                          </span>
+                        )}
+                      </span>
                     </label>
                   )
                 })}

@@ -280,20 +280,12 @@ export default function ContentBlockPage() {
                   de cause.
                 </p>
               )}
-              {isAllow && (
-                <p className="text-[11px] text-amber-700 mt-2 leading-relaxed">
-                  ⚠ « Tout bloquer sauf » est moins étanche que l'inverse : le blocage se fait au
-                  niveau DNS, donc un client qui utilise une IP directe ou du DNS chiffré (DoH)
-                  peut passer outre. Pour une coupure stricte liée à un impayé, utilise plutôt la
-                  page <strong>FAI</strong>.
-                </p>
-              )}
-              {isAllow && selected.size === 0 && (
-                <p className="text-[11px] text-red-700 mt-2">
-                  ⚠ Aucun service coché en mode « tout bloquer » = le filtre sera simplement retiré
-                  (on ne coupe pas un client sans rien autoriser depuis cette page).
-                </p>
-              )}
+              {/* Deux avertissements retirés à la demande de l'opérateur (UI trop
+                  bavarde) : la porosité du mode « tout bloquer sauf » (DNS seul —
+                  IP directe et DoH passent outre) et le fait qu'aucun service
+                  coché retire le filtre. Le COMPORTEMENT est inchangé, seul
+                  l'affichage disparaît ; les deux points restent documentés dans
+                  ssh_service._set_content_block_sync. */}
             </div>
           </fieldset>
 

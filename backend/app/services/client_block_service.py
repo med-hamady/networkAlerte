@@ -55,6 +55,11 @@ VALID_MODES = (MODE_FULL, MODE_WHATSAPP)
 # config catalogue). Independent of the block_mode above.
 VALID_CONTENT_CATEGORIES = tuple(CONTENT_BLOCK_LABELS)
 
+# Direction of the content filter, persisted on Lr.content_block_mode.
+CONTENT_MODE_DENY = "denylist"    # allow everything EXCEPT the selected services
+CONTENT_MODE_ALLOW = "allowlist"  # block everything EXCEPT the selected services
+VALID_CONTENT_MODES = (CONTENT_MODE_DENY, CONTENT_MODE_ALLOW)
+
 # Per-family default client LAN interface, field-verified 2026-05-19:
 #   LTU LR family terminates the customer on a VLAN sub-interface (eth0.1 → br1).
 #     Their physical eth0 carries the management bridge (eth0.2 → br0), so
@@ -516,6 +521,15 @@ def _normalize_categories(categories: list[str] | None) -> list[str]:
     return [key for key in VALID_CONTENT_CATEGORIES if key in requested]
 
 
+def _normalize_content_mode(mode: str | None) -> str:
+    """Validate the filter direction, defaulting to the (safer) denylist.
+
+    Anything unrecognised falls back to ``denylist``: getting this wrong the
+    other way would cut a client off the entire internet.
+    """
+    return CONTENT_MODE_ALLOW if mode == CONTENT_MODE_ALLOW else CONTENT_MODE_DENY
+
+
 def _keep_dnat(lr: Lr) -> bool:
     """True when a whatsapp_only block is active — it shares the DNS-redirect rule."""
     return bool(lr.client_blocked and lr.block_mode == MODE_WHATSAPP)
@@ -536,6 +550,8 @@ async def _apply_content_block(lr: Lr, categories: list[str]) -> tuple[bool, str
             keep_dnat=_keep_dnat(lr),
             expected_fingerprint=lr.ssh_host_fingerprint,
             fallback_passwords=settings.lr_fallback_password_list,
+            mode=_normalize_content_mode(lr.content_block_mode),
+            allow_resolver=settings.content_block_allow_resolver,
         )
     _pin_fp(lr, ok, observed_fp)
     _promote_password(lr, primary_pw, used_pw)
@@ -543,15 +559,19 @@ async def _apply_content_block(lr: Lr, categories: list[str]) -> tuple[bool, str
 
 
 async def set_content_block(
-    session: AsyncSession, lr: Lr, categories: list[str] | None
+    session: AsyncSession, lr: Lr, categories: list[str] | None,
+    mode: str | None = None,
 ) -> tuple[bool, str]:
     """Set a client's per-category content filter and enforce it immediately.
 
-    ``categories`` is the full desired set (an empty list clears the filter).
-    Records the desired state, then tries to enforce it over SSH; if the LR is
-    unreachable the intent persists and ``enforce_content_blocks`` retries — so
-    the returned ``ok`` reflects *enforcement*, not intent. Refuses when the LR
-    has no SSH credentials (an unenforceable filter is the trap we avoid).
+    ``categories`` is the full desired set (an empty list clears the filter,
+    whatever the mode). ``mode`` is the direction — ``denylist`` (block those
+    services, allow the rest) or ``allowlist`` (block everything, allow only
+    those); omitted keeps the LR's current direction. Records the desired state,
+    then tries to enforce it over SSH; if the LR is unreachable the intent
+    persists and ``enforce_content_blocks`` retries — so the returned ``ok``
+    reflects *enforcement*, not intent. Refuses when the LR has no SSH
+    credentials (an unenforceable filter is the trap we avoid).
     """
     if not _has_ssh(lr):
         return (
@@ -565,6 +585,8 @@ async def set_content_block(
     # [] signals "ensure cleared" so the enforce loop retries a failed removal;
     # it becomes None once the clear is confirmed.
     lr.blocked_categories = normalized if normalized else []
+    if mode is not None:
+        lr.content_block_mode = _normalize_content_mode(mode)
     await session.commit()  # acquit intent + release DB conn before the SSH round-trip
 
     ok, msg = await _apply_content_block(lr, normalized)

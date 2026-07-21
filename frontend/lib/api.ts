@@ -191,22 +191,29 @@ export interface ContentBlockCategory {
   domain_count: number
 }
 
+// Direction of the filter: 'denylist' = allow all but these; 'allowlist' =
+// block all but these.
+export type ContentBlockMode = 'denylist' | 'allowlist'
+
 export interface ContentBlockResult {
   ok: boolean
   message: string
   blocked_categories: string[]
+  content_block_mode: ContentBlockMode
   content_block_enforced_at: string | null
 }
 
-// Set a client's full set of blocked categories on its LR (empty = clear).
+// Set a client's full set of categories + direction on its LR. An empty
+// `categories` clears the filter whatever the mode.
 export async function setContentBlock(
   lrId: number,
   categories: string[],
+  mode: ContentBlockMode = 'denylist',
 ): Promise<ContentBlockResult> {
   const res = await fetch(endpoints.contentBlock(lrId), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ categories }),
+    body: JSON.stringify({ categories, mode }),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))

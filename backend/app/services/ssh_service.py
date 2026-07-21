@@ -667,6 +667,10 @@ _DNS_BLOCK_END = "CLIENTBLOCK_END"
 _CONTENT_DNS_BEGIN = "CONTENTBLOCK_BEGIN"
 _CONTENT_DNS_END = "CONTENTBLOCK_END"
 
+# Direction of the content filter (see _set_content_block_sync).
+_CONTENT_MODE_DENY = "denylist"    # allow everything except the listed services
+_CONTENT_MODE_ALLOW = "allowlist"  # block everything except the listed services
+
 def _detect_client_context(
     transport: paramiko.Transport,
 ) -> tuple[str | None, str | None]:
@@ -937,21 +941,36 @@ def _set_content_block_sync(
     keep_dnat: bool,
     expected_fingerprint: str | None,
     fallback_passwords: list[str] | None,
+    mode: str = _CONTENT_MODE_DENY,
+    allow_resolver: str = "8.8.8.8",
 ) -> tuple[bool, str, str | None, str | None]:
-    """Apply a per-category content filter on the LR — DNS-poison only, declarative.
+    """Apply a per-category content filter on the LR — DNS-only, declarative.
 
-    Unlike ``whatsapp_only`` (an allowlist that DROPs everything but a few
-    ranges), this is a *denylist*: the client keeps full internet, only the
-    given ``domains`` resolve to 0.0.0.0. Two layers:
+    Two directions, both driven by the same ``domains`` union:
+
+      - ``denylist``  : the client keeps full internet, only ``domains`` resolve
+                        to 0.0.0.0 (``address=/<domain>/0.0.0.0``).
+      - ``allowlist`` : the reverse — a catch-all ``address=/#/0.0.0.0`` poisons
+                        *every* name, and each allowed domain is excepted with
+                        ``server=/<domain>/<resolver>`` so it resolves normally.
+                        dnsmasq matches the most specific rule, so the per-domain
+                        exceptions win over the ``#`` wildcard.
+
+    Two layers:
 
       1. ``iptables -t nat PREROUTING`` DNAT — force the client subnet's DNS to
          the LR's own dnsmasq so a hardcoded 8.8.8.8 can't bypass the poison.
          This rule is *shared* with the whatsapp_only mode (identical match), so
          ``keep_dnat`` tells us whether another mechanism still needs it when we
          clear the content filter.
-      2. ``/etc/dnsmasq.conf`` — a CONTENTBLOCK-marked block of
-         ``address=/<domain>/0.0.0.0`` for the union of the selected categories'
-         domains, then ``killall dnsmasq`` (NOT SIGHUP — airOS 8 quirk).
+      2. ``/etc/dnsmasq.conf`` — a CONTENTBLOCK-marked block, then
+         ``killall dnsmasq`` (NOT SIGHUP — airOS 8 quirk).
+
+    ⚠ ``allowlist`` is inherently weaker than ``denylist``: blocking "everything
+    else" by DNS cannot stop a client that dials a raw IP or resolves over DoH,
+    and the catch-all also poisons the *LR's own* name resolution (management is
+    unaffected — the supervisor reaches the LR by IP). Blocking a named service
+    is exact; allowing only a named service is best-effort.
 
     Declarative: the desired ``domains`` set is fingerprinted into the BEGIN
     marker, so an unchanged filter is a pure no-op (no rewrite, no dnsmasq
@@ -1006,17 +1025,37 @@ def _set_content_block_sync(
         # filter a pure no-op, while a *changed* category selection produces a
         # different stamp and is therefore re-applied (which is why we stamp a
         # hash rather than just grepping for the plain marker).
+        # The mode is part of the stamp: the same domain set means the exact
+        # OPPOSITE policy in allowlist vs denylist, so a direction switch must
+        # produce a different digest and force a rewrite.
         digest = hashlib.sha1(
-            ",".join(sorted(valid_domains)).encode()
+            f"{mode}|{','.join(sorted(valid_domains))}".encode()
         ).hexdigest()[:12]
         begin_tag = f"{begin} {digest}"
         tag_q = shlex.quote(begin_tag)
         marker_q = shlex.quote(begin)
 
         if enable:
+            # The only difference between the two directions is what we write
+            # inside the marked block; DNAT, stamping and restart are identical.
+            if mode == _CONTENT_MODE_ALLOW:
+                dns_lines = (
+                    # Catch-all first: every name → 0.0.0.0 …
+                    f"  echo 'address=/#/0.0.0.0' >> {conf}; "
+                    # … then the exceptions, which dnsmasq prefers (most specific).
+                    f"  for d in $DOMAINS; do "
+                    f'    echo "server=/$d/$RESOLVER" >> {conf}; '
+                    f"  done; "
+                )
+            else:
+                dns_lines = (
+                    f"  for d in $DOMAINS; do "
+                    f'    echo "address=/$d/0.0.0.0" >> {conf}; '
+                    f"  done; "
+                )
             script = (
                 f"{_IPT_PATH}; "
-                f"SUBNET={net_q}; LR_IP={lr_q}; "
+                f"SUBNET={net_q}; LR_IP={lr_q}; RESOLVER={shlex.quote(allow_resolver)}; "
                 f'DOMAINS="{domains_str}"; '
                 # 1) DNAT — capture DNS bypass attempts (shared, idempotent)
                 f"for p in udp tcp; do "
@@ -1030,9 +1069,7 @@ def _set_content_block_sync(
                 f"  sed -i '/{begin}/,/{end}/d' {conf} 2>/dev/null; "
                 f"  echo '' >> {conf}; "
                 f"  echo '# >>> {begin_tag} (auto) >>>' >> {conf}; "
-                f"  for d in $DOMAINS; do "
-                f'    echo "address=/$d/0.0.0.0" >> {conf}; '
-                f"  done; "
+                f"{dns_lines}"
                 f"  echo '# <<< {end} <<<' >> {conf}; "
                 # killall (NOT SIGHUP) — field-verified necessity on airOS 8
                 f"  killall dnsmasq 2>/dev/null || true; "
@@ -1085,7 +1122,13 @@ def _set_content_block_sync(
                 observed,
                 used_pw,
             )
-        if enable:
+        if enable and mode == _CONTENT_MODE_ALLOW:
+            msg = (
+                f"Filtre « autoriser uniquement » appliqué sur {subnet} : tout est "
+                f"résolu en 0.0.0.0 sauf {len(valid_domains)} domaine(s) autorisé(s), "
+                f"DNS redirigé vers {lr_ip}."
+            )
+        elif enable:
             msg = (
                 f"Filtre de contenu appliqué sur {subnet} : {len(valid_domains)} "
                 f"domaine(s) résolus en 0.0.0.0, DNS redirigé vers {lr_ip}."
@@ -1106,13 +1149,17 @@ async def set_content_block(
     keep_dnat: bool = False,
     expected_fingerprint: str | None = None,
     fallback_passwords: list[str] | None = None,
+    mode: str = _CONTENT_MODE_DENY,
+    allow_resolver: str = "8.8.8.8",
 ) -> tuple[bool, str, str | None, str | None]:
     """SSH into the LR and apply/remove a per-category DNS content filter.
 
     ``domains`` is the union of the selected categories' domains (empty = clear
-    the filter). ``keep_dnat`` should be True when a ``whatsapp_only`` block is
-    also active on the LR, so clearing the content filter doesn't tear down the
-    shared DNS-redirect rule. See ``_set_content_block_sync`` for the mechanism.
+    the filter, whatever the mode). ``mode`` picks the direction: ``denylist``
+    (block those domains, allow the rest) or ``allowlist`` (block everything,
+    allow only those). ``keep_dnat`` should be True when a ``whatsapp_only``
+    block is also active on the LR, so clearing the content filter doesn't tear
+    down the shared DNS-redirect rule. See ``_set_content_block_sync``.
 
     Returns (ok, message, observed_fp, used_password).
     """
@@ -1120,7 +1167,7 @@ async def set_content_block(
         _set_content_block_sync,
         host, port, username, password,
         domains, keep_dnat, expected_fingerprint,
-        fallback_passwords,
+        fallback_passwords, mode, allow_resolver,
     )
 
 

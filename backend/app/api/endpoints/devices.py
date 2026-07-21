@@ -736,14 +736,18 @@ class ContentBlockCategory(BaseModel):
 
 
 class ContentBlockRequest(BaseModel):
-    # Full desired set of category keys to block (empty = clear the filter).
+    # Full desired set of category keys (empty = clear the filter, any mode).
     categories: list[str] = []
+    # Direction: "denylist" = allow all but these; "allowlist" = block all but
+    # these. Omitted keeps the LR's current direction.
+    mode: Literal["denylist", "allowlist"] | None = None
 
 
 class ContentBlockResult(BaseModel):
     ok: bool
     message: str
     blocked_categories: list[str]
+    content_block_mode: str
     content_block_enforced_at: datetime.datetime | None
 
 
@@ -767,13 +771,17 @@ async def set_content_block(
     body: ContentBlockRequest,
     db: AsyncSession = Depends(get_db),
 ) -> ContentBlockResult:
-    """Set a client's per-category content filter (DNS-poison on its LR).
+    """Set a client's per-category content filter (DNS-level, on its LR).
 
-    Independent of block-client: the client keeps full internet except toward
-    the selected services (e.g. TikTok). ``categories`` is the complete desired
-    set — an empty list clears the filter. Persisted and re-asserted by the
-    enforcement job (survives an LR reboot). Only valid on LR devices in router
-    mode.
+    Independent of block-client. Two directions via ``mode``:
+      - ``denylist``  (default): full internet except the selected services
+        (e.g. everything but TikTok).
+      - ``allowlist``: nothing except the selected services (e.g. WhatsApp
+        only). Best-effort — see the service docstring: blocking "everything
+        else" by DNS cannot stop raw-IP or DoH access.
+    ``categories`` is the complete desired set; an empty list clears the filter
+    in either direction. Persisted and re-asserted by the enforcement job
+    (survives an LR reboot). Only valid on LR devices in router mode.
     """
     device = await device_service.get_device(db, device_id)
     if not isinstance(device, Lr):
@@ -792,12 +800,13 @@ async def set_content_block(
             ),
         )
     ok, message = await client_block_service.set_content_block(
-        db, device, body.categories
+        db, device, body.categories, body.mode
     )
     return ContentBlockResult(
         ok=ok,
         message=message,
         blocked_categories=device.blocked_categories or [],
+        content_block_mode=device.content_block_mode,
         content_block_enforced_at=device.content_block_enforced_at,
     )
 

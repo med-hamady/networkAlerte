@@ -7,6 +7,7 @@ import {
   fetcher,
   setContentBlock,
   type ContentBlockCategory,
+  type ContentBlockMode,
 } from '@/lib/api'
 import type { Device, Lr } from '@/lib/types'
 import IpLink from '@/components/IpLink'
@@ -60,15 +61,24 @@ export default function ContentBlockPage() {
     setSelected(new Set(blockedKey ? blockedKey.split(',') : []))
   }, [lr?.id, blockedKey])
 
+  // Filter direction, seeded from the device the same way.
+  const [mode, setMode] = React.useState<ContentBlockMode>('denylist')
+  const deviceMode = lr?.content_block_mode ?? 'denylist'
+  React.useEffect(() => {
+    setMode(deviceMode === 'allowlist' ? 'allowlist' : 'denylist')
+  }, [lr?.id, deviceMode])
+
   const [applying, setApplying] = React.useState(false)
   const [result, setResult] = React.useState<{ ok: boolean; message: string } | null>(null)
 
   const isBridge = lr?.topology_mode === 'bridge'
   const noSsh = lr ? !lr.has_ssh_password : false
   const canApply = !!lr && !isBridge && !noSsh && !applying
+  const isAllow = mode === 'allowlist'
 
   const initial = new Set(lr?.blocked_categories ?? [])
   const dirty =
+    mode !== deviceMode ||
     selected.size !== initial.size ||
     [...selected].some((c) => !initial.has(c))
 
@@ -84,12 +94,12 @@ export default function ContentBlockPage() {
 
   // Single write path for both "Appliquer" and "Tout retirer" — the backend
   // takes the complete desired set, so removal is just applying an empty one.
-  const push = async (categories: string[]) => {
+  const push = async (categories: string[], pushMode: ContentBlockMode = mode) => {
     if (!lr) return
     setApplying(true)
     setResult(null)
     try {
-      const r = await setContentBlock(lr.id, categories)
+      const r = await setContentBlock(lr.id, categories, pushMode)
       setResult({ ok: r.ok, message: r.message })
       await mutateDevice()
     } catch (e) {
@@ -112,9 +122,9 @@ export default function ContentBlockPage() {
       <div>
         <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Filtre de contenu</h1>
         <p className="text-blue-400 text-sm mt-1 max-w-3xl">
-          Bloque l'accès d'un client à des services précis (TikTok, Facebook, Google…) tout en
-          le laissant naviguer sur tout le reste. Le filtrage est appliqué directement sur le LR
-          du client (résolution DNS des services bloqués vers <code>0.0.0.0</code>) et ré-appliqué
+          Filtre les services accessibles à un client, dans les deux sens : <strong>autoriser tout
+          sauf</strong> certains services, ou <strong>tout bloquer sauf</strong> certains services.
+          Le filtrage est appliqué directement sur le LR du client (au niveau DNS) et ré-appliqué
           automatiquement toutes les 120 s (survit au reboot du LR).
         </p>
       </div>
@@ -170,8 +180,16 @@ export default function ContentBlockPage() {
               </div>
             </div>
             {lr.blocked_categories.length > 0 && (
-              <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-red-100 text-red-700 text-[11px] font-semibold">
-                {lr.blocked_categories.length} service(s) bloqué(s)
+              <span
+                className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold ${
+                  deviceMode === 'allowlist'
+                    ? 'bg-green-100 text-green-800'
+                    : 'bg-red-100 text-red-700'
+                }`}
+              >
+                {deviceMode === 'allowlist'
+                  ? `${lr.blocked_categories.length} service(s) autorisé(s) uniquement`
+                  : `${lr.blocked_categories.length} service(s) bloqué(s)`}
               </span>
             )}
           </div>
@@ -188,38 +206,78 @@ export default function ContentBlockPage() {
             </div>
           )}
 
-          <fieldset disabled={isBridge || noSsh} className="space-y-2">
-            <legend className="text-xs font-semibold uppercase tracking-wider text-blue-500 mb-1">
-              Services à bloquer
-            </legend>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {(categories ?? []).map((cat) => {
-                const checked = selected.has(cat.key)
-                return (
-                  <label
-                    key={cat.key}
-                    className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border cursor-pointer transition-colors ${
-                      checked
-                        ? 'border-red-300 bg-red-50'
-                        : 'border-blue-100 hover:bg-blue-50/60'
-                    } ${isBridge || noSsh ? 'opacity-60 cursor-not-allowed' : ''}`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggle(cat.key)}
-                      className="w-4 h-4 accent-red-600"
-                    />
-                    <span className="text-sm text-slate-800 font-medium">{cat.label}</span>
-                  </label>
-                )
-              })}
-            </div>
-            {selected.has('google') && (
-              <p className="text-[11px] text-amber-700 mt-1">
-                ⚠ Bloquer Google coupe aussi YouTube et de nombreux services (reCAPTCHA, cartes…).
+          <fieldset disabled={isBridge || noSsh} className="space-y-4">
+            {/* Direction of the filter — everything below reads from it. */}
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-blue-500 mb-1.5">
+                Type de filtrage
               </p>
-            )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <ModeCard
+                  active={!isAllow}
+                  disabled={isBridge || noSsh}
+                  onClick={() => { setMode('denylist'); setResult(null) }}
+                  title="Autoriser tout, sauf…"
+                  desc="Le client navigue partout sauf sur les services cochés."
+                />
+                <ModeCard
+                  active={isAllow}
+                  disabled={isBridge || noSsh}
+                  onClick={() => { setMode('allowlist'); setResult(null) }}
+                  title="Tout bloquer, sauf…"
+                  desc="Le client n'a accès qu'aux services cochés."
+                />
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-blue-500 mb-1.5">
+                {isAllow ? 'Services autorisés' : 'Services à bloquer'}
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {(categories ?? []).map((cat) => {
+                  const checked = selected.has(cat.key)
+                  // Ticked means "allowed" in allowlist mode → green, not red.
+                  const tone = isAllow ? 'border-green-300 bg-green-50' : 'border-red-300 bg-red-50'
+                  return (
+                    <label
+                      key={cat.key}
+                      className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border cursor-pointer transition-colors ${
+                        checked ? tone : 'border-blue-100 hover:bg-blue-50/60'
+                      } ${isBridge || noSsh ? 'opacity-60 cursor-not-allowed' : ''}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggle(cat.key)}
+                        className={`w-4 h-4 ${isAllow ? 'accent-green-600' : 'accent-red-600'}`}
+                      />
+                      <span className="text-sm text-slate-800 font-medium">{cat.label}</span>
+                    </label>
+                  )
+                })}
+              </div>
+
+              {!isAllow && selected.has('google') && (
+                <p className="text-[11px] text-amber-700 mt-2">
+                  ⚠ Bloquer Google coupe aussi YouTube et de nombreux services (reCAPTCHA, cartes…).
+                </p>
+              )}
+              {isAllow && (
+                <p className="text-[11px] text-amber-700 mt-2 leading-relaxed">
+                  ⚠ « Tout bloquer sauf » est moins étanche que l'inverse : le blocage se fait au
+                  niveau DNS, donc un client qui utilise une IP directe ou du DNS chiffré (DoH)
+                  peut passer outre. Pour une coupure stricte liée à un impayé, utilise plutôt la
+                  page <strong>FAI</strong>.
+                </p>
+              )}
+              {isAllow && selected.size === 0 && (
+                <p className="text-[11px] text-red-700 mt-2">
+                  ⚠ Aucun service coché en mode « tout bloquer » = le filtre sera simplement retiré
+                  (on ne coupe pas un client sans rien autoriser depuis cette page).
+                </p>
+              )}
+            </div>
           </fieldset>
 
           <div className="flex items-center gap-3 pt-1">
@@ -255,6 +313,19 @@ export default function ContentBlockPage() {
             )}
           </div>
 
+          <div>
+            {/* Plain-language recap of what will actually happen. */}
+            {selected.size > 0 && (
+              <p className="text-xs text-slate-600">
+                {isAllow ? (
+                  <>Ce client n'aura accès <strong>qu'à</strong> : {labelsOf(selected, categories)}.</>
+                ) : (
+                  <>Ce client aura accès à tout <strong>sauf</strong> : {labelsOf(selected, categories)}.</>
+                )}
+              </p>
+            )}
+          </div>
+
           {result && (
             <div
               className={`rounded-lg text-xs px-3 py-2 ${
@@ -275,5 +346,44 @@ export default function ContentBlockPage() {
         </p>
       )}
     </div>
+  )
+}
+
+/** Human labels for the ticked category keys, in catalogue order. */
+function labelsOf(keys: Set<string>, categories?: ContentBlockCategory[]): string {
+  return (categories ?? [])
+    .filter((c) => keys.has(c.key))
+    .map((c) => c.label)
+    .join(', ')
+}
+
+function ModeCard({ active, disabled, onClick, title, desc }: {
+  active: boolean
+  disabled: boolean
+  onClick: () => void
+  title: string
+  desc: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${
+        active
+          ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-300'
+          : 'border-blue-100 hover:bg-blue-50/60'
+      } ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
+    >
+      <div className="flex items-center gap-2">
+        <span
+          className={`w-3.5 h-3.5 rounded-full border shrink-0 ${
+            active ? 'border-blue-600 bg-blue-600 ring-2 ring-inset ring-white' : 'border-blue-300'
+          }`}
+        />
+        <span className="text-sm font-semibold text-slate-800">{title}</span>
+      </div>
+      <p className="text-[11px] text-blue-400 mt-1 ml-5">{desc}</p>
+    </button>
   )
 }

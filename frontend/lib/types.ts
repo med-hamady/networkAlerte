@@ -64,6 +64,7 @@ export interface Lr extends DeviceBase {
   client_block_enforced_at: string | null
   block_mode: BlockMode
   blocked_categories: string[]
+  content_block_mode: 'denylist' | 'allowlist'
   content_block_enforced_at: string | null
   topology_mode: TopologyMode
 }

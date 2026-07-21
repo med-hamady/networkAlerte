@@ -251,6 +251,14 @@ class Lr(Device):
     content_block_enforced_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
+    # Direction of the filter above:
+    #   "denylist"  → allow everything EXCEPT `blocked_categories` (the default).
+    #   "allowlist" → block everything EXCEPT `blocked_categories`.
+    # Same column list, opposite policy — which is why the SSH layer stamps the
+    # mode into its dnsmasq marker, so flipping direction forces a rewrite.
+    content_block_mode: Mapped[str] = mapped_column(
+        String(10), default="denylist", nullable=False, server_default="denylist",
+    )
     # Router vs bridge mode — read from each LR's HTTP poll (airMAX: airOS
     # status.cgi host.netrole; LTU: Rocket API peer.remote.netMode), no SSH.
     # The client-block feature only works in router mode (the LR must be in

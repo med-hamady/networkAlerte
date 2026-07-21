@@ -367,6 +367,8 @@ class LrRead(_DeviceBaseRead):
     # coerced to [] in model_validate so the frontend always gets a list.
     blocked_categories: list[str] | None = None
     content_block_enforced_at: datetime.datetime | None = None
+    # "denylist" = allow all but these; "allowlist" = block all but these.
+    content_block_mode: str = "denylist"
     topology_mode: str = "unknown"  # "router" | "bridge" | "unknown"
     # Subscription plan (forfait) cached from the LR's traffic shaper via SSH.
     # None/None = never synced or no shaper on the device. Name is CRM-only.

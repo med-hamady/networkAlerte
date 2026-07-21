@@ -409,6 +409,11 @@ class Settings(BaseSettings):
     )
     content_block_domains_telegram: str = "telegram.org,telegram.me,t.me,telesco.pe,tdesktop.com"
 
+    # Upstream resolver the LR's dnsmasq forwards the ALLOWED domains to when the
+    # filter runs in "allowlist" direction (everything is poisoned to 0.0.0.0 by
+    # a catch-all, so the exceptions need a real resolver to answer them).
+    content_block_allow_resolver: str = "8.8.8.8"
+
     def content_block_catalog(self) -> dict[str, list[str]]:
         """Return {category_key: [domains]} for every known content-block service."""
         return {

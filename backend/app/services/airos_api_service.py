@@ -14,8 +14,17 @@ Metrics extracted from ``wireless.sta[0]`` (the AP this station is linked to) an
 DeviceMetric persistence and the frontend modal all work unchanged:
   link_potential_pct  : mean(dl_linkscore, ul_linkscore) — UI "Link Potential"
   total_capacity_mbps : airmax.cb_capacity (Kbps→Mbps)   — UI "Total Capacity"
-  tx_rate_mbps / rx_rate_mbps   : airmax.dl_capacity / ul_capacity (Kbps→Mbps)
-  tx_ideal_mbps / rx_ideal_mbps : dl_capacity_expect / ul_capacity_expect (Kbps→Mbps)
+  dl_capacity_mbps / ul_capacity_mbps : airmax.dl_capacity / ul_capacity
+      (Kbps→Mbps) — what the link COULD carry. UI "Capacity RX".
+  dl_throughput_mbps / ul_throughput_mbps : wireless.throughput.rx / .tx
+      (Kbps→Mbps) — what actually flows. UI "Throughput RX".
+
+      ⚠ Direction is inverted vs the key names, and the block sits OUTSIDE
+      ``wireless.sta[0]``. We poll the CPE (station), so its RX is the
+      customer's DOWNLINK and its TX the UPLINK — hence rx→dl and tx→ul.
+      Confirmed on a live LiteBeam 5AC (fw v8.7.22, 2026-07-20): capacity
+      145080 Kbps alongside throughput.rx 186 Kbps — three orders of magnitude
+      apart. Never derive one from the other.
   local_rx_rate_idx   : rx_idx (AP→CPE downlink "Nx") — UI "Local RX Data Rate"
   remote_rx_rate_idx  : tx_idx (CPE→AP uplink "Nx")
   signal_dbm          : station signal from AP (dBm)
@@ -59,10 +68,38 @@ def _nested(obj: object, *keys: str) -> object:
     return obj
 
 
-def _kbps_to_mbps(val: object) -> float | None:
-    """Convert a Kbps value to Mbps (rounded), or None."""
+# Clés produites par les DEUX parsers de lien (côté CPE et côté AP). Partagées
+# pour que la fiche, la persistance et l'alerting soient indifférents à la
+# source : basculer un LR du poll direct au poll par son AP ne doit rien changer
+# en aval.
+_LINK_METRIC_KEYS: tuple[str, ...] = (
+    "signal_dbm",
+    "cinr_db",
+    "ul_cinr_db",
+    "dl_capacity_mbps",
+    "ul_capacity_mbps",
+    "dl_throughput_mbps",
+    "ul_throughput_mbps",
+    "total_capacity_mbps",
+    "link_potential_pct",
+    "local_rx_rate_idx",
+    "remote_rx_rate_idx",
+    "remote_signal_dbm",
+    "distance_m",
+    "radio_rx_bytes",
+    "radio_tx_bytes",
+    "uptime_seconds",
+)
+
+
+def _kbps_to_mbps(val: object, ndigits: int = 2) -> float | None:
+    """Convert a Kbps value to Mbps (rounded), or None.
+
+    ``ndigits`` defaults to 2 for capacities (hundreds of Mbps); throughput is
+    read at 3 so a sub-Mbps idle link keeps a usable value instead of 0.0.
+    """
     f = _float(val)
-    return round(f / 1000.0, 2) if f is not None else None
+    return round(f / 1000.0, ndigits) if f is not None else None
 
 
 class AirOsApiClient:
@@ -127,26 +164,19 @@ def parse_airos_link_metrics(raw: dict) -> dict[str, float | None]:
     Only keys actually present are filled; everything else stays None. Returns
     an all-None dict when there is no connected station.
     """
-    result: dict[str, float | None] = {
-        "signal_dbm":          None,
-        "cinr_db":             None,
-        "ul_cinr_db":          None,
-        "tx_rate_mbps":        None,
-        "rx_rate_mbps":        None,
-        "tx_ideal_mbps":       None,
-        "rx_ideal_mbps":       None,
-        "total_capacity_mbps": None,
-        "link_potential_pct":  None,
-        "local_rx_rate_idx":   None,
-        "remote_rx_rate_idx":  None,
-        "remote_signal_dbm":   None,
-        "distance_m":          None,
-        "radio_rx_bytes":      None,
-        "radio_tx_bytes":      None,
-        "uptime_seconds":      None,
-    }
+    result: dict[str, float | None] = dict.fromkeys(_LINK_METRIC_KEYS)
 
     result["uptime_seconds"] = _float(_nested(raw, "host", "uptime"))
+
+    # THROUGHPUT — radio-level block, outside `sta`. On a CPE the station list
+    # holds a single link, so the radio totals ARE that link's traffic.
+    # rx = what the CPE receives = customer downlink; tx = uplink.
+    result["dl_throughput_mbps"] = _kbps_to_mbps(
+        _nested(raw, "wireless", "throughput", "rx"), ndigits=3
+    )
+    result["ul_throughput_mbps"] = _kbps_to_mbps(
+        _nested(raw, "wireless", "throughput", "tx"), ndigits=3
+    )
 
     sta_list = _nested(raw, "wireless", "sta")
     if not isinstance(sta_list, list) or not sta_list:
@@ -159,8 +189,6 @@ def parse_airos_link_metrics(raw: dict) -> dict[str, float | None]:
     result["distance_m"]  = _float(sta.get("distance"))
     result["local_rx_rate_idx"]  = _float(sta.get("rx_idx"))
     result["remote_rx_rate_idx"] = _float(sta.get("tx_idx"))
-    result["tx_ideal_mbps"] = _kbps_to_mbps(sta.get("dl_capacity_expect"))
-    result["rx_ideal_mbps"] = _kbps_to_mbps(sta.get("ul_capacity_expect"))
     result["remote_signal_dbm"] = _float(_nested(sta, "remote", "signal"))
     result["radio_rx_bytes"] = _float(_nested(sta, "stats", "rx_bytes"))
     result["radio_tx_bytes"] = _float(_nested(sta, "stats", "tx_bytes"))
@@ -181,8 +209,8 @@ def parse_airos_link_metrics(raw: dict) -> dict[str, float | None]:
     if isinstance(airmax, dict):
         result["cinr_db"]    = _float(_nested(airmax, "rx", "cinr"))
         result["ul_cinr_db"] = _float(_nested(airmax, "tx", "cinr"))
-        result["tx_rate_mbps"] = _kbps_to_mbps(airmax.get("dl_capacity"))
-        result["rx_rate_mbps"] = _kbps_to_mbps(airmax.get("ul_capacity"))
+        result["dl_capacity_mbps"] = _kbps_to_mbps(airmax.get("dl_capacity"))
+        result["ul_capacity_mbps"] = _kbps_to_mbps(airmax.get("ul_capacity"))
         result["total_capacity_mbps"] = _kbps_to_mbps(airmax.get("cb_capacity"))
 
     # Fallback Total Capacity from the radio-wide polling block.
@@ -192,6 +220,135 @@ def parse_airos_link_metrics(raw: dict) -> dict[str, float | None]:
         )
 
     return result
+
+
+def _normalize_mac(value: object) -> str | None:
+    """Lowercase colon-separated MAC, or None. Same identity key as the LTU
+    fan-out and `discovery_service` — a station is bound to its LR by MAC."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip().lower()
+
+
+def parse_airos_ap_stations(raw: dict) -> list[tuple[str | None, dict, dict]]:
+    """Per-station metrics read from an airMAX **AP** (`wireless.sta[]`).
+
+    One HTTP call to a Rocket returns every connected client, so a site with 14
+    subscribers costs 1 login+status instead of 14 — the same fan-out the LTU
+    poll already does. Returns ``(mac, metrics)`` per station, metrics carrying
+    the SAME keys as :func:`parse_airos_link_metrics` so persistence, the alert
+    engine and the modal need no change.
+
+    ⚠️ **Two label families, and only one of them flips.** Verified on a live
+    ap-ptmp Rocket (fw v8.7.22) against one of its CPEs polled back-to-back,
+    3 paired samples:
+
+    * ``dl_*`` / ``ul_*`` are **absolute** — ``airmax.dl_capacity`` and
+      ``dl_linkscore`` came back byte-identical from both ends (ratio 1.000).
+      Read them as-is.
+    * ``rx`` / ``tx`` are **relative to whoever answers** and MUST be crossed.
+      ``AP.airmax.rx.cinr == CPE.airmax.tx.cinr`` on 3/3 samples. The AP
+      *receives* the uplink, so its ``rx`` is the customer's UPLINK — the
+      opposite of the CPE-side parser.
+
+    Getting that backwards would silently swap DL and UL on every airMAX
+    subscriber, so each crossed field is commented individually below.
+
+    ⚠️ **airOS 6 stations (LiteBeam M5) report no throughput**: their
+    ``remote.rx_throughput``/``tx_throughput`` stay 0 — confirmed over 5
+    captures while all 12 airOS 8 peers reported traffic every time, including
+    when the M5's ``remote`` block was fresh (age 1-4 s). Their ``linkscore``
+    is 0 too (no Link Potential on airMAX-M). We therefore leave throughput
+    ABSENT for them rather than publishing a fake 0 — the byte counters are
+    still exported so the caller can derive it.
+    """
+    sta_list = _nested(raw, "wireless", "sta")
+    if not isinstance(sta_list, list):
+        return []
+
+    stations: list[tuple[str | None, dict, dict]] = []
+    for sta in sta_list:
+        if not isinstance(sta, dict):
+            continue
+        m: dict[str, float | None] = dict.fromkeys(_LINK_METRIC_KEYS)
+        remote = sta.get("remote") if isinstance(sta.get("remote"), dict) else {}
+
+        # --- champs ABSOLUS : lus tels quels ---------------------------------
+        m["distance_m"] = _float(sta.get("distance"))
+        dl_score = _float(sta.get("dl_linkscore"))
+        ul_score = _float(sta.get("ul_linkscore"))
+        if dl_score is None:
+            dl_score = _float(sta.get("dl_avg_linkscore"))
+        if ul_score is None:
+            ul_score = _float(sta.get("ul_avg_linkscore"))
+        # linkscore 0/0 = station airOS-M : pas de Link Potential, on laisse None
+        # plutôt que d'afficher un lien « à 0 % » sur un client sain.
+        if dl_score and ul_score:
+            m["link_potential_pct"] = round((dl_score + ul_score) / 2.0, 1)
+        elif dl_score:
+            m["link_potential_pct"] = round(dl_score, 1)
+
+        airmax = sta.get("airmax")
+        if isinstance(airmax, dict):
+            m["dl_capacity_mbps"] = _kbps_to_mbps(airmax.get("dl_capacity"))
+            m["ul_capacity_mbps"] = _kbps_to_mbps(airmax.get("ul_capacity"))
+            m["total_capacity_mbps"] = _kbps_to_mbps(airmax.get("cb_capacity"))
+            # CINR : seulement pour les stations airOS 8. Sur une station
+            # airOS 6 (M5), l'AP annonce 3 dB là où le SNR réel est de 25 —
+            # publier ça ferait passer TOUS les M5 sous le seuil critique de
+            # 10 dB. Le linkscore à 0 est le marqueur de ces stations (elles
+            # n'ont pas la notion) : il signale un bloc `airmax` inexploitable.
+            # Leur CINR vient du SSH `wstalist`, mesuré au CPE.
+            # CROISÉ : l'AP reçoit le montant, donc son rx.cinr est l'UL.
+            if dl_score or ul_score:
+                m["cinr_db"]    = _float(_nested(airmax, "tx", "cinr"))
+                m["ul_cinr_db"] = _float(_nested(airmax, "rx", "cinr"))
+
+        # --- champs RELATIFS : croisés ---------------------------------------
+        # `signal` = ce que l'AP reçoit (montant) ; `remote.signal` = ce que le
+        # CPE reçoit (descendant), donc c'est lui qui porte la sémantique que le
+        # parser CPE appelle `signal_dbm`.
+        m["signal_dbm"]        = _float(remote.get("signal"))
+        m["remote_signal_dbm"] = _float(sta.get("signal"))
+        # `rx_idx` = index de modulation en réception de l'AP = montant.
+        m["local_rx_rate_idx"]  = _float(sta.get("tx_idx"))
+        m["remote_rx_rate_idx"] = _float(sta.get("rx_idx"))
+
+        # DÉBIT : mesuré par le CPE et relayé. `remote.rx_throughput` = ce que
+        # le client reçoit = DESCENDANT. 0 sur airOS 6 → laissé absent.
+        dl_kbps = _float(remote.get("rx_throughput"))
+        ul_kbps = _float(remote.get("tx_throughput"))
+        if dl_kbps:
+            m["dl_throughput_mbps"] = round(dl_kbps / 1000.0, 3)
+        if ul_kbps:
+            m["ul_throughput_mbps"] = round(ul_kbps / 1000.0, 3)
+
+        # ⚠️ PAS DE COMPTEURS D'OCTETS ICI — volontaire.
+        # Le compteur de l'AP pour une station et le compteur propre du CPE
+        # sont deux cumuls d'ORIGINES DIFFÉRENTES : mesuré sur le même client au
+        # même instant, l'AP annonçait 55,46 Gio de download quand le CPE en
+        # annonçait 2,03. `consumption_service` somme des deltas `LAG()` ; si la
+        # source changeait, le premier delta après bascule vaudrait cet écart et
+        # serait FACTURÉ comme de la consommation réelle. Le plafond
+        # anti-glitch (8 Gio) n'en écarte qu'une partie — un écart de 0 à 8 Gio
+        # passerait inaperçu.
+        # La conso reste donc lue sur le compteur du CPE (SSH `wstalist`), qui
+        # ne change pas d'origine. Cf. ssh_service._parse_wstalist_metrics.
+
+        m["uptime_seconds"] = _float(sta.get("uptime"))
+
+        # Champs NON numériques que l'AP offre gratuitement sur chaque abonné et
+        # que le poll direct allait chercher un par un : nom configuré, mode
+        # routeur/bridge (garde-fou du blocage client) et modèle réel.
+        hostname = remote.get("hostname")
+        meta = {
+            "hostname": hostname.strip() if isinstance(hostname, str) and hostname.strip() else None,
+            "netrole": remote.get("netrole"),
+            "platform": remote.get("platform"),
+        }
+        stations.append((_normalize_mac(sta.get("mac")), m, meta))
+
+    return stations
 
 
 def _extract_hostname(raw: dict) -> str | None:

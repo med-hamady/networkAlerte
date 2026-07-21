@@ -474,27 +474,32 @@ async def test_radio_link_degraded_two_metrics(db, settings, patch_notif):
 
 
 # ---------------------------------------------------------------------------
-# Famille D — Capacité
+# Famille D — Débit vs capacité
 # ---------------------------------------------------------------------------
 
-async def test_capacity_low_warning(db, settings, patch_notif):
-    """Capacité à 20% → incident capacity_low warning après anti-flap."""
+async def test_low_throughput_alone_raises_no_incident(db, settings, patch_notif):
+    """Un débit faible sur un lien sain n'est PAS une anomalie.
+
+    Le trafic d'un abonné tombe à quelques dizaines de kb/s dès qu'il ne
+    navigue pas, alors que la capacité du lien reste pleine. Tant que le débit
+    était lu dans `capacity.*`, les deux étaient la même valeur et cette
+    distinction n'existait pas. Ce test verrouille l'invariant.
+    """
     device = await _make_rocket(db)
 
     for _ in range(4):
         await evaluate_device_metrics(db, device, {
-            "tx_rate_mbps": 20.0,
-            "tx_ideal_mbps": 100.0,
+            "dl_capacity_mbps": 145.0,     # lien sain
+            "ul_capacity_mbps": 118.0,
+            "dl_throughput_mbps": 0.186,   # abonné au repos
+            "ul_throughput_mbps": 0.115,
         }, settings)
         await db.flush()
 
     result = await db.execute(
         select(Incident).where(
             Incident.device_id == device.id,
-            Incident.alert_type == "capacity_low",
             Incident.status == "open",
         )
     )
-    incident = result.scalar_one_or_none()
-    assert incident is not None
-    assert incident.severity == "warning"
+    assert result.scalars().all() == []

@@ -10,7 +10,6 @@ import types
 import pytest
 
 from app.services.alert_rules import (
-    CapacityLowRule,
     CCQLowRule,
     CINRLowRule,
     CPEDisconnectedRule,
@@ -19,7 +18,6 @@ from app.services.alert_rules import (
     RadioInterfaceDownRule,
     RadioLinkDegradedRule,
     SignalLowRule,
-    ThroughputAnomalyRule,
     get_failure_threshold,
     get_rules_for_device,
 )
@@ -40,8 +38,6 @@ def make_settings(**overrides):
         cinr_warning_db=20.0,
         cinr_critical_db=10.0,
         cinr_tolerance_db=0.0,
-        capacity_low_warning_pct=30.0,
-        capacity_low_critical_pct=15.0,
         rx_tx_error_warning_pct=1.0,
         rx_tx_error_critical_pct=5.0,
         signal_failure_threshold=2,
@@ -50,9 +46,6 @@ def make_settings(**overrides):
         capacity_failure_threshold=3,
         error_failure_threshold=2,
         radio_degraded_failure_threshold=2,
-        throughput_anomaly_drop_pct=50.0,
-        throughput_anomaly_min_mbps=1.0,
-        throughput_anomaly_failure_threshold=3,
         # LR link substandard — per-family floors
         lr_link_potential_min_pct_ltu=50.0,
         lr_link_potential_min_pct_airmax=40.0,
@@ -246,40 +239,6 @@ class TestRadioLinkDegradedRule:
 # Famille D — Performance
 # ---------------------------------------------------------------------------
 
-class TestCapacityLowRule:
-    rule = CapacityLowRule()
-
-    def test_good_capacity_no_alert(self):
-        r = self.rule.evaluate(DEVICE_NAME, {
-            "tx_rate_mbps": 80.0, "tx_ideal_mbps": 100.0,
-        }, SETTINGS)
-        assert r.severity is None
-
-    def test_warning_capacity(self):
-        r = self.rule.evaluate(DEVICE_NAME, {
-            "tx_rate_mbps": 20.0, "tx_ideal_mbps": 100.0,
-        }, SETTINGS)
-        assert r.severity == "warning"
-        assert r.alert_type == "capacity_low"
-        assert r.metric_value == pytest.approx(20.0)
-
-    def test_critical_capacity(self):
-        r = self.rule.evaluate(DEVICE_NAME, {
-            "tx_rate_mbps": 10.0, "tx_ideal_mbps": 100.0,
-        }, SETTINGS)
-        assert r.severity == "critical"
-
-    def test_no_ideal_no_alert(self):
-        r = self.rule.evaluate(DEVICE_NAME, {"tx_rate_mbps": 5.0}, SETTINGS)
-        assert r.severity is None
-
-    def test_zero_ideal_no_alert(self):
-        r = self.rule.evaluate(DEVICE_NAME, {
-            "tx_rate_mbps": 5.0, "tx_ideal_mbps": 0.0,
-        }, SETTINGS)
-        assert r.severity is None
-
-
 class TestHighRxTxErrorsRule:
     rule = HighRxTxErrorsRule()
 
@@ -365,7 +324,6 @@ class TestRuleRegistry:
         assert "CINRLowRule" in rule_types
         assert "CCQLowRule" in rule_types
         assert "RadioLinkDegradedRule" in rule_types
-        assert "CapacityLowRule" in rule_types
         assert "HighRxTxErrorsRule" in rule_types
 
     def test_lr_has_subset(self):
@@ -383,106 +341,9 @@ class TestRuleRegistry:
         rules = get_rules_for_device("unknown_device")
         assert rules == []
 
-    def test_rocket_has_throughput_anomaly(self):
-        rules = get_rules_for_device("ltu_rocket")
-        rule_types = {type(r).__name__ for r in rules}
-        assert "ThroughputAnomalyRule" in rule_types
-
-    def test_lr_has_throughput_anomaly(self):
-        rules = get_rules_for_device("lr")
-        rule_types = {type(r).__name__ for r in rules}
-        assert "ThroughputAnomalyRule" in rule_types
-
-    def test_switch_no_throughput_anomaly(self):
-        rules = get_rules_for_device("uisp_switch")
-        rule_types = {type(r).__name__ for r in rules}
-        assert "ThroughputAnomalyRule" not in rule_types
-
     def test_failure_thresholds(self):
         assert get_failure_threshold("signal_low", SETTINGS) == 2
         assert get_failure_threshold("cinr_low", SETTINGS) == 2
         assert get_failure_threshold("ccq_low", SETTINGS) == 2
-        assert get_failure_threshold("capacity_low", SETTINGS) == 3
         assert get_failure_threshold("radio_interface_down", SETTINGS) == 0
         assert get_failure_threshold("eth0_down", SETTINGS) == 0
-        assert get_failure_threshold("throughput_anomaly", SETTINGS) == 3
-
-
-# ---------------------------------------------------------------------------
-# Famille D — Anomalie de débit
-# ---------------------------------------------------------------------------
-
-class TestThroughputAnomalyRule:
-    rule = ThroughputAnomalyRule()
-
-    def test_no_rate_no_alert(self):
-        """tx_rate_mbps absent → no alert (data not available yet)."""
-        r = self.rule.evaluate(DEVICE_NAME, {}, SETTINGS)
-        assert r.severity is None
-
-    def test_no_ema_no_alert(self):
-        """tx_rate_mbps present but no EMA baseline yet → no alert."""
-        r = self.rule.evaluate(DEVICE_NAME, {"tx_rate_mbps": 5.0}, SETTINGS)
-        assert r.severity is None
-
-    def test_ema_below_min_no_alert(self):
-        """EMA below throughput_anomaly_min_mbps → ignore (idle link)."""
-        r = self.rule.evaluate(DEVICE_NAME, {
-            "tx_rate_mbps": 0.1,
-            "tx_rate_ema_mbps": 0.5,  # below min of 1.0 Mbps
-        }, SETTINGS)
-        assert r.severity is None
-
-    def test_no_significant_drop_no_alert(self):
-        """Current rate close to EMA (20% drop, threshold is 50%) → no alert."""
-        r = self.rule.evaluate(DEVICE_NAME, {
-            "tx_rate_mbps": 8.0,
-            "tx_rate_ema_mbps": 10.0,  # 20% drop → below 50% threshold
-        }, SETTINGS)
-        assert r.severity is None
-
-    def test_exactly_at_threshold_no_alert(self):
-        """Exactly 50% drop → alert triggered (boundary condition)."""
-        r = self.rule.evaluate(DEVICE_NAME, {
-            "tx_rate_mbps": 5.0,
-            "tx_rate_ema_mbps": 10.0,  # exactly 50% drop
-        }, SETTINGS)
-        assert r.severity == "warning"
-
-    def test_drop_exceeds_threshold_warning(self):
-        """Current rate 70% below EMA with sufficient baseline → warning."""
-        r = self.rule.evaluate(DEVICE_NAME, {
-            "tx_rate_mbps": 3.0,
-            "tx_rate_ema_mbps": 10.0,  # 70% drop
-        }, SETTINGS)
-        assert r.severity == "warning"
-        assert r.alert_type == "throughput_anomaly"
-        assert r.metric_name == "tx_drop_pct"
-        assert r.metric_value == pytest.approx(70.0, abs=0.1)
-        assert r.threshold_value == 50.0
-
-    def test_recovery_when_rate_returns(self):
-        """Rate recovers close to EMA → no alert (resolved by engine)."""
-        r = self.rule.evaluate(DEVICE_NAME, {
-            "tx_rate_mbps": 9.5,
-            "tx_rate_ema_mbps": 10.0,  # 5% drop — well below 50%
-        }, SETTINGS)
-        assert r.severity is None
-
-    def test_custom_drop_threshold(self):
-        """Custom 30% drop threshold from settings override."""
-        settings = make_settings(throughput_anomaly_drop_pct=30.0)
-        r = self.rule.evaluate(DEVICE_NAME, {
-            "tx_rate_mbps": 6.0,
-            "tx_rate_ema_mbps": 10.0,  # 40% drop → above custom 30% threshold
-        }, settings)
-        assert r.severity == "warning"
-
-    def test_zero_rate_is_full_drop(self):
-        """Zero throughput with active baseline → 100% drop → warning."""
-        r = self.rule.evaluate(DEVICE_NAME, {
-            "tx_rate_mbps": 0.0,
-            "tx_rate_ema_mbps": 10.0,
-        }, SETTINGS)
-        assert r.severity == "warning"
-        assert r.metric_value == 100.0

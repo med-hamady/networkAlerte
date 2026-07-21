@@ -161,7 +161,7 @@ _PING_FAILURE_STATE_KEY = "_ping_failures"
 # other polled metric — including all radio quality metrics (signal/ccq/cinr/
 # link_potential/capacity/rate idx) since the 30-day report sections were
 # removed — is read ONLY as "latest" (the /metrics/latest LATERAL probe). The
-# alert engine reads its baselines (EMA throughput, error deltas) from
+# alert engine reads its baselines (error counter deltas) from
 # AlertState, never from device_metrics, so collapsing a non-history metric to a
 # single row breaks no alert. We therefore APPEND the byte counters (one row per
 # cycle) and COLLAPSE everything else to a single row per (device_id,
@@ -174,6 +174,77 @@ HISTORY_METRICS: frozenset[str] = frozenset({
 })
 
 
+async def _derive_throughput_from_counters(
+    session,
+    device_id: int,
+    metrics: dict[str, float | None],
+    now: datetime.datetime,
+    dl_counter: str,
+    ul_counter: str,
+) -> None:
+    """Derive dl/ul_throughput_mbps from cumulative byte counters, in place.
+
+    For radios that expose **no instantaneous throughput at all** — the
+    LiteBeam M5 (airOS 6) is the case that forced this. Its own web UI does
+    exactly the same thing: `Monitor > Throughput` polls `ifstats.cgi`, which
+    returns only `rx_bytes`/`tx_bytes`, and derives the rate client-side.
+    Verified on a live M5 (fw v6.3.24 XW, 2026-07-21): two reads 6 s apart gave
+    76480 B, i.e. 102 kb/s, against 157 kb/s shown by the UI at that moment —
+    same magnitude, different sampling window.
+
+    ⚠ The result is an **average over the poll interval**, not the instant rate
+    the LTU/airOS families report. On the SSH probe that interval is 3–8 min, so
+    a short burst is flattened. It is still the only throughput obtainable here.
+
+    ⚠ Direction is the CALLER's call, never guessed: on a station (M5 client)
+    the radio's rx is the customer's DOWNLINK, on an AP it is the uplink. Hence
+    the explicit ``dl_counter`` / ``ul_counter`` arguments.
+
+    Skipped silently when there is no previous sample, when the counter went
+    backwards (device reboot — airOS resets these to 0) or when no time has
+    elapsed. A skip leaves the key absent, so the graph shows a gap rather than
+    a fake 0.
+    """
+    wanted = {dl_counter: "dl_throughput_mbps", ul_counter: "ul_throughput_mbps"}
+    pending = {
+        counter: target
+        for counter, target in wanted.items()
+        if metrics.get(counter) is not None and metrics.get(target) is None
+    }
+    if not pending:
+        return
+
+    rows = await session.execute(
+        select(
+            DeviceMetric.metric_name,
+            DeviceMetric.metric_value,
+            DeviceMetric.collected_at,
+        )
+        .where(
+            DeviceMetric.device_id == device_id,
+            DeviceMetric.metric_name.in_(list(pending)),
+        )
+        .order_by(DeviceMetric.collected_at.desc())
+        .limit(len(pending) * 2)
+    )
+    previous: dict[str, tuple[float, datetime.datetime]] = {}
+    for name, value, collected_at in rows:
+        previous.setdefault(name, (value, collected_at))
+
+    for counter, target in pending.items():
+        prev = previous.get(counter)
+        if prev is None:
+            continue
+        prev_value, prev_at = prev
+        elapsed = (now - prev_at).total_seconds()
+        delta = float(metrics[counter]) - float(prev_value)
+        # delta < 0 → compteur remis à zéro (reboot) ; elapsed <= 0 → horloge
+        # non avancée. Dans les deux cas la valeur serait fausse, pas basse.
+        if elapsed <= 0 or delta < 0:
+            continue
+        metrics[target] = round(delta * 8 / elapsed / 1_000_000.0, 3)
+
+
 async def persist_device_metrics(
     session,
     device_id: int,
@@ -181,6 +252,7 @@ async def persist_device_metrics(
     unit_map: dict[str, str] | None = None,
     *,
     now: datetime.datetime | None = None,
+    throughput_from_counters: tuple[str, str] | None = None,
 ) -> None:
     """Persist one poll cycle of metrics, honouring the history/latest policy.
 
@@ -229,6 +301,14 @@ async def persist_device_metrics(
     await session.execute(
         text("SELECT pg_advisory_xact_lock(:k)"), {"k": int(device_id)},
     )
+
+    # Débit dérivé des compteurs, pour les radios qui n'en publient aucun (M5).
+    # Doit tourner AVANT le collapse ci-dessous : il lit le relevé PRÉCÉDENT,
+    # que l'INSERT de ce cycle remplacerait.
+    if throughput_from_counters is not None:
+        await _derive_throughput_from_counters(
+            session, device_id, metrics, now, *throughput_from_counters,
+        )
 
     collapse_names = [
         name for name, value in metrics.items()
@@ -1434,6 +1514,27 @@ async def ltu_api_poll_job() -> None:
             # copy. Per-link metrics (signal/CCQ/CINR/etc.) belong to each LR and
             # are stored in the fan-out loop below.
             rocket_ap_metrics["peer_count"] = len(all_peers)
+
+            # DÉBIT AGRÉGÉ de l'AP = somme du trafic de tous ses CPE. L'API LTU
+            # ne donne aucun débit au niveau AP (parse_rocket_ap_metrics ne
+            # retourne que noise/largeur), il n'existe que par peer — or c'est
+            # le total qui a un sens pour le Rocket. Sert l'AFFICHAGE (la fiche
+            # d'un Rocket montre son débit comme celle d'un LR) ; plus aucune
+            # règle ne le consomme depuis la suppression de throughput_anomaly.
+            for _key, _src in (
+                ("dl_throughput_mbps", "dl_throughput_mbps"),
+                ("ul_throughput_mbps", "ul_throughput_mbps"),
+            ):
+                vals = [
+                    m.get(_src)
+                    for _mac, m in per_peer_metrics
+                    if m.get(_src) is not None
+                ]
+                # Aucun relevé → on laisse la clé absente : la règle skippe,
+                # au lieu de prendre un 0 pour une chute de trafic.
+                if vals:
+                    rocket_ap_metrics[_key] = round(sum(vals), 3)
+
             await persist_device_metrics(session, dev.id, rocket_ap_metrics, unit_map)
 
             # Rocket-level alert engine pass: cares about peer_count and whatever
@@ -1491,6 +1592,131 @@ async def ltu_api_poll_job() -> None:
             await session.commit()
 
 
+_AIRMAX_PLATFORM_VARIANTS = (
+    ("m5", "litebeam_m5"),
+    ("5ac", "litebeam_5ac"),
+    ("ac", "litebeam_5ac"),
+)
+
+
+def _variant_from_platform(platform: object) -> str | None:
+    """`remote.platform` (« LiteBeam M5 ») → model_variant, ou None.
+
+    Même intention que `airos_api_service.airmax_variant_from_model` côté poll
+    direct : ne jamais faire sortir un LR de la famille airMAX, donc on ne rend
+    qu'une des deux variantes connues. Le M5 est testé AVANT « ac » car
+    « LiteBeam M5 » ne contient pas « ac », mais l'ordre protège d'un futur
+    modèle qui contiendrait les deux.
+    """
+    if not isinstance(platform, str):
+        return None
+    low = platform.lower()
+    for needle, variant in _AIRMAX_PLATFORM_VARIANTS:
+        if needle in low:
+            return variant
+    return None
+
+
+async def _collect_airmax_stations_via_aps(
+    ap_targets: list[tuple],
+    lr_by_mac: dict[str, int],
+    settings,
+) -> set[int]:
+    """Interroge chaque AP airMAX et distribue ses stations aux LR (par MAC).
+
+    Renvoie l'ensemble des `device_id` effectivement servis, pour que l'appelant
+    n'interroge en direct que le reliquat.
+
+    Le fan-out est calqué sur celui de `ltu_api_poll_job` : Phase 1 de fetch
+    concurrent, Phase 2 série en DB. Le verrou consultatif est pris sur l'AP,
+    comme l'exige la règle de `persist_device_metrics` (clé du Rocket parent).
+    """
+    if not ap_targets:
+        return set()
+
+    sem = asyncio.Semaphore(settings.airos_concurrency)
+    fetched: dict[int, list] = {}
+
+    async def _fetch(dev_id: int, name: str, ip: str, user: str, pwd: str) -> None:
+        async with sem:
+            raw = await airos_api_service.AirOsApiClient(ip, user, pwd, 443).fetch_status()
+        if raw is None:
+            logger.debug("airMAX AP %s (%s) — status.cgi injoignable", name, ip)
+            return
+        fetched[dev_id] = airos_api_service.parse_airos_ap_stations(raw)
+
+    await asyncio.gather(
+        *[_fetch(*t) for t in ap_targets], return_exceptions=True,
+    )
+
+    unit_map = {
+        **ltu_api_service.METRIC_UNITS,
+        "radio_rx_bytes": "B",
+        "radio_tx_bytes": "B",
+        "uptime_seconds": "s",
+    }
+    served: set[int] = set()
+
+    for ap_id, stations in fetched.items():
+        async with async_session_factory() as session:
+            # Verrou sur l'AP : ses LR sont écrits ici comme le fan-out LTU le
+            # fait depuis son Rocket. Pris avant la 1re écriture.
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(:k)"), {"k": int(ap_id)},
+            )
+            for mac, metrics, extra in stations:
+                lr_id = lr_by_mac.get(mac) if mac else None
+                if lr_id is None:
+                    continue          # station inconnue de l'inventaire
+                lr = await session.get(Lr, lr_id)
+                if lr is None:
+                    continue
+
+                if not any(v is not None for v in metrics.values()):
+                    continue
+
+                variant = _variant_from_platform(extra.get("platform"))
+                if variant and lr.model_variant != variant:
+                    logger.info(
+                        "airMAX LR model_variant ← platform via AP — '%s' : %s → %s",
+                        lr.name, lr.model_variant, variant,
+                    )
+                    lr.model_variant = variant
+
+                distance = metrics.get("distance_m")
+                if distance is not None:
+                    lr.distance_m = distance
+
+                hostname = extra.get("hostname")
+                if hostname:
+                    if lr.hostname != hostname:
+                        lr.hostname = hostname
+                    if lr.name != hostname:
+                        logger.info(
+                            "airMAX LR name ← hostname via AP — '%s' → '%s'", lr.name, hostname,
+                        )
+                        lr.name = hostname
+
+                # Le M5 ne remonte aucun débit à son AP (airOS 6) : on le dérive
+                # des compteurs, comme le fait son propre écran Monitor. Les
+                # clés sont déjà normalisées côté parser (radio_rx_bytes =
+                # download), d'où l'ordre standard ici.
+                await persist_device_metrics(
+                    session, lr.id, metrics, unit_map,
+                    throughput_from_counters=("radio_rx_bytes", "radio_tx_bytes"),
+                )
+                await alert_engine.evaluate_device_metrics(
+                    session, lr, dict(metrics), settings,
+                )
+                await _apply_lr_topology(
+                    session, lr, extra.get("netrole"), "netrole via AP airMAX",
+                )
+                served.add(lr.id)
+            await session.commit()
+
+    return served
+
+
 @_timed_job
 async def airos_api_poll_job() -> None:
     """
@@ -1526,17 +1752,72 @@ async def airos_api_poll_job() -> None:
                 select(PtpLiteBeam).where(PtpLiteBeam.status == "up")
             )
         ).scalars().all()
-        # Snapshot creds/ip for the concurrent fetch (no session held during HTTP).
-        targets = [
-            (d.id, d.name, d.ip_address, d.ssh_username, d.ssh_password)
-            for d in [*lr_rows, *ptp_rows]
+        # Les AP airMAX : un seul appel par Rocket sert TOUS ses abonnés.
+        ap_rows = (
+            await session.execute(
+                select(Rocket).where(
+                    Rocket.status == "up",
+                    Rocket.radio_tech == "airmax",
+                    Rocket.ssh_username.is_not(None),
+                    Rocket.ssh_password.is_not(None),
+                )
+            )
+        ).scalars().all()
+        ap_targets = [
+            (d.id, d.name, d.ip_address, d.ssh_username, d.ssh_password) for d in ap_rows
         ]
+        # ⚠️ SEULS LES M5 sont servis par leur AP. Les 5AC gardent leur poll
+        # HTTP direct, et c'est la CONSOMMATION qui l'impose : ses compteurs
+        # d'octets viennent du CPE lui-même (`sta[0].stats`) depuis toujours.
+        # Le compteur que l'AP tient pour une station est un cumul d'une AUTRE
+        # origine — 55,46 Gio vu par l'AP contre 2,03 Gio vu par le CPE, mesuré
+        # sur le même client au même instant — et `consumption_service` sommant
+        # des deltas `LAG()`, une bascule de source ferait FACTURER l'écart.
+        # Puisque le poll direct doit tourner pour les compteurs, il fournit
+        # déjà tout le reste : passer aussi par l'AP serait un appel de plus,
+        # pas de moins.
+        #
+        # Le M5, lui, gagne réellement : son AP calcule pour lui une capacité en
+        # Mb/s qu'il ne sait pas produire (il n'expose qu'un taux PHY), et il ne
+        # répond pas au parser airOS AC. Sa conso reste sur `wstalist`, inchangée.
+        lr_by_mac = {
+            lr.mac_address.lower(): lr.id
+            for lr in lr_rows
+            if lr.mac_address and lr.model_variant == "litebeam_m5"
+        }
+        # Snapshot creds/ip for the concurrent fetch (no session held during HTTP).
+        direct_targets = {
+            d.id: (d.name, d.ip_address, d.ssh_username, d.ssh_password)
+            for d in [*lr_rows, *ptp_rows]
+        }
 
-    if not targets:
+    if not direct_targets and not ap_targets:
         logger.debug("airOS API poll — no eligible devices")
         return
 
-    logger.info("airOS API poll — checking %d device(s)", len(targets))
+    # ── Phase 0 : les M5 par leur AP ───────────────────────────────────────
+    # Un M5 ne répond pas au parser airOS AC (son status.cgi est en schéma
+    # airOS 6, sans bloc `sta[]`) : vu de son AP, il obtient enfin une capacité
+    # en Mb/s, un potentiel, sa distance et son netrole. Les valeurs de l'AP
+    # sont identiques à celles du CPE — vérifié en interrogeant un AP et l'un de
+    # ses CPE coup sur coup (capacité et linkscore au bit près).
+    # Les 5AC ne passent PAS par là (cf. lr_by_mac ci-dessus) : leur poll direct
+    # est imposé par la consommation.
+    covered = await _collect_airmax_stations_via_aps(ap_targets, lr_by_mac, settings)
+    # Repli : tout LR qu'aucun AP n'a rapporté (AP HTTP KO, LR roamé hors parc,
+    # MAC inconnue) garde son poll direct — on ne perd jamais un abonné parce
+    # que son AP a hoqueté.
+    targets = [
+        (dev_id, *rest) for dev_id, rest in direct_targets.items()
+        if dev_id not in covered
+    ]
+    if not targets:
+        logger.info("airOS API poll — %d LR servis par leurs AP, aucun poll direct", len(covered))
+        return
+
+    logger.info(
+        "airOS API poll — %d via AP, %d en direct", len(covered), len(targets),
+    )
 
     # airOS HTTP metric keys reuse the LTU units; add the few SNMP-style keys
     # this poll also fills (byte counters, uptime).
@@ -2076,11 +2357,20 @@ async def lr_internet_probe_job() -> None:
                 )
 
             # Métriques radio des M5 (via wstalist sur cette même session SSH) :
-            # les LiteBeam M5 ne répondent pas au HTTP status.cgi → cette sonde
-            # est leur seule source de signal/CCQ/CINR/débits. On persiste comme
-            # le poll airOS (mêmes clés) et on évalue les règles radio.
+            # le status.cgi des M5 est en schéma airOS 6 (champs à plat, PAS de
+            # bloc `sta[]`) donc le parser airOS AC n'en tire rien → cette sonde
+            # est leur seule source de signal/CCQ/CINR. On persiste comme le
+            # poll airOS (mêmes clés) et on évalue les règles radio.
+            #
+            # Le M5 ne publie AUCUN débit instantané (ni wstalist, ni status.cgi,
+            # ni ifstats.cgi) : on le dérive du delta des compteurs d'octets,
+            # exactement comme le fait son propre écran Monitor. Le device est
+            # une STATION, donc ce que la radio REÇOIT est le descendant client.
             if radio and any(v is not None for v in radio.values()):
-                await persist_device_metrics(session, dev.id, radio, _M5_RADIO_UNITS)
+                await persist_device_metrics(
+                    session, dev.id, radio, _M5_RADIO_UNITS,
+                    throughput_from_counters=("radio_rx_bytes", "radio_tx_bytes"),
+                )
                 await alert_engine.evaluate_device_metrics(
                     session, dev, dict(radio), settings
                 )

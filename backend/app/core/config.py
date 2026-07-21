@@ -467,8 +467,6 @@ class Settings(BaseSettings):
     cinr_tolerance_db: float = 3.0
 
     # Anomaly thresholds — link capacity (% of ideal/rated capacity)
-    capacity_low_warning_pct: float = 30.0   # below → warning
-    capacity_low_critical_pct: float = 15.0  # below → critical
 
     # Per-LR link floors — single source shared by the lr-health page
     # classification AND the lr_link_substandard alert rule. Below any of
@@ -541,10 +539,8 @@ class Settings(BaseSettings):
     signal_failure_threshold: int = 2
     cinr_failure_threshold: int = 2
     ccq_failure_threshold: int = 2
-    capacity_failure_threshold: int = 3
     error_failure_threshold: int = 2
     radio_degraded_failure_threshold: int = 2
-    throughput_anomaly_failure_threshold: int = 3
     # link_potential/capacity/RX-rate are very volatile → debounce hard:
     # opens on the 5th consecutive bad cycle (count > 4), ~5 min sustained.
     lr_link_substandard_failure_threshold: int = 4
@@ -560,8 +556,6 @@ class Settings(BaseSettings):
     rocket_overload_failure_threshold: int = 3
 
     # Throughput anomaly — detect sudden drops vs exponential moving average
-    throughput_anomaly_drop_pct: float = 50.0   # alert if rate < EMA * (1 - drop_pct/100)
-    throughput_anomaly_min_mbps: float = 1.0    # ignore if EMA < this (nearly idle link)
 
     # Anomaly thresholds — UISP Power
     # Politique 2026-06-11 : deux alertes batterie DISTINCTES, toutes deux

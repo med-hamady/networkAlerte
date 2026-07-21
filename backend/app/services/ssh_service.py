@@ -310,10 +310,32 @@ def _num(val: object) -> float | None:
 # Keys filled from `wstalist` — same names as ltu_api_service / airos_api_service
 # so the alert engine, DeviceMetric persistence and the frontend modal all work
 # unchanged.
+#
+# ⚠ PÉRIMÈTRE VOLONTAIREMENT RÉDUIT (2026-07-21) : depuis que les LR airMAX sont
+# pollés via leur AP, celui-ci est la source de la CAPACITÉ, du DÉBIT et des
+# COMPTEURS D'OCTETS — y compris pour les M5. `wstalist` ne garde que ce que
+# l'AP ne sait PAS donner d'un M5 :
+#   - `ccq_pct`  : l'AP n'expose aucun CCQ par station (pas de clé `ccq`).
+#   - `cinr_db`  : l'AP annonce un CINR de 3 dB pour un M5 dont le SNR réel est
+#     de 25 dB (son bloc `airmax` est inexploitable sur une station airOS 6,
+#     comme son `linkscore` à 0). S'y fier ferait passer TOUS les M5 sous le
+#     seuil critique de 10 dB → alertes massives et fausses.
+#   - `noise_dbm`, `signal_dbm` : mesurés au CPE.
+#
+# NE PAS y remettre capacité / débit / compteurs : les deux sources écriraient
+# les mêmes clés. Pour la capacité c'est une valeur qui oscille ; pour les
+# compteurs c'est pire — ce sont deux compteurs cumulés d'ORIGINES DIFFÉRENTES
+# (celui de l'AP pour cette station vs celui du M5 depuis SON boot), et
+# `consumption_service` en calcule des deltas par `LAG()` : les entrelacer
+# produirait des sauts délirants dans la consommation facturée.
 _WSTALIST_METRIC_KEYS = (
-    "signal_dbm", "noise_dbm", "cinr_db", "ccq_pct", "tx_rate_mbps",
-    "rx_rate_mbps", "remote_signal_dbm", "radio_rx_bytes", "radio_tx_bytes",
-    "uptime_seconds",
+    "signal_dbm", "noise_dbm", "cinr_db", "ccq_pct",
+    "remote_signal_dbm", "uptime_seconds",
+    # Compteurs cumulés : SOURCE DE LA CONSOMMATION, inchangée depuis toujours.
+    # Ils restent ici et surtout PAS côté AP : le compteur de l'AP pour cette
+    # station a une autre origine (55 Gio vs 2 Gio mesurés sur un même client),
+    # et basculer de source ferait facturer l'écart au client.
+    "radio_rx_bytes", "radio_tx_bytes",
 )
 
 
@@ -343,17 +365,18 @@ def _parse_wstalist_metrics(text: str) -> dict[str, float | None]:
     result["signal_dbm"]   = _num(sta.get("signal"))
     result["noise_dbm"]    = _num(sta.get("noisefloor"))
     result["ccq_pct"]      = _num(sta.get("ccq"))
-    result["tx_rate_mbps"] = _num(sta.get("tx"))
-    result["rx_rate_mbps"] = _num(sta.get("rx"))
     result["uptime_seconds"] = _num(sta.get("uptime"))
 
-    remote = sta.get("remote")
-    if isinstance(remote, dict):
-        result["remote_signal_dbm"] = _num(remote.get("signal"))
+    # Compteurs du CPE lui-même (interface radio) : `rx` = ce qu'il reçoit =
+    # DOWNLOAD du client, conforme à la convention de `consumption_service`.
     stats = sta.get("stats")
     if isinstance(stats, dict):
         result["radio_rx_bytes"] = _num(stats.get("rx_bytes"))
         result["radio_tx_bytes"] = _num(stats.get("tx_bytes"))
+
+    remote = sta.get("remote")
+    if isinstance(remote, dict):
+        result["remote_signal_dbm"] = _num(remote.get("signal"))
 
     # CINR ≈ SNR = signal − noise floor (dB).
     if result["signal_dbm"] is not None and result["noise_dbm"] is not None:

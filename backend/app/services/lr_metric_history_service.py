@@ -61,15 +61,33 @@ GRAPH_METRICS: dict[str, dict] = {
         },
         "threshold_direction": "min",
     },
-    "tx_rate_mbps": {
-        "label": "Débit descendant du lien",
+    # CAPACITÉ par sens — ce que le lien POURRAIT écouler.
+    "dl_capacity_mbps": {
+        "label": "Capacité descendante",
         "unit": "Mb/s",
         "zero_based": True,
         "threshold_setting": None,
         "threshold_direction": None,
     },
-    "rx_rate_mbps": {
-        "label": "Débit montant du lien",
+    "ul_capacity_mbps": {
+        "label": "Capacité montante",
+        "unit": "Mb/s",
+        "zero_based": True,
+        "threshold_setting": None,
+        "threshold_direction": None,
+    },
+    # DÉBIT par sens — le trafic réellement écoulé. À ne jamais confondre avec
+    # les capacités ci-dessus : sur un lien au repos elles diffèrent de deux à
+    # trois ordres de grandeur (140 Mb/s de capacité pour 94 kb/s de trafic).
+    "dl_throughput_mbps": {
+        "label": "Débit descendant",
+        "unit": "Mb/s",
+        "zero_based": True,
+        "threshold_setting": None,
+        "threshold_direction": None,
+    },
+    "ul_throughput_mbps": {
+        "label": "Débit montant",
         "unit": "Mb/s",
         "zero_based": True,
         "threshold_setting": None,

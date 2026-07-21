@@ -253,15 +253,12 @@ export const ALERT_TYPE_LABELS: Record<string, string> = {
   ccq_low:                 'Qualité de connexion radio faible',
   radio_link_degraded:     'Lien radio dégradé',
   // Performance
-  capacity_low:            'Capacité du lien radio faible',
   high_rx_tx_errors:       "Taux d'erreurs réseau élevé",
-  throughput_anomaly:      'Anomalie de débit détectée',
   lr_link_substandard:     'Lien client sous le seuil',
   rocket_client_overload:  'Station de base saturée (trop de clients)',
   // Qualité radio UL (montant — client → base)
   ccq_ul_low:              'Qualité de connexion côté client faible',
   cinr_ul_low:             'Qualité du signal côté client faible (CINR)',
-  capacity_ul_low:         'Capacité montante (côté client) faible',
   // Power & infra
   uisp_power_unreachable:  'UISP Power injoignable',
   battery_low_warning:     'Batterie faible',

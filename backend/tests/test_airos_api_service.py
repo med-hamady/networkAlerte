@@ -1,9 +1,15 @@
 """
 Unit tests for airos_api_service.parse_airos_link_metrics — pure Python, no DB.
 
-The fixture is a trimmed copy of a real status.cgi response captured on a
-LiteBeam 5AC (fw v8.7.22) on 2026-06-02, keeping only the fields the parser
-reads.
+The fixture is a copy of a real status.cgi response captured on a LiteBeam 5AC
+(fw v8.7.22).
+
+⚠ It used to be trimmed to "only the fields the parser reads", which made it
+actively misleading: `wireless.throughput` was absent from the fixture purely
+because the parser ignored it, and that absence was later read as proof the
+firmware did not expose throughput at all. It does. Keep whole blocks here even
+when unused, so the fixture stays evidence of what the device sends rather than
+a mirror of what the code already knows.
 """
 
 from app.services.airos_api_service import (
@@ -19,6 +25,10 @@ def _real_status() -> dict:
     return {
         "host": {"hostname": "44910449- Habib Khoumeini", "uptime": 9455, "netrole": "router"},
         "wireless": {
+            # Débit RÉEL du lien (kbps), hors du bloc `sta`. Sur le CPE, rx =
+            # descendant client, tx = montant. Trois ordres de grandeur sous la
+            # capacité ci-dessous : c'est le point du test.
+            "throughput": {"tx": 115, "rx": 186},
             "polling": {"cb_capacity": 145860},
             "sta": [
                 {
@@ -54,12 +64,16 @@ def test_parse_real_status_maps_dashboard_values():
     assert m["link_potential_pct"] == 93.5
     # Total Capacity = cb_capacity / 1000
     assert m["total_capacity_mbps"] == 145.86
-    # Actual DL/UL capacity
-    assert m["tx_rate_mbps"] == 145.08
-    assert m["rx_rate_mbps"] == 146.64
-    # Ideal (expected) capacity — enables capacity_low rules on airMAX
-    assert m["tx_ideal_mbps"] == 156.0
-    assert m["rx_ideal_mbps"] == 156.0
+    # CAPACITÉ réelle DL/UL — ce que le lien pourrait écouler
+    assert m["dl_capacity_mbps"] == 145.08
+    assert m["ul_capacity_mbps"] == 146.64
+    # DÉBIT réel — le trafic écoulé, sans commune mesure avec la capacité.
+    # C'est la régression que ce test verrouille : tant que le débit était lu
+    # dans `capacity.*`, la fiche affichait 145 Mbps de « débit » pour 186 kbps
+    # de trafic réel.
+    assert m["dl_throughput_mbps"] == 0.186
+    assert m["ul_throughput_mbps"] == 0.115
+    assert m["dl_throughput_mbps"] < m["dl_capacity_mbps"] / 100
     # Rate index "Nx"
     assert m["local_rx_rate_idx"] == 8
     assert m["remote_rx_rate_idx"] == 8

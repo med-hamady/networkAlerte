@@ -320,8 +320,9 @@ async def collect_airmax_metrics(
       noise_dbm      : noise floor (dBm)
       cinr_db        : computed as signal − noise (approximates SNR)
       ccq_pct        : CCQ in percent (0–100)
-      tx_rate_mbps   : current TX throughput (Mbps)
-      rx_rate_mbps   : current RX throughput (Mbps)
+      dl_phy_rate_mbps : negotiated TX PHY rate (Mbps) — the modulation rate,
+                       NOT the traffic in flight and NOT the link capacity
+      ul_phy_rate_mbps : negotiated RX PHY rate (Mbps)
       radio_if_up    : 1.0=UP / 0.0=DOWN (IF-MIB ath0 ifOperStatus)
       eth_if_up      : 1.0=UP / 0.0=DOWN (IF-MIB eth0 ifOperStatus)
       radio_rx_bytes : cumulative RX bytes (IF-MIB, for error-rate tracking)
@@ -342,8 +343,8 @@ async def collect_airmax_metrics(
         "noise_dbm":      None,
         "cinr_db":        None,
         "ccq_pct":        None,
-        "tx_rate_mbps":   None,
-        "rx_rate_mbps":   None,
+        "dl_phy_rate_mbps": None,
+        "ul_phy_rate_mbps": None,
     }
 
     # Standard uptime — also our reachability probe. An unreachable device
@@ -358,8 +359,8 @@ async def collect_airmax_metrics(
 
     # UBNT Enterprise MIB — wireless station stats
     airmax_poll: list[tuple[str, str, object]] = [
-        ("tx_rate_mbps", _UBNT_STA_TX_RATE, lambda v: round(int(v) / 1000.0, 2)),
-        ("rx_rate_mbps", _UBNT_STA_RX_RATE, lambda v: round(int(v) / 1000.0, 2)),
+        ("dl_phy_rate_mbps", _UBNT_STA_TX_RATE, lambda v: round(int(v) / 1000.0, 2)),
+        ("ul_phy_rate_mbps", _UBNT_STA_RX_RATE, lambda v: round(int(v) / 1000.0, 2)),
         ("ccq_pct",      _UBNT_STA_CCQ,     lambda v: round(int(v) / 10.0, 1)),
         ("signal_dbm",   _UBNT_STA_SIGNAL,  lambda v: float(int(v))),
         ("noise_dbm",    _UBNT_STA_NOISE,   lambda v: float(int(v))),

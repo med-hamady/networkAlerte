@@ -27,8 +27,6 @@ from app.core.alert_constants import (
     AT_BATTERY_INTERNAL_LOW,
     AT_BATTERY_LOW_CRIT,
     AT_BATTERY_LOW_WARN,
-    AT_CAPACITY_LOW,
-    AT_CAPACITY_UL_LOW,
     AT_CCQ_LOW,
     AT_CCQ_UL_LOW,
     AT_CINR_LOW,
@@ -55,7 +53,6 @@ from app.core.alert_constants import (
     AT_SWITCH_DOWN,
     AT_SWITCH_PORT_DOWN,
     AT_SWITCH_PORT_SPEED_LOW,
-    AT_THROUGHPUT_ANOMALY,
     AT_TRANSIT_UNAVAILABLE,
     AT_UISP_POWER_UNREACH,
     AT_VOLTAGE_ANOMALY,
@@ -174,22 +171,8 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
 
     # --- Performance (warning) -----------------------------------------------
 
-    AT_CAPACITY_LOW: AlertPolicy(
-        alert_type=AT_CAPACITY_LOW,
-        severity=Severity.WARNING,
-        notify_immediately=False,
-        channels=_CHANNELS_WARNING,
-        groupable=True,
-    ),
     AT_HIGH_RX_TX_ERRORS: AlertPolicy(
         alert_type=AT_HIGH_RX_TX_ERRORS,
-        severity=Severity.WARNING,
-        notify_immediately=False,
-        channels=_CHANNELS_WARNING,
-        groupable=True,
-    ),
-    AT_THROUGHPUT_ANOMALY: AlertPolicy(
-        alert_type=AT_THROUGHPUT_ANOMALY,
         severity=Severity.WARNING,
         notify_immediately=False,
         channels=_CHANNELS_WARNING,
@@ -221,13 +204,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     ),
     AT_CINR_UL_LOW: AlertPolicy(
         alert_type=AT_CINR_UL_LOW,
-        severity=Severity.WARNING,
-        notify_immediately=False,
-        channels=_CHANNELS_WARNING,
-        groupable=True,
-    ),
-    AT_CAPACITY_UL_LOW: AlertPolicy(
-        alert_type=AT_CAPACITY_UL_LOW,
         severity=Severity.WARNING,
         notify_immediately=False,
         channels=_CHANNELS_WARNING,

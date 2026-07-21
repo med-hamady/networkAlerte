@@ -26,8 +26,6 @@ def make_settings(**overrides):
         ccq_critical_pct=50,
         cinr_warning_db=20.0,
         cinr_critical_db=10.0,
-        capacity_low_warning_pct=30.0,
-        capacity_low_critical_pct=15.0,
         rx_tx_error_warning_pct=1.0,
         rx_tx_error_critical_pct=5.0,
         signal_failure_threshold=2,

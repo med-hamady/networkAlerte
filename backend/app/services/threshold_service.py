@@ -106,25 +106,6 @@ THRESHOLD_SCHEMA: dict[str, dict[str, Any]] = {
         "max": 20,
         "step": 1,
     },
-    # Link capacity (%)
-    "capacity_low_warning_pct": {
-        "label": "Capacité DL/UL — seuil warning",
-        "category": "capacity",
-        "unit": "%",
-        "type": float,
-        "min": 0,
-        "max": 100,
-        "step": 1,
-    },
-    "capacity_low_critical_pct": {
-        "label": "Capacité DL/UL — seuil critique",
-        "category": "capacity",
-        "unit": "%",
-        "type": float,
-        "min": 0,
-        "max": 100,
-        "step": 1,
-    },
     # Planchers du lien client (lr_link_substandard) — déclinés par famille
     # radio : LTU et airMAX (Litebeam) n'ont pas les mêmes bornes.
     "lr_link_potential_min_pct_ltu": {
@@ -315,15 +296,6 @@ THRESHOLD_SCHEMA: dict[str, dict[str, Any]] = {
         "max": 10,
         "step": 1,
     },
-    "capacity_failure_threshold": {
-        "label": "Capacité — cycles consécutifs avant incident",
-        "category": "antiflap",
-        "unit": "cycles",
-        "type": int,
-        "min": 0,
-        "max": 10,
-        "step": 1,
-    },
     "error_failure_threshold": {
         "label": "Taux d'erreurs RX/TX — cycles consécutifs avant incident",
         "category": "antiflap",
@@ -335,15 +307,6 @@ THRESHOLD_SCHEMA: dict[str, dict[str, Any]] = {
     },
     "radio_degraded_failure_threshold": {
         "label": "Lien radio dégradé — cycles consécutifs avant incident",
-        "category": "antiflap",
-        "unit": "cycles",
-        "type": int,
-        "min": 0,
-        "max": 10,
-        "step": 1,
-    },
-    "throughput_anomaly_failure_threshold": {
-        "label": "Anomalie de débit — cycles consécutifs avant incident",
         "category": "antiflap",
         "unit": "cycles",
         "type": int,
@@ -387,25 +350,6 @@ THRESHOLD_SCHEMA: dict[str, dict[str, Any]] = {
         "max": 10,
         "step": 1,
     },
-    # Throughput anomaly
-    "throughput_anomaly_drop_pct": {
-        "label": "Chute de débit — seuil d'anomalie",
-        "category": "throughput",
-        "unit": "%",
-        "type": float,
-        "min": 10,
-        "max": 90,
-        "step": 5,
-    },
-    "throughput_anomaly_min_mbps": {
-        "label": "Chute de débit — débit minimum pour détection",
-        "category": "throughput",
-        "unit": "Mbps",
-        "type": float,
-        "min": 0.1,
-        "max": 100,
-        "step": 0.5,
-    },
 }
 
 CATEGORY_LABELS: dict[str, str] = {
@@ -419,7 +363,6 @@ CATEGORY_LABELS: dict[str, str] = {
     "battery":      "Batterie (UISP Power)",
     "ping_latency": "Latence ping",
     "antiflap":     "Anti-flapping",
-    "throughput":   "Anomalie de débit",
 }
 
 

@@ -14,10 +14,15 @@ Metrics dict keys (sourced from SNMP + LTU API + ping):
   cinr_db           : float   — DL CINR (dB)
   ccq_pct           : float   — DL CCQ (%)
   ul_ccq_pct        : float   — UL CCQ (%)
-  tx_rate_mbps      : float   — current DL throughput (Mbps)
-  rx_rate_mbps      : float   — current UL throughput (Mbps)
-  tx_ideal_mbps     : float   — rated DL capacity (Mbps)
-  rx_ideal_mbps     : float   — rated UL capacity (Mbps)
+  dl_capacity_mbps  : float   — DL CAPACITY (Mbps) : what the link could carry
+  ul_capacity_mbps  : float   — UL CAPACITY (Mbps)
+  dl_throughput_mbps : float  — DL THROUGHPUT (Mbps) : traffic really flowing.
+      Distinct from the capacity above by orders of magnitude on an idle link
+      (86 Mbps of capacity for 0.3 Mbps of traffic) — never swap the two.
+  ul_throughput_mbps : float  — UL THROUGHPUT (Mbps)
+  dl_phy_rate_mbps  : float   — negotiated PHY modulation rate (airMAX-M/SNMP
+      only) : neither a capacity nor a throughput
+  ul_phy_rate_mbps  : float   — idem, uplink
   total_capacity_mbps : float — capacity.combined (UI "Total Capacity"); informational
   link_potential_pct  : float — mean(linkScore dl/ul) ≈ UI "Link Potential"; informational
   local_rx_rate_idx   : float — mcs.txRate, downlink "Nx" (UI "Local RX Data Rate"); informational
@@ -500,69 +505,6 @@ class RadioLinkDegradedRule(AlertRule):
 # ---------------------------------------------------------------------------
 
 
-class CapacityLowRule(AlertRule):
-    """
-    Capacité de liaison anormalement faible.
-
-    Évalue tx_rate_mbps / tx_ideal_mbps. Si la capacité idéale n'est pas
-    disponible ou vaut 0, la règle ne déclenche pas (pas de baseline).
-    """
-
-    alert_type = "capacity_low"
-
-    def evaluate(self, device_name: str, metrics: dict, settings) -> AlertEvalResult:
-        tx_rate = metrics.get("tx_rate_mbps")
-        tx_ideal = metrics.get("tx_ideal_mbps")
-
-        if tx_rate is None or tx_ideal is None or tx_ideal <= 0:
-            return AlertEvalResult(
-                alert_type=self.alert_type,
-                severity=None,
-                metric_name="tx_rate_pct",
-                metric_value=None,
-                threshold_value=None,
-                message="",
-                skip=True,
-            )
-
-        capacity_pct = (tx_rate / tx_ideal) * 100.0
-
-        if capacity_pct < settings.capacity_low_critical_pct:
-            return AlertEvalResult(
-                alert_type=self.alert_type,
-                severity="critical",
-                metric_name="tx_rate_pct",
-                metric_value=round(capacity_pct, 1),
-                threshold_value=settings.capacity_low_critical_pct,
-                message=(
-                    f"ALERTE CRITIQUE : capacité DL très faible sur {device_name} : "
-                    f"{capacity_pct:.1f}% de la capacité nominale "
-                    f"({tx_rate:.1f}/{tx_ideal:.1f} Mbps)"
-                ),
-            )
-        if capacity_pct < settings.capacity_low_warning_pct:
-            return AlertEvalResult(
-                alert_type=self.alert_type,
-                severity="warning",
-                metric_name="tx_rate_pct",
-                metric_value=round(capacity_pct, 1),
-                threshold_value=settings.capacity_low_warning_pct,
-                message=(
-                    f"ALERTE WARNING : capacité DL dégradée sur {device_name} : "
-                    f"{capacity_pct:.1f}% de la capacité nominale "
-                    f"({tx_rate:.1f}/{tx_ideal:.1f} Mbps)"
-                ),
-            )
-        return AlertEvalResult(
-            alert_type=self.alert_type,
-            severity=None,
-            metric_name="tx_rate_pct",
-            metric_value=round(capacity_pct, 1),
-            threshold_value=None,
-            message=f"RECOVERY : capacité DL de {device_name} de nouveau nominale",
-        )
-
-
 class HighRxTxErrorsRule(AlertRule):
     """
     Taux d'erreurs RX/TX anormalement élevé.
@@ -771,137 +713,6 @@ class CINRLowULRule(AlertRule):
             metric_value=cinr_ul,
             threshold_value=None,
             message=f"RECOVERY : CINR UL de {device_name} de nouveau nominal ({cinr_ul:.1f} dB)",
-        )
-
-
-class CapacityLowULRule(AlertRule):
-    """
-    Capacité uplink anormalement faible.
-
-    Évalue rx_rate_mbps / rx_ideal_mbps (symétrique de CapacityLowRule sur le DL).
-    """
-
-    alert_type = "capacity_ul_low"
-
-    def evaluate(self, device_name: str, metrics: dict, settings) -> AlertEvalResult:
-        rx_rate = metrics.get("rx_rate_mbps")
-        rx_ideal = metrics.get("rx_ideal_mbps")
-
-        if rx_rate is None or rx_ideal is None or rx_ideal <= 0:
-            return AlertEvalResult(
-                alert_type=self.alert_type,
-                severity=None,
-                metric_name="rx_rate_pct",
-                metric_value=None,
-                threshold_value=None,
-                message="",
-                skip=True,
-            )
-
-        capacity_pct = (rx_rate / rx_ideal) * 100.0
-
-        if capacity_pct < settings.capacity_low_critical_pct:
-            return AlertEvalResult(
-                alert_type=self.alert_type,
-                severity="critical",
-                metric_name="rx_rate_pct",
-                metric_value=round(capacity_pct, 1),
-                threshold_value=settings.capacity_low_critical_pct,
-                message=(
-                    f"ALERTE CRITIQUE : capacité UL très faible sur {device_name} : "
-                    f"{capacity_pct:.1f}% de la capacité nominale "
-                    f"({rx_rate:.1f}/{rx_ideal:.1f} Mbps)"
-                ),
-            )
-        if capacity_pct < settings.capacity_low_warning_pct:
-            return AlertEvalResult(
-                alert_type=self.alert_type,
-                severity="warning",
-                metric_name="rx_rate_pct",
-                metric_value=round(capacity_pct, 1),
-                threshold_value=settings.capacity_low_warning_pct,
-                message=(
-                    f"ALERTE WARNING : capacité UL dégradée sur {device_name} : "
-                    f"{capacity_pct:.1f}% de la capacité nominale "
-                    f"({rx_rate:.1f}/{rx_ideal:.1f} Mbps)"
-                ),
-            )
-        return AlertEvalResult(
-            alert_type=self.alert_type,
-            severity=None,
-            metric_name="rx_rate_pct",
-            metric_value=round(capacity_pct, 1),
-            threshold_value=None,
-            message=f"RECOVERY : capacité UL de {device_name} de nouveau nominale",
-        )
-
-
-# ---------------------------------------------------------------------------
-# Famille D — Anomalie de débit (throughput_anomaly)
-# ---------------------------------------------------------------------------
-
-
-class ThroughputAnomalyRule(AlertRule):
-    """
-    Détecte une chute soudaine du débit par rapport à la baseline mobile.
-
-    L'engine injecte `tx_rate_ema_mbps` (moyenne exponentielle calculée sur
-    les derniers cycles) avant d'appeler evaluate(). Si le débit actuel est
-    inférieur à (EMA × (1 - drop_pct/100)) et que la baseline est
-    suffisamment haute (≥ min_mbps), une alerte warning est émise.
-    """
-
-    alert_type = "throughput_anomaly"
-
-    def evaluate(self, device_name: str, metrics: dict, settings) -> AlertEvalResult:
-        tx_rate = metrics.get("tx_rate_mbps")
-        ema = metrics.get("tx_rate_ema_mbps")
-
-        # Need both current rate and a baseline to compare against
-        if tx_rate is None or ema is None:
-            return AlertEvalResult(
-                alert_type=self.alert_type,
-                severity=None,
-                metric_name="tx_drop_pct",
-                metric_value=None,
-                threshold_value=None,
-                message="",
-                skip=True,
-            )
-
-        # Don't alert on nearly-idle links — no meaningful baseline
-        if ema < settings.throughput_anomaly_min_mbps:
-            return AlertEvalResult(
-                alert_type=self.alert_type,
-                severity=None,
-                metric_name="tx_drop_pct",
-                metric_value=None,
-                threshold_value=None,
-                message=f"RECOVERY : débit DL de {device_name} de nouveau nominal (baseline insuffisante pour détecter anomalie)",
-            )
-
-        drop_pct = max(0.0, (ema - tx_rate) / ema * 100.0)
-
-        if drop_pct >= settings.throughput_anomaly_drop_pct:
-            return AlertEvalResult(
-                alert_type=self.alert_type,
-                severity="warning",
-                metric_name="tx_drop_pct",
-                metric_value=round(drop_pct, 1),
-                threshold_value=settings.throughput_anomaly_drop_pct,
-                message=(
-                    f"ALERTE WARNING : chute de débit DL sur {device_name} : "
-                    f"{tx_rate:.1f} Mbps vs baseline {ema:.1f} Mbps "
-                    f"(−{drop_pct:.0f}%)"
-                ),
-            )
-        return AlertEvalResult(
-            alert_type=self.alert_type,
-            severity=None,
-            metric_name="tx_drop_pct",
-            metric_value=round(drop_pct, 1),
-            threshold_value=None,
-            message=f"RECOVERY : débit DL de {device_name} de nouveau nominal ({tx_rate:.1f} Mbps)",
         )
 
 
@@ -1317,7 +1128,6 @@ _ROCKET_RULES: list[AlertRule] = [
     Eth0DownRule(),
     CPEDisconnectedRule(),
     HighRxTxErrorsRule(),
-    ThroughputAnomalyRule(),
     RocketClientOverloadRule(),
 ]
 
@@ -1332,8 +1142,6 @@ _LR_RULES: list[AlertRule] = [
     CINRLowULRule(),
     CCQLowULRule(),
     RadioLinkDegradedRule(),
-    CapacityLowRule(),
-    CapacityLowULRule(),
     LrLinkSubstandardRule(),
 ]
 
@@ -1351,7 +1159,6 @@ _AIRMAX_ROCKET_RULES: list[AlertRule] = [
     CCQLowRule(),
     RadioLinkDegradedRule(),
     HighRxTxErrorsRule(),
-    ThroughputAnomalyRule(),
     RocketClientOverloadRule(),
 ]
 
@@ -1387,11 +1194,8 @@ FAILURE_THRESHOLDS: dict[str, str] = {
     "ccq_low": "ccq_failure_threshold",
     "cinr_ul_low": "cinr_failure_threshold",
     "ccq_ul_low": "ccq_failure_threshold",
-    "capacity_low": "capacity_failure_threshold",
-    "capacity_ul_low": "capacity_failure_threshold",
     "high_rx_tx_errors": "error_failure_threshold",
     "radio_link_degraded": "radio_degraded_failure_threshold",
-    "throughput_anomaly": "throughput_anomaly_failure_threshold",
     "lr_link_substandard": "lr_link_substandard_failure_threshold",
     "rocket_client_overload": "rocket_overload_failure_threshold",
     "af60_signal_low": "af60_signal_failure_threshold",

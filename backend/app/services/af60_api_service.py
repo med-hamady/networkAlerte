@@ -33,10 +33,10 @@ METRIC_UNITS: dict[str, str] = {
     "remote_snr_db":       "dB",
     "link_potential_pct":  "%",
     "total_capacity_mbps": "Mbps",
-    "tx_rate_mbps":        "Mbps",
-    "rx_rate_mbps":        "Mbps",
-    "tx_ideal_mbps":       "Mbps",
-    "rx_ideal_mbps":       "Mbps",
+    "dl_capacity_mbps":    "Mbps",
+    "ul_capacity_mbps":    "Mbps",
+    "dl_throughput_mbps":  "Mbps",
+    "ul_throughput_mbps":  "Mbps",
     "local_rx_rate_idx":   "x",
     "remote_rx_rate_idx":  "x",
     "distance_m":          "m",
@@ -99,14 +99,26 @@ def parse_af60_metrics(raw: dict) -> dict[str, float | None]:
 
     result["distance_m"] = _float(_nested(peer, "common", "distance"))
 
+    # DÉBIT réel (trafic écoulé), à distinguer de la capacité plus bas. Même
+    # UDAPI que le LTU : compteurs `common.counters`, clés `txRate`/`rxRate`,
+    # unité **bits par seconde** (vérifié sur un lien LTU, cf. ltu_api_service).
+    # ⚠ NON VÉRIFIÉ sur un AF60 physique — le firmware 60 GHz peut ne pas
+    # exposer ce bloc. Les clés restent alors à None plutôt que de valoir 0.
+    counters = _nested(peer, "common", "counters")
+    if isinstance(counters, dict):
+        tx_bps = _float(counters.get("txRate"))
+        rx_bps = _float(counters.get("rxRate"))
+        if tx_bps is not None:
+            result["dl_throughput_mbps"] = round(tx_bps / 1_000_000.0, 3)
+        if rx_bps is not None:
+            result["ul_throughput_mbps"] = round(rx_bps / 1_000_000.0, 3)
+
     lq = _nested(peer, "local", 0, "linkQuality")
     if isinstance(lq, dict):
         result["signal_dbm"] = _float(lq.get("signal"))
         result["snr_db"] = _float(lq.get("snr"))          # 60 GHz : SNR, pas CINR
-        result["tx_rate_mbps"] = _kbps_to_mbps(_nested(lq, "capacity", "dl"))
-        result["rx_rate_mbps"] = _kbps_to_mbps(_nested(lq, "capacity", "ul"))
-        result["tx_ideal_mbps"] = _kbps_to_mbps(_nested(lq, "capacity", "dlIdeal"))
-        result["rx_ideal_mbps"] = _kbps_to_mbps(_nested(lq, "capacity", "ulIdeal"))
+        result["dl_capacity_mbps"] = _kbps_to_mbps(_nested(lq, "capacity", "dl"))
+        result["ul_capacity_mbps"] = _kbps_to_mbps(_nested(lq, "capacity", "ul"))
         # Capacité totale = dl + ul (pas de capacity.combined sur l'AF60).
         dl = _float(_nested(lq, "capacity", "dl"))
         ul = _float(_nested(lq, "capacity", "ul"))

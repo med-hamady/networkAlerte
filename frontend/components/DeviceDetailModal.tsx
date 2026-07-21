@@ -265,10 +265,15 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
             {metrics.ul_cinr_db?.value    != null && <MetricRow label="CINR UL"         value={`${metrics.ul_cinr_db.value} dB`} />}
             {metrics.ccq_pct?.value       != null && <MetricRow label="CCQ DL"          value={<CcqValue pct={metrics.ccq_pct.value} warn={thresholds.ccq_warning_pct} crit={thresholds.ccq_critical_pct} />} />}
             {metrics.ul_ccq_pct?.value    != null && <MetricRow label="CCQ UL"          value={<CcqValue pct={metrics.ul_ccq_pct.value} warn={thresholds.ccq_warning_pct} crit={thresholds.ccq_critical_pct} />} />}
-            {metrics.tx_rate_mbps?.value  != null && <MetricRow label="Débit DL"        value={`${metrics.tx_rate_mbps.value.toFixed(1)} Mbps`} />}
-            {metrics.rx_rate_mbps?.value  != null && <MetricRow label="Débit UL"        value={`${metrics.rx_rate_mbps.value.toFixed(1)} Mbps`} />}
-            {metrics.tx_ideal_mbps?.value != null && <MetricRow label="Capacité DL"     value={`${metrics.tx_ideal_mbps.value.toFixed(1)} Mbps`} />}
-            {metrics.rx_ideal_mbps?.value != null && <MetricRow label="Capacité UL"     value={`${metrics.rx_ideal_mbps.value.toFixed(1)} Mbps`} />}
+            {/* DÉBIT = trafic réellement écoulé ; CAPACITÉ = ce que le lien
+                pourrait écouler. Deux mesures distinctes : les afficher avec
+                la même valeur revenait à mentir sur l'une des deux. */}
+            {metrics.dl_throughput_mbps?.value != null && <MetricRow label="Débit DL"    value={formatRate(metrics.dl_throughput_mbps.value)} />}
+            {metrics.ul_throughput_mbps?.value != null && <MetricRow label="Débit UL"    value={formatRate(metrics.ul_throughput_mbps.value)} />}
+            {metrics.dl_capacity_mbps?.value   != null && <MetricRow label="Capacité DL" value={`${metrics.dl_capacity_mbps.value.toFixed(1)} Mbps`} />}
+            {metrics.ul_capacity_mbps?.value   != null && <MetricRow label="Capacité UL" value={`${metrics.ul_capacity_mbps.value.toFixed(1)} Mbps`} />}
+            {metrics.dl_phy_rate_mbps?.value   != null && <MetricRow label="Modulation DL" value={`${metrics.dl_phy_rate_mbps.value.toFixed(1)} Mbps`} />}
+            {metrics.ul_phy_rate_mbps?.value   != null && <MetricRow label="Modulation UL" value={`${metrics.ul_phy_rate_mbps.value.toFixed(1)} Mbps`} />}
 
             {(metrics.total_capacity_mbps?.value != null ||
               metrics.link_potential_pct?.value != null ||
@@ -707,6 +712,14 @@ function Section({ title, children }: { title: React.ReactNode; children: React.
       </div>
     </div>
   )
+}
+
+// Un débit réel descend souvent sous le Mb/s (94 kb/s sur un lien au repos).
+// L'afficher en Mbps donnerait « 0.1 Mbps » pour toute la plage utile, donc on
+// bascule en kbps sous 1 Mbps.
+function formatRate(mbps: number): string {
+  if (mbps < 1) return `${Math.round(mbps * 1000)} kbps`
+  return `${mbps.toFixed(1)} Mbps`
 }
 
 function MetricRow({ label, value }: { label: string; value: React.ReactNode }) {

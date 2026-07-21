@@ -66,12 +66,8 @@ def test_parse_wstalist_maps_radio_metrics():
     assert m["signal_dbm"] == -55
     assert m["noise_dbm"] == -103
     assert m["ccq_pct"] == 99
-    assert m["tx_rate_mbps"] == 19.5
-    assert m["rx_rate_mbps"] == 58.5
     assert m["uptime_seconds"] == 40170
     assert m["remote_signal_dbm"] == -60
-    assert m["radio_rx_bytes"] == 366908719
-    assert m["radio_tx_bytes"] == 12437780
     # CINR ≈ SNR = signal − noise floor = -55 − (-103) = 48
     assert m["cinr_db"] == 48.0
 
@@ -90,3 +86,33 @@ def test_parse_wstalist_missing_fields_stay_none():
     assert m["signal_dbm"] == -50
     assert m["cinr_db"] is None
     assert m["ccq_pct"] is None
+
+
+def test_wstalist_owns_quality_and_the_consumption_counters():
+    """`wstalist` fournit la QUALITÉ et les COMPTEURS — pas la capacité.
+
+    Répartition des sources après la bascule vers le poll par l'AP :
+      - capacité / débit / potentiel  → l'AP ;
+      - compteurs d'octets            → ICI, et nulle part ailleurs. La conso
+        est facturée : elle garde le compteur du CPE, sa source depuis toujours.
+        Le compteur de l'AP pour la même station est un cumul d'une AUTRE
+        origine (55 Gio contre 2 Gio sur un même client au même instant) :
+        changer de source ferait facturer l'écart au client.
+      - qualité (signal/bruit/CINR/CCQ) → ICI pour les M5 seulement, car l'AP
+        n'expose aucun CCQ par station et annonce un CINR de 3 dB là où le SNR
+        réel est de 25 dB. Sur un 5AC, l'appelant ne retient que les compteurs.
+
+    La capacité ne doit JAMAIS revenir ici : deux sources sur la même clé
+    collapse feraient osciller la valeur d'un cycle à l'autre.
+    """
+    m = _parse_wstalist_metrics(_REAL_WSTALIST)
+    for absent in ("dl_capacity_mbps", "ul_capacity_mbps",
+                   "dl_throughput_mbps", "ul_throughput_mbps",
+                   "dl_phy_rate_mbps", "ul_phy_rate_mbps"):
+        assert absent not in m, f"{absent} ne doit pas venir du SSH"
+    # Compteurs : source de la consommation.
+    assert m["radio_rx_bytes"] == 366908719
+    assert m["radio_tx_bytes"] == 12437780
+    # Qualité : ce que l'AP ne sait pas donner d'un M5.
+    assert m["ccq_pct"] == 99
+    assert m["cinr_db"] == 48.0

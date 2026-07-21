@@ -9,8 +9,12 @@ Metrics extracted from wireless.peers[0] and wireless.radios[0]:
   noise_dbm         : noise floor at AP (dBm)
   ccq_pct / ul_ccq_pct : DL/UL link score 0–100 (LTU equivalent of CCQ)
   cinr_db / ul_cinr_db  : DL/UL CINR (dB)
-  tx_rate_mbps / rx_rate_mbps : actual DL/UL capacity (Kbps → Mbps)
-  tx_ideal_mbps / rx_ideal_mbps : ideal (uncapped) DL/UL capacity
+  dl_capacity_mbps / ul_capacity_mbps : actual DL/UL CAPACITY (Kbps → Mbps) —
+      what the link *could* carry. UI "RX CAPACITY". NOT the traffic in flight.
+  dl_throughput_mbps / ul_throughput_mbps : actual DL/UL THROUGHPUT (Kbps →
+      Mbps) — the traffic really flowing. UI "RX THROUGHPUT". Two different
+      things: a healthy idle link shows 86 Mbps capacity for 0.3 Mbps of
+      throughput. Never feed one from the other.
   total_capacity_mbps : capacity.combined (Kbps→Mbps) — UI "Total Capacity"
   link_potential_pct  : mean(linkScore.dl, linkScore.ul) — UI "Link Potential"
   local_rx_rate_idx   : mcs.txRate, AP→CPE downlink "Nx" — UI "Local RX Data Rate"
@@ -21,7 +25,6 @@ Metrics extracted from wireless.peers[0] and wireless.radios[0]:
   distance_m        : link distance (m)
   peer_uptime_s     : CPE uptime (s)
   peer_cpu_pct / peer_ram_pct : CPE CPU / RAM usage (%)
-  peer_tx_kbps / peer_rx_kbps : CPE throughput counters (Kbps)
 """
 
 import logging
@@ -43,10 +46,10 @@ METRIC_UNITS: dict[str, str] = {
     "ul_ccq_pct":          "%",
     "cinr_db":             "dB",
     "ul_cinr_db":          "dB",
-    "tx_rate_mbps":        "Mbps",
-    "rx_rate_mbps":        "Mbps",
-    "tx_ideal_mbps":       "Mbps",
-    "rx_ideal_mbps":       "Mbps",
+    "dl_capacity_mbps":    "Mbps",
+    "ul_capacity_mbps":    "Mbps",
+    "dl_throughput_mbps":  "Mbps",
+    "ul_throughput_mbps":  "Mbps",
     "total_capacity_mbps": "Mbps",
     "link_potential_pct":  "%",
     "local_rx_rate_idx":   "x",
@@ -58,8 +61,6 @@ METRIC_UNITS: dict[str, str] = {
     "peer_uptime_s":       "s",
     "peer_cpu_pct":        "%",
     "peer_ram_pct":        "%",
-    "peer_tx_kbps":        "Kbps",
-    "peer_rx_kbps":        "Kbps",
     "peer_tx_bytes":       "B",
     "peer_rx_bytes":       "B",
     "channel_width_mhz":   "MHz",
@@ -192,10 +193,12 @@ def _extract_peer_radio_metrics(peer: dict) -> dict[str, float | None]:
         "ul_ccq_pct":        None,
         "cinr_db":           None,
         "ul_cinr_db":        None,
-        "tx_rate_mbps":      None,
-        "rx_rate_mbps":      None,
-        "tx_ideal_mbps":     None,
-        "rx_ideal_mbps":     None,
+        "dl_capacity_mbps":  None,
+        "ul_capacity_mbps":  None,
+        # Traffic actually in flight (UI "RX THROUGHPUT") — distinct from the
+        # capacity above.
+        "dl_throughput_mbps": None,
+        "ul_throughput_mbps": None,
         # Derived link summary (UI "Total Capacity" / "Link Potential")
         "total_capacity_mbps": None,
         "link_potential_pct":  None,
@@ -210,8 +213,6 @@ def _extract_peer_radio_metrics(peer: dict) -> dict[str, float | None]:
         "peer_uptime_s":     None,
         "peer_cpu_pct":      None,
         "peer_ram_pct":      None,
-        "peer_tx_kbps":      None,
-        "peer_rx_kbps":      None,
         # Cumulative byte counters from AP's perspective for this peer.
         # AP→CPE (downlink, customer's download) = txBytes; CPE→AP = rxBytes.
         # Reported in 64-bit range by LTU firmware → no wrap handling needed.
@@ -231,11 +232,23 @@ def _extract_peer_radio_metrics(peer: dict) -> dict[str, float | None]:
         result["peer_ram_pct"] = _float(common.get("ram"))
         counters = common.get("counters")
         if isinstance(counters, dict):
-            # Try Kbps keys first, fall back to generic tx/rx (use is not None to keep 0 values)
-            tx = counters.get("txkbps")
-            result["peer_tx_kbps"] = _float(tx if tx is not None else counters.get("tx"))
-            rx = counters.get("rxkbps")
-            result["peer_rx_kbps"] = _float(rx if rx is not None else counters.get("rx"))
+            # THROUGHPUT — traffic actually flowing. Keys are `txRate`/`rxRate`
+            # and the unit is **bits per second**, both verified on a live
+            # LTU-Rocket link (fw afltu v2.4.1, 2026-07-20):
+            #   - rxRate 191961 ÷ 8 ÷ rxPPS 16 = exactly 1500 B/packet (MTU),
+            #     which only works out if the value is bps;
+            #   - read as kbps it would be 192 Mb/s on a link whose capacity is
+            #     51.8 Mb/s — impossible.
+            # These counters mirror the LOCAL device's wireless interface
+            # (byte-for-byte equal to `interfaces[].statistics` in the same
+            # response). We poll the ROCKET, so tx = AP→CPE = the customer's
+            # DOWNLINK. Same convention as peer_tx_bytes below.
+            tx_bps = _float(counters.get("txRate"))
+            rx_bps = _float(counters.get("rxRate"))
+            if tx_bps is not None:
+                result["dl_throughput_mbps"] = round(tx_bps / 1_000_000.0, 3)
+            if rx_bps is not None:
+                result["ul_throughput_mbps"] = round(rx_bps / 1_000_000.0, 3)
             # Cumulative byte counters (LTU firmware uses 64-bit txBytes/rxBytes
             # in common.counters). Source-of-truth for per-client consumption.
             result["peer_tx_bytes"] = _float(counters.get("txBytes"))
@@ -250,20 +263,14 @@ def _extract_peer_radio_metrics(peer: dict) -> dict[str, float | None]:
         result["ul_cinr_db"]    = _float(_nested(lq, "cinr", "ul"))
         result["ccq_pct"]       = _float(_nested(lq, "linkScore", "dl"))
         result["ul_ccq_pct"]    = _float(_nested(lq, "linkScore", "ul"))
-        # Actual capacity (Kbps → Mbps)
+        # CAPACITY — what the link could carry (Kbps → Mbps). The dashboard's
+        # "RX CAPACITY"; never the throughput above.
         dl_kbps = _float(_nested(lq, "capacity", "dl"))
         ul_kbps = _float(_nested(lq, "capacity", "ul"))
         if dl_kbps is not None:
-            result["tx_rate_mbps"] = dl_kbps / 1000.0
+            result["dl_capacity_mbps"] = round(dl_kbps / 1000.0, 2)
         if ul_kbps is not None:
-            result["rx_rate_mbps"] = ul_kbps / 1000.0
-        # Ideal (uncapped) capacity
-        dl_ideal = _float(_nested(lq, "capacity", "dlIdeal"))
-        ul_ideal = _float(_nested(lq, "capacity", "ulIdeal"))
-        if dl_ideal is not None:
-            result["tx_ideal_mbps"] = dl_ideal / 1000.0
-        if ul_ideal is not None:
-            result["rx_ideal_mbps"] = ul_ideal / 1000.0
+            result["ul_capacity_mbps"] = round(ul_kbps / 1000.0, 2)
         # Data-rate modulation multiplier ("Nx") from mcs. Only the AP-side
         # mcs carries txRate/rxRate (CPE-side has only a histogram), so BOTH
         # directions are read here:
@@ -301,9 +308,9 @@ def _extract_peer_radio_metrics(peer: dict) -> dict[str, float | None]:
     # Fallback Total Capacity for firmware without capacity.combined
     # (Link Potential is linkScore-based, independent of capacity).
     if result["total_capacity_mbps"] is None:
-        tx_r, rx_r = result["tx_rate_mbps"], result["rx_rate_mbps"]
-        if tx_r is not None and rx_r is not None:
-            result["total_capacity_mbps"] = round(tx_r + rx_r, 2)
+        dl_c, ul_c = result["dl_capacity_mbps"], result["ul_capacity_mbps"]
+        if dl_c is not None and ul_c is not None:
+            result["total_capacity_mbps"] = round(dl_c + ul_c, 2)
 
     return result
 

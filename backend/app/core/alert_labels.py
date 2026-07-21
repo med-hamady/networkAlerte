@@ -21,8 +21,6 @@ from app.core.alert_constants import (
     AT_BATTERY_INTERNAL_LOW,
     AT_BATTERY_LOW_CRIT,
     AT_BATTERY_LOW_WARN,
-    AT_CAPACITY_LOW,
-    AT_CAPACITY_UL_LOW,
     AT_CCQ_LOW,
     AT_CCQ_UL_LOW,
     AT_CINR_LOW,
@@ -50,7 +48,6 @@ from app.core.alert_constants import (
     AT_SWITCH_DOWN,
     AT_SWITCH_PORT_DOWN,
     AT_SWITCH_PORT_SPEED_LOW,
-    AT_THROUGHPUT_ANOMALY,
     AT_TRANSIT_UNAVAILABLE,
     AT_UISP_POWER_UNREACH,
     AT_VOLTAGE_ANOMALY,
@@ -79,9 +76,7 @@ ALERT_TYPE_LABELS: dict[str, str] = {
     AT_RADIO_LINK_DEGRADED:  "Lien radio dégradé",
 
     # Performance
-    AT_CAPACITY_LOW:         "Capacité du lien radio faible",
     AT_HIGH_RX_TX_ERRORS:    "Taux d'erreurs réseau élevé",
-    AT_THROUGHPUT_ANOMALY:   "Anomalie de débit détectée",
     AT_LR_LINK_SUBSTANDARD:  "Lien client sous le seuil",
     AT_ROCKET_CLIENT_OVERLOAD: "Station de base saturée (trop de clients)",
     AT_DEVICE_FLAPPING:      "Équipement instable (flapping répété)",
@@ -89,7 +84,6 @@ ALERT_TYPE_LABELS: dict[str, str] = {
     # Radio quality UL (uplink — client → base)
     AT_CCQ_UL_LOW:           "Qualité de connexion côté client faible",
     AT_CINR_UL_LOW:          "Qualité du signal côté client faible (CINR)",
-    AT_CAPACITY_UL_LOW:      "Capacité montante (côté client) faible",
 
     # Power & infra
     AT_UISP_POWER_UNREACH:   "UISP Power injoignable",
@@ -142,8 +136,6 @@ METRIC_LABELS: dict[str, str] = {
     "ul_cinr_db":      "Qualité signal/bruit côté client (dB)",
 
     # Performance
-    "tx_rate_pct":     "Capacité d'émission (%)",
-    "rx_rate_pct":     "Capacité de réception (%)",
     "error_rate_pct":  "Taux d'erreurs (%)",
     "tx_drop_pct":     "Taux de paquets perdus (%)",
     "lr_link_floors":  "Plancher lien client (potentiel/capacité/débit)",

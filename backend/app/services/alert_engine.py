@@ -122,40 +122,6 @@ async def _resolve_alert(
 
 
 # ---------------------------------------------------------------------------
-# Throughput baseline injection (EMA-based anomaly detection)
-# ---------------------------------------------------------------------------
-
-_THROUGHPUT_EMA_ALPHA = 0.05  # ~20-cycle half-life at 60 s/cycle ≈ 20 minutes
-
-
-async def _inject_throughput_baseline(
-    db: AsyncSession,
-    device_id: int,
-    metrics: dict,
-) -> dict:
-    """
-    Maintain an exponential moving average of tx_rate_mbps in AlertState and
-    inject it as tx_rate_ema_mbps for ThroughputAnomalyRule.
-    """
-    tx_rate = metrics.get("tx_rate_mbps")
-    if tx_rate is None:
-        return metrics
-
-    metrics = dict(metrics)
-    state = await _get_or_create_state(db, device_id, "_throughput_ema")
-
-    if state.last_metric_value is None:
-        ema = tx_rate  # cold start — seed with current value
-    else:
-        ema = _THROUGHPUT_EMA_ALPHA * tx_rate + (1 - _THROUGHPUT_EMA_ALPHA) * state.last_metric_value
-
-    state.last_metric_value = ema
-    state.last_evaluated_at = datetime.datetime.now(datetime.UTC)
-    metrics["tx_rate_ema_mbps"] = ema
-    return metrics
-
-
-# ---------------------------------------------------------------------------
 # Error counter injection (delta-based rules)
 # ---------------------------------------------------------------------------
 
@@ -243,8 +209,6 @@ async def evaluate_device_metrics(
 
     # Inject delta counters for error-based rules
     metrics = await _inject_error_deltas(db, device.id, metrics)
-    # Inject EMA baseline for throughput anomaly detection
-    metrics = await _inject_throughput_baseline(db, device.id, metrics)
     # Inject open-incident set for hysteresis-aware rules (signal_low)
     metrics = await _inject_open_alert_types(db, device.id, metrics)
     # For LRs, surface model_variant so per-family rules (lr_link_substandard)

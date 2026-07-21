@@ -66,9 +66,7 @@ AT_CCQ_LOW              = "ccq_low"
 AT_RADIO_LINK_DEGRADED  = "radio_link_degraded"
 
 # Performance (alert_rules)
-AT_CAPACITY_LOW         = "capacity_low"
 AT_HIGH_RX_TX_ERRORS    = "high_rx_tx_errors"
-AT_THROUGHPUT_ANOMALY   = "throughput_anomaly"
 
 # Power & infrastructure (jobs.power_poll_job, jobs.transit_probe_job, jobs.snmp_poll_job)
 AT_UISP_POWER_UNREACH   = "uisp_power_unreachable"
@@ -102,7 +100,6 @@ AT_LR_LINK_SUBSTANDARD = "lr_link_substandard"
 # Uplink (UL) quality — métriques bidirectionnelles du lien radio
 AT_CCQ_UL_LOW      = "ccq_ul_low"
 AT_CINR_UL_LOW     = "cinr_ul_low"
-AT_CAPACITY_UL_LOW = "capacity_ul_low"
 
 # airMAX (airOS) device availability — ping-based, device_ping_job
 AT_AIRMAX_DOWN     = "airmax_down"
@@ -174,13 +171,13 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_ROCKET_DOWN, AT_SWITCH_DOWN, AT_DEVICE_UNREACHABLE,
     AT_RADIO_INTERFACE_DOWN, AT_ETH0_DOWN, AT_CPE_DISCONNECTED,
     AT_SIGNAL_LOW, AT_CINR_LOW, AT_CCQ_LOW, AT_RADIO_LINK_DEGRADED,
-    AT_CAPACITY_LOW, AT_HIGH_RX_TX_ERRORS, AT_THROUGHPUT_ANOMALY,
+    AT_HIGH_RX_TX_ERRORS,
     AT_UISP_POWER_UNREACH, AT_BATTERY_LOW_WARN, AT_BATTERY_LOW_CRIT,
     AT_BATTERY_INTERNAL_LOW, AT_BATTERY_EXTERNAL_LOW,
     AT_VOLTAGE_ANOMALY, AT_MAINS_POWER_LOST,
     AT_TRANSIT_UNAVAILABLE, AT_SWITCH_PORT_DOWN,
     AT_LR_NO_TRANSIT, AT_SWITCH_PORT_SPEED_LOW, AT_LR_LINK_SUBSTANDARD,
-    AT_CCQ_UL_LOW, AT_CINR_UL_LOW, AT_CAPACITY_UL_LOW,
+    AT_CCQ_UL_LOW, AT_CINR_UL_LOW,
     AT_AIRMAX_DOWN,
     AT_LR_DISCOVERED, AT_LR_IP_CHANGED, AT_LR_REASSIGNED,
     AT_LR_BRIDGE_MODE_MISCONFIG,
@@ -235,8 +232,8 @@ WHATSAPP_ALERT_TYPES: frozenset[str] = frozenset({
 # incident_service.is_suppressed_incident, the single chokepoint.
 #
 # The split is by DEVICE, not by alert_type: the radio alert_types (signal_low,
-# ccq_low, cinr_low, capacity_low, radio_link_degraded, high_rx_tx_errors,
-# throughput_anomaly) fire on BOTH base-station Rockets (infra → kept) and
+# ccq_low, cinr_low, radio_link_degraded, high_rx_tx_errors,
+# high_rx_tx_errors) fire on BOTH base-station Rockets (infra → kept) and
 # subscriber LRs (client → dropped), so filtering on the alert_type string would
 # wrongly silence real infra alerts. Two explicit exceptions override the device
 # rule:

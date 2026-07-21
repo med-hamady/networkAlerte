@@ -259,8 +259,11 @@ export default function ContentBlockPage() {
               </div>
 
               {!isAllow && selected.has('google') && (
-                <p className="text-[11px] text-amber-700 mt-2">
-                  ⚠ Bloquer Google coupe aussi YouTube et de nombreux services (reCAPTCHA, cartes…).
+                <p className="text-[11px] text-amber-700 mt-2 leading-relaxed">
+                  ⚠ « Google » ne couvre <strong>pas</strong> YouTube (case séparée). En revanche
+                  il coupe la recherche, Drive, Maps — et de nombreux sites tiers qui s'appuient
+                  sur Google (reCAPTCHA, cartes intégrées, polices). À n'utiliser qu'en connaissance
+                  de cause.
                 </p>
               )}
               {isAllow && (

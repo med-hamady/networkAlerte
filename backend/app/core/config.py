@@ -13,7 +13,8 @@ CONTENT_BLOCK_LABELS: dict[str, str] = {
     "whatsapp": "WhatsApp",
     "tiktok": "TikTok",
     "snapchat": "Snapchat",
-    "google": "Google / YouTube",
+    "youtube": "YouTube",
+    "google": "Google (recherche, Drive, Maps…)",
     "telegram": "Telegram",
 }
 
@@ -403,9 +404,22 @@ class Settings(BaseSettings):
         "byteoversea.com,musical.ly,tiktokcdn-us.com"
     )
     content_block_domains_snapchat: str = "snapchat.com,sc-cdn.net,snap.com,snapkit.com"
+    # YouTube is deliberately SEPARATE from Google: they share Google's IP space
+    # (youtube.com and google.com both resolve into AS15169), so only DNS can
+    # tell them apart — blocking YouTube must not take search/Drive/Maps down.
+    #   googlevideo.com = the video CDN (kills playback), ytimg/ggpht = thumbs
+    #   and avatars, youtubei.googleapis.com = the mobile app's API. That last
+    #   one is a *subdomain* of googleapis.com and dnsmasq honours the most
+    #   specific rule, so it dies without touching maps.googleapis.com & co.
+    content_block_domains_youtube: str = (
+        "youtube.com,youtu.be,ytimg.com,googlevideo.com,ggpht.com,"
+        "youtubei.googleapis.com"
+    )
+    # Google proper — search, Drive, Maps, and the shared JS/API hosts. Blocking
+    # this breaks a great many third-party sites (reCAPTCHA, embedded Maps,
+    # fonts): it is a heavy hammer, hence the warning in the UI.
     content_block_domains_google: str = (
-        "google.com,googlevideo.com,youtube.com,youtu.be,ytimg.com,"
-        "gstatic.com,googleapis.com,googleusercontent.com,ggpht.com"
+        "google.com,gstatic.com,googleapis.com,googleusercontent.com"
     )
     content_block_domains_telegram: str = "telegram.org,telegram.me,t.me,telesco.pe,tdesktop.com"
 

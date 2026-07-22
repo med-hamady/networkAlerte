@@ -234,6 +234,20 @@ class Lr(Device):
     block_unenforceable_reason: Mapped[str | None] = mapped_column(
         String(255), nullable=True,
     )
+    # ── Repli routeur ────────────────────────────────────────────────────────
+    # Une règle drop est-elle en place sur le MikroTik pour ce client ? C'est le
+    # filet de sécurité du blocage : le LR peut être éteint ou refuser le SSH, le
+    # routeur de cœur coupe quand même. L'état DÉSIRÉ n'est pas stocké — il se
+    # dérive (`client_blocked` ET coupure LR non confirmée, cf.
+    # client_block_service._reconcile_router) ; cette colonne mémorise seulement
+    # ce qui est POSÉ, pour n'appeler le routeur que sur transition. Sans elle, la
+    # réconciliation interrogerait le routeur pour chaque client à chaque cycle.
+    router_blocked: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false",
+    )
+    router_blocked_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
     # ── Content block (per-category destination filter) ──────────────────────
     # Independent of `block_mode`: the client stays fully online EXCEPT toward
     # the selected services (e.g. ["tiktok","google"]). Enforced DNS-only on the

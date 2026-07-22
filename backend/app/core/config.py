@@ -61,6 +61,20 @@ class Settings(BaseSettings):
     # texte, dans un volume bind-monté → survit aux redéploiements.
     fai_log_path: str = "/app/logs/fai_actions.log"
 
+    # ── Repli MikroTik ──────────────────────────────────────────────────────
+    # Filet de sécurité du blocage client : quand la coupure sur le LR n'aboutit
+    # pas (LR éteint, SSH refusé, mot de passe rejeté), on pose une règle drop sur
+    # le routeur de cœur, qui coupe sans dépendre de l'équipement du client.
+    # Voir `mikrotik_service` et `client_block_service._reconcile_router`.
+    # Off par défaut : sans mot de passe le repli reste inactif et le système se
+    # comporte exactement comme avant.
+    mikrotik_enabled: bool = False
+    mikrotik_host: str = "10.135.0.1"     # IP LAN du routeur (celle du NetFlow)
+    mikrotik_port: int = 8728             # API RouterOS binaire
+    mikrotik_user: str = "Suspension"     # compte dédié aux opérations firewall
+    mikrotik_password: str = ""
+    mikrotik_timeout: float = 15.0
+
     # CORS — comma-separated origins. Leave empty to disable cross-origin sharing.
     cors_origins: str = "http://localhost:3000"
 

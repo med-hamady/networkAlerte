@@ -42,7 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import CONTENT_BLOCK_LABELS, get_settings
 from app.models.device import Lr
 from app.schemas.device import normalize_mac
-from app.services import fai_audit, ssh_service
+from app.services import fai_audit, mikrotik_service, ssh_service
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +281,132 @@ async def _neutralize_other(lr: Lr) -> None:
         )
 
 
+# ── Repli routeur ───────────────────────────────────────────────────────────
+# Le blocage sur le LR échoue dès que celui-ci est éteint, refuse le SSH ou rejette
+# nos identifiants — et un client qu'on n'arrive pas à couper garde son accès malgré
+# son impayé (run du 2026-07-14 : 163/222 dans ce cas, dont ZÉRO refus de mot de
+# passe : un repli limité aux échecs structurels ne se déclencherait jamais).
+#
+# Le routeur de cœur coupe sans dépendre de l'équipement du client. Il prend donc le
+# relais tant que la coupure sur le LR n'est pas confirmée, et se retire dès qu'elle
+# l'est — le routeur ne garde que les irréductibles.
+
+
+def desired_router_block(lr: Lr) -> bool:
+    """Le routeur doit-il couper ce client ?
+
+    Règle entièrement dérivée de l'état déjà stocké — aucune colonne d'intention
+    supplémentaire à tenir synchronisée. Le routeur prend le relais quand le
+    client doit être coupé ET que son LR ne le fait pas :
+
+      - `client_block_enforced_at IS NULL` → la coupure n'a jamais abouti. C'est
+        le cas de masse (163/222 le 2026-07-14).
+      - `block_unenforceable_reason` → on a ABANDONNÉ le LR (mot de passe rejeté,
+        clé d'hôte, mauvaise identité) : le job ne le retentera plus, donc un
+        client coupé autrefois puis dont le LR a rebooté resterait en ligne
+        indéfiniment sans ce second cas.
+
+    On ne se base délibérément PAS sur « la dernière tentative a échoué » : un
+    échec transitoire (paquet perdu) ferait poser puis retirer une règle à chaque
+    cycle, et le routeur passerait son temps à encaisser ce va-et-vient. Les deux
+    conditions ci-dessus sont stables.
+
+    Volontairement indépendant de `block_mode` : une règle routeur est un DROP
+    total, donc un client en `whatsapp_only` dont le LR est injoignable perd aussi
+    WhatsApp. Arbitrage assumé (décision 2026-07-22) — garantir la coupure prime.
+    """
+    if not lr.client_blocked:
+        return False
+    return lr.client_block_enforced_at is None or lr.block_unenforceable_reason is not None
+
+
+async def _reconcile_router(lr: Lr) -> str | None:
+    """Aligne le routeur sur l'état désiré. Retourne un message si on a agi.
+
+    N'appelle le routeur QUE sur transition (désir ≠ ce qui est posé) : sans ce
+    garde-fou, la réconciliation ouvrirait une session API par client bloqué à
+    chaque cycle de 120 s, ce qui saturerait le routeur.
+
+    Un échec laisse `router_blocked` inchangé → l'écart persiste et le cycle
+    suivant réessaie. Ne lève jamais.
+    """
+    if not mikrotik_service.is_enabled():
+        return None
+
+    desired = desired_router_block(lr)
+    if desired == lr.router_blocked:
+        return None  # déjà aligné — aucun appel au routeur
+
+    if desired:
+        ok, msg = await mikrotik_service.block_by_mac(
+            lr.mac_address, mikrotik_service.build_comment(lr.name or f"lr-{lr.id}"),
+        )
+        if ok:
+            lr.router_blocked = True
+            lr.router_blocked_at = _now()
+            logger.warning(
+                "ROUTER BLOCK — LR '%s' (id=%d, %s) coupé sur le routeur : %s",
+                lr.name, lr.id, lr.mac_address, msg,
+            )
+            fai_audit.log_action(
+                "ROUTER_BLOCK", ok=True, mac=lr.mac_address, name=lr.name,
+                mode=lr.block_mode, source="enforce", message=msg,
+            )
+        else:
+            logger.warning(
+                "ROUTER BLOCK non posé — LR '%s' (id=%d) : %s — nouvelle tentative "
+                "au prochain cycle",
+                lr.name, lr.id, msg,
+            )
+        return msg
+
+    ok, msg = await mikrotik_service.unblock_by_mac(lr.mac_address)
+    if ok:
+        lr.router_blocked = False
+        lr.router_blocked_at = None
+        logger.warning(
+            "ROUTER UNBLOCK — LR '%s' (id=%d, %s) règle retirée : %s",
+            lr.name, lr.id, lr.mac_address, msg,
+        )
+        fai_audit.log_action(
+            "ROUTER_UNBLOCK", ok=True, mac=lr.mac_address, name=lr.name,
+            mode=lr.block_mode, source="enforce", message=msg,
+        )
+    else:
+        logger.warning(
+            "ROUTER UNBLOCK non appliqué — LR '%s' (id=%d) : %s — nouvelle "
+            "tentative au prochain cycle",
+            lr.name, lr.id, msg,
+        )
+    return msg
+
+
+async def _clear_router_block(lr: Lr) -> str | None:
+    """Retrait inconditionnel des règles routeur de ce client (déblocage).
+
+    Tenté même quand `router_blocked` est faux : le retrait cible TOUTES les règles
+    drop de cette MAC, y compris celles posées par le système historique. Un client
+    débloqué chez nous ne doit pas rester coupé par une règle qu'on n'a pas posée.
+    """
+    if not mikrotik_service.is_enabled():
+        return None
+    ok, msg = await mikrotik_service.unblock_by_mac(lr.mac_address)
+    if ok:
+        if lr.router_blocked:
+            fai_audit.log_action(
+                "ROUTER_UNBLOCK", ok=True, mac=lr.mac_address, name=lr.name,
+                mode=lr.block_mode, source="enforce", message=msg,
+            )
+        lr.router_blocked = False
+        lr.router_blocked_at = None
+    else:
+        logger.warning(
+            "ROUTER UNBLOCK (déblocage) non appliqué — LR '%s' (id=%d) : %s",
+            lr.name, lr.id, msg,
+        )
+    return msg
+
+
 async def block_client(
     session: AsyncSession, lr: Lr, reason: str | None, mode: str | None = None
 ) -> tuple[bool, str]:
@@ -324,6 +450,8 @@ async def block_client(
     if ok:
         lr.client_block_enforced_at = _now()
         lr.block_unenforceable_reason = None
+        # La coupure LR est confirmée → le routeur n'a plus à couvrir ce client.
+        await _reconcile_router(lr)
         await session.commit()
         logger.warning(
             "CLIENT BLOCK appliqué — LR '%s' (id=%d, %s) mode=%s — motif: %s",
@@ -334,8 +462,30 @@ async def block_client(
 
     structural = _structural_failure(msg)
     lr.block_unenforceable_reason = structural  # None = transitoire → on réessaiera
+
+    # Le LR n'a pas coupé : le routeur prend le relais pour que le client soit
+    # effectivement coupé malgré tout. C'est le cœur du repli.
+    router_msg = await _reconcile_router(lr)
     await session.commit()
 
+    if lr.router_blocked:
+        logger.warning(
+            "CLIENT BLOCK — LR '%s' (id=%d) non coupé en SSH (%s) mais COUPÉ SUR "
+            "LE ROUTEUR",
+            lr.name, lr.id, msg,
+        )
+        suffix = (
+            " Le job de renforcement continue d'essayer de couper le LR lui-même."
+            if not structural
+            else " Le LR refuse la connexion — intervention technique requise pour "
+            "y appliquer la coupure, mais le client est bien coupé."
+        )
+        return (
+            True,
+            f"Client {lr.name} bloqué sur le routeur ({msg} côté LR).{suffix}",
+        )
+
+    router_note = f" Repli routeur : {router_msg}" if router_msg else ""
     if structural:
         logger.error(
             "CLIENT BLOCK ABANDONNÉ — LR '%s' (id=%d, %s) : %s — échec SSH "
@@ -346,7 +496,7 @@ async def block_client(
             False,
             f"Blocage ({label}) enregistré pour {lr.name} mais IMPOSSIBLE à "
             f"appliquer ({msg}). Connexion au LR refusée — intervention "
-            f"technique requise, aucune nouvelle tentative automatique.",
+            f"technique requise, aucune nouvelle tentative automatique.{router_note}",
         )
 
     logger.warning(
@@ -358,7 +508,7 @@ async def block_client(
         False,
         f"Blocage ({label}) enregistré pour {lr.name} mais NON appliqué "
         f"({msg}). Le job de renforcement réessaiera automatiquement dès que "
-        f"le LR sera joignable.",
+        f"le LR sera joignable.{router_note}",
     )
 
 
@@ -376,18 +526,27 @@ async def unblock_client(session: AsyncSession, lr: Lr) -> tuple[bool, str]:
     lr.client_block_enforced_at = None
 
     if not _has_ssh(lr):
+        # Même sans SSH, une règle routeur a pu couper ce client : la retirer est
+        # justement ce qui lui rend l'accès dans ce cas.
+        await _clear_router_block(lr)
         await session.commit()
         return (
             False,
-            f"Intention de blocage levée pour {lr.name}, mais sans identifiants "
-            f"SSH l'accès n'a pas pu être rétabli sur le LR. Configure les "
-            f"credentials puis relance le déblocage.",
+            f"Intention de blocage levée pour {lr.name} (et règle routeur retirée), "
+            f"mais sans identifiants SSH une éventuelle coupure locale sur le LR n'a "
+            f"pas pu être levée. Configure les credentials puis relance le déblocage.",
         )
 
     # Idem block_client : on acquitte l'intention et on rend la connexion au pool
     # avant de partir en SSH, pour que N déblocages simultanés (le batch du matin
     # après une nuit de paiements) ne saturent pas le pool.
     await session.commit()
+
+    # Retrait routeur INCONDITIONNEL, avant même le SSH : c'est ce qui rend l'accès
+    # aux clients que seul le routeur coupait, et ça nettoie au passage les règles
+    # posées par le système historique pour cette MAC.
+    router_msg = await _clear_router_block(lr)
+    router_note = f" Routeur : {router_msg}" if router_msg else ""
 
     ok, msg = await _clear_block(lr)
     if ok:
@@ -398,7 +557,7 @@ async def unblock_client(session: AsyncSession, lr: Lr) -> tuple[bool, str]:
             "CLIENT UNBLOCK — LR '%s' (id=%d, %s) accès rétabli",
             lr.name, lr.id, lr.ip_address,
         )
-        return True, f"Accès internet rétabli pour {lr.name}. {msg}"
+        return True, f"Accès internet rétabli pour {lr.name}. {msg}{router_note}"
 
     structural = _structural_failure(msg)
     # Transitoire → on retente jusqu'à ce que le LR réponde. Structurel → inutile
@@ -475,15 +634,28 @@ async def enforce_blocked_clients(session: AsyncSession) -> int:
         who paid while his LR was off stays cut forever: clearing the intent takes
         him out of the block loop, and nothing else would ever restore him.
 
-    LRs marked `block_unenforceable_reason` (wrong password, host-key mismatch) are
-    skipped: they answer but refuse the login, so retrying every cycle is pointless
-    noise — they're logged once to the FAI journal for a technician. Returns the
-    count of orders successfully applied this pass.
+    Deux plans se superposent ici, et ils n'ont PAS le même périmètre :
+
+      - le plan SSH saute les LR marqués `block_unenforceable_reason` (mot de passe
+        rejeté, clé d'hôte) : ils répondent mais refusent le login, les retenter
+        chaque cycle n'est que du bruit.
+      - le plan ROUTEUR les visite au contraire TOUS — ce sont précisément les
+        clients abandonnés qu'il doit couvrir, sinon ils resteraient en ligne pour
+        toujours. Le repli n'appelle le routeur que sur transition (cf.
+        `_reconcile_router`), donc ce balayage élargi ne coûte rien quand l'état
+        est déjà aligné.
+
+    Le `router_blocked` dans la requête rattrape le cas d'une règle restée en place
+    après un déblocage dont le retrait avait échoué. Returns the count of orders
+    successfully applied this pass.
     """
     result = await session.execute(
         select(Lr).where(
-            Lr.block_unenforceable_reason.is_(None),
-            or_(Lr.client_blocked.is_(True), Lr.unblock_pending.is_(True)),
+            or_(
+                Lr.client_blocked.is_(True),
+                Lr.unblock_pending.is_(True),
+                Lr.router_blocked.is_(True),
+            ),
         )
     )
     pending = list(result.scalars().all())
@@ -492,12 +664,25 @@ async def enforce_blocked_clients(session: AsyncSession) -> int:
 
     enforced = 0
     for lr in pending:
+        # Plan routeur d'abord : il ne dépend ni du SSH ni de l'état d'abandon,
+        # et c'est lui qui garantit la coupure quand le LR ne répond pas.
+        await _reconcile_router(lr)
+
+        if lr.block_unenforceable_reason is not None:
+            await session.commit()  # persiste l'éventuel changement côté routeur
+            continue  # LR abandonné : pas de SSH, le routeur a pris le relais
+
         if not _has_ssh(lr):
             logger.warning(
                 "enforce_blocked_clients: LR '%s' (id=%d) sans identifiants SSH "
                 "— ordre non garanti",
                 lr.name, lr.id,
             )
+            await session.commit()
+            continue
+
+        if not lr.client_blocked and not lr.unblock_pending:
+            await session.commit()  # visité pour le seul nettoyage routeur
             continue
 
         blocking = lr.client_blocked
@@ -532,6 +717,11 @@ async def enforce_blocked_clients(session: AsyncSession) -> int:
                 "tentative au prochain cycle",
                 lr.name, lr.id, action, msg,
             )
+
+        # Le SSH vient peut-être de changer l'état désiré (coupure confirmée → la
+        # règle routeur devient inutile ; abandon → elle devient nécessaire). On
+        # réaligne tout de suite plutôt que d'attendre le cycle suivant.
+        await _reconcile_router(lr)
         await session.commit()
 
     return enforced

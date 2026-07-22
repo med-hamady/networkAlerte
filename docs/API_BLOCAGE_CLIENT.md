@@ -13,6 +13,10 @@ installé chez lui) et l'action souhaitée. Nous appliquons l'ordre **directemen
 cet équipement**, et nous le **maintenons** : si le client redémarre ou débranche son
 matériel, le blocage est ré-appliqué automatiquement à son retour.
 
+Et si son équipement ne répond pas du tout — éteint, débranché, inaccessible — la
+coupure est posée **sur le routeur central**, qui n'a besoin de rien chez le client.
+Vous n'avez pas à gérer ce cas : un seul appel, et la coupure est garantie.
+
 Trois opérations, et rien d'autre à connaître :
 
 | Objectif | Appel |
@@ -119,43 +123,51 @@ votre intégration** : il n'existe pas d'environnement de test, les appels `bloc
   "block_mode": "full",
   "client_block_enforced_at": "2026-07-14T10:32:11Z",
   "retry_scheduled": false,
-  "unenforceable_reason": null
+  "unenforceable_reason": null,
+  "enforced_by": "lr",
+  "router_blocked": false
 }
 ```
 
 | Champ | Signification |
 |---|---|
 | `client_blocked` | **L'état officiel du client chez nous.** C'est ce champ qui fait foi. |
-| `ok` | L'ordre a-t-il été appliqué **sur l'équipement à cet instant** |
+| `ok` | **Le client est-il effectivement coupé** (par son équipement ou par le routeur) |
 | `message` | Message lisible, à journaliser de votre côté |
 | `name` | Nom du client tel que nous le connaissons (contrôle de cohérence) |
 | `block_mode` | Mode actif (`full` ou `whatsapp_only`) |
 | `client_block_enforced_at` | Dernière application effective sur l'équipement (`null` = jamais) |
+| `enforced_by` | Par quel moyen : `"lr"` (son équipement), `"router"` (le routeur central), `null` (pas coupé) |
+| `router_blocked` | Une règle de coupure est en place sur le routeur central |
 | `retry_scheduled` | `true` = non appliqué pour l'instant, mais **sera rejoué automatiquement** |
-| `unenforceable_reason` | Non `null` = l'équipement **refuse la connexion** : pas de rattrapage automatique, intervention technique nécessaire |
+| `unenforceable_reason` | Non `null` = l'équipement **refuse la connexion**. Le client reste coupé par le routeur, mais une intervention technique est nécessaire pour rétablir la coupure sur son équipement |
 
 ---
 
-## 7. Le point clé de l'intégration : `ok: false` n'est pas un échec
+## 7. Le point clé de l'intégration : `ok: true` = coupure garantie
 
-L'équipement d'un client peut être **éteint** au moment de votre appel. Dans ce cas nous
-répondons `HTTP 200` avec `ok: false`, `client_blocked` à jour et `retry_scheduled: true` :
-**l'ordre est enregistré** et notre système l'applique automatiquement dès que
-l'équipement revient en ligne — y compris des jours plus tard.
+`ok: true` signifie que **le client est effectivement coupé**, peu importe comment :
+sur son propre équipement (`enforced_by: "lr"`) ou, si celui-ci ne répondait pas, sur
+le routeur central (`enforced_by: "router"`). C'est le cas de la très grande majorité
+des appels, y compris quand le client a débranché son matériel.
+
+Il reste un cas où `ok` vaut `false` : ni l'équipement **ni** le routeur n'ont pu être
+joints. L'ordre est malgré tout **enregistré** (`client_blocked` est à jour) et notre
+système le rejoue automatiquement — y compris des jours plus tard.
 
 C'est vrai **dans les deux sens** : un client qui paie alors que son équipement est
 débranché sera rétabli à son retour, sans nouvelle sollicitation de votre part.
 
 > **Ne rejouez pas l'appel en boucle.** Le rattrapage est déjà pris en charge. Un système
-> qui réessaie sur ces réponses ne fait que boucler inutilement sur des clients éteints.
+> qui réessaie sur ces réponses ne fait que boucler inutilement.
 
 La règle tient en trois lignes :
 
 | Réponse | Ce que ça veut dire | Ce que vous faites |
 |---|---|---|
-| `ok: true` | Appliqué sur l'équipement | Rien |
+| `ok: true` | **Client coupé**, garanti | Rien |
 | `ok: false` + `retry_scheduled: true` | Enregistré, application différée | Journaliser. **Ne pas réessayer.** |
-| `ok: false` + `unenforceable_reason` | L'équipement refuse la connexion | **Nous le signaler** — il n'y aura pas de rattrapage |
+| `unenforceable_reason` renseigné | L'équipement du client refuse la connexion (le routeur prend le relais) | **Nous le signaler** — une intervention technique est nécessaire |
 
 ---
 
@@ -265,6 +277,10 @@ $estBloque = $data["client_blocked"];   // fait foi — pas $data["ok"]
   immédiatement, puis appliquées progressivement.
 - **Persistance** : un blocage survit au redémarrage de l'équipement du client (il est
   ré-appliqué toutes les 2 minutes).
+- **Coupure via le routeur** : quand elle prend le relais, elle coupe **tout** — un client
+  bloqué en mode `whatsapp_only` dont l'équipement ne répond pas perd donc aussi WhatsApp.
+  La règle du routeur est retirée automatiquement dès que la coupure aboutit sur son
+  équipement, ou au déblocage.
 - **Traçabilité** : chaque action est journalisée de notre côté (date, MAC, client, motif,
   résultat) et consultable par les opérateurs.
 - **Limite connue** : le mode `whatsapp_only` laisse aussi passer Facebook et Instagram —

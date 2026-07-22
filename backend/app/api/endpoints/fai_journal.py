@@ -67,6 +67,10 @@ class AttentionRow(BaseModel):
     intent: Literal["block", "unblock"]
     reason: str | None
     since: datetime.datetime | None
+    # Le repli a-t-il pris le relais ? Change radicalement la lecture de la ligne :
+    # le client EST coupé (par le routeur), seule la coupure sur son équipement
+    # reste à faire. Sans ce drapeau, l'opérateur croirait le client en ligne.
+    router_blocked: bool
 
 
 class JournalResponse(BaseModel):
@@ -107,11 +111,13 @@ async def get_journal(
             intent="block" if lr.client_blocked else "unblock",
             reason=lr.block_unenforceable_reason,
             since=lr.client_blocked_at,
+            router_blocked=lr.router_blocked,
         )
         for lr in result.scalars().all()
     ]
-    # Les cas bloquants (intervention technique) d'abord.
-    attention.sort(key=lambda r: (r.kind != "unenforceable", r.name))
+    # Les cas bloquants d'abord, et parmi eux ceux que le routeur ne couvre PAS —
+    # ce sont les seuls où un client reste réellement en ligne sans rien payer.
+    attention.sort(key=lambda r: (r.router_blocked, r.kind != "unenforceable", r.name))
 
     return JournalResponse(
         entries=[JournalEntry(**e) for e in entries],

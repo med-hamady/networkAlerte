@@ -90,11 +90,27 @@ class FaiBlockResult(BaseModel):
     # Renseigné quand le LR REFUSE la connexion SSH (mot de passe, host key) :
     # aucune nouvelle tentative automatique, une intervention technique est requise.
     unenforceable_reason: str | None
+    # Par quel mécanisme le client est effectivement coupé :
+    #   "lr"     → coupure appliquée sur son équipement (mécanisme nominal)
+    #   "router" → repli : règle drop sur le routeur de cœur, parce que le LR ne
+    #              répondait pas ou refusait la connexion
+    #   null     → pas coupé
+    enforced_by: Literal["lr", "router"] | None
+    # Une règle de blocage est-elle en place sur le routeur pour ce client ?
+    router_blocked: bool
 
 
 def _result(lr: Lr, ok: bool, message: str) -> FaiBlockResult:
     """Snapshot the LR's block state — same payload for block / unblock / status."""
     blocked_reason = lr.block_unenforceable_reason
+    if not lr.client_blocked:
+        enforced_by = None
+    elif lr.client_block_enforced_at is not None and blocked_reason is None:
+        enforced_by = "lr"
+    elif lr.router_blocked:
+        enforced_by = "router"
+    else:
+        enforced_by = None  # ordre pris, pas encore appliqué
     return FaiBlockResult(
         ok=ok,
         message=message,
@@ -106,6 +122,8 @@ def _result(lr: Lr, ok: bool, message: str) -> FaiBlockResult:
         # Un ordre non appliqué reste en file tant que l'échec est transitoire.
         retry_scheduled=(not ok) and blocked_reason is None,
         unenforceable_reason=blocked_reason,
+        enforced_by=enforced_by,
+        router_blocked=lr.router_blocked,
     )
 
 
@@ -200,5 +218,7 @@ async def fai_status(
     - 404 : aucun LR pour cette MAC.
     """
     lr = await _lookup_lr(db, mac)
-    state = "bloqué" if lr.client_blocked else "actif"
-    return _result(lr, ok=True, message=f"Accès {state}.")
+    if not lr.client_blocked:
+        return _result(lr, ok=True, message="Accès actif.")
+    where = " (coupé sur le routeur)" if lr.router_blocked else ""
+    return _result(lr, ok=True, message=f"Accès bloqué{where}.")

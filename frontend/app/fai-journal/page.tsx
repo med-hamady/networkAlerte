@@ -27,6 +27,11 @@ const ACTION_STYLE: Record<FaiJournalEntry['action'], { label: string; cls: stri
   // (ambre) — ici il n'y a rien à réparer sur le terrain, c'est la fiche qui
   // est périmée, et elle se corrigera dès que la découverte reverra le client.
   IDENT_KO: { label: 'Identité refusée', cls: 'bg-purple-50 text-purple-700 border-purple-200' },
+  // Le repli : la coupure n'a pas pu être posée sur l'équipement du client, elle
+  // l'a été sur le routeur de cœur. Teinte ardoise pour marquer « autre plan » —
+  // ce n'est ni un succès nominal (rouge/vert) ni un échec (ambre).
+  ROUTER_BLOCK:   { label: 'Coupé (routeur)',   cls: 'bg-slate-100 text-slate-700 border-slate-300' },
+  ROUTER_UNBLOCK: { label: 'Rétabli (routeur)', cls: 'bg-slate-100 text-slate-700 border-slate-300' },
 }
 
 // Qui a demandé l'action. `script` = blocage de masse (migration depuis le MikroTik).
@@ -71,9 +76,10 @@ export default function FaiJournalPage() {
         <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Journal des blocages</h1>
         <p className="text-blue-400 text-sm mt-1">
           Chaque coupure et rétablissement, qu'il vienne du <strong>système de paiement</strong>{' '}
-          ou du renforcement automatique. Un ordre non appliqué est rejoué toutes les 2 minutes —
-          sauf si le LR <strong>refuse la connexion</strong> (mot de passe, clé d'hôte) : il passe
-          alors en « à traiter » ci-dessous et attend une intervention technique.
+          ou du renforcement automatique. Un ordre non appliqué est rejoué toutes les 2 minutes.
+          Quand la coupure ne peut pas être posée sur l'équipement du client, elle l'est{' '}
+          <strong>sur le routeur</strong> : le client est coupé quand même, et la règle du routeur
+          est retirée dès que la coupure locale aboutit.
         </p>
       </div>
 
@@ -95,6 +101,7 @@ export default function FaiJournalPage() {
             <p className="text-xs text-amber-700 mt-0.5">
               Le LR répond mais rejette notre authentification SSH. Aucune nouvelle tentative
               automatique : corriger les identifiants sur la fiche, ou intervenir sur l'équipement.
+              Ceux marqués « coupé sur le routeur » ne sont pas urgents — le client est déjà coupé.
             </p>
           </header>
           <AttentionTable rows={blocking} showReason />
@@ -209,6 +216,7 @@ function AttentionTable({ rows, showReason }: { rows: FaiAttentionRow[]; showRea
             <Th>IP</Th>
             <Th>Site</Th>
             <Th>Ordre</Th>
+            <Th>Couverture</Th>
             {showReason && <Th>Cause</Th>}
           </tr>
         </thead>
@@ -227,6 +235,18 @@ function AttentionTable({ rows, showReason }: { rows: FaiAttentionRow[]; showRea
                 }`}>
                   {r.intent === 'block' ? 'à couper' : 'à rétablir'}
                 </span>
+              </Td>
+              <Td>
+                {r.router_blocked ? (
+                  <span className="inline-block px-2 py-0.5 rounded-md border text-xs font-semibold
+                                   bg-slate-100 text-slate-700 border-slate-300">
+                    coupé sur le routeur
+                  </span>
+                ) : r.intent === 'block' ? (
+                  <span className="text-xs font-semibold text-red-700">client en ligne ⚠</span>
+                ) : (
+                  <span className="text-xs text-blue-400">—</span>
+                )}
               </Td>
               {showReason && (
                 <Td className="text-xs text-amber-800 max-w-md">{r.reason ?? '—'}</Td>

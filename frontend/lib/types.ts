@@ -840,7 +840,11 @@ export interface FaiJournalEntry {
   /** IDENT_KO = rien n'a été tenté : l'équipement joint à l'adresse de la
    *  fiche n'était pas celui attendu (MAC differente), donc agir aurait
    *  touché un autre abonné. */
-  action: 'BLOCK' | 'UNBLOCK' | 'RETRY_OK' | 'ABANDON' | 'IDENT_KO'
+  action:
+    | 'BLOCK' | 'UNBLOCK' | 'RETRY_OK' | 'ABANDON' | 'IDENT_KO'
+    // Repli : coupure posée / retirée sur le routeur de cœur parce que
+    // l'équipement du client ne répondait pas.
+    | 'ROUTER_BLOCK' | 'ROUTER_UNBLOCK'
   ok: boolean
   mac: string | null
   name: string
@@ -868,6 +872,9 @@ export interface FaiAttentionRow {
   intent: 'block' | 'unblock'
   reason: string | null
   since: string | null
+  // Le repli routeur couvre-t-il ce client ? Si oui il EST coupé : seule la
+  // coupure sur son propre équipement reste à poser.
+  router_blocked: boolean
 }
 export interface FaiJournalResponse {
   entries: FaiJournalEntry[]

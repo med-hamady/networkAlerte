@@ -17,12 +17,23 @@ async def get_client_signal(
     ),
     db: AsyncSession = Depends(get_db),
 ) -> ClientSignalResponse:
-    """Qualité actuelle du signal d'un client, par MAC de son LR.
+    """Qualité actuelle du signal **et de la latence** d'un client, par MAC de son LR.
 
-    Destiné à un système tiers : passe le ``mac`` du LR, reçoit une catégorie
-    qualitative (``excellent`` / ``bien`` / ``moyen`` / ``faible``) calculée à
-    partir de la dernière valeur de signal connue en base. ``quality`` vaut
-    ``indetermine`` si le LR existe mais n'a aucune mesure de signal récente.
+    Destiné à un système tiers : passe le ``mac`` du LR, reçois
+
+    - ``quality`` : catégorie du **signal** (``excellent`` / ``bien`` / ``moyen``
+      / ``faible``), lue de la dernière valeur connue en base ;
+    - ``latency_quality`` + ``latency_message`` : la **latence mesurée EN DIRECT
+      à cet appel** — le LR ping ``lr_latency_target`` avec 5 paquets de 56 o —
+      classée ``excellent`` (< 80 ms) / ``tres_bien`` (80-100) / ``bien``
+      (100-120) / ``mauvaise`` (120-150) / ``catastrophique`` (≥ 150).
+
+    Chaque catégorie vaut ``indetermine`` quand la donnée manque (pas de mesure
+    de signal récente ; LR injoignable ou sans transit pour la latence) —
+    ``latency_message`` en donne alors la raison.
+
+    ⚠️ **Appel lent** : il ouvre une session SSH sur le LR, comptez ~6-15 s (plus
+    sur un lien radio dégradé). Prévoir le timeout client en conséquence.
 
     - 400 si le MAC est mal formé.
     - 404 si aucun LR ne porte ce MAC.

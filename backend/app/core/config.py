@@ -499,6 +499,20 @@ class Settings(BaseSettings):
     # warning/critical pour les bandes basses ; ce seuil sépare « bien » (> -65)
     # d'« excellent » (≥ -65). Voir services/client_signal_service.classify_signal.
     signal_excellent_dbm: int = -65  # ≥ → excellent
+    # Bandes de qualité de la LATENCE mesurée EN DIRECT par GET /client-signal
+    # (ping du LR vers `lr_latency_target`). Grille opérateur 2026-07-22, en ms :
+    # < 80 excellent | 80-100 très bien | 100-120 bien | 120-150 mauvaise |
+    # ≥ 150 catastrophique. Bornes propres à cette API : elles décrivent une
+    # qualité de service à un tiers, elles n'ouvrent aucun incident (l'alerting
+    # reste piloté par lr_latency_critical_ms).
+    client_signal_latency_excellent_ms: float = 80.0
+    client_signal_latency_very_good_ms: float = 100.0
+    client_signal_latency_good_ms: float = 120.0
+    client_signal_latency_bad_ms: float = 150.0
+    # Taille d'échantillon de la mesure live. Volontairement DISTINCT de
+    # lr_latency_ping_count (sonde de fond, réglable pour tenir la cadence du
+    # job) : le contrat exposé au tiers est « 5 paquets de 56 octets ».
+    client_signal_ping_count: int = 5
     # Tolerance band on signal: an incident opens only when the signal is
     # this many dBm *below* the threshold, so a small dip at the boundary
     # is absorbed instead of flapping into an incident. Default 0 = strict

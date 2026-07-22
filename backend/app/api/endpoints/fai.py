@@ -15,6 +15,7 @@ le système tiers, qui ne connaît pas nos `id` internes.
 from __future__ import annotations
 
 import datetime
+import unicodedata
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -26,6 +27,41 @@ from app.models.device import Lr
 from app.services import client_block_service, fai_audit
 
 router = APIRouter()
+
+# Origine affichée dans le journal (colonne « Origine » de /fai-journal).
+#
+# Le système de paiement n'est pas un bloc unique : ses différents scripts appellent
+# la même route, et savoir LEQUEL a coupé un client est ce qu'on veut lire quand on
+# enquête sur une coupure. Le seul signal qu'ils nous transmettent est le `reason`,
+# dont chaque script a sa formule fixe — on l'utilise donc comme signature.
+#
+# La correspondance se fait sur le PRÉFIXE : le motif se termine par une partie
+# variable (« ... client <info> »), une égalité stricte ne matcherait jamais.
+# Comparaison insensible à la casse et aux accents (« Impaye » / « Impayé »).
+# Ajouter un script appelant = ajouter une ligne ici.
+_REASON_SOURCES: tuple[tuple[str, str], ...] = (
+    ("impaye - blocage auto - client", "Block_all.php"),
+)
+
+# Origine par défaut quand le `reason` ne correspond à aucune signature connue.
+_DEFAULT_SOURCE = "payment"
+
+
+def _strip_accents(text: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
+    )
+
+
+def _source_from_reason(reason: str | None) -> str:
+    """Déduit l'origine à journaliser à partir du motif envoyé par l'appelant."""
+    if not reason:
+        return _DEFAULT_SOURCE
+    normalized = _strip_accents(reason).strip().lower()
+    for prefix, source in _REASON_SOURCES:
+        if normalized.startswith(prefix):
+            return source
+    return _DEFAULT_SOURCE
 
 
 class FaiBlockRequest(BaseModel):
@@ -114,7 +150,7 @@ async def fai_block(
     )
     fai_audit.log_action(
         "BLOCK", ok=ok, mac=lr.mac_address, name=lr.name,
-        mode=lr.block_mode, message=message,
+        mode=lr.block_mode, source=_source_from_reason(body.reason), message=message,
     )
     return _result(lr, ok, message)
 

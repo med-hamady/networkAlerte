@@ -45,9 +45,13 @@ def _line(
 ) -> str:
     ts = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     flat = " ".join((message or "").split())  # jamais de retour à la ligne dans une entrée
+    # `source` est dérivé du motif envoyé par l'appelant : un « | » y décalerait
+    # toutes les colonnes à la relecture (le message, lui, est le dernier champ et
+    # peut en contenir sans risque).
+    src = " ".join((source or "-").split()).replace("|", "/")
     return (
         f"{ts} | {action:<9} | ok={str(ok):<5} | {mac or '-':<17} | {name} "
-        f"| mode={mode or '-'} | source={source} | {flat}\n"
+        f"| mode={mode or '-'} | source={src} | {flat}\n"
     )
 
 

@@ -833,7 +833,9 @@ export interface FaiJournalEntry {
   mac: string | null
   name: string
   mode: string
-  source: 'payment' | 'enforce' | 'script'
+  // 'payment' | 'enforce' | 'script', ou le nom du script appelant déduit du motif
+  // côté backend (ex. 'Block_all.php') — affiché tel quel s'il n'est pas dans SOURCE_LABEL.
+  source: string
   message: string
 }
 export interface FaiJournalStats {

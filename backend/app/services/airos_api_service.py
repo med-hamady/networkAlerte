@@ -230,6 +230,25 @@ def _normalize_mac(value: object) -> str | None:
     return value.strip().lower()
 
 
+def _first_ip(value: object) -> str | None:
+    """Première IP de management exploitable de `remote.ipaddr`.
+
+    airOS rend une LISTE (une entrée par interface du CPE), d'où le déballage.
+    Cette IP est la SEULE source qui suive un client quand il roame d'un AP à
+    l'autre : l'AP qui le sert aujourd'hui la connaît, alors que notre ligne
+    porte encore l'IP de son ancien AP (morte, donc plus pingeable, donc le
+    client reste « hors ligne » pour toujours).
+    """
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return None
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            return item.strip()
+    return None
+
+
 def parse_airos_ap_stations(raw: dict) -> list[tuple[str | None, dict, dict]]:
     """Per-station metrics read from an airMAX **AP** (`wireless.sta[]`).
 
@@ -345,6 +364,9 @@ def parse_airos_ap_stations(raw: dict) -> list[tuple[str | None, dict, dict]]:
             "hostname": hostname.strip() if isinstance(hostname, str) and hostname.strip() else None,
             "netrole": remote.get("netrole"),
             "platform": remote.get("platform"),
+            # Identité réseau courante de la station, telle que la voit l'AP qui
+            # la sert MAINTENANT — sert à la réconciliation (cf. appelant).
+            "mgmt_ip": _first_ip(remote.get("ipaddr")),
         }
         stations.append((_normalize_mac(sta.get("mac")), m, meta))
 

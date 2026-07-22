@@ -1623,10 +1623,19 @@ async def _collect_airmax_stations_via_aps(
     lr_by_mac: dict[str, int],
     settings,
 ) -> set[int]:
-    """Interroge chaque AP airMAX et distribue ses stations aux LR (par MAC).
+    """Interroge chaque AP airMAX, réconcilie ses stations et leur distribue les métriques.
 
-    Renvoie l'ensemble des `device_id` effectivement servis, pour que l'appelant
-    n'interroge en direct que le reliquat.
+    Deux portées DIFFÉRENTES, à ne pas confondre :
+
+    * **Réconciliation d'identité** (IP / Rocket parent / site) : appliquée à
+      **toutes** les stations de l'AP, 5AC comprises — c'est le seul chemin qui
+      suive un abonné qui roame (cf. le bloc commenté en Phase 2).
+    * **Fan-out des métriques** : réservé aux M5, ceux que `lr_by_mac` contient.
+      La conso des 5AC vient de leurs propres compteurs et ne doit pas changer
+      d'origine.
+
+    Renvoie l'ensemble des `device_id` effectivement servis EN MÉTRIQUES, pour
+    que l'appelant n'interroge en direct que le reliquat.
 
     Le fan-out est calqué sur celui de `ltu_api_poll_job` : Phase 1 de fetch
     concurrent, Phase 2 série en DB. Le verrou consultatif est pris sur l'AP,
@@ -1665,6 +1674,43 @@ async def _collect_airmax_stations_via_aps(
             await session.execute(
                 text("SELECT pg_advisory_xact_lock(:k)"), {"k": int(ap_id)},
             )
+
+            # ── Réconciliation d'identité — TOUTES les stations ────────────
+            # Le fan-out de métriques ci-dessous ne sert que les M5 (cf.
+            # `lr_by_mac` chez l'appelant), mais l'IDENTITÉ d'un abonné doit
+            # être réconciliée pour toute la famille airMAX, 5AC compris.
+            #
+            # Sans ça, un client qui roame vers un autre AP n'est corrigé par
+            # AUCUN chemin : le poll direct le vise à son ancienne IP (morte)
+            # et ne tourne de toute façon que sur les LR `status="up"`, donc
+            # une fois `down` il ne repasse jamais up — et `discover_airmax_peers`
+            # (SNMP) est le seul à savoir re-rattacher, or le SNMP est souvent
+            # éteint sur ces radios. Constaté le 2026-07-22 : un 5AC servi par
+            # A2-DN1-SUD1 depuis 3 semaines était toujours affiché hors ligne
+            # sur son ancien site avec son ancienne IP.
+            #
+            # L'AP nous donne MAC + IP courante + hostname + modèle à chaque
+            # cycle : `reconcile_peers` en tire le re-parentage, la reprise
+            # d'IP (avec libération de l'ancien détenteur) et le resync du
+            # site. L'IP corrigée fait repartir le ping, donc le poll direct.
+            ap = await session.get(Rocket, ap_id)
+            if ap is not None:
+                peers = [
+                    {
+                        "mac": mac,
+                        "mgmt_ip": extra.get("mgmt_ip"),
+                        "hostname": extra.get("hostname"),
+                        # `remote.platform` (« LiteBeam 5AC ») est le modèle réel :
+                        # `_infer_model_variant` en tire la bonne variante à la
+                        # création au lieu du défaut de famille.
+                        "model": extra.get("platform"),
+                        "firmware": None,
+                    }
+                    for mac, _metrics, extra in stations
+                    if mac or extra.get("mgmt_ip")
+                ]
+                await discovery_service.reconcile_peers(session, ap, peers)
+
             for mac, metrics, extra in stations:
                 lr_id = lr_by_mac.get(mac) if mac else None
                 if lr_id is None:

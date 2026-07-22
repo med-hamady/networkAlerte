@@ -190,29 +190,57 @@ async def _lr_row(db, mac, ip, rocket_id, days_since_radio=25):
     return lr
 
 
-async def test_down_client_is_reparented_but_keeps_its_ip(db, monkeypatch):
-    """Le cas fondateur — ET la limite : l'AP se reprend, l'IP non.
+async def test_down_but_recently_seen_client_gets_both_ap_and_ip(db, monkeypatch):
+    """LE cas fondateur : « en outage depuis 1 h », et pourtant tout est bon.
 
-    Un abonné ne change pas de site en étant éteint, donc le rattachement est
-    sûr. Son IP, elle, a pu être redonnée à quelqu'un d'autre par le DHCP
-    pendant son absence : UISP n'en a qu'un souvenir.
+    UISP est ici la source la PLUS RÉCENTE — c'est bien lui qui sait où est
+    l'abonné et quelle adresse il porte. Une panne d'une heure ne périme pas un
+    bail DHCP. Un critère binaire `uisp_status == "active"` aurait jeté une IP
+    juste (vérifiée à la main sur l'interface airOS de l'équipement).
     """
     from app.services import uisp_sync_service
 
     old_ap, new_ap = await _setup(db)
     lr = await _lr_row(db, "1C:6A:1B:B8:79:B0", "10.135.5.152", old_ap.id)
     monkeypatch.setattr(uisp_sync_service.uisp_service, "UISPClient", _fake_client([
-        _station("1C:6A:1B:B8:79:B0", "Yakoub", "10.135.4.13", "A2-DN1-SUD1", "disconnected"),
+        _station("1C:6A:1B:B8:79:B0", "Yakoub", "10.135.4.13", "A2-DN1-SUD1",
+                 "disconnected", seen_minutes_ago=60),
     ]))
 
     summary = await uisp_sync_service.sync_uisp_stations(db)
 
     assert summary["reparented"] == 1, "le résumé des STATIONS doit porter le compteur"
-    assert summary["ip_updated"] == 0, "station déconnectée : son IP est un souvenir"
+    assert summary["ip_updated"] == 1
     await db.flush()
     await db.refresh(lr)
     assert lr.rocket_id == new_ap.id
     assert lr.location == "A2 DN1"
+    assert lr.ip_address == "10.135.4.13"
+
+
+async def test_long_gone_client_is_reparented_but_keeps_its_ip(db, monkeypatch):
+    """La limite : disparue depuis 3 semaines → l'AP se reprend, l'IP non.
+
+    Un abonné ne change pas de site en étant éteint, donc le rattachement reste
+    sûr. Son adresse, elle, a eu tout le temps d'être redonnée à quelqu'un
+    d'autre par le DHCP — UISP n'en a plus qu'un souvenir.
+    """
+    from app.services import uisp_sync_service
+
+    old_ap, new_ap = await _setup(db)
+    lr = await _lr_row(db, "1C:6A:1B:B8:79:B0", "10.135.5.152", old_ap.id, days_since_radio=40)
+    monkeypatch.setattr(uisp_sync_service.uisp_service, "UISPClient", _fake_client([
+        _station("1C:6A:1B:B8:79:B0", "Vieux", "10.135.4.13", "A2-DN1-SUD1",
+                 "disconnected", seen_minutes_ago=60 * 24 * 21),
+    ]))
+
+    summary = await uisp_sync_service.sync_uisp_stations(db)
+
+    assert summary["reparented"] == 1
+    assert summary["ip_updated"] == 0, "vue il y a 3 semaines : son IP est un souvenir"
+    await db.flush()
+    await db.refresh(lr)
+    assert lr.rocket_id == new_ap.id
     assert lr.ip_address == "10.135.5.152"
 
 

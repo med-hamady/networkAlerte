@@ -1,4 +1,4 @@
-"""
+r"""
 Efface les IP de LR qu'AUCUNE source ne confirme plus.
 
 Contexte (2026-07-22) : un passage du sync UISP lancé sans le garde-fou de
@@ -15,9 +15,14 @@ l'IP de la fiche.
 Règle appliquée — on GARDE l'IP seulement si une source la confirme ENCORE :
   * le radio a redécouvert la station depuis l'écriture suspecte
     (`last_discovered_at > --since`) : la découverte a réécrit l'IP elle-même,
-    et elle, elle voit le terrain ; ou
-  * UISP voit la station **active** en ce moment (`uisp_status = 'active'`) :
-    son IP est alors actuelle, pas un souvenir.
+    et elle, elle voit le terrain ;
+  * UISP voit la station **active** en ce moment : son IP est celle de
+    maintenant ;
+  * UISP l'a vue il y a moins de `--trust-hours` (défaut 24 h) : le bail DHCP
+    n'a quasi sûrement pas bougé. C'est une FENÊTRE, pas un booléen `active` —
+    une station en panne depuis 1 h et une disparue depuis 3 semaines portent
+    toutes deux `disconnected`, mais leur dernière IP connue n'a pas la même
+    valeur.
 Sinon l'IP est effacée et le statut repasse à `unknown` — c'est-à-dire l'état
 honnête : nous ne pouvons plus mesurer cet abonné. Rien n'est perdu, la
 découverte lui rend son IP dès qu'un AP le rapporte.
@@ -29,7 +34,8 @@ Le compteur d'échecs de ping est purgé avec l'IP, comme le fait
 Usage — la liste d'IP vient des logs du passage fautif, sur stdin :
 
     dc logs --since 2h backend \\
-      | grep -oE "IP reprise [^ ]+ → [0-9.]+" | awk '{print $NF}' | sort -u \\
+      | grep "source UISP, radio muet" \
+      | grep -oE "[0-9]{1,3}(\.[0-9]{1,3}){3} \(source" | awk '{print $1}' | sort -u \\
       | dc exec -T backend python scripts/clear_unverified_ips.py \\
             --since 2026-07-22T12:40:00Z
 
@@ -58,24 +64,50 @@ from app.models.alert_state import AlertState  # noqa: E402
 from app.models.device import Lr  # noqa: E402
 
 
+def _aware(value: datetime.datetime | None) -> datetime.datetime | None:
+    """Une colonne timestamptz peut remonter naïve selon le driver.
+
+    Comparer naïf et aware lèverait un TypeError au milieu d'un nettoyage de
+    masse, à mi-parcours des écritures.
+    """
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=datetime.UTC)
+    return value
+
+
 def is_confirmed(
     uisp_status: str | None,
+    uisp_last_seen: datetime.datetime | None,
     last_discovered_at: datetime.datetime | None,
     since: datetime.datetime,
+    trust_hours: int,
 ) -> bool:
     """Une source confirme-t-elle ENCORE l'IP portée par cette ligne ?
 
-    `since` = l'instant de l'écriture suspecte. Une découverte radio POSTÉRIEURE
-    signifie que l'IP a été réécrite par la source qui voit le terrain, donc
-    qu'elle est bonne quoi qu'ait fait le passage fautif.
+    Trois façons de la confirmer :
+      * le radio a redécouvert la station APRÈS l'écriture suspecte (`since`) :
+        l'IP a été réécrite par la source qui voit le terrain ;
+      * UISP voit la station **en ligne** : l'adresse est celle de maintenant ;
+      * UISP l'a vue il y a moins de `trust_hours` : le bail DHCP n'a quasi
+        sûrement pas bougé.
+
+    Ce dernier point est une FENÊTRE, pas un booléen `active`. Une station en
+    panne depuis 1 h et une station disparue depuis 3 semaines portent toutes
+    deux `disconnected`, mais leur dernière IP connue n'a pas la même valeur —
+    le cas fondateur (LR 598, « en outage depuis 1 h ») avait une adresse juste,
+    vérifiée sur l'équipement. La jeter aurait été une perte, pas une prudence.
     """
     if (uisp_status or "").lower() == "active":
         return True
-    if last_discovered_at is None:
+    last_discovered_at = _aware(last_discovered_at)
+    if last_discovered_at is not None and last_discovered_at > since:
+        return True
+    uisp_last_seen = _aware(uisp_last_seen)
+    if uisp_last_seen is None:
         return False
-    if last_discovered_at.tzinfo is None:
-        last_discovered_at = last_discovered_at.replace(tzinfo=datetime.UTC)
-    return last_discovered_at > since
+    return uisp_last_seen > datetime.datetime.now(datetime.UTC) - datetime.timedelta(
+        hours=trust_hours
+    )
 
 
 async def main() -> int:
@@ -83,6 +115,11 @@ async def main() -> int:
     parser.add_argument(
         "--since", required=True,
         help="Instant de l'écriture suspecte, ISO 8601 UTC (ex. 2026-07-22T12:40:00Z)",
+    )
+    parser.add_argument(
+        "--trust-hours", type=int, default=24,
+        help="Une IP annoncée par UISP est crédible si la station a été vue depuis "
+             "moins de N heures (défaut 24). Miroir de UISP_IP_TRUST_HOURS.",
     )
     parser.add_argument(
         "--apply", action="store_true",
@@ -106,7 +143,10 @@ async def main() -> int:
 
         kept, cleared = [], []
         for lr in rows:
-            if is_confirmed(lr.uisp_status, lr.last_discovered_at, since):
+            if is_confirmed(
+                lr.uisp_status, lr.uisp_last_seen, lr.last_discovered_at,
+                since, args.trust_hours,
+            ):
                 kept.append(lr)
                 continue
             cleared.append(lr)
@@ -125,7 +165,12 @@ async def main() -> int:
         print(f"  confirmées (gardées): {len(kept)}")
         print(f"  non confirmées      : {len(cleared)}")
         for lr in kept[:10]:
-            why = "UISP active" if (lr.uisp_status or "").lower() == "active" else "radio récent"
+            if (lr.uisp_status or "").lower() == "active":
+                why = "UISP active"
+            elif lr.last_discovered_at and _aware(lr.last_discovered_at) > since:
+                why = "radio récent"
+            else:
+                why = "UISP récent"
             print(f"    GARDE  {lr.ip_address:<15} {lr.name[:40]:<40} ({why})")
         for lr in cleared[:10]:
             print(f"    EFFACE {lr.ip_address:<15} {lr.name[:40]}")

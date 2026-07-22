@@ -446,6 +446,34 @@ def _norm_name(value: str | None) -> str:
     return (value or "").strip().casefold()
 
 
+def _ip_is_fresh_enough(
+    uisp_status: str | None, uisp_last_seen: datetime.datetime | None
+) -> bool:
+    """L'IP annoncée par UISP est-elle assez FRAÎCHE pour être écrite ?
+
+    Deux cas la rendent crédible :
+      * UISP voit la station **en ligne** — l'adresse est celle de maintenant ;
+      * UISP l'a vue il y a moins de `UISP_IP_TRUST_HOURS` — le bail DHCP n'a
+        quasi sûrement pas bougé depuis.
+
+    C'est une FENÊTRE, pas un booléen : une station en panne depuis 1 h et une
+    station disparue depuis 3 semaines portent toutes deux `disconnected`, mais
+    leur dernière IP connue n'a pas du tout la même valeur. Le cas fondateur
+    (LR 598) était précisément « en outage depuis 1 h » — le traiter comme une
+    ligne périmée aurait jeté une adresse juste, vérifiée sur l'équipement.
+    """
+    if (uisp_status or "").lower() == "active":
+        return True
+    if uisp_last_seen is None:
+        return False
+    if uisp_last_seen.tzinfo is None:
+        uisp_last_seen = uisp_last_seen.replace(tzinfo=datetime.UTC)
+    horizon = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
+        hours=get_settings().uisp_ip_trust_hours
+    )
+    return uisp_last_seen > horizon
+
+
 async def _adopt_uisp_attribution(
     session: AsyncSession,
     lr: Lr,
@@ -500,10 +528,13 @@ async def _adopt_uisp_attribution(
     # L'AP, lui, se reprend sans condition (un abonné ne change pas de site en
     # étant éteint). L'IP est une tout autre affaire :
     #
-    # 1. `uisp_status == "active"` — pour un client DÉCONNECTÉ, l'IP que UISP
-    #    affiche est un dernier état connu que le DHCP a pu réattribuer depuis.
-    #    Constaté au 1er passage réel : UISP a rendu `10.135.3.159` pour TROIS
-    #    abonnés déconnectés différents, `10.135.2.24` pour deux, etc.
+    # 1. **Fraîcheur** — station vue en ligne à l'instant (`active`), ou vue par
+    #    UISP il y a moins de `UISP_IP_TRUST_HOURS`. Pour un client
+    #    déconnecté, UISP donne la DERNIÈRE adresse connue : elle vaut ce que
+    #    vaut sa fraîcheur. Vue il y a 1 h, le bail DHCP n'a quasi sûrement pas
+    #    bougé ; vue il y a 3 semaines, elle a pu être redonnée — au 1er passage
+    #    réel UISP a rendu `10.135.3.159` pour TROIS abonnés déconnectés
+    #    différents et `10.135.2.24` pour deux.
     # 2. Le plan de management (`is_management_ip`) — UISP remonte aussi des
     #    LAN de CPE.
     # 3. **Libre uniquement** : si un autre équipement détient l'IP, on
@@ -513,7 +544,7 @@ async def _adopt_uisp_attribution(
     #    qui a produit 124 faux « hors ligne » (cf. `is_management_ip`).
     #    `claimed_ips` étend ce verrou AU SEIN d'un même passage, où plusieurs
     #    stations revendiquent la même adresse avant tout flush.
-    if not ip or ip == lr.ip_address or (uisp_status or "").lower() != "active":
+    if not ip or ip == lr.ip_address or not _ip_is_fresh_enough(uisp_status, uisp_last_seen):
         return
     if not discovery_service.is_management_ip(ip):
         return

@@ -759,6 +759,14 @@ class Settings(BaseSettings):
     # seule dès qu'un AP le rapporte avec une IP du plan de management.
     out_of_supervision_days: int = 7
 
+    # Fenêtre de confiance de l'IP annoncée par UISP pour une station qu'il ne
+    # voit PAS en ligne à l'instant. UISP donne alors la dernière adresse
+    # connue : elle vaut ce que vaut sa fraîcheur. Vue il y a 1 h, le bail DHCP
+    # n'a quasi sûrement pas bougé ; vue il y a 3 semaines, elle a pu être
+    # redonnée à un autre abonné (UISP a réellement rendu la même adresse pour
+    # trois abonnés différents). Au-delà de ce délai l'IP est ignorée.
+    uisp_ip_trust_hours: int = 24
+
     @property
     def management_ip_cidr_list(self) -> list[str]:
         return [p.strip() for p in self.management_ip_cidrs.split(",") if p.strip()]

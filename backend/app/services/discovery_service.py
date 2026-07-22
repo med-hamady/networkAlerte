@@ -236,6 +236,19 @@ async def _find_lr_by_ip(session: AsyncSession, ip: str, rocket_id: int | None) 
     return res.scalar_one_or_none()
 
 
+async def release_ip_if_held(
+    session: AsyncSession, ip: str, exclude_id: int | None = None
+) -> bool:
+    """Alias public de `_release_ip_if_held` — voir sa docstring.
+
+    Exposé pour `uisp_sync_service`, qui doit honorer exactement la même règle
+    de libération quand il reprend l'IP d'un client que le radio ne voit plus.
+    Dupliquer la logique ferait diverger les deux écrivains sur une contrainte
+    UNIQUE — c'est précisément ce qui a produit le vol d'IP entre clients.
+    """
+    return await _release_ip_if_held(session, ip, exclude_id)
+
+
 async def _release_ip_if_held(
     session: AsyncSession, ip: str, exclude_id: int | None = None
 ) -> bool:

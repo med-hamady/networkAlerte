@@ -239,6 +239,9 @@ async def sync_uisp_devices(session: AsyncSession, *, dry_run: bool = False) -> 
         "infra_matched": 0,
         "created": 0,
         "updated": 0,
+        # Corrections reprises de UISP quand le radio ne voit plus la station.
+        "reparented": 0,
+        "ip_updated": 0,
         "unchanged": 0,
         "skipped": {"no_ip": 0, "no_name": 0, "type_conflict": 0, "ip_conflict": 0, "ignored_site": 0},
         "by_type": {},
@@ -436,15 +439,98 @@ def _build_station_ap_map(links: list[dict]) -> dict[str, str]:
     return {sid: name for sid, (_, name) in chosen.items()}
 
 
+def _norm_name(value: str | None) -> str:
+    """Clé de rapprochement d'un nom d'AP (UISP ↔ notre inventaire).
+
+    Les noms UISP arrivent avec des espaces parasites et une casse variable
+    (` A2-HQ-SUD ` a réellement été vu en base) : un rapprochement strict
+    laisserait le client orphelin sans que rien ne le signale.
+    """
+    return (value or "").strip().casefold()
+
+
+async def _adopt_uisp_attribution(
+    session: AsyncSession,
+    lr: Lr,
+    ap_name: str | None,
+    ip: str | None,
+    uisp_last_seen: datetime.datetime | None,
+    rockets_by_norm_name: dict[str, Rocket],
+    summary: dict,
+) -> None:
+    """Reprend l'AP et l'IP que UISP connaît — SEULEMENT s'il a vu plus récemment.
+
+    Pourquoi c'est nécessaire : le rattachement radio (`discovery_service`) ne
+    peut agir que sur un client **allumé**, puisqu'il lit la liste des stations
+    de l'AP. Un client qui déménage puis tombe en panne n'est donc corrigé par
+    personne : sa ligne reste figée sur son ANCIEN AP, son ancien site et son
+    ancienne IP — morte, donc plus pingeable, donc « hors ligne » pour toujours.
+    Constaté le 2026-07-22 : un abonné servi par A2-DN1-SUD1 depuis 3 semaines,
+    affiché sur A2 AT1 avec une IP périmée, alors que la colonne `uisp_ap_name`
+    de SA PROPRE LIGNE portait déjà le bon AP.
+
+    Règle de priorité — **la source qui l'a vu le plus récemment gagne** :
+    tant que le radio le voit (poll toutes les 60 s), il fait foi et UISP ne
+    touche à rien ; dès que le radio le perd, l'instantané UISP prend le relais.
+    Sans cet arbitrage, deux écrivains sur `rocket_id` le feraient osciller à
+    chaque cycle.
+    """
+    if uisp_last_seen is None:
+        return
+    if uisp_last_seen.tzinfo is None:
+        uisp_last_seen = uisp_last_seen.replace(tzinfo=datetime.UTC)
+    seen_by_radio = lr.last_discovered_at
+    if seen_by_radio is not None:
+        if seen_by_radio.tzinfo is None:
+            seen_by_radio = seen_by_radio.replace(tzinfo=datetime.UTC)
+        if seen_by_radio >= uisp_last_seen:
+            return  # le radio l'a vu plus récemment : il reste propriétaire
+
+    parent = rockets_by_norm_name.get(_norm_name(ap_name)) if ap_name else None
+    if parent is not None and lr.rocket_id != parent.id:
+        logger.info(
+            "UISP: LR '%s' rerattaché %s → '%s' (UISP l'a vu plus récemment que le radio)",
+            lr.name, lr.rocket_id, parent.name,
+        )
+        lr.rocket_id = parent.id
+        # Le site suit l'AP : un CPE est physiquement chez son Rocket parent.
+        lr.location = parent.location
+        summary["reparented"] += 1
+
+    # L'IP passe par le MÊME garde-fou que la découverte : hors du plan de
+    # management, elle est écartée (UISP remonte aussi des LAN de CPE), et la
+    # libération de l'ancien détenteur suit la règle unique de discovery_service
+    # — deux écrivains divergents sur une contrainte UNIQUE, c'est le vol d'IP.
+    if (
+        ip
+        and ip != lr.ip_address
+        and discovery_service.is_management_ip(ip)
+        and await discovery_service.release_ip_if_held(session, ip, exclude_id=lr.id)
+    ):
+        logger.info(
+            "UISP: LR '%s' — IP reprise %s → %s (source UISP, radio muet)",
+            lr.name, lr.ip_address, ip,
+        )
+        lr.ip_address = ip
+        summary["ip_updated"] += 1
+
+
 async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) -> dict:
     """Import the UISP client-station roster into the `lrs` table.
 
     Unlike `sync_uisp_devices` (infrastructure), this brings in subscriber LRs so
     /access can show every client — and its bridge/router mode — even when our
-    own live poll has nothing (Rocket down, LR never discovered). It writes ONLY
-    the `uisp_*` snapshot columns (mode/status/last_seen/ap_name) plus name/IP on
-    create; it NEVER touches the live-owned columns (`topology_mode`, `rocket_id`
-    of an existing row, block state) — discovery_service stays the owner of those.
+    own live poll has nothing (Rocket down, LR never discovered). It writes the
+    `uisp_*` snapshot columns (mode/status/last_seen/ap_name) plus name/IP on
+    create, and NEVER touches the block state or `topology_mode` — those stay
+    live-owned.
+
+    ⚠️ `rocket_id`/`location`/`ip_address` of an EXISTING row are shared with
+    discovery_service, under one arbitration rule: **the source that saw the
+    station most recently wins** (`_adopt_uisp_attribution`). Radio discovery
+    only sees a powered-on client, so a client that moves then goes down was
+    corrected by nobody and stayed pinned to its former AP, site and (dead) IP
+    forever — while its own `uisp_ap_name` already held the right answer.
 
     Reconciliation is MAC-first (same identity discovery uses) so a station that
     is later discovered over the radio converges onto the same row. AF60 backhaul
@@ -490,6 +576,10 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
     by_ip: dict[str, Device] = {d.ip_address: d for d in existing if d.ip_address}
     rockets_by_name: dict[str, Rocket] = {
         d.name: d for d in existing if isinstance(d, Rocket)
+    }
+    # Rapprochement tolérant (espaces/casse) — les noms UISP ne sont pas propres.
+    rockets_by_norm_name: dict[str, Rocket] = {
+        _norm_name(d.name): d for d in existing if isinstance(d, Rocket)
     }
 
     now = datetime.datetime.now(datetime.UTC)
@@ -559,6 +649,10 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
                 match.uisp_last_seen = last_seen
                 match.uisp_ap_name = ap_name
                 match.uisp_synced_at = now
+                await _adopt_uisp_attribution(
+                    session, match, ap_name, ip, last_seen,
+                    rockets_by_norm_name, summary,
+                )
             summary["updated"] += 1
             if len(summary["samples"]["update"]) < _SAMPLE_CAP:
                 summary["samples"]["update"].append(
@@ -622,8 +716,10 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
                 summary["cleared_ap"] += 1
 
     logger.info(
-        "UISP station sync %s: fetched=%d stations=%d created=%d updated=%d cleared_ap=%d skipped=%s",
+        "UISP station sync %s: fetched=%d stations=%d created=%d updated=%d "
+        "reparented=%d ip_updated=%d cleared_ap=%d skipped=%s",
         "(dry-run)" if dry_run else "", summary["fetched"], summary["stations"],
-        summary["created"], summary["updated"], summary["cleared_ap"], summary["skipped"],
+        summary["created"], summary["updated"], summary["reparented"],
+        summary["ip_updated"], summary["cleared_ap"], summary["skipped"],
     )
     return summary

@@ -31,7 +31,16 @@ Le compteur d'échecs de ping est purgé avec l'IP, comme le fait
 `discovery_service._release_ip_if_held` : sans ça la station rebasculerait
 « down » au premier paquet perdu après son retour.
 
-Usage — la liste d'IP vient des logs du passage fautif, sur stdin :
+Deux façons de cibler :
+
+  * **liste d'IP sur stdin** (issue des logs du passage fautif) + `--since` :
+    périmètre exact, à privilégier tant que les logs existent ;
+  * **rien sur stdin** : le script prend TOUTE ligne portant une IP et applique
+    la même règle, avec `--radio-hours` comme fenêtre de confiance côté radio.
+    Périmètre plus large — les logs Docker tournent vite, c'est le repli quand
+    la trace du passage fautif a disparu.
+
+Usage :
 
     dc logs --since 2h backend \\
       | grep "source UISP, radio muet" \
@@ -113,8 +122,15 @@ def is_confirmed(
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--since", required=True,
-        help="Instant de l'écriture suspecte, ISO 8601 UTC (ex. 2026-07-22T12:40:00Z)",
+        "--since",
+        help="Instant de l'écriture suspecte, ISO 8601 UTC (ex. 2026-07-22T12:40:00Z). "
+             "Une découverte radio POSTÉRIEURE confirme l'IP. Par défaut : "
+             "maintenant moins --radio-hours.",
+    )
+    parser.add_argument(
+        "--radio-hours", type=int, default=24,
+        help="Sans --since : le radio confirme l'IP s'il a vu la station depuis "
+             "moins de N heures (défaut 24).",
     )
     parser.add_argument(
         "--trust-hours", type=int, default=24,
@@ -127,19 +143,29 @@ async def main() -> int:
     )
     args = parser.parse_args()
 
-    since = datetime.datetime.fromisoformat(args.since.replace("Z", "+00:00"))
-    if since.tzinfo is None:
-        since = since.replace(tzinfo=datetime.UTC)
+    if args.since:
+        since = datetime.datetime.fromisoformat(args.since.replace("Z", "+00:00"))
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=datetime.UTC)
+    else:
+        since = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
+            hours=args.radio_hours
+        )
 
-    ips = {line.strip() for line in sys.stdin if line.strip()}
-    if not ips:
-        print("Aucune IP reçue sur stdin — rien à faire.")
-        return 1
+    # stdin peut être un terminal (mode « tout le parc ») : ne pas bloquer dessus.
+    ips = set()
+    if not sys.stdin.isatty():
+        ips = {line.strip() for line in sys.stdin if line.strip()}
 
     async with async_session_factory() as session:
-        rows = (
-            await session.execute(select(Lr).where(Lr.ip_address.in_(ips)))
-        ).scalars().all()
+        query = select(Lr).where(Lr.ip_address.is_not(None))
+        if ips:
+            query = query.where(Lr.ip_address.in_(ips))
+            print(f"Périmètre : les {len(ips)} IP fournies")
+        else:
+            print("Périmètre : TOUTES les lignes portant une IP "
+                  f"(radio confirmant depuis moins de {args.radio_hours} h)")
+        rows = (await session.execute(query)).scalars().all()
 
         kept, cleared = [], []
         for lr in rows:
@@ -160,8 +186,7 @@ async def main() -> int:
                     )
                 )
 
-        print(f"IP reçues            : {len(ips)}")
-        print(f"Lignes correspondantes: {len(rows)}")
+        print(f"Lignes examinées      : {len(rows)}")
         print(f"  confirmées (gardées): {len(kept)}")
         print(f"  non confirmées      : {len(cleared)}")
         for lr in kept[:10]:

@@ -126,3 +126,76 @@ async def test_ip_outside_the_management_plan_is_refused(rockets):
     )
     assert lr.ip_address == "10.135.4.13"
     assert summary["ip_updated"] == 0
+
+
+# ── Test d'intégration : le résumé réel doit porter les compteurs ────────────
+# Régression vécue : les clés `reparented`/`ip_updated` avaient été insérées
+# dans le résumé du sync INFRA au lieu de celui des STATIONS. Les tests
+# unitaires ci-dessus passaient (ils fabriquent leur propre dict), mais le vrai
+# sync levait un KeyError au premier client rerattaché. Seul un passage par la
+# vraie fonction pouvait l'attraper.
+
+class _FakeUISPClient:
+    """Contrôleur UISP simulé : une station, vue il y a 1 h, sur le nouvel AP."""
+
+    def __init__(self, *a, **kw):
+        pass
+
+    async def fetch_devices(self, role=None):
+        return [{
+            "identification": {
+                "id": "sta-1", "mac": "1C:6A:1B:B8:79:B0",
+                "name": "32469697-Yakoub", "modelName": "LiteBeam 5AC",
+            },
+            "overview": {
+                "status": "disconnected",   # DOWN : l'AP ne le liste pas
+                "lastSeen": (
+                    datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=1)
+                ).isoformat(),
+                "wirelessMode": "sta-ptmp",
+            },
+            "mode": "router",
+            "ipAddress": "10.135.4.13/16",
+            "attributes": {"apDevice": {"name": "A2-DN1-SUD1"}},
+        }]
+
+    async def fetch_data_links(self):
+        return []
+
+
+async def test_station_sync_reparents_a_down_client_end_to_end(db, monkeypatch):
+    from app.services import uisp_sync_service
+
+    old_ap = Rocket(name="ZZ-AT1-SUD1", location="ZZ AT1", radio_tech="airmax",
+                    ip_address="10.99.200.1", status="up")
+    new_ap = Rocket(name="A2-DN1-SUD1", location="A2 DN1", radio_tech="airmax",
+                    ip_address="10.99.200.2", status="up")
+    db.add_all([old_ap, new_ap])
+    await db.flush()
+
+    lr = Lr(
+        name="32469697-Yakoub", model_variant="litebeam_5ac", status="down",
+        ip_address="10.135.5.152", mac_address="1c:6a:1b:b8:79:b0",
+        rocket_id=old_ap.id, location="ZZ AT1", auto_discovered=True,
+        # Le radio ne l'a pas vu depuis 25 jours → UISP (1 h) doit gagner.
+        last_discovered_at=_now() - datetime.timedelta(days=25),
+    )
+    db.add(lr)
+    await db.flush()
+
+    monkeypatch.setattr(uisp_sync_service.uisp_service, "UISPClient", _FakeUISPClient)
+    summary = await uisp_sync_service.sync_uisp_stations(db)
+
+    assert summary["reparented"] == 1, "le résumé des STATIONS doit porter le compteur"
+    assert summary["ip_updated"] == 1
+    # ⚠️ `refresh()` ne flushe PAS les modifications en attente : il expire
+    # l'objet et le relit, donc il ÉCRASE silencieusement ce qui n'est pas
+    # encore écrit. Sans ce flush, le test relisait l'ancienne IP et accusait
+    # le code à tort (`rocket_id`, lui, avait survécu parce qu'un autoflush
+    # interne l'avait déjà poussé). On flushe donc pour prouver que la valeur
+    # atteint vraiment la base, puis on relit.
+    await db.flush()
+    await db.refresh(lr)
+    assert lr.rocket_id == new_ap.id
+    assert lr.location == "A2 DN1"
+    assert lr.ip_address == "10.135.4.13"

@@ -239,9 +239,6 @@ async def sync_uisp_devices(session: AsyncSession, *, dry_run: bool = False) -> 
         "infra_matched": 0,
         "created": 0,
         "updated": 0,
-        # Corrections reprises de UISP quand le radio ne voit plus la station.
-        "reparented": 0,
-        "ip_updated": 0,
         "unchanged": 0,
         "skipped": {"no_ip": 0, "no_name": 0, "type_conflict": 0, "ip_conflict": 0, "ignored_site": 0},
         "by_type": {},
@@ -590,6 +587,11 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
         "stations": 0,
         "created": 0,
         "updated": 0,
+        # Corrections reprises de UISP quand le radio ne voit plus la station
+        # (cf. `_adopt_uisp_attribution`) — c'est CE résumé qui les porte, pas
+        # celui du sync infra, qui ne réconcilie aucun client.
+        "reparented": 0,
+        "ip_updated": 0,
         "skipped": {
             "af60": 0, "no_mac": 0, "type_conflict": 0,
         },

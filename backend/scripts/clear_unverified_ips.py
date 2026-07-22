@@ -71,6 +71,7 @@ from app.core.alert_constants import PING_FAILURE_STATE_KEY  # noqa: E402
 from app.db.session import async_session_factory  # noqa: E402
 from app.models.alert_state import AlertState  # noqa: E402
 from app.models.device import Lr  # noqa: E402
+from app.services.discovery_service import is_management_ip  # noqa: E402
 
 
 def _aware(value: datetime.datetime | None) -> datetime.datetime | None:
@@ -85,6 +86,7 @@ def _aware(value: datetime.datetime | None) -> datetime.datetime | None:
 
 
 def is_confirmed(
+    ip: str | None,
     uisp_status: str | None,
     uisp_last_seen: datetime.datetime | None,
     last_discovered_at: datetime.datetime | None,
@@ -93,7 +95,14 @@ def is_confirmed(
 ) -> bool:
     """Une source confirme-t-elle ENCORE l'IP portée par cette ligne ?
 
-    Trois façons de la confirmer :
+    Préalable : une IP **hors plan de management** (LAN d'usine `192.168.x`,
+    APIPA…) n'est JAMAIS confirmable, quelle que soit la fraîcheur de la source.
+    Elle est fausse par construction — nous ne joignons aucun équipement par
+    là. Sans ce préalable, une station que UISP voit active tout en annonçant
+    son LAN gardait une adresse inutilisable (constaté en prod : `192.168.1.71`
+    encore en base, rescapé d'avant le garde-fou).
+
+    Trois façons de confirmer une IP du plan :
       * le radio a redécouvert la station APRÈS l'écriture suspecte (`since`) :
         l'IP a été réécrite par la source qui voit le terrain ;
       * UISP voit la station **en ligne** : l'adresse est celle de maintenant ;
@@ -106,6 +115,8 @@ def is_confirmed(
     le cas fondateur (LR 598, « en outage depuis 1 h ») avait une adresse juste,
     vérifiée sur l'équipement. La jeter aurait été une perte, pas une prudence.
     """
+    if not is_management_ip(ip):
+        return False
     if (uisp_status or "").lower() == "active":
         return True
     last_discovered_at = _aware(last_discovered_at)
@@ -170,8 +181,8 @@ async def main() -> int:
         kept, cleared = [], []
         for lr in rows:
             if is_confirmed(
-                lr.uisp_status, lr.uisp_last_seen, lr.last_discovered_at,
-                since, args.trust_hours,
+                lr.ip_address, lr.uisp_status, lr.uisp_last_seen,
+                lr.last_discovered_at, since, args.trust_hours,
             ):
                 kept.append(lr)
                 continue

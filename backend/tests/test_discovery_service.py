@@ -18,6 +18,25 @@ from app.models.device import Lr, Rocket
 from app.services import discovery_service
 
 
+@pytest.fixture(autouse=True)
+def widen_management_plan(monkeypatch):
+    """Élargit le plan d'adressage de management aux IP synthétiques (10.99.*).
+
+    Ces tests portent sur la RÉCONCILIATION (identité MAC, vol d'IP, rebascule),
+    pas sur le filtre d'adressage — qui a son propre fichier
+    (`test_management_ip_guard.py`). Sans ça, chaque `mgmt_ip` de fixture serait
+    écartée avant d'atteindre la logique testée et tous les tests passeraient
+    pour de mauvaises raisons.
+    """
+    from app.core import config
+
+    monkeypatch.setattr(
+        type(config.get_settings()),
+        "management_ip_cidr_list",
+        property(lambda _s: ["10.0.0.0/8"]),
+    )
+
+
 @pytest.fixture
 def patch_notif():
     with patch("app.services.discovery_service.notification_service") as mock:

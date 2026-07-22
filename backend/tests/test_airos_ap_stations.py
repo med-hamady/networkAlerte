@@ -156,31 +156,30 @@ def test_airos6_station_gets_no_cinr_from_the_ap():
     assert _by_platform("5AC")["cinr_db"] is not None
 
 
-def test_station_carries_its_current_management_ip():
-    """L'AP donne l'IP COURANTE de chaque abonné — c'est ce qui suit un roaming.
+def test_station_exposes_every_address_it_announces():
+    """L'AP donne les adresses COURANTES de chaque abonné — c'est ce qui suit un roaming.
 
-    `remote.ipaddr` est une LISTE côté airOS (une entrée par interface du CPE) ;
-    on en garde la première exploitable. Cette IP est la seule source capable de
-    corriger un client passé sous un autre AP : sa ligne porte encore l'IP de son
-    ancien AP, qui ne répond plus au ping — il reste donc « hors ligne » tant que
-    personne ne réécrit son identité (constaté le 2026-07-22 sur un 5AC affiché
-    hors ligne depuis 3 semaines sur son ancien site).
+    `remote.ipaddr` est une LISTE côté airOS (une entrée par interface du CPE).
+    Le parser ne doit PAS en élire une : elle mélange l'IP de management et le
+    LAN du CPE (`192.168.10.1`, `172.16.0.1`… valeurs d'usine), dans un ordre
+    non garanti. Le tri revient à `discovery_service.pick_management_ip`, sur le
+    plan d'adressage configuré — choisir ici reviendrait à tirer au sort.
     """
     stations = parse_airos_ap_stations(_ap_status())
-    ips = {meta["mgmt_ip"] for _mac, _m, meta in stations}
-    assert ips == {"10.0.0.11", "10.0.0.12"}
+    ips = {tuple(meta["mgmt_ips"]) for _mac, _m, meta in stations}
+    assert ips == {("10.0.0.11",), ("10.0.0.12",)}
 
 
-def test_missing_or_scalar_management_ip_is_tolerated():
+def test_missing_or_scalar_address_list_is_tolerated():
     """Une station sans `ipaddr`, ou qui l'annonce en scalaire, ne casse rien.
 
-    `mgmt_ip` à None laisse simplement la réconciliation identifier la station
-    par sa MAC seule (l'IP de la ligne reste inchangée) — jamais une exception
-    qui ferait sauter tout le cycle de l'AP.
+    Liste vide = la réconciliation identifie la station par sa MAC seule et
+    laisse son IP inchangée — jamais une exception qui ferait sauter le cycle
+    de tout l'AP.
     """
     raw = _ap_status()
     del raw["wireless"]["sta"][0]["remote"]["ipaddr"]
     raw["wireless"]["sta"][1]["remote"]["ipaddr"] = "10.0.0.99"
     metas = [meta for _mac, _m, meta in parse_airos_ap_stations(raw)]
-    assert metas[0]["mgmt_ip"] is None
-    assert metas[1]["mgmt_ip"] == "10.0.0.99"
+    assert metas[0]["mgmt_ips"] == []
+    assert metas[1]["mgmt_ips"] == ["10.0.0.99"]

@@ -740,6 +740,21 @@ class Settings(BaseSettings):
     lr_metric_history_retention_days: int = 30
     lr_metric_history_retention_interval_minutes: int = 360  # every 6 h
 
+    # Plan d'adressage de MANAGEMENT — les seules IP qu'un équipement a le droit
+    # de se voir attribuer par la découverte. Un CPE annonce aussi ses adresses
+    # LAN (`192.168.10.1`, `192.168.1.20`, `172.16.0.1` = valeurs d'usine airOS)
+    # ou pas d'adresse du tout (`0.0.0.0`, APIPA `169.254.x`). Ces adresses sont
+    # PARTAGÉES par des dizaines de CPE : écrites dans `devices.ip_address`, qui
+    # est UNIQUE, chacune VOLE la ligne du détenteur précédent (cf.
+    # `discovery_service._release_ip_if_held`, qui remet sa victime à
+    # `status="unknown"`) — un client sain devient injoignable à cause d'un
+    # autre, à l'autre bout du réseau. D'où l'allowlist. Vide = filtre désactivé.
+    management_ip_cidrs: str = "10.135.0.0/16"
+
+    @property
+    def management_ip_cidr_list(self) -> list[str]:
+        return [p.strip() for p in self.management_ip_cidrs.split(",") if p.strip()]
+
     @property
     def netflow_internal_prefix_list(self) -> list[str]:
         return [p.strip() for p in self.netflow_internal_prefixes.split(",") if p.strip()]

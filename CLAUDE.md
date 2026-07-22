@@ -136,6 +136,7 @@ backend/app/
 | `LOG_LEVEL` | Niveau de log (INFO, DEBUG, WARNING) |
 | `API_KEY` | Clé d'authentification API (header X-API-Key) |
 | `LR_FALLBACK_SSH_PASSWORDS` | Mots de passe SSH de fallback pour les LR (CSV) essayés quand le `ssh_password` stocké échoue ; le mdp qui marche est promu sur le LR. Défaut `A2HQ@4321` |
+| `MANAGEMENT_IP_CIDRS` | **Allowlist du plan d'adressage de management** (CSV de CIDR, défaut `10.135.0.0/16`). La découverte n'écrit `devices.ip_address` que si l'IP annoncée y appartient. Une radio annonce AUSSI son LAN (`192.168.10.1`, `192.168.1.20`, `172.16.0.1` = valeurs d'usine airOS), une APIPA `169.254.x` ou `0.0.0.0` : ces adresses sont les **mêmes sur des dizaines de CPE** alors que `ip_address` est **UNIQUE** → chaque écriture **volait** la ligne du détenteur précédent (`_release_ip_if_held` le laisse sans IP et en `status="unknown"`, donc hors du sweep de ping). Un CPE éteignait ainsi un **autre** client sain. Vide = filtre désactivé. `discovery_service.is_management_ip` / `pick_management_ip` |
 | `SNMP_DEFAULT_COMMUNITY` | Community SNMP par défaut (ex: public) |
 | `SNMP_PORT` | Port SNMP (défaut 161) |
 | `SNMP_TIMEOUT` | Timeout SNMP en secondes |

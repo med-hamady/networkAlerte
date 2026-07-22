@@ -230,23 +230,24 @@ def _normalize_mac(value: object) -> str | None:
     return value.strip().lower()
 
 
-def _first_ip(value: object) -> str | None:
-    """Première IP de management exploitable de `remote.ipaddr`.
+def _ip_list(value: object) -> list[str]:
+    """Toutes les adresses annoncées par la station (`remote.ipaddr`).
 
     airOS rend une LISTE (une entrée par interface du CPE), d'où le déballage.
-    Cette IP est la SEULE source qui suive un client quand il roame d'un AP à
-    l'autre : l'AP qui le sert aujourd'hui la connaît, alors que notre ligne
-    porte encore l'IP de son ancien AP (morte, donc plus pingeable, donc le
-    client reste « hors ligne » pour toujours).
+    Elle contient l'IP de management — la SEULE source qui suive un client quand
+    il roame d'un AP à l'autre — mais AUSSI le LAN du CPE (`192.168.10.1`,
+    `172.16.0.1`… valeurs d'usine), dans un ordre non garanti.
+
+    On rend donc la liste ENTIÈRE sans en élire une : c'est
+    `discovery_service.pick_management_ip` qui tranche, sur le plan
+    d'adressage configuré. Choisir ici reviendrait à tirer au sort — et une IP
+    LAN écrite en base vole sa ligne à un autre client (cf. `is_management_ip`).
     """
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, list):
-        return None
-    for item in value:
-        if isinstance(item, str) and item.strip():
-            return item.strip()
-    return None
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
 
 def parse_airos_ap_stations(raw: dict) -> list[tuple[str | None, dict, dict]]:
@@ -364,9 +365,10 @@ def parse_airos_ap_stations(raw: dict) -> list[tuple[str | None, dict, dict]]:
             "hostname": hostname.strip() if isinstance(hostname, str) and hostname.strip() else None,
             "netrole": remote.get("netrole"),
             "platform": remote.get("platform"),
-            # Identité réseau courante de la station, telle que la voit l'AP qui
-            # la sert MAINTENANT — sert à la réconciliation (cf. appelant).
-            "mgmt_ip": _first_ip(remote.get("ipaddr")),
+            # Adresses courantes de la station, telles que les voit l'AP qui la
+            # sert MAINTENANT — servent à la réconciliation (cf. appelant). Non
+            # filtrées ici : le tri est fait par `discovery_service`.
+            "mgmt_ips": _ip_list(remote.get("ipaddr")),
         }
         stations.append((_normalize_mac(sta.get("mac")), m, meta))
 

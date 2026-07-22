@@ -26,7 +26,9 @@ PeerInfo dicts works.
 from __future__ import annotations
 
 import datetime
+import ipaddress
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TypedDict
 
@@ -102,6 +104,56 @@ def _generate_device_name(peer: PeerInfo, fallback_index: int) -> str:
     if ip:
         return f"LR {ip}"
     return f"LR auto #{fallback_index}"
+
+
+def is_management_ip(ip: str | None) -> bool:
+    """L'IP appartient-elle au plan de MANAGEMENT (`MANAGEMENT_IP_CIDRS`) ?
+
+    Une radio annonce plusieurs adresses, et la plupart ne nous concernent pas :
+    son LAN (`192.168.10.1`, `192.168.1.20`, `172.16.0.1` — valeurs d'usine
+    airOS), une APIPA `169.254.x` quand le DHCP n'a pas répondu, ou `0.0.0.0`
+    quand elle n'a rien. Les écrire serait bien pire qu'inutile : ces adresses
+    sont les MÊMES sur des dizaines de CPE, or `devices.ip_address` est UNIQUE
+    — chaque écriture VOLE donc la ligne du détenteur précédent via
+    `_release_ip_if_held`, qui le laisse sans IP et en `status="unknown"`,
+    c.-à-d. hors du sweep de ping. Un CPE qui annonce brièvement son LAN
+    éteignait ainsi un AUTRE client, sain, ailleurs sur le réseau (constaté le
+    2026-07-22 : battement `10.135.3.116 ⇄ 169.254.210.235 ⇄ 192.168.10.1`
+    toutes les 3 min sur plusieurs abonnés).
+
+    Liste vide dans la config = filtre désactivé (tout est accepté).
+    """
+    if not ip:
+        return False
+    cidrs = get_settings().management_ip_cidr_list
+    if not cidrs:
+        return True
+    try:
+        addr = ipaddress.ip_address(ip.strip())
+    except ValueError:
+        return False
+    for cidr in cidrs:
+        try:
+            if addr in ipaddress.ip_network(cidr, strict=False):
+                return True
+        except ValueError:
+            logger.warning("MANAGEMENT_IP_CIDRS: préfixe invalide %r — ignoré", cidr)
+    return False
+
+
+def pick_management_ip(candidates: Iterable[str | None]) -> str | None:
+    """Première IP de management de la liste annoncée par l'équipement.
+
+    Les radios rendent une LISTE d'adresses (une par interface) dans un ordre
+    qui n'est pas garanti : prendre `[0]` revient à tirer au sort entre l'IP de
+    management et le LAN du CPE. On sélectionne donc sur le CRITÈRE, pas sur la
+    position. Aucune candidate éligible → None, et l'appelant laisse l'IP
+    existante intacte.
+    """
+    for candidate in candidates:
+        if is_management_ip(candidate):
+            return candidate.strip()  # type: ignore[union-attr]
+    return None
 
 
 def _normalised_mac(peer: PeerInfo) -> str | None:
@@ -277,7 +329,18 @@ async def _reconcile_single_peer(
 ) -> Lr | None:
     """Reconcile one peer entry — create or update the corresponding Lr row."""
     mac = _normalised_mac(peer)
+    # Une IP hors plan de management est ÉCARTÉE, pas corrigée : le peer reste
+    # réconcilié par sa MAC et garde l'IP qu'il avait. C'est le seul point où
+    # une IP entre dans la découverte, donc les trois sources (SNMP airMAX, API
+    # LTU, stations d'un AP airOS) sont couvertes ici d'un coup. Voir
+    # `is_management_ip` pour la raison — le vol d'IP entre clients.
     ip = peer.get("mgmt_ip")
+    if ip and not is_management_ip(ip):
+        logger.debug(
+            "Discovery: IP %s annoncée par %s (mac=%s) hors plan de management — ignorée",
+            ip, parent.name, mac or "?",
+        )
+        ip = None
     if mac is None and ip is None:
         logger.debug(
             "Discovery: peer reported by %s has neither MAC nor IP — skipped",

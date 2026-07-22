@@ -1698,7 +1698,12 @@ async def _collect_airmax_stations_via_aps(
                 peers = [
                     {
                         "mac": mac,
-                        "mgmt_ip": extra.get("mgmt_ip"),
+                        # La station annonce PLUSIEURS adresses (management +
+                        # LAN du CPE) dans un ordre non garanti : c'est le plan
+                        # d'adressage qui tranche, jamais la position.
+                        "mgmt_ip": discovery_service.pick_management_ip(
+                            extra.get("mgmt_ips") or []
+                        ),
                         "hostname": extra.get("hostname"),
                         # `remote.platform` (« LiteBeam 5AC ») est le modèle réel :
                         # `_infer_model_variant` en tire la bonne variante à la
@@ -1707,7 +1712,7 @@ async def _collect_airmax_stations_via_aps(
                         "firmware": None,
                     }
                     for mac, _metrics, extra in stations
-                    if mac or extra.get("mgmt_ip")
+                    if mac or extra.get("mgmt_ips")
                 ]
                 await discovery_service.reconcile_peers(session, ap, peers)
 

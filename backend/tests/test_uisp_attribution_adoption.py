@@ -55,10 +55,10 @@ async def test_uisp_reparents_when_radio_has_not_seen_it_since(rockets, monkeypa
     """Le cas fondateur : radio muet depuis 3 semaines, UISP l'a vu il y a 1 h."""
     lr = _lr(rocket_id=855, location="A2 AT1", ip_address="10.135.5.152",
              last_discovered_at=_now() - datetime.timedelta(days=25))
-    summary = {"reparented": 0, "ip_updated": 0}
+    summary = {"reparented": 0, "ip_updated": 0, "ip_conflict": 0}
     await _adopt_uisp_attribution(
-        _FakeSession(), lr, "A2-DN1-SUD1", None,
-        _now() - datetime.timedelta(hours=1), rockets, summary,
+        _FakeSession(), lr, "A2-DN1-SUD1", None, "active",
+        _now() - datetime.timedelta(hours=1), rockets, set(), summary,
     )
     assert lr.rocket_id == 1794
     assert lr.location == "A2 DN1"   # le site suit l'AP
@@ -72,21 +72,22 @@ async def test_radio_wins_while_it_still_sees_the_station(rockets):
     """
     lr = _lr(rocket_id=855, location="A2 AT1",
              last_discovered_at=_now() - datetime.timedelta(seconds=30))
-    summary = {"reparented": 0, "ip_updated": 0}
+    summary = {"reparented": 0, "ip_updated": 0, "ip_conflict": 0}
     await _adopt_uisp_attribution(
-        _FakeSession(), lr, "A2-DN1-SUD1", "10.135.4.13",
-        _now() - datetime.timedelta(hours=1), rockets, summary,
+        _FakeSession(), lr, "A2-DN1-SUD1", "10.135.4.13", "active",
+        _now() - datetime.timedelta(hours=1), rockets, set(), summary,
     )
     assert lr.rocket_id == 855
-    assert summary == {"reparented": 0, "ip_updated": 0}
+    assert summary == {"reparented": 0, "ip_updated": 0, "ip_conflict": 0}
 
 
 async def test_uisp_without_a_timestamp_never_wins(rockets):
     """Pas de `lastSeen` = aucune preuve de fraîcheur → on ne touche à rien."""
     lr = _lr(rocket_id=855, last_discovered_at=None)
-    summary = {"reparented": 0, "ip_updated": 0}
+    summary = {"reparented": 0, "ip_updated": 0, "ip_conflict": 0}
     await _adopt_uisp_attribution(
-        _FakeSession(), lr, "A2-DN1-SUD1", None, None, rockets, summary,
+        _FakeSession(), lr, "A2-DN1-SUD1", None, "active",
+        None, rockets, set(), summary,
     )
     assert lr.rocket_id == 855
 
@@ -94,10 +95,10 @@ async def test_uisp_without_a_timestamp_never_wins(rockets):
 async def test_ap_name_is_matched_despite_spaces_and_case(rockets):
     """Les noms UISP arrivent sales (` A2-HQ-SUD `) — un match strict perdrait le client."""
     lr = _lr(rocket_id=855, last_discovered_at=None)
-    summary = {"reparented": 0, "ip_updated": 0}
+    summary = {"reparented": 0, "ip_updated": 0, "ip_conflict": 0}
     await _adopt_uisp_attribution(
-        _FakeSession(), lr, "  a2-dn1-sud1  ", None,
-        _now(), rockets, summary,
+        _FakeSession(), lr, "  a2-dn1-sud1  ", None, "active",
+        _now(), rockets, set(), summary,
     )
     assert lr.rocket_id == 1794
 
@@ -105,9 +106,10 @@ async def test_ap_name_is_matched_despite_spaces_and_case(rockets):
 async def test_unknown_ap_leaves_the_row_alone(rockets):
     """AP absent de notre inventaire → aucun rattachement inventé."""
     lr = _lr(rocket_id=855, last_discovered_at=None)
-    summary = {"reparented": 0, "ip_updated": 0}
+    summary = {"reparented": 0, "ip_updated": 0, "ip_conflict": 0}
     await _adopt_uisp_attribution(
-        _FakeSession(), lr, "A2-AILLEURS-NORD", None, _now(), rockets, summary,
+        _FakeSession(), lr, "A2-AILLEURS-NORD", None, "active",
+        _now(), rockets, set(), summary,
     )
     assert lr.rocket_id == 855
     assert summary["reparented"] == 0
@@ -120,82 +122,167 @@ async def test_ip_outside_the_management_plan_is_refused(rockets):
     que le filtre coupe AVANT toute écriture.
     """
     lr = _lr(rocket_id=1794, ip_address="10.135.4.13", last_discovered_at=None)
-    summary = {"reparented": 0, "ip_updated": 0}
+    summary = {"reparented": 0, "ip_updated": 0, "ip_conflict": 0}
     await _adopt_uisp_attribution(
-        _FakeSession(), lr, "A2-DN1-SUD1", "192.168.10.1", _now(), rockets, summary,
+        _FakeSession(), lr, "A2-DN1-SUD1", "192.168.10.1", "active",
+        _now(), rockets, set(), summary,
     )
     assert lr.ip_address == "10.135.4.13"
     assert summary["ip_updated"] == 0
 
 
-# ── Test d'intégration : le résumé réel doit porter les compteurs ────────────
-# Régression vécue : les clés `reparented`/`ip_updated` avaient été insérées
-# dans le résumé du sync INFRA au lieu de celui des STATIONS. Les tests
-# unitaires ci-dessus passaient (ils fabriquent leur propre dict), mais le vrai
-# sync levait un KeyError au premier client rerattaché. Seul un passage par la
-# vraie fonction pouvait l'attraper.
-
-class _FakeUISPClient:
-    """Contrôleur UISP simulé : une station, vue il y a 1 h, sur le nouvel AP."""
-
-    def __init__(self, *a, **kw):
-        pass
-
-    async def fetch_devices(self, role=None):
-        return [{
-            "identification": {
-                "id": "sta-1", "mac": "1C:6A:1B:B8:79:B0",
-                "name": "32469697-Yakoub", "modelName": "LiteBeam 5AC",
-            },
-            "overview": {
-                "status": "disconnected",   # DOWN : l'AP ne le liste pas
-                "lastSeen": (
-                    datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=1)
-                ).isoformat(),
-                "wirelessMode": "sta-ptmp",
-            },
-            "mode": "router",
-            "ipAddress": "10.135.4.13/16",
-            "attributes": {"apDevice": {"name": "A2-DN1-SUD1"}},
-        }]
-
-    async def fetch_data_links(self):
-        return []
+# ── Tests d'intégration (vraie fonction, vraie DB) ──────────────────────────
+# Deux régressions vécues le 2026-07-22, toutes deux invisibles aux tests
+# unitaires ci-dessus (qui fabriquent leur propre dict de résumé) :
+#   1. les compteurs avaient été posés sur le résumé du sync INFRA → KeyError
+#      au premier client rerattaché, tout le sync des stations tombait ;
+#   2. l'IP était reprise même pour une station DÉCONNECTÉE, dont UISP n'a
+#      qu'un dernier état connu — au 1er passage réel, `10.135.3.159` a été
+#      attribuée à TROIS abonnés différents et `10.135.2.24` à deux, chacun
+#      volant la ligne du précédent. Le vol d'IP, réintroduit par l'autre bout.
 
 
-async def test_station_sync_reparents_a_down_client_end_to_end(db, monkeypatch):
-    from app.services import uisp_sync_service
+def _station(mac, name, ip, ap, status, seen_minutes_ago=60):
+    return {
+        "identification": {"id": f"sta-{mac}", "mac": mac, "name": name,
+                           "modelName": "LiteBeam 5AC"},
+        "overview": {
+            "status": status,
+            "lastSeen": (_now() - datetime.timedelta(minutes=seen_minutes_ago)).isoformat(),
+            "wirelessMode": "sta-ptmp",
+        },
+        "mode": "router",
+        "ipAddress": f"{ip}/16" if ip else None,
+        "attributes": {"apDevice": {"name": ap}},
+    }
 
+
+def _fake_client(stations):
+    class _C:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def fetch_devices(self, role=None):
+            return stations
+
+        async def fetch_data_links(self):
+            return []
+    return _C
+
+
+async def _setup(db):
     old_ap = Rocket(name="ZZ-AT1-SUD1", location="ZZ AT1", radio_tech="airmax",
                     ip_address="10.99.200.1", status="up")
     new_ap = Rocket(name="A2-DN1-SUD1", location="A2 DN1", radio_tech="airmax",
                     ip_address="10.99.200.2", status="up")
     db.add_all([old_ap, new_ap])
     await db.flush()
+    return old_ap, new_ap
 
-    lr = Lr(
-        name="32469697-Yakoub", model_variant="litebeam_5ac", status="down",
-        ip_address="10.135.5.152", mac_address="1c:6a:1b:b8:79:b0",
-        rocket_id=old_ap.id, location="ZZ AT1", auto_discovered=True,
-        # Le radio ne l'a pas vu depuis 25 jours → UISP (1 h) doit gagner.
-        last_discovered_at=_now() - datetime.timedelta(days=25),
-    )
+
+async def _lr_row(db, mac, ip, rocket_id, days_since_radio=25):
+    lr = Lr(name=f"client-{mac[-5:]}", model_variant="litebeam_5ac", status="down",
+            ip_address=ip, mac_address=mac.lower(), rocket_id=rocket_id,
+            location="ZZ AT1", auto_discovered=True,
+            last_discovered_at=_now() - datetime.timedelta(days=days_since_radio))
     db.add(lr)
     await db.flush()
+    return lr
 
-    monkeypatch.setattr(uisp_sync_service.uisp_service, "UISPClient", _FakeUISPClient)
+
+async def test_down_client_is_reparented_but_keeps_its_ip(db, monkeypatch):
+    """Le cas fondateur — ET la limite : l'AP se reprend, l'IP non.
+
+    Un abonné ne change pas de site en étant éteint, donc le rattachement est
+    sûr. Son IP, elle, a pu être redonnée à quelqu'un d'autre par le DHCP
+    pendant son absence : UISP n'en a qu'un souvenir.
+    """
+    from app.services import uisp_sync_service
+
+    old_ap, new_ap = await _setup(db)
+    lr = await _lr_row(db, "1C:6A:1B:B8:79:B0", "10.135.5.152", old_ap.id)
+    monkeypatch.setattr(uisp_sync_service.uisp_service, "UISPClient", _fake_client([
+        _station("1C:6A:1B:B8:79:B0", "Yakoub", "10.135.4.13", "A2-DN1-SUD1", "disconnected"),
+    ]))
+
     summary = await uisp_sync_service.sync_uisp_stations(db)
 
     assert summary["reparented"] == 1, "le résumé des STATIONS doit porter le compteur"
-    assert summary["ip_updated"] == 1
-    # ⚠️ `refresh()` ne flushe PAS les modifications en attente : il expire
-    # l'objet et le relit, donc il ÉCRASE silencieusement ce qui n'est pas
-    # encore écrit. Sans ce flush, le test relisait l'ancienne IP et accusait
-    # le code à tort (`rocket_id`, lui, avait survécu parce qu'un autoflush
-    # interne l'avait déjà poussé). On flushe donc pour prouver que la valeur
-    # atteint vraiment la base, puis on relit.
+    assert summary["ip_updated"] == 0, "station déconnectée : son IP est un souvenir"
     await db.flush()
     await db.refresh(lr)
     assert lr.rocket_id == new_ap.id
     assert lr.location == "A2 DN1"
-    assert lr.ip_address == "10.135.4.13"
+    assert lr.ip_address == "10.135.5.152"
+
+
+async def test_active_client_gets_its_ip_back(db, monkeypatch):
+    """UISP voit la station EN LIGNE → son IP est actuelle, on la reprend."""
+    from app.services import uisp_sync_service
+
+    old_ap, new_ap = await _setup(db)
+    lr = await _lr_row(db, "1C:6A:1B:B8:79:B1", None, old_ap.id)
+    monkeypatch.setattr(uisp_sync_service.uisp_service, "UISPClient", _fake_client([
+        _station("1C:6A:1B:B8:79:B1", "Actif", "10.135.4.14", "A2-DN1-SUD1", "active"),
+    ]))
+
+    summary = await uisp_sync_service.sync_uisp_stations(db)
+
+    assert summary["ip_updated"] == 1
+    await db.flush()
+    await db.refresh(lr)
+    assert lr.ip_address == "10.135.4.14"
+
+
+async def test_two_stations_claiming_the_same_ip_do_not_steal_it(db, monkeypatch):
+    """LE bug de production : UISP a rendu la même IP pour plusieurs abonnés.
+
+    La première la prend, la seconde est comptée en conflit et garde la sienne.
+    Sans ce verrou, la seconde volait la ligne de la première, qui se
+    retrouvait sans IP donc hors du sweep de ping — un client sain éteint par
+    un autre.
+    """
+    from app.services import uisp_sync_service
+
+    old_ap, _new_ap = await _setup(db)
+    a = await _lr_row(db, "1C:6A:1B:B8:79:C1", None, old_ap.id)
+    b = await _lr_row(db, "1C:6A:1B:B8:79:C2", None, old_ap.id)
+    monkeypatch.setattr(uisp_sync_service.uisp_service, "UISPClient", _fake_client([
+        _station("1C:6A:1B:B8:79:C1", "A", "10.135.3.159", "A2-DN1-SUD1", "active"),
+        _station("1C:6A:1B:B8:79:C2", "B", "10.135.3.159", "A2-DN1-SUD1", "active"),
+    ]))
+
+    summary = await uisp_sync_service.sync_uisp_stations(db)
+
+    assert summary["ip_updated"] == 1
+    assert summary["ip_conflict"] == 1
+    await db.flush()
+    await db.refresh(a)
+    await db.refresh(b)
+    assert {a.ip_address, b.ip_address} == {"10.135.3.159", None}
+
+
+async def test_ip_held_by_another_device_is_left_alone(db, monkeypatch):
+    """IP déjà détenue en base → on s'abstient. Seul le radio voit le terrain.
+
+    Ici on ne peut pas savoir laquelle des deux lignes est périmée ; voler,
+    c'est laisser la victime sans IP.
+    """
+    from app.services import uisp_sync_service
+
+    old_ap, _new_ap = await _setup(db)
+    holder = await _lr_row(db, "1C:6A:1B:B8:79:D1", "10.135.7.77", old_ap.id)
+    claimer = await _lr_row(db, "1C:6A:1B:B8:79:D2", None, old_ap.id)
+    monkeypatch.setattr(uisp_sync_service.uisp_service, "UISPClient", _fake_client([
+        _station("1C:6A:1B:B8:79:D2", "Claimer", "10.135.7.77", "A2-DN1-SUD1", "active"),
+    ]))
+
+    summary = await uisp_sync_service.sync_uisp_stations(db)
+
+    assert summary["ip_updated"] == 0
+    assert summary["ip_conflict"] == 1
+    await db.flush()
+    await db.refresh(holder)
+    await db.refresh(claimer)
+    assert holder.ip_address == "10.135.7.77"   # la victime garde son IP
+    assert claimer.ip_address is None

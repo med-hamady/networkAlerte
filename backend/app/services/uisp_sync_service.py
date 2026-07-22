@@ -451,8 +451,10 @@ async def _adopt_uisp_attribution(
     lr: Lr,
     ap_name: str | None,
     ip: str | None,
+    uisp_status: str | None,
     uisp_last_seen: datetime.datetime | None,
     rockets_by_norm_name: dict[str, Rocket],
+    claimed_ips: set[str],
     summary: dict,
 ) -> None:
     """Reprend l'AP et l'IP que UISP connaît — SEULEMENT s'il a vu plus récemment.
@@ -494,22 +496,47 @@ async def _adopt_uisp_attribution(
         lr.location = parent.location
         summary["reparented"] += 1
 
-    # L'IP passe par le MÊME garde-fou que la découverte : hors du plan de
-    # management, elle est écartée (UISP remonte aussi des LAN de CPE), et la
-    # libération de l'ancien détenteur suit la règle unique de discovery_service
-    # — deux écrivains divergents sur une contrainte UNIQUE, c'est le vol d'IP.
-    if (
-        ip
-        and ip != lr.ip_address
-        and discovery_service.is_management_ip(ip)
-        and await discovery_service.release_ip_if_held(session, ip, exclude_id=lr.id)
-    ):
-        logger.info(
-            "UISP: LR '%s' — IP reprise %s → %s (source UISP, radio muet)",
-            lr.name, lr.ip_address, ip,
+    # ── L'IP : trois verrous, et AUCUN vol ────────────────────────────────
+    # L'AP, lui, se reprend sans condition (un abonné ne change pas de site en
+    # étant éteint). L'IP est une tout autre affaire :
+    #
+    # 1. `uisp_status == "active"` — pour un client DÉCONNECTÉ, l'IP que UISP
+    #    affiche est un dernier état connu que le DHCP a pu réattribuer depuis.
+    #    Constaté au 1er passage réel : UISP a rendu `10.135.3.159` pour TROIS
+    #    abonnés déconnectés différents, `10.135.2.24` pour deux, etc.
+    # 2. Le plan de management (`is_management_ip`) — UISP remonte aussi des
+    #    LAN de CPE.
+    # 3. **Libre uniquement** : si un autre équipement détient l'IP, on
+    #    s'abstient. Ici on ne peut PAS savoir laquelle des deux lignes est
+    #    périmée — seul le radio voit le terrain. Voler, c'est laisser la
+    #    victime sans IP donc hors du sweep de ping : exactement le mécanisme
+    #    qui a produit 124 faux « hors ligne » (cf. `is_management_ip`).
+    #    `claimed_ips` étend ce verrou AU SEIN d'un même passage, où plusieurs
+    #    stations revendiquent la même adresse avant tout flush.
+    if not ip or ip == lr.ip_address or (uisp_status or "").lower() != "active":
+        return
+    if not discovery_service.is_management_ip(ip):
+        return
+    if ip in claimed_ips:
+        summary["ip_conflict"] += 1
+        return
+    holder = (
+        await session.execute(select(Device).where(Device.ip_address == ip))
+    ).scalar_one_or_none()
+    if holder is not None and holder.id != lr.id:
+        summary["ip_conflict"] += 1
+        logger.debug(
+            "UISP: IP %s revendiquée par '%s' mais détenue par '%s' — inchangée",
+            ip, lr.name, holder.name,
         )
-        lr.ip_address = ip
-        summary["ip_updated"] += 1
+        return
+    logger.info(
+        "UISP: LR '%s' — IP reprise %s → %s (station active, radio muet)",
+        lr.name, lr.ip_address, ip,
+    )
+    lr.ip_address = ip
+    claimed_ips.add(ip)
+    summary["ip_updated"] += 1
 
 
 async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) -> dict:
@@ -580,6 +607,9 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
     }
 
     now = datetime.datetime.now(datetime.UTC)
+    # IP déjà revendiquées DANS ce passage : deux stations déconnectées peuvent
+    # porter la même adresse périmée, et rien n'est encore flushé pour le voir.
+    claimed_ips: set[str] = set()
 
     summary: dict = {
         "dry_run": dry_run,
@@ -592,6 +622,8 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
         # celui du sync infra, qui ne réconcilie aucun client.
         "reparented": 0,
         "ip_updated": 0,
+        # IP annoncée par UISP mais déjà détenue : laissée au radio, jamais volée.
+        "ip_conflict": 0,
         "skipped": {
             "af60": 0, "no_mac": 0, "type_conflict": 0,
         },
@@ -652,8 +684,8 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
                 match.uisp_ap_name = ap_name
                 match.uisp_synced_at = now
                 await _adopt_uisp_attribution(
-                    session, match, ap_name, ip, last_seen,
-                    rockets_by_norm_name, summary,
+                    session, match, ap_name, ip, uisp_status, last_seen,
+                    rockets_by_norm_name, claimed_ips, summary,
                 )
             summary["updated"] += 1
             if len(summary["samples"]["update"]) < _SAMPLE_CAP:
@@ -719,9 +751,10 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
 
     logger.info(
         "UISP station sync %s: fetched=%d stations=%d created=%d updated=%d "
-        "reparented=%d ip_updated=%d cleared_ap=%d skipped=%s",
+        "reparented=%d ip_updated=%d ip_conflict=%d cleared_ap=%d skipped=%s",
         "(dry-run)" if dry_run else "", summary["fetched"], summary["stations"],
         summary["created"], summary["updated"], summary["reparented"],
-        summary["ip_updated"], summary["cleared_ap"], summary["skipped"],
+        summary["ip_updated"], summary["ip_conflict"], summary["cleared_ap"],
+        summary["skipped"],
     )
     return summary

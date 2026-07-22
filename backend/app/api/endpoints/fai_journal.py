@@ -38,7 +38,7 @@ router = APIRouter()
 
 class JournalEntry(BaseModel):
     timestamp: str
-    action: str  # BLOCK | UNBLOCK | RETRY_OK | ABANDON
+    action: str  # BLOCK | UNBLOCK | RETRY_OK | ABANDON | IDENT_KO
     ok: bool
     mac: str | None
     name: str
@@ -78,7 +78,7 @@ class JournalResponse(BaseModel):
 @router.get("", response_model=JournalResponse)
 async def get_journal(
     limit: int = Query(200, ge=1, le=1000),
-    action: str | None = Query(None, description="BLOCK | UNBLOCK | RETRY_OK | ABANDON"),
+    action: str | None = Query(None, description="BLOCK | UNBLOCK | RETRY_OK | ABANDON | IDENT_KO"),
     status: str | None = Query(None, description="ok | failed | abandoned"),
     search: str | None = Query(None, description="Filtre sur la MAC ou le nom du client"),
     db: AsyncSession = Depends(get_db),

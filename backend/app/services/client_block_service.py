@@ -148,6 +148,9 @@ async def _set_full(lr: Lr, cut: bool) -> tuple[bool, str]:
             bring_up=not cut,
             expected_fingerprint=lr.ssh_host_fingerprint,
             fallback_passwords=settings.lr_fallback_password_list,
+            # La fiche cible une MAC ; la session part sur une IP qui a pu
+            # être redonnée à un autre abonné. Refus si ça ne concorde pas.
+            expected_mac=lr.mac_address,
         )
     _pin_fp(lr, ok, observed_fp)
     _promote_password(lr, primary_pw, used_pw)
@@ -175,6 +178,9 @@ async def _set_whatsapp(lr: Lr, on: bool) -> tuple[bool, str]:
             deny_domains=settings.blocked_domains_whatsapp_only_list,
             expected_fingerprint=lr.ssh_host_fingerprint,
             fallback_passwords=settings.lr_fallback_password_list,
+            # La fiche cible une MAC ; la session part sur une IP qui a pu
+            # être redonnée à un autre abonné. Refus si ça ne concorde pas.
+            expected_mac=lr.mac_address,
         )
     _pin_fp(lr, ok, observed_fp)
     _promote_password(lr, primary_pw, used_pw)
@@ -219,7 +225,24 @@ async def _clear_block(lr: Lr) -> tuple[bool, str]:
 # ssh_service only surfaces failures as free-text messages (str(exc)), so this is a
 # string match on the two paramiko cases — deliberately narrow: anything unrecognised
 # counts as transient (we keep retrying), which is the safe default.
-_STRUCTURAL_MARKERS = ("authentication failed", "host key mismatch")
+_STRUCTURAL_MARKERS = (
+    "authentication failed",
+    "host key mismatch",
+    # Identité : l'équipement joint n'est pas celui de la fiche. Réessayer
+    # toutes les 120 s ne peut pas aider — l'IP restera fausse tant que la
+    # découverte ne l'aura pas corrigée. C'est donc structurel, pas transitoire.
+    ssh_service.IDENTITY_REFUSAL_PREFIX.lower(),
+)
+
+
+def is_identity_refusal(msg: str | None) -> bool:
+    """Le refus vient-il du contrôle d'identité (et non d'un échec SSH) ?
+
+    Sert à en faire une entrée de journal distincte : pour l'opérateur,
+    « l'adresse pointe sur quelqu'un d'autre » n'est pas la même information
+    que « le mot de passe est faux », alors que les deux sont des abandons.
+    """
+    return (msg or "").lower().startswith(ssh_service.IDENTITY_REFUSAL_PREFIX.lower())
 
 
 def _structural_failure(msg: str) -> str | None:
@@ -420,11 +443,21 @@ async def _abandon(lr: Lr, action: str, reason: str) -> None:
         "technique requise",
         action, lr.name, lr.id, lr.ip_address, reason,
     )
-    fai_audit.log_action(
-        "ABANDON", ok=False, mac=lr.mac_address, name=lr.name,
-        mode=lr.block_mode, source="enforce",
-        message=f"{action} impossible (connexion refusée) : {reason}",
-    )
+    # « L'adresse pointe sur quelqu'un d'autre » et « le mot de passe est faux »
+    # sont deux abandons pour un opérateur, mais deux causes très différentes —
+    # et seule la première demande de corriger la fiche, pas l'équipement.
+    if is_identity_refusal(reason):
+        fai_audit.log_action(
+            "IDENT_KO", ok=False, mac=lr.mac_address, name=lr.name,
+            mode=lr.block_mode, source="enforce",
+            message=f"{action} REFUSÉ — {reason}",
+        )
+    else:
+        fai_audit.log_action(
+            "ABANDON", ok=False, mac=lr.mac_address, name=lr.name,
+            mode=lr.block_mode, source="enforce",
+            message=f"{action} impossible (connexion refusée) : {reason}",
+        )
 
 
 async def enforce_blocked_clients(session: AsyncSession) -> int:
@@ -552,6 +585,7 @@ async def _apply_content_block(lr: Lr, categories: list[str]) -> tuple[bool, str
             fallback_passwords=settings.lr_fallback_password_list,
             mode=_normalize_content_mode(lr.content_block_mode),
             allow_resolver=settings.content_block_allow_resolver,
+            expected_mac=lr.mac_address,
         )
     _pin_fp(lr, ok, observed_fp)
     _promote_password(lr, primary_pw, used_pw)

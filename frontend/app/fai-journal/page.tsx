@@ -22,6 +22,11 @@ const ACTION_STYLE: Record<FaiJournalEntry['action'], { label: string; cls: stri
   UNBLOCK:  { label: 'Déblocage',      cls: 'bg-green-50 text-green-700 border-green-200' },
   RETRY_OK: { label: 'Rattrapé',       cls: 'bg-blue-50 text-blue-700 border-blue-200'    },
   ABANDON:  { label: 'Abandonné',      cls: 'bg-amber-50 text-amber-800 border-amber-300' },
+  // Rien n'a été tenté sur l'équipement : l'adresse de la fiche répondait, mais
+  // c'était un AUTRE abonné. Violet pour ne pas le confondre avec une panne
+  // (ambre) — ici il n'y a rien à réparer sur le terrain, c'est la fiche qui
+  // est périmée, et elle se corrigera dès que la découverte reverra le client.
+  IDENT_KO: { label: 'Identité refusée', cls: 'bg-purple-50 text-purple-700 border-purple-200' },
 }
 
 // Qui a demandé l'action. `script` = blocage de masse (migration depuis le MikroTik).

@@ -767,6 +767,16 @@ class Settings(BaseSettings):
     # trois abonnés différents). Au-delà de ce délai l'IP est ignorée.
     uisp_ip_trust_hours: int = 24
 
+    # Nettoyage périodique des IP que plus aucune source ne confirme
+    # (`ip_hygiene_service`). C'est un FILET : la protection réelle contre une
+    # action sur le mauvais abonné est le contrôle d'identité MAC fait avant
+    # chaque blocage (`ssh_service.identity_refusal`). Ici on nettoie
+    # l'affichage et on réduit la fenêtre.
+    ip_cleanup_enabled: bool = True
+    ip_cleanup_interval_hours: int = 12
+    # Le radio confirme une IP s'il a revu la station depuis moins de N heures.
+    ip_cleanup_radio_hours: int = 24
+
     @property
     def management_ip_cidr_list(self) -> list[str]:
         return [p.strip() for p in self.management_ip_cidrs.split(",") if p.strip()]

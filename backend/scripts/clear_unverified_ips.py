@@ -65,94 +65,23 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import delete, select  # noqa: E402
+from sqlalchemy import select  # noqa: E402
 
-from app.core.alert_constants import PING_FAILURE_STATE_KEY  # noqa: E402
 from app.db.session import async_session_factory  # noqa: E402
-from app.models.alert_state import AlertState  # noqa: E402
 from app.models.device import Lr  # noqa: E402
-from app.services.discovery_service import is_management_ip  # noqa: E402
+from app.services import ip_hygiene_service  # noqa: E402
+from app.services.ip_hygiene_service import (  # noqa: E402
+    _aware,
+    is_confirmed,
+    plan_cleanup,
+)
 
+# La logique vit dans `app/services/ip_hygiene_service.py` : le job planifié
+# (toutes les 12 h) et ce script doivent appliquer EXACTEMENT la même règle,
+# et un job ne peut pas importer depuis `scripts/`. Ici il ne reste que le
+# pilotage en ligne de commande.
 
-def _aware(value: datetime.datetime | None) -> datetime.datetime | None:
-    """Une colonne timestamptz peut remonter naïve selon le driver.
-
-    Comparer naïf et aware lèverait un TypeError au milieu d'un nettoyage de
-    masse, à mi-parcours des écritures.
-    """
-    if value is not None and value.tzinfo is None:
-        return value.replace(tzinfo=datetime.UTC)
-    return value
-
-
-def is_confirmed(
-    ip: str | None,
-    uisp_status: str | None,
-    uisp_last_seen: datetime.datetime | None,
-    last_discovered_at: datetime.datetime | None,
-    since: datetime.datetime,
-    trust_hours: int,
-) -> bool:
-    """Une source confirme-t-elle ENCORE l'IP portée par cette ligne ?
-
-    Préalable : une IP **hors plan de management** (LAN d'usine `192.168.x`,
-    APIPA…) n'est JAMAIS confirmable, quelle que soit la fraîcheur de la source.
-    Elle est fausse par construction — nous ne joignons aucun équipement par
-    là. Sans ce préalable, une station que UISP voit active tout en annonçant
-    son LAN gardait une adresse inutilisable (constaté en prod : `192.168.1.71`
-    encore en base, rescapé d'avant le garde-fou).
-
-    Trois façons de confirmer une IP du plan :
-      * le radio a redécouvert la station APRÈS l'écriture suspecte (`since`) :
-        l'IP a été réécrite par la source qui voit le terrain ;
-      * UISP voit la station **en ligne** : l'adresse est celle de maintenant ;
-      * UISP l'a vue il y a moins de `trust_hours` : le bail DHCP n'a quasi
-        sûrement pas bougé.
-
-    Ce dernier point est une FENÊTRE, pas un booléen `active`. Une station en
-    panne depuis 1 h et une station disparue depuis 3 semaines portent toutes
-    deux `disconnected`, mais leur dernière IP connue n'a pas la même valeur —
-    le cas fondateur (LR 598, « en outage depuis 1 h ») avait une adresse juste,
-    vérifiée sur l'équipement. La jeter aurait été une perte, pas une prudence.
-    """
-    if not is_management_ip(ip):
-        return False
-    if (uisp_status or "").lower() == "active":
-        return True
-    last_discovered_at = _aware(last_discovered_at)
-    if last_discovered_at is not None and last_discovered_at > since:
-        return True
-    uisp_last_seen = _aware(uisp_last_seen)
-    if uisp_last_seen is None:
-        return False
-    return uisp_last_seen > datetime.datetime.now(datetime.UTC) - datetime.timedelta(
-        hours=trust_hours
-    )
-
-
-def plan_cleanup(
-    rows: list[Lr], since: datetime.datetime, trust_hours: int,
-) -> tuple[list[Lr], list[tuple[Lr, str | None]]]:
-    """Décide, sans rien modifier — renvoie (gardées, [(ligne, IP à retirer)]).
-
-    Décider et muter dans la même boucle avait un défaut discret : l'IP était
-    effacée AVANT d'être affichée, donc le formatage tombait sur un `None` et
-    faisait mourir le script au milieu des mutations. Rien n'était committé,
-    mais le nettoyage n'avait pas lieu et l'erreur ressemblait à une panne de
-    fond. Séparer la décision de l'écriture rend ça structurellement impossible
-    — et rend la décision testable sans base.
-    """
-    kept: list[Lr] = []
-    cleared: list[tuple[Lr, str | None]] = []
-    for lr in rows:
-        if is_confirmed(
-            lr.ip_address, lr.uisp_status, lr.uisp_last_seen,
-            lr.last_discovered_at, since, trust_hours,
-        ):
-            kept.append(lr)
-        else:
-            cleared.append((lr, lr.ip_address))
-    return kept, cleared
+__all__ = ["is_confirmed", "plan_cleanup"]
 
 
 async def main() -> int:
@@ -205,15 +134,10 @@ async def main() -> int:
 
         kept, cleared = plan_cleanup(rows, since, args.trust_hours)
         if args.apply:
-            for lr, _old_ip in cleared:
-                lr.ip_address = None
-                lr.status = "unknown"
-                await session.execute(
-                    delete(AlertState).where(
-                        AlertState.device_id == lr.id,
-                        AlertState.alert_type == PING_FAILURE_STATE_KEY,
-                    )
-                )
+            await ip_hygiene_service.run_cleanup(
+                session, apply=True, since=since,
+                trust_hours=args.trust_hours, ips=ips or None,
+            )
 
         print(f"Lignes examinées      : {len(rows)}")
         print(f"  confirmées (gardées): {len(kept)}")

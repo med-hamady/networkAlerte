@@ -837,7 +837,10 @@ export interface SiteOutageSummary {
 // en souffrance lus de la base. Voir backend/app/api/endpoints/fai_journal.py.
 export interface FaiJournalEntry {
   timestamp: string
-  action: 'BLOCK' | 'UNBLOCK' | 'RETRY_OK' | 'ABANDON'
+  /** IDENT_KO = rien n'a été tenté : l'équipement joint à l'adresse de la
+   *  fiche n'était pas celui attendu (MAC differente), donc agir aurait
+   *  touché un autre abonné. */
+  action: 'BLOCK' | 'UNBLOCK' | 'RETRY_OK' | 'ABANDON' | 'IDENT_KO'
   ok: boolean
   mac: string | null
   name: string

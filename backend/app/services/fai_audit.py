@@ -67,7 +67,8 @@ def log_action(
 ) -> None:
     """Ajoute une ligne au journal des actions FAI (best-effort, ne lève jamais).
 
-    ``action`` : BLOCK | UNBLOCK | RETRY_OK | ABANDON. ``source`` : qui a demandé
+    ``action`` : BLOCK | UNBLOCK | RETRY_OK | ABANDON | IDENT_KO (l'équipement
+    joint n'était pas celui de la fiche → rien n'a été tenté). ``source`` : qui a demandé
     (``payment`` = API du système de paiement, ``enforce`` = job de renforcement).
     """
     path = get_settings().fai_log_path

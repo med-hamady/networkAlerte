@@ -527,6 +527,73 @@ def _collect_forbidden_ifaces(transport: paramiko.Transport) -> set[str]:
     return forbidden
 
 
+# ── Contrôle d'identité avant toute action de blocage ────────────────────────
+
+_IDENT_CMD = "cat /sys/class/net/*/address 2>/dev/null"
+
+# Préfixe du message de refus. Les appelants le reconnaissent par CETTE
+# constante, jamais en cherchant des mots dans la phrase : le libellé est
+# destiné à un opérateur et peut être reformulé sans casser la logique.
+IDENTITY_REFUSAL_PREFIX = "Identité refusée :"
+
+
+def _device_macs(transport: paramiko.Transport, timeout: int = 10) -> set[str]:
+    """MAC de TOUTES les interfaces de l'équipement joint, en minuscules.
+
+    On compare sur l'ENSEMBLE des interfaces plutôt que sur une seule : le nom
+    de l'interface radio dépend de la famille (ath0 sur airOS, autre ailleurs)
+    et notre `mac_address` vient de la liste des stations de l'AP, donc de la
+    radio. Chercher la MAC attendue parmi toutes les interfaces est robuste
+    sans rien supposer du nommage.
+    """
+    try:
+        code, out = _exec_capture(transport, _IDENT_CMD, timeout)
+    except Exception as exc:  # noqa: BLE001 — l'invérifiable ne doit pas bloquer
+        logger.debug("identité : lecture des MAC impossible (%s)", exc)
+        return set()
+    if code != 0:
+        return set()
+    return {
+        line.strip().lower()
+        for line in (out or "").splitlines()
+        if len(line.strip()) == 17 and line.strip().count(":") == 5
+    }
+
+
+def identity_refusal(
+    transport: paramiko.Transport, expected_mac: str | None, timeout: int = 10
+) -> str | None:
+    """`None` si on peut agir, sinon le motif du refus.
+
+    Une fiche identifie son client par sa **MAC**, mais la session SSH part sur
+    son **IP** — et une IP a pu être redonnée à un autre abonné par le DHCP
+    pendant que celui-ci était éteint. Sans ce contrôle, une coupure demandée
+    pour le client A tombait sur le client B, qui paie.
+
+    ⚠️ **Invérifiable = on laisse passer.** Un firmware sans `/sys/class/net`
+    rendrait sinon TOUT blocage impossible sur cette famille d'équipements —
+    une panne bien pire que le risque couvert. On ne refuse que sur une preuve
+    positive : des MAC lisibles, et la MAC attendue absente.
+
+    Coût : une commande sur la session DÉJÀ ouverte. Ce qui est cher sur ces
+    radios, c'est la poignée de main SSH (saturation au-delà d'environ 150
+    simultanées), pas une lecture dans /sys.
+    """
+    if not expected_mac:
+        return None
+    macs = _device_macs(transport, timeout)
+    if not macs:
+        logger.debug("identité invérifiable (aucune MAC lisible) — action autorisée")
+        return None
+    if expected_mac.strip().lower() in macs:
+        return None
+    return (
+        f"{IDENTITY_REFUSAL_PREFIX} l'équipement joint annonce {sorted(macs)}, pas la "
+        f"MAC attendue {expected_mac}. L'IP de la fiche est périmée (bail DHCP "
+        f"réattribué) — agir aurait touché un AUTRE abonné."
+    )
+
+
 def _set_iface_state_sync(
     host: str,
     port: int,
@@ -536,6 +603,7 @@ def _set_iface_state_sync(
     bring_up: bool,
     expected_fingerprint: str | None,
     fallback_passwords: list[str] | None,
+    expected_mac: str | None = None,
 ) -> tuple[bool, str, str | None, str | None]:
     """SSH into the device and bring `interface` admin up or down.
 
@@ -568,6 +636,13 @@ def _set_iface_state_sync(
     except Exception as exc:
         logger.debug("set_iface SSH connect failed — %s — %s", host, exc)
         return False, str(exc), None, None
+
+    # Identité : la fiche cible une MAC, la session part sur une IP. Refuser
+    # avant d'agir évite de couper un abonné qui a hérité de l'adresse.
+    refusal = identity_refusal(transport, expected_mac)
+    if refusal is not None:
+        logger.warning("Action de blocage refusée sur %s — %s", host, refusal)
+        return False, refusal, observed, used_pw
 
     action = "up" if bring_up else "down"
     iface = shlex.quote(interface)
@@ -631,6 +706,7 @@ async def set_lan_interface(
     bring_up: bool,
     expected_fingerprint: str | None = None,
     fallback_passwords: list[str] | None = None,
+    expected_mac: str | None = None,
 ) -> tuple[bool, str, str | None, str | None]:
     """SSH into the LR and bring its LAN port admin up/down — non-blocking.
 
@@ -643,7 +719,7 @@ async def set_lan_interface(
     return await asyncio.to_thread(
         _set_iface_state_sync,
         host, port, username, password, interface, bring_up,
-        expected_fingerprint, fallback_passwords,
+        expected_fingerprint, fallback_passwords, expected_mac,
     )
 
 
@@ -730,6 +806,7 @@ def _set_whatsapp_only_sync(
     deny_domains: list[str],
     expected_fingerprint: str | None,
     fallback_passwords: list[str] | None,
+    expected_mac: str | None = None,
 ) -> tuple[bool, str, str | None, str | None]:
     """Install/remove the WhatsApp-only restriction on the LR (3 layers).
 
@@ -765,6 +842,13 @@ def _set_whatsapp_only_sync(
     except Exception as exc:
         logger.debug("whatsapp_only SSH connect failed — %s — %s", host, exc)
         return False, str(exc), None, None
+
+    # Identité : la fiche cible une MAC, la session part sur une IP. Refuser
+    # avant d'agir évite de couper un abonné qui a hérité de l'adresse.
+    refusal = identity_refusal(transport, expected_mac)
+    if refusal is not None:
+        logger.warning("Action de blocage refusée sur %s — %s", host, refusal)
+        return False, refusal, observed, used_pw
 
     try:
         subnet, lr_ip = _detect_client_context(transport)
@@ -914,6 +998,7 @@ async def set_whatsapp_only(
     deny_domains: list[str],
     expected_fingerprint: str | None = None,
     fallback_passwords: list[str] | None = None,
+    expected_mac: str | None = None,
 ) -> tuple[bool, str, str | None, str | None]:
     """SSH into the LR and apply/remove the 3-layer WhatsApp-only restriction.
 
@@ -928,7 +1013,7 @@ async def set_whatsapp_only(
         _set_whatsapp_only_sync,
         host, port, username, password,
         enable, allow_cidrs, deny_domains, expected_fingerprint,
-        fallback_passwords,
+        fallback_passwords, expected_mac,
     )
 
 
@@ -943,6 +1028,7 @@ def _set_content_block_sync(
     fallback_passwords: list[str] | None,
     mode: str = _CONTENT_MODE_DENY,
     allow_resolver: str = "8.8.8.8",
+    expected_mac: str | None = None,
 ) -> tuple[bool, str, str | None, str | None]:
     """Apply a per-category content filter on the LR — DNS-only, declarative.
 
@@ -993,6 +1079,13 @@ def _set_content_block_sync(
     except Exception as exc:
         logger.debug("content_block SSH connect failed — %s — %s", host, exc)
         return False, str(exc), None, None
+
+    # Identité : la fiche cible une MAC, la session part sur une IP. Refuser
+    # avant d'agir évite de couper un abonné qui a hérité de l'adresse.
+    refusal = identity_refusal(transport, expected_mac)
+    if refusal is not None:
+        logger.warning("Action de blocage refusée sur %s — %s", host, refusal)
+        return False, refusal, observed, used_pw
 
     try:
         subnet, lr_ip = _detect_client_context(transport)
@@ -1151,6 +1244,7 @@ async def set_content_block(
     fallback_passwords: list[str] | None = None,
     mode: str = _CONTENT_MODE_DENY,
     allow_resolver: str = "8.8.8.8",
+    expected_mac: str | None = None,
 ) -> tuple[bool, str, str | None, str | None]:
     """SSH into the LR and apply/remove a per-category DNS content filter.
 
@@ -1167,7 +1261,7 @@ async def set_content_block(
         _set_content_block_sync,
         host, port, username, password,
         domains, keep_dnat, expected_fingerprint,
-        fallback_passwords, mode, allow_resolver,
+        fallback_passwords, mode, allow_resolver, expected_mac,
     )
 
 

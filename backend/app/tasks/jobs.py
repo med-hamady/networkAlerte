@@ -60,6 +60,7 @@ from app.services import (
     digest_service,
     discovery_service,
     incident_service,
+    ip_hygiene_service,
     lr_health_service,
     lr_metric_history_service,
     lr_plan_service,
@@ -2586,6 +2587,43 @@ async def client_consumption_7d_refresh_job() -> None:
 
 
 @_timed_job
+async def unverified_ip_cleanup_job() -> None:
+    """Retire les IP de LR que plus aucune source ne confirme.
+
+    Une adresse périmée n'est pas neutre : la fiche pingue l'équipement d'un
+    autre abonné (faux « en ligne ») et toute opération SSH viserait le mauvais
+    client. Une case vide dit « je ne sais pas », ce qui est vrai.
+
+    ⚠️ FILET, pas protection principale : ce qui empêche réellement de couper le
+    mauvais abonné est le contrôle d'identité MAC exécuté avant chaque blocage
+    (`ssh_service.identity_refusal`). Ici on nettoie l'affichage et on réduit la
+    fenêtre — d'où un intervalle en heures et non en minutes.
+
+    Rien n'est supprimé : la ligne garde nom, MAC, AP, site et historique, et la
+    découverte lui rend son IP dès qu'un AP la rapporte.
+    """
+    settings = get_settings()
+    if not settings.ip_cleanup_enabled:
+        return
+    try:
+        async with async_session_factory() as session:
+            result = await ip_hygiene_service.run_cleanup(session, apply=True)
+            await session.commit()
+    except Exception:
+        logger.exception("unverified_ip_cleanup_job: échec")
+        return
+
+    if result["cleared"]:
+        logger.warning(
+            "Hygiène IP : %d ligne(s) sur %d sans source de confirmation — IP "
+            "retirée, statut 'unknown'. Exemples : %s",
+            result["cleared"], result["examined"],
+            ", ".join(f"{s['name']} ({s['ip']})" for s in result["samples"][:5]),
+        )
+    else:
+        logger.info("Hygiène IP : %d ligne(s) examinée(s), rien à retirer", result["examined"])
+
+
 async def traffic_stats_retention_job() -> None:
     """Purge traffic_dest_stats buckets older than the retention window.
 
@@ -3142,7 +3180,7 @@ _FAST_JOB_IDS = {
     "infra_ping", "warning_digest", "flap_detection",
     "network_latency_aggregate", "client_consumption_matview_refresh",
     "client_consumption_7d_refresh",
-    "traffic_stats_retention", "lr_latency_retention",
+    "traffic_stats_retention", "lr_latency_retention", "unverified_ip_cleanup",
     "security_anomaly_detection", "rocket_saturation_report",
     "site_infra_report",
 }
@@ -3283,6 +3321,16 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         max_instances=1,
         coalesce=True,
         misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        unverified_ip_cleanup_job,
+        trigger="interval",
+        hours=settings.ip_cleanup_interval_hours,
+        id="unverified_ip_cleanup",
+        name="Hygiène IP (retire les adresses que plus aucune source ne confirme)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     scheduler.add_job(
         traffic_stats_retention_job,

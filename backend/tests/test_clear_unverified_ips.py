@@ -12,7 +12,7 @@ On ne garde donc l'IP que si une source la confirme ENCORE.
 
 import datetime
 
-from scripts.clear_unverified_ips import is_confirmed
+from scripts.clear_unverified_ips import is_confirmed, plan_cleanup
 
 _SINCE = datetime.datetime(2026, 7, 22, 12, 40, tzinfo=datetime.UTC)
 _IP = "10.135.4.13"      # dans le plan de management
@@ -82,3 +82,48 @@ def test_an_ip_outside_the_management_plan_is_never_confirmed():
     """
     assert is_confirmed("192.168.1.71", "active", _recent(0.1), None, _SINCE, 24) is False
     assert is_confirmed("169.254.3.4", "active", None, _at(13, 15), _SINCE, 24) is False
+
+
+# ── plan_cleanup : decider d'abord, muter ensuite ───────────────────────────
+
+class _FakeLr:
+    """Juste ce que `plan_cleanup` lit — pas besoin de base pour decider."""
+
+    def __init__(self, ip, uisp_status=None, uisp_last_seen=None, last_discovered_at=None):
+        self.id = 1
+        self.name = "client"
+        self.ip_address = ip
+        self.uisp_status = uisp_status
+        self.uisp_last_seen = uisp_last_seen
+        self.last_discovered_at = last_discovered_at
+
+
+def test_plan_keeps_the_ip_it_is_about_to_remove():
+    """Le couple (ligne, IP retiree) porte l'ADRESSE, pas None.
+
+    Regression vecue en prod : la decision et la mutation etaient dans la meme
+    boucle, l'IP etait donc effacee avant d'etre affichee et le formatage
+    tombait sur un None — le script mourait au milieu des mutations. Rien
+    n'etait committe, mais le nettoyage n'avait pas lieu et l'erreur
+    ressemblait a une panne de fond.
+    """
+    doomed = _FakeLr("10.135.9.24", uisp_status="disconnected")
+    kept, cleared = plan_cleanup([doomed], _SINCE, 24)
+
+    assert kept == []
+    assert cleared == [(doomed, "10.135.9.24")]
+
+
+def test_plan_does_not_mutate_anything():
+    """`plan_cleanup` decide seulement — l'ecriture appartient a l'appelant."""
+    row = _FakeLr("10.135.9.24", uisp_status="disconnected")
+    plan_cleanup([row], _SINCE, 24)
+    assert row.ip_address == "10.135.9.24"
+
+
+def test_plan_splits_kept_and_cleared():
+    live = _FakeLr(_IP, uisp_status="active")
+    stale = _FakeLr("10.135.9.24", uisp_status="disconnected")
+    kept, cleared = plan_cleanup([live, stale], _SINCE, 24)
+    assert kept == [live]
+    assert [ip for _row, ip in cleared] == ["10.135.9.24"]

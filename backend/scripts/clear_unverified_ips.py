@@ -130,6 +130,31 @@ def is_confirmed(
     )
 
 
+def plan_cleanup(
+    rows: list[Lr], since: datetime.datetime, trust_hours: int,
+) -> tuple[list[Lr], list[tuple[Lr, str | None]]]:
+    """Décide, sans rien modifier — renvoie (gardées, [(ligne, IP à retirer)]).
+
+    Décider et muter dans la même boucle avait un défaut discret : l'IP était
+    effacée AVANT d'être affichée, donc le formatage tombait sur un `None` et
+    faisait mourir le script au milieu des mutations. Rien n'était committé,
+    mais le nettoyage n'avait pas lieu et l'erreur ressemblait à une panne de
+    fond. Séparer la décision de l'écriture rend ça structurellement impossible
+    — et rend la décision testable sans base.
+    """
+    kept: list[Lr] = []
+    cleared: list[tuple[Lr, str | None]] = []
+    for lr in rows:
+        if is_confirmed(
+            lr.ip_address, lr.uisp_status, lr.uisp_last_seen,
+            lr.last_discovered_at, since, trust_hours,
+        ):
+            kept.append(lr)
+        else:
+            cleared.append((lr, lr.ip_address))
+    return kept, cleared
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -178,16 +203,9 @@ async def main() -> int:
                   f"(radio confirmant depuis moins de {args.radio_hours} h)")
         rows = (await session.execute(query)).scalars().all()
 
-        kept, cleared = [], []
-        for lr in rows:
-            if is_confirmed(
-                lr.ip_address, lr.uisp_status, lr.uisp_last_seen,
-                lr.last_discovered_at, since, args.trust_hours,
-            ):
-                kept.append(lr)
-                continue
-            cleared.append(lr)
-            if args.apply:
+        kept, cleared = plan_cleanup(rows, since, args.trust_hours)
+        if args.apply:
+            for lr, _old_ip in cleared:
                 lr.ip_address = None
                 lr.status = "unknown"
                 await session.execute(
@@ -208,8 +226,8 @@ async def main() -> int:
             else:
                 why = "UISP récent"
             print(f"    GARDE  {lr.ip_address:<15} {lr.name[:40]:<40} ({why})")
-        for lr in cleared[:10]:
-            print(f"    EFFACE {lr.ip_address:<15} {lr.name[:40]}")
+        for lr, old_ip in cleared[:10]:
+            print(f"    EFFACE {old_ip or '?':<15} {lr.name[:40]}")
         if len(cleared) > 10:
             print(f"    … et {len(cleared) - 10} autres")
 

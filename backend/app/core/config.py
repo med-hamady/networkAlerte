@@ -751,6 +751,14 @@ class Settings(BaseSettings):
     # autre, à l'autre bout du réseau. D'où l'allowlist. Vide = filtre désactivé.
     management_ip_cidrs: str = "10.135.0.0/16"
 
+    # « Hors supervision » : un LR SANS IP (donc hors du sweep de ping — plus
+    # rien ne peut mesurer son état) que le contrôleur UISP ne voit pas non plus
+    # depuis ce délai. Ni une panne ni un client actif : un abonné dont plus
+    # aucune source ne dit quoi que ce soit. Affiché comme tel et exclu du
+    # décompte des accès actifs, jamais supprimé — la découverte le récupère
+    # seule dès qu'un AP le rapporte avec une IP du plan de management.
+    out_of_supervision_days: int = 7
+
     @property
     def management_ip_cidr_list(self) -> list[str]:
         return [p.strip() for p in self.management_ip_cidrs.split(",") if p.strip()]

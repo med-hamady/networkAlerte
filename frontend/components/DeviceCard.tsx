@@ -42,7 +42,7 @@ export default function DeviceCard({ device, onClick, linkedLRCount = 0 }: Props
             <p className="font-semibold text-slate-800 text-sm leading-tight truncate">{device.name}</p>
             <p className="text-blue-400 text-xs mt-0.5">{deviceLabel(device)}</p>
           </div>
-          <StatusPill status={device.status} />
+          <StatusPill status={device.status} outOfSupervision={device.device_type === 'lr' && device.out_of_supervision} />
         </div>
 
         {/* Metadata rows */}
@@ -94,7 +94,7 @@ function Row({ label, value }: { label: string; value: ReactNode }) {
   )
 }
 
-function StatusPill({ status }: { status: string }) {
+function StatusPill({ status, outOfSupervision }: { status: string; outOfSupervision?: boolean }) {
   if (status === 'up') return (
     <div className="flex items-center gap-1.5 shrink-0">
       <span className="relative flex h-2.5 w-2.5">
@@ -110,8 +110,18 @@ function StatusPill({ status }: { status: string }) {
       <span className="text-red-500 text-xs font-bold">DOWN</span>
     </div>
   )
-  // Statut non mesurable (LR sans IP après churn DHCP) : rouge, pas un tiret
-  // neutre. Il n'est pas joignable — le "—" le rendait invisible dans la liste.
+  // Aucune source ne parle de cet abonné : ni ping (pas d'IP) ni UISP depuis
+  // des jours. Ce n'est PAS une panne constatée — le rouge le faisait lire
+  // comme telle, alors qu'ils représentaient 12 % du parc. Ambre + libellé
+  // explicite : on ne sait pas, et on le dit.
+  if (outOfSupervision) return (
+    <div className="flex items-center gap-1.5 shrink-0" title="Sans IP et non vu par UISP — aucune mesure possible">
+      <span className="inline-flex h-2.5 w-2.5 rounded-full bg-amber-400" />
+      <span className="text-amber-600 text-xs font-bold">HORS SUPERVISION</span>
+    </div>
+  )
+  // Statut non mesurable mais récent (LR qui vient de perdre son IP) : rouge,
+  // pas un tiret neutre. Il n'est pas joignable — le "—" le rendait invisible.
   return (
     <div className="flex items-center gap-1.5 shrink-0">
       <span className="inline-flex h-2.5 w-2.5 rounded-full bg-red-400" />

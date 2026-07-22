@@ -141,9 +141,21 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
             <span className="text-red-500 text-sm font-bold">HORS LIGNE</span>
           </div>
         )}
-        {/* Statut non mesurable — rouge comme un down : sans IP le device sort
-            du sweep de ping, donc rien ne peut plus confirmer qu'il est là. */}
-        {!isUp && !isDown && (
+        {/* Aucune source ne parle de cet abonné : pas d'IP (donc hors du sweep
+            de ping) ET UISP ne l'a pas vu depuis des jours. Ce n'est pas une
+            panne constatée, donc pas de rouge — on affiche l'incertitude. */}
+        {!isUp && !isDown && device.device_type === 'lr' && device.out_of_supervision && (
+          <div
+            className="flex items-center gap-2 bg-white border border-amber-200 px-4 py-1.5 rounded-full shadow-sm"
+            title="Sans IP et non vu par UISP — aucune mesure possible. Récupéré automatiquement dès qu'un AP le rapporte."
+          >
+            <span className="inline-flex h-2.5 w-2.5 rounded-full bg-amber-400" />
+            <span className="text-amber-600 text-sm font-bold">HORS SUPERVISION</span>
+          </div>
+        )}
+        {/* Statut non mesurable mais RÉCENT — rouge comme un down : le device
+            vient de sortir du sweep de ping, rien ne confirme plus qu'il est là. */}
+        {!isUp && !isDown && !(device.device_type === 'lr' && device.out_of_supervision) && (
           <div className="flex items-center gap-2 bg-white border border-red-200 px-4 py-1.5 rounded-full shadow-sm">
             <span className="inline-flex h-2.5 w-2.5 rounded-full bg-red-400" />
             <span className="text-red-500 text-sm font-bold">INCONNU</span>

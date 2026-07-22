@@ -67,6 +67,10 @@ export interface Lr extends DeviceBase {
   content_block_mode: 'denylist' | 'allowlist'
   content_block_enforced_at: string | null
   topology_mode: TopologyMode
+  /** Sans IP (hors du sweep de ping) ET non vu par UISP depuis
+   *  OUT_OF_SUPERVISION_DAYS : aucune source ne mesure cet abonné. Ni une
+   *  panne constatée ni un accès actif — l'UI le distingue d'un « INCONNU ». */
+  out_of_supervision: boolean
 }
 
 export type BlockMode = 'full' | 'whatsapp_only'
@@ -778,6 +782,10 @@ export interface AccessClientRow {
   // effective_mode = uisp_mode (else 'unknown'); reachable = uisp_status active.
   effective_mode: TopologyMode
   reachable: boolean
+  /** Sans IP (donc hors du sweep de ping) ET non vu par UISP depuis
+   *  OUT_OF_SUPERVISION_DAYS : aucune source ne mesure cet abonné. Exclu des
+   *  « accès actifs » — ce n'est ni une panne constatée ni un client actif. */
+  out_of_supervision: boolean
 }
 export interface AccessClientsResponse {
   stats: {
@@ -787,6 +795,7 @@ export interface AccessClientsResponse {
     blocked_whatsapp: number
     bridge: number
     disconnected: number
+    out_of_supervision: number
   }
   items: AccessClientRow[]
 }

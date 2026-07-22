@@ -7,7 +7,8 @@ import type { AccessClientRow, AccessClientsResponse } from '@/lib/types'
 import ClientAccessActionModal from '@/components/ClientAccessActionModal'
 import IpLink from '@/components/IpLink'
 
-type Filter = 'all' | 'active' | 'blocked_full' | 'blocked_whatsapp' | 'bridge' | 'disconnected'
+type Filter = 'all' | 'active' | 'blocked_full' | 'blocked_whatsapp' | 'bridge'
+  | 'disconnected' | 'out_of_supervision'
 
 const FILTERS: { value: Filter; label: string }[] = [
   { value: 'all',              label: 'Tous'             },
@@ -16,6 +17,7 @@ const FILTERS: { value: Filter; label: string }[] = [
   { value: 'blocked_whatsapp', label: 'WhatsApp autorisé' },
   { value: 'bridge',           label: 'Mode bridge ⚠'    },
   { value: 'disconnected',     label: 'Hors ligne > 1 mois' },
+  { value: 'out_of_supervision', label: 'Hors supervision' },
 ]
 
 function timeAgo(iso: string | null): string {
@@ -47,6 +49,7 @@ export default function AccessPage() {
 
   const stats = data?.stats ?? {
     total: 0, active: 0, blocked_full: 0, blocked_whatsapp: 0, bridge: 0, disconnected: 0,
+    out_of_supervision: 0,
   }
   const sorted = data?.items ?? []
   const isEmptyFleet = stats.total === 0
@@ -79,7 +82,14 @@ export default function AccessPage() {
           tone="blue"
           sub={stats.disconnected > 0 ? `${stats.disconnected} hors ligne > 1 mois` : undefined}
         />
-        <StatCard label="Accès actif" value={stats.active} tone="green" />
+        <StatCard
+          label="Accès actif"
+          value={stats.active}
+          tone="green"
+          sub={stats.out_of_supervision > 0
+            ? `${stats.out_of_supervision} hors supervision exclu${stats.out_of_supervision > 1 ? 's' : ''}`
+            : undefined}
+        />
         <StatCard
           label="Bloqués"
           value={stats.blocked_full + stats.blocked_whatsapp}
@@ -170,6 +180,16 @@ export default function AccessPage() {
                             <span className="text-red-500 font-semibold text-xs">● Bloqué</span>
                             <ModeBadge mode={lr.block_mode} />
                           </div>
+                        ) : lr.out_of_supervision ? (
+                          // Ni bloqué ni « actif » : aucune source ne parle de
+                          // lui (pas d'IP, et UISP ne l'a pas vu). L'afficher
+                          // « ● Actif » était un mensonge par défaut.
+                          <span
+                            className="text-amber-600 font-semibold text-xs"
+                            title="Sans IP et non vu par UISP — aucune mesure possible. Récupéré dès qu'un AP le rapporte."
+                          >
+                            ● Hors supervision
+                          </span>
                         ) : (
                           <span className="text-green-600 font-semibold text-xs">● Actif</span>
                         )}

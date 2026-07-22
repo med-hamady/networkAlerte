@@ -14,6 +14,35 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from app.core.config import get_settings
+
+
+def is_out_of_supervision(
+    ip_address: str | None, uisp_last_seen: datetime.datetime | None
+) -> bool:
+    """Les DEUX sources se taisent-elles sur ce LR ?
+
+    Sans IP il sort du sweep de ping (`_ping_sweep` filtre
+    `ip_address IS NOT NULL`), donc plus rien ne peut mesurer son état ; si en
+    plus le contrôleur UISP ne l'a pas vu depuis `OUT_OF_SUPERVISION_DAYS`,
+    aucune source ne dit quoi que ce soit de cet abonné. `uisp_last_seen` nul
+    compte comme un silence : jamais vu = jamais mesuré.
+
+    Doit rester la MÊME règle que `fn_access_clients` (migration
+    `cc3d4e5f6a7b`), qui la calcule en SQL pour la page /access.
+    """
+    if ip_address is not None:
+        return False
+    if uisp_last_seen is None:
+        return True
+    horizon = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
+        days=get_settings().out_of_supervision_days
+    )
+    if uisp_last_seen.tzinfo is None:
+        uisp_last_seen = uisp_last_seen.replace(tzinfo=datetime.UTC)
+    return uisp_last_seen < horizon
+
+
 # Discriminator values used by SQLAlchemy polymorphic identity and by the API.
 DeviceType = Literal[
     "rocket", "lr", "uisp_power", "uisp_switch", "client_modem", "airfiber", "ptp_litebeam"
@@ -375,6 +404,12 @@ class LrRead(_DeviceBaseRead):
     plan_download_mbps: float | None = None
     plan_upload_mbps: float | None = None
     plan_synced_at: datetime.datetime | None = None
+    # « Hors supervision » : sans IP, le LR sort du sweep de ping — plus rien ne
+    # mesure son état — et UISP ne l'a pas vu depuis `OUT_OF_SUPERVISION_DAYS`.
+    # Les deux sources se taisent : ce n'est ni une panne constatée ni un client
+    # actif. L'UI le dit explicitement au lieu d'un « INCONNU » rouge, que
+    # l'opérateur lisait comme une panne (12 % du parc en prod le 2026-07-22).
+    out_of_supervision: bool = False
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs: Any) -> "LrRead":
@@ -383,6 +418,9 @@ class LrRead(_DeviceBaseRead):
             instance.has_ssh_password = bool(obj.ssh_password)
         if instance.blocked_categories is None:
             instance.blocked_categories = []
+        instance.out_of_supervision = is_out_of_supervision(
+            instance.ip_address, getattr(obj, "uisp_last_seen", None)
+        )
         return instance
 
 

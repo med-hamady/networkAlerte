@@ -13,12 +13,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.rpc import scalar_json
+from app.core.config import get_settings
 from app.db.session import get_db
 
 router = APIRouter()
 
 AccessFilter = Literal[
     "all", "active", "blocked_full", "blocked_whatsapp", "bridge", "disconnected",
+    "out_of_supervision",
 ]
 
 
@@ -30,7 +32,14 @@ async def get_access_clients(
 ) -> dict[str, Any]:
     """Reachable LR clients (stats + filtered, sorted list) — computed in SQL."""
     result = await db.execute(
-        text("SELECT fn_access_clients(:search, :filter)"),
-        {"search": search, "filter": filter},
+        # Le seuil « hors supervision » est passé depuis la config plutôt que
+        # gravé dans la fonction : l'opérateur l'ajuste dans le `.env`, sans
+        # migration (cf. `Settings.out_of_supervision_days`).
+        text("SELECT fn_access_clients(:search, :filter, :out_of_supervision_days)"),
+        {
+            "search": search,
+            "filter": filter,
+            "out_of_supervision_days": get_settings().out_of_supervision_days,
+        },
     )
     return scalar_json(result)

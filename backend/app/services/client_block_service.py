@@ -739,6 +739,11 @@ async def enforce_blocked_clients(session: AsyncSession) -> int:
 
         if ok:
             enforced += 1
+            # Un ré-essai réussi lève l'abandon : sans ça la raison resterait
+            # posée et le LR traînerait dans « À traiter » alors qu'il est réglé
+            # (le nettoyage n'existait que dans les endpoints block/unblock, pas
+            # dans la boucle — invisible tant que les abandonnés étaient sautés).
+            _set_unenforceable(lr, None)
             if blocking:
                 lr.client_block_enforced_at = _now()
                 logger.info(
@@ -931,6 +936,7 @@ async def enforce_content_blocks(session: AsyncSession) -> int:
         ok, msg = await _apply_content_block(lr, categories)
         if ok:
             enforced += 1
+            _set_unenforceable(lr, None)  # SSH réussi → l'abandon éventuel est levé
             if categories:
                 lr.content_block_enforced_at = _now()
             else:

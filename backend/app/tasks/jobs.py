@@ -2363,6 +2363,15 @@ async def lr_internet_probe_job() -> None:
                     )
                     dev.model_variant = resolved
 
+            # Diagnostic SSH persisté (page « Diagnostics d'accès ») — la session
+            # SSH a déjà eu lieu ci-dessus, on ne fait qu'en enregistrer l'issue.
+            # `used_pw` non nul = auth réussie même si un exec a ensuite timeout →
+            # classé "ok" (pas un refus). Voir ssh_service.classify_probe_ssh_status.
+            dev.ssh_status, dev.ssh_error = ssh_service.classify_probe_ssh_status(
+                ssh_ok, used_pw, msg,
+            )
+            dev.ssh_checked_at = datetime.datetime.now(datetime.UTC)
+
             if not ssh_ok:
                 # Géré par device_ping_job (le LR est down). Pas d'alerte ici.
                 # Incrémente le streak d'échec SSH → backoff si chronique.
@@ -3115,8 +3124,10 @@ async def uisp_sync_job() -> None:
     """Import infrastructure devices from the UISP controller (name/IP/site).
 
     Disabled unless UISP_SYNC_ENABLED and a base URL + credentials (token or
-    username/password) are configured. Subscriber stations are ignored; nothing
-    is ever deleted. See services/uisp_sync_service.
+    username/password) are configured. Infra devices are never deleted. When the
+    station sync runs (UISP_STATION_SYNC_ENABLED), a UISP-sourced client LR that
+    UISP has deprovisioned (its MAC gone from the roster) IS deleted so we stay
+    in sync with UISP. See services/uisp_sync_service.
     """
     settings = get_settings()
     if not settings.uisp_sync_enabled:

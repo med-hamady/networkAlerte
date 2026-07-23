@@ -882,6 +882,38 @@ export interface FaiJournalResponse {
   attention: FaiAttentionRow[]
 }
 
+// ─── Diagnostics d'accès (page /access-diagnostics) ─────────────────────────
+// Deux anomalies de gestion du parc abonné : LR qui refusent le SSH, et LR vus
+// par le radio mais absents du roster UISP (non provisionnés).
+export type SshRefusalStatus = 'auth_failed' | 'ssh_disabled' | 'host_key_mismatch'
+export interface SshRefusedRow {
+  id: number
+  name: string
+  mac: string | null
+  ip_address: string | null
+  site: string | null
+  ap_name: string | null
+  ssh_status: SshRefusalStatus
+  ssh_error: string | null
+  ssh_checked_at: string | null
+  client_blocked: boolean
+}
+export interface RadioNotInUispRow {
+  id: number
+  name: string
+  mac: string | null
+  ip_address: string | null
+  site: string | null
+  ap_name: string | null
+  status: string
+  last_discovered_at: string | null
+}
+export interface AccessDiagnosticsResponse {
+  ssh_refused: SshRefusedRow[]
+  radio_not_in_uisp: RadioNotInUispRow[]
+  counts: { ssh_refused: number; radio_not_in_uisp: number }
+}
+
 // ─── Historique des courbes de la fiche équipement (lr_metric_samples) ──────
 // Une courbe par métrique (latence, capacité du lien, débits). Alimenté par
 // persist_device_metrics : chaque relevé est replié dans un bucket de 5 min.

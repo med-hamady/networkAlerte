@@ -88,6 +88,8 @@ export const endpoints = {
   // Journal des blocages/déblocages (fichier d'audit) + LR encore en souffrance.
   faiJournal:           (status: string, search: string) =>
     `${API_BASE}/fai-journal?limit=300&status=${encodeURIComponent(status)}&search=${encodeURIComponent(search)}`,
+  // Diagnostics d'accès : LR qui refusent le SSH + LR vus par radio hors UISP.
+  accessDiagnostics:    `${API_BASE}/access-diagnostics`,
 }
 
 // ---------------------------------------------------------------------------

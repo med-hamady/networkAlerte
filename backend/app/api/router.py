@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from app.api.deps import require_fai_client, require_user_or_api_key
 from app.api.endpoints import (
     access,
+    access_diagnostics,
     auth,
     client_signal,
     clients,
@@ -39,6 +40,10 @@ api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboar
 api_router.include_router(sites.router, prefix="/sites", tags=["sites"], dependencies=_auth)
 api_router.include_router(device_map.router, prefix="/map", tags=["map"], dependencies=_auth)
 api_router.include_router(access.router, prefix="/access", tags=["access"], dependencies=_auth)
+api_router.include_router(
+    access_diagnostics.router, prefix="/access-diagnostics",
+    tags=["access"], dependencies=_auth,
+)
 # /fai additionally accepts FAI_API_KEY — a key scoped to these routes only, held
 # by the external payment system (see require_fai_client).
 api_router.include_router(

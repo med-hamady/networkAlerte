@@ -592,6 +592,13 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
     stations are excluded (already infra); everything else UISP lists is imported
     (the full roster — UISP already drops de-provisioned stations).
 
+    ⚠️ This sync DELETES to stay in sync with UISP: a UISP-sourced LR
+    (`uisp_synced_at` set) whose MAC is no longer in the fetched roster has been
+    deprovisioned in UISP and is dropped (cascade). Radio-only clients UISP never
+    provisioned (`uisp_synced_at` NULL) are left to discovery_service. The
+    deletion pass is skipped whenever the roster comes back empty (fetch failure
+    guard — never mistake an empty payload for "everyone deprovisioned").
+
     Returns a summary dict; the caller commits (nothing is written in dry_run).
     """
     settings = get_settings()
@@ -765,27 +772,63 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
                 "mode": uisp_mode, "status": uisp_status, "ap": ap_name,
             })
 
-    # Reconcile the roster: an LR that carries a UISP AP attribution but whose
-    # MAC is no longer in the fetched station list has been deprovisioned in
-    # UISP. Since the sync never deletes rows, without this its stale
-    # `uisp_ap_name` would keep it counted in /capacity forever (the "25 vs 24"
-    # phantom). Clear only the UISP snapshot columns — discovery-owned columns
-    # (rocket_id, topology_mode, block state) stay untouched.
-    summary["cleared_ap"] = 0
-    if not dry_run:
-        for d in existing:
-            if isinstance(d, Lr) and d.uisp_ap_name and d.mac_address not in roster_macs:
-                d.uisp_ap_name = None
-                d.uisp_status = None
-                d.uisp_synced_at = now
-                summary["cleared_ap"] += 1
+    # ── Reconcile the roster: DELETE the LRs UISP no longer knows ─────────────
+    # A station provisioned in UISP and later removed there is a DELIBERATE
+    # deprovision by the operator — the source of truth for the client roster is
+    # UISP, so we drop the row to stay in sync. Deleting an LR cascades its
+    # metrics/incidents/history away; the FAI block journal is a MAC-keyed text
+    # file that survives, so the audit trail is kept.
+    #
+    # Eligibility is deliberately NARROW so we never wipe a live client:
+    #   * `uisp_synced_at` set → the row was created or matched by THIS station
+    #     sync at some point (that column is written nowhere else). A radio-only
+    #     client that UISP never provisioned (uisp_synced_at NULL) is owned by
+    #     discovery_service and is NEVER deleted here — wiping it would just make
+    #     the next radio poll re-create it in a loop.
+    #   * MAC no longer present in the freshly-fetched roster.
+    # A blocked client is deleted too (deprovisioned = no longer served; the
+    # local LR cut becomes moot).
+    #
+    # ⚠️ SAFETY: skip the whole deletion pass when the roster came back EMPTY.
+    # `fetch_devices` raises on transport/auth errors (the cycle is skipped
+    # upstream), but a malformed or momentarily-empty payload returns [] — which
+    # would otherwise read as "every station was deprovisioned" and delete the
+    # entire client base. A real network always provisions at least one station.
+    summary["deleted"] = 0
+    if roster_macs:
+        to_delete = [
+            d for d in existing
+            if isinstance(d, Lr)
+            and d.mac_address
+            and d.uisp_synced_at is not None
+            and d.mac_address not in roster_macs
+        ]
+        summary["deleted"] = len(to_delete)
+        for d in to_delete[:_SAMPLE_CAP]:
+            summary["samples"].setdefault("delete", []).append(
+                {"name": d.name, "mac": d.mac_address, "blocked": d.client_blocked},
+            )
+        if not dry_run:
+            for d in to_delete:
+                logger.info(
+                    "UISP: LR '%s' (%s) supprimé — absent du roster UISP (déprovisionné"
+                    "%s)", d.name, d.mac_address,
+                    ", client était bloqué" if d.client_blocked else "",
+                )
+                await session.delete(d)
+            await session.flush()
+    else:
+        logger.warning(
+            "UISP station sync: roster vide — suppression des LR absents ignorée "
+            "(échec de fetch probable, le parc client n'est PAS purgé)",
+        )
 
     logger.info(
         "UISP station sync %s: fetched=%d stations=%d created=%d updated=%d "
-        "reparented=%d ip_updated=%d ip_conflict=%d cleared_ap=%d skipped=%s",
+        "reparented=%d ip_updated=%d ip_conflict=%d deleted=%d skipped=%s",
         "(dry-run)" if dry_run else "", summary["fetched"], summary["stations"],
         summary["created"], summary["updated"], summary["reparented"],
-        summary["ip_updated"], summary["ip_conflict"], summary["cleared_ap"],
+        summary["ip_updated"], summary["ip_conflict"], summary["deleted"],
         summary["skipped"],
     )
     return summary

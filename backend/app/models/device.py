@@ -180,6 +180,22 @@ class Lr(Device):
     ssh_port: Mapped[int] = mapped_column(default=22)
     ssh_host_fingerprint: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
+    # ── Diagnostic SSH (renseigné par lr_internet_probe_job, qui SSH déjà chaque
+    # LR up chaque cycle — capture ici GRATUITE). Sépare « refuse le SSH »
+    # (défaut de gestion, action requise) de « simplement hors ligne » :
+    #   "ok"                → session ouverte (le LR est gérable)
+    #   "auth_failed"       → mot de passe rejeté (AuthenticationException)
+    #   "ssh_disabled"      → port fermé / SSH désactivé (ConnectionRefusedError)
+    #   "host_key_mismatch" → le LR répond mais rejette notre clé épinglée
+    #   "unreachable"       → timeout/route (le LR up mais SSH muet — PAS un refus)
+    #   NULL                → jamais sondé (LR down : device_ping_job ne le sonde pas)
+    # La page « Diagnostics d'accès » ne remonte que les 3 refus, LR encore up.
+    ssh_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    ssh_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ssh_checked_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
     # Link characteristic reported by the parent Rocket's API.
     distance_m: Mapped[float | None] = mapped_column(Float, nullable=True)
 

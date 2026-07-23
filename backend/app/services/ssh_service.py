@@ -1688,6 +1688,48 @@ async def measure_latency_via_ssh(
     )
 
 
+# SSH refusal categories persisted on `lrs.ssh_status` (see the Lr model). Kept
+# next to the code that produces the failure strings so the mapping stays honest.
+SSH_STATUS_OK = "ok"
+SSH_STATUS_AUTH_FAILED = "auth_failed"
+SSH_STATUS_DISABLED = "ssh_disabled"
+SSH_STATUS_HOST_KEY_MISMATCH = "host_key_mismatch"
+SSH_STATUS_UNREACHABLE = "unreachable"
+# The three that mean "the LR REFUSES us" — a management defect a tech must fix,
+# as opposed to a device that is merely offline. The diagnostics page filters on
+# exactly this set.
+SSH_REFUSAL_STATUSES = frozenset(
+    {SSH_STATUS_AUTH_FAILED, SSH_STATUS_DISABLED, SSH_STATUS_HOST_KEY_MISMATCH}
+)
+
+
+def classify_probe_ssh_status(
+    ssh_ok: bool, used_pw: str | None, message: str | None
+) -> tuple[str, str | None]:
+    """Map a probe result to (ssh_status, ssh_error) for `lrs.ssh_status`.
+
+    ``used_pw`` is set by ``_open_transport`` ONLY once the SSH session actually
+    authenticated — so ``ssh_ok or used_pw`` means "we got a working SSH session"
+    (even when a later exec timed out, which is a transient command problem, not a
+    refusal). Otherwise we read the failure category off the message string
+    produced upstream: ``AuthenticationException`` → "Authentication failed",
+    ``_FingerprintMismatchError`` → "Host key mismatch for …",
+    ``ConnectionRefusedError`` → "Connection refused". Anything else (socket
+    timeout, no route) is a reachability problem, NOT a refusal — the LR is up
+    (device_ping_job says so) but its SSH is momentarily mute.
+    """
+    if ssh_ok or used_pw:
+        return SSH_STATUS_OK, None
+    low = (message or "").lower()
+    if "authentication failed" in low:
+        return SSH_STATUS_AUTH_FAILED, message
+    if "host key mismatch" in low:
+        return SSH_STATUS_HOST_KEY_MISMATCH, message
+    if "connection refused" in low:
+        return SSH_STATUS_DISABLED, message
+    return SSH_STATUS_UNREACHABLE, message
+
+
 # ── Traffic shaper (per-client subscription plan / "forfait") ────────────────
 #
 # The customer's plan is NOT in any HTTP API (LTU /statistics, airOS status.cgi

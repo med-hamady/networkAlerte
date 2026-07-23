@@ -39,7 +39,8 @@ const sections: NavSection[] = [
   {
     title: 'Anomalies',
     links: [
-      { href: '/incidents',         label: 'Incidents',       icon: WarningIcon, exact: true },
+      { href: '/incidents',         label: 'Incidents',           icon: WarningIcon, exact: true },
+      { href: '/access-diagnostics', label: "Diagnostics d'accès", icon: PlugIcon },
     ],
   },
   {
@@ -314,6 +315,15 @@ function FilterIcon({ className }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round"
         d="M3 4h18l-7 8v6l-4 2v-8L3 4z" />
+    </svg>
+  )
+}
+
+function PlugIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round"
+        d="M12 22v-5m0 0a5 5 0 005-5V8H7v4a5 5 0 005 5zM9 8V3m6 5V3" />
     </svg>
   )
 }

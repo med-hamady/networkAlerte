@@ -314,3 +314,97 @@ async def test_ip_held_by_another_device_is_left_alone(db, monkeypatch):
     await db.refresh(claimer)
     assert holder.ip_address == "10.135.7.77"   # la victime garde son IP
     assert claimer.ip_address is None
+
+
+# ── Suppression des stations déprovisionnées dans UISP (2026-07-23) ──────────
+# UISP est la source de vérité du roster client : une station qu'il ne liste
+# plus a été déprovisionnée délibérément → on supprime la ligne pour rester
+# synchro. Garde-fous : seulement les LR issus de UISP (`uisp_synced_at` set),
+# jamais un client radio-seul, et JAMAIS quand le roster revient vide.
+
+
+async def _uisp_lr(db, mac, ip, rocket_id, *, blocked=False):
+    """LR déjà connu de UISP (uisp_synced_at renseigné) — éligible à la purge."""
+    lr = await _lr_row(db, mac, ip, rocket_id)
+    lr.uisp_synced_at = _now() - datetime.timedelta(days=1)
+    lr.uisp_ap_name = "ZZ-AT1-SUD1"
+    lr.client_blocked = blocked
+    await db.flush()
+    return lr
+
+
+async def test_uisp_sourced_station_gone_from_roster_is_deleted(db, monkeypatch):
+    """LE cas demandé : `1c:6a:1b:b8:76:aa` retiré de UISP → supprimé chez nous."""
+    from app.services import uisp_sync_service
+
+    old_ap, _new_ap = await _setup(db)
+    lr = await _uisp_lr(db, "1C:6A:1B:B8:76:AA", "10.135.6.10", old_ap.id)
+    lr_id = lr.id
+    # Roster NON vide (une autre station), mais sans notre MAC.
+    monkeypatch.setattr(uisp_sync_service.uisp_service, "UISPClient", _fake_client([
+        _station("1C:6A:1B:B8:79:FF", "Autre", "10.135.6.11", "ZZ-AT1-SUD1", "active"),
+    ]))
+
+    summary = await uisp_sync_service.sync_uisp_stations(db)
+
+    assert summary["deleted"] == 1
+    assert await db.get(Lr, lr_id) is None
+
+
+async def test_radio_only_station_is_never_deleted(db, monkeypatch):
+    """Client découvert par radio seul (uisp_synced_at NULL) → jamais purgé ici.
+
+    C'est discovery_service qui le possède ; l'effacer déclencherait une
+    recréation en boucle au prochain poll radio.
+    """
+    from app.services import uisp_sync_service
+
+    old_ap, _new_ap = await _setup(db)
+    lr = await _lr_row(db, "1C:6A:1B:B8:79:E1", "10.135.6.20", old_ap.id)  # pas de uisp_synced_at
+    lr_id = lr.id
+    monkeypatch.setattr(uisp_sync_service.uisp_service, "UISPClient", _fake_client([
+        _station("1C:6A:1B:B8:79:FF", "Autre", "10.135.6.11", "ZZ-AT1-SUD1", "active"),
+    ]))
+
+    summary = await uisp_sync_service.sync_uisp_stations(db)
+
+    assert summary["deleted"] == 0
+    assert await db.get(Lr, lr_id) is not None
+
+
+async def test_empty_roster_never_purges_the_client_base(db, monkeypatch):
+    """Garde-fou anti-catastrophe : roster vide = échec de fetch, on ne supprime rien.
+
+    Un payload vide ne doit JAMAIS être lu comme « tout le monde déprovisionné ».
+    """
+    from app.services import uisp_sync_service
+
+    old_ap, _new_ap = await _setup(db)
+    lr = await _uisp_lr(db, "1C:6A:1B:B8:76:AA", "10.135.6.10", old_ap.id)
+    lr_id = lr.id
+    monkeypatch.setattr(uisp_sync_service.uisp_service, "UISPClient", _fake_client([]))
+
+    summary = await uisp_sync_service.sync_uisp_stations(db)
+
+    assert summary["deleted"] == 0
+    assert await db.get(Lr, lr_id) is not None
+
+
+async def test_blocked_client_gone_from_roster_is_deleted_too(db, monkeypatch):
+    """Déprovisionné = plus servi : on supprime même un client bloqué.
+
+    Le journal FAI est un fichier par MAC → l'audit de la coupure survit.
+    """
+    from app.services import uisp_sync_service
+
+    old_ap, _new_ap = await _setup(db)
+    lr = await _uisp_lr(db, "1C:6A:1B:B8:76:AA", "10.135.6.10", old_ap.id, blocked=True)
+    lr_id = lr.id
+    monkeypatch.setattr(uisp_sync_service.uisp_service, "UISPClient", _fake_client([
+        _station("1C:6A:1B:B8:79:FF", "Autre", "10.135.6.11", "ZZ-AT1-SUD1", "active"),
+    ]))
+
+    summary = await uisp_sync_service.sync_uisp_stations(db)
+
+    assert summary["deleted"] == 1
+    assert await db.get(Lr, lr_id) is None

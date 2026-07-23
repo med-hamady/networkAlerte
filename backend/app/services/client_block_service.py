@@ -595,24 +595,30 @@ async def unblock_client(session: AsyncSession, lr: Lr) -> tuple[bool, str]:
         return True, f"Accès internet rétabli pour {lr.name}. {msg}{router_note}"
 
     structural = _structural_failure(msg)
-    # Transitoire → on retente jusqu'à ce que le LR réponde. Structurel → inutile
-    # d'y revenir : le port restera fermé tant qu'un technicien n'aura rien fait.
-    lr.unblock_pending = structural is None
+    # On GARDE l'intention de déblocage dans la boucle, même sur échec structurel
+    # (symétrie avec le blocage, dont `client_blocked` reste True) : un client qui
+    # a payé ne doit pas rester coupé parce qu'un technicien doit intervenir. Le
+    # ré-essai est throttlé par `_abandon_retry_due` (via `block_unenforceable_since`
+    # posé ci-dessous) et guérit tout seul dès que la cause disparaît — clé d'hôte
+    # ré-épinglée sur MAC, ou mot de passe corrigé hors bande. Transitoire : reason
+    # None → retenté chaque cycle.
+    lr.unblock_pending = True
     _set_unenforceable(lr, structural)
     await session.commit()
 
     suffix = "" if was_blocked else " (le client n'était pas marqué bloqué)"
     if structural:
         logger.error(
-            "CLIENT UNBLOCK ABANDONNÉ — LR '%s' (id=%d, %s) : %s — connexion au "
-            "LR refusée, le client reste COUPÉ jusqu'à intervention technique",
+            "CLIENT UNBLOCK non appliqué (structurel) — LR '%s' (id=%d, %s) : %s — "
+            "connexion au LR refusée ; ré-essai lent automatique (self-heal)",
             lr.name, lr.id, lr.ip_address, msg,
         )
         return (
             False,
-            f"Déblocage enregistré pour {lr.name} mais l'accès n'a PAS pu être "
-            f"rétabli ({msg}). Connexion au LR refusée — intervention technique "
-            f"requise, aucune nouvelle tentative automatique.{suffix}",
+            f"Déblocage enregistré pour {lr.name} mais l'accès n'a PAS encore pu "
+            f"être rétabli ({msg}). Connexion au LR refusée — le job de renforcement "
+            f"réessaiera automatiquement (clé d'hôte re-flashée ou mot de passe "
+            f"corrigé = guérison sans intervention).{suffix}",
         )
 
     logger.warning(
@@ -629,9 +635,16 @@ async def unblock_client(session: AsyncSession, lr: Lr) -> tuple[bool, str]:
 
 
 async def _abandon(lr: Lr, action: str, reason: str) -> None:
-    """Take an LR out of the retry loop after a structural SSH failure."""
+    """Enregistre l'échec structurel — mais NE sort PAS un déblocage de la boucle.
+
+    Le ré-essai est throttlé par `_abandon_retry_due` (via `block_unenforceable_since`
+    posé par `_set_unenforceable`), pas supprimé : un client qui a payé ne doit pas
+    rester coupé jusqu'à une intervention manuelle. On garde donc `unblock_pending`
+    pour un déblocage (il guérit dès que la clé est ré-épinglée ou le mot de passe
+    corrigé) ; une coupure abandonnée n'a, elle, pas de déblocage en attente.
+    """
     _set_unenforceable(lr, reason)
-    lr.unblock_pending = False
+    lr.unblock_pending = action == "UNBLOCK"
     logger.error(
         "enforce: %s ABANDONNÉ — LR '%s' (id=%d, %s) : %s — intervention "
         "technique requise",

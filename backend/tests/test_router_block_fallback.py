@@ -122,6 +122,29 @@ def test_abandon_ancien_est_retente():
     assert client_block_service._abandon_retry_due(lr) is True
 
 
+@pytest.mark.asyncio
+async def test_abandon_garde_le_deblocage_dans_la_boucle():
+    """Un déblocage abandonné (structurel) RESTE dans la boucle (self-heal
+    throttlé) : le client qui a payé ne doit pas rester coupé jusqu'à une
+    intervention manuelle."""
+    lr = _FakeLr(client_blocked=False, unblock_pending=True)
+    with patch("app.services.client_block_service.fai_audit.log_action"):
+        await client_block_service._abandon(
+            lr, "UNBLOCK", "Host key mismatch for 10.135.2.52"
+        )
+    assert lr.unblock_pending is True
+    assert lr.block_unenforceable_reason is not None
+    assert lr.block_unenforceable_since is not None
+
+
+@pytest.mark.asyncio
+async def test_abandon_coupure_na_pas_de_deblocage_en_attente():
+    lr = _FakeLr(client_blocked=True, unblock_pending=False)
+    with patch("app.services.client_block_service.fai_audit.log_action"):
+        await client_block_service._abandon(lr, "BLOCK", "Authentication failed.")
+    assert lr.unblock_pending is False
+
+
 # ── Les transitions ─────────────────────────────────────────────────────────
 
 

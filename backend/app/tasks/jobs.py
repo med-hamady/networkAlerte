@@ -2228,7 +2228,7 @@ async def lr_internet_probe_job() -> None:
         targets = [
             (lr.id, lr.name, lr.ip_address, lr.ssh_port or 22,
              lr.ssh_username, lr.ssh_password, lr.ssh_host_fingerprint,
-             lr.model_variant)
+             lr.model_variant, lr.mac_address)
             for lr in result.scalars().all()
         ]
 
@@ -2272,7 +2272,7 @@ async def lr_internet_probe_job() -> None:
     results: dict[int, tuple] = {}
 
     async def _probe(t: tuple, pool: ThreadPoolExecutor) -> None:
-        dev_id, name, ip, port, user, pwd, fp, model_variant = t
+        dev_id, name, ip, port, user, pwd, fp, model_variant, mac = t
         # Radio metrics via wstalist only for M5 LRs — they don't serve the
         # HTTP status.cgi, so this SSH session (already open for the ping) is
         # their only metric source. 5AC LRs get metrics from airos_api_poll_job.
@@ -2293,6 +2293,7 @@ async def lr_internet_probe_job() -> None:
                     settings.lr_fallback_password_list,
                     collect_radio,
                     collect_model,
+                    mac,  # expected_mac → clé d'hôte ré-épinglée si la MAC concorde
                 ),
             )
         except Exception:

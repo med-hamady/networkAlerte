@@ -9,7 +9,17 @@ airOS-M LRs (M5), which do not answer the HTTP status.cgi the AC firmware does.
 
 import json
 
-from app.services.ssh_service import _parse_board_model, _parse_wstalist_metrics
+import paramiko
+import pytest
+
+from app.services import ssh_service
+from app.services.ssh_service import (
+    _FingerprintMismatchError,
+    _host_key_rotation_confirmed,
+    _open_transport,
+    _parse_board_model,
+    _parse_wstalist_metrics,
+)
 
 
 def test_parse_board_model_m5():
@@ -86,6 +96,132 @@ def test_parse_wstalist_missing_fields_stay_none():
     assert m["signal_dbm"] == -50
     assert m["cinr_db"] is None
     assert m["ccq_pct"] is None
+
+
+# ── Auto-guérison de la clé d'hôte (LR re-flashé) ───────────────────────────
+#
+# Un LR ré-initialisé régénère sa clé SSH mais garde sa MAC (gravée). La
+# nouvelle clé n'est ré-épinglée que si la MAC attendue est présente sur
+# l'équipement — preuve que c'est le même matériel, pas un MITM ni une IP DHCP
+# réattribuée. Invérifiable ⇒ on refuse (asymétrie voulue avec identity_refusal).
+
+_EXPECTED_MAC = "d0:21:f9:f6:06:99"
+
+
+class _FakeTransport:
+    def __init__(self, sock, auth_ok=True):
+        self._auth_ok = auth_ok
+        self.closed = False
+
+    def start_client(self, timeout=None):
+        pass
+
+    def get_remote_server_key(self):
+        return object()
+
+    def auth_password(self, username, password, fallback=False):
+        if not self._auth_ok:
+            raise paramiko.AuthenticationException("bad password")
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def _patch_transport(monkeypatch):
+    """Patche socket + paramiko.Transport + _fingerprint pour tester la logique
+    de _open_transport sans réseau. Retourne un setter (observed_fp, device_macs)."""
+    state = {"observed": "FP_NEW", "macs": set(), "last": None}
+
+    def _fake_conn(addr, timeout=None):
+        return object()
+
+    def _fake_transport(sock):
+        t = _FakeTransport(sock)
+        state["last"] = t
+        return t
+
+    monkeypatch.setattr(ssh_service.socket, "create_connection", _fake_conn)
+    monkeypatch.setattr(ssh_service.paramiko, "Transport", _fake_transport)
+    monkeypatch.setattr(ssh_service, "_fingerprint", lambda key: state["observed"])
+    monkeypatch.setattr(ssh_service, "_device_macs", lambda t, timeout=10: state["macs"])
+    return state
+
+
+def test_matching_fingerprint_returns_transport(_patch_transport):
+    _patch_transport["observed"] = "FP_OK"
+    transport, fp, pw = _open_transport(
+        "10.0.0.1", 22, "ubnt", "pw", expected_fingerprint="FP_OK",
+    )
+    assert fp == "FP_OK"
+    assert pw == "pw"
+
+
+def test_first_seen_key_is_pinned_tofu(_patch_transport):
+    # expected_fingerprint None → TOFU: accept whatever the host presents.
+    transport, fp, pw = _open_transport(
+        "10.0.0.1", 22, "ubnt", "pw", expected_fingerprint=None,
+    )
+    assert fp == "FP_NEW"
+
+
+def test_rotated_key_self_heals_when_mac_confirms(_patch_transport):
+    # Key changed (FP_NEW ≠ FP_OLD) but the expected MAC is on the device → the
+    # re-flashed LR is the same box → accept the new key, do not raise.
+    _patch_transport["observed"] = "FP_NEW"
+    _patch_transport["macs"] = {_EXPECTED_MAC, "aa:bb:cc:dd:ee:ff"}
+    transport, fp, pw = _open_transport(
+        "10.0.0.1", 22, "ubnt", "pw",
+        expected_fingerprint="FP_OLD", expected_mac=_EXPECTED_MAC,
+    )
+    assert fp == "FP_NEW"
+    assert transport is _patch_transport["last"]
+    assert transport.closed is False
+
+
+def test_rotated_key_refused_when_mac_absent(_patch_transport):
+    # Key changed and the device's MACs do NOT include the expected one → a
+    # different device on a reassigned IP (or a MITM) → keep refusing.
+    _patch_transport["observed"] = "FP_NEW"
+    _patch_transport["macs"] = {"aa:bb:cc:dd:ee:ff"}
+    with pytest.raises(_FingerprintMismatchError):
+        _open_transport(
+            "10.0.0.1", 22, "ubnt", "pw",
+            expected_fingerprint="FP_OLD", expected_mac=_EXPECTED_MAC,
+        )
+    assert _patch_transport["last"].closed is True
+
+
+def test_rotated_key_refused_when_no_expected_mac(_patch_transport):
+    # No MAC to verify against → cannot confirm identity → strict old behaviour.
+    _patch_transport["observed"] = "FP_NEW"
+    with pytest.raises(_FingerprintMismatchError):
+        _open_transport(
+            "10.0.0.1", 22, "ubnt", "pw", expected_fingerprint="FP_OLD",
+        )
+
+
+def test_rotated_key_refused_when_macs_unreadable(_patch_transport):
+    # Firmware exposes no MAC (empty set) → unverifiable → refuse (we only trust
+    # a rotated key on POSITIVE proof, the inverse of the action guard).
+    _patch_transport["observed"] = "FP_NEW"
+    _patch_transport["macs"] = set()
+    with pytest.raises(_FingerprintMismatchError):
+        _open_transport(
+            "10.0.0.1", 22, "ubnt", "pw",
+            expected_fingerprint="FP_OLD", expected_mac=_EXPECTED_MAC,
+        )
+
+
+def test_host_key_rotation_confirmed_helper(monkeypatch):
+    monkeypatch.setattr(
+        ssh_service, "_device_macs", lambda t, timeout=10: {_EXPECTED_MAC}
+    )
+    assert _host_key_rotation_confirmed(object(), _EXPECTED_MAC) is True
+    assert _host_key_rotation_confirmed(object(), "00:00:00:00:00:00") is False
+    assert _host_key_rotation_confirmed(object(), None) is False
+    monkeypatch.setattr(ssh_service, "_device_macs", lambda t, timeout=10: set())
+    assert _host_key_rotation_confirmed(object(), _EXPECTED_MAC) is False
 
 
 def test_wstalist_owns_quality_and_the_consumption_counters():

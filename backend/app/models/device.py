@@ -234,6 +234,14 @@ class Lr(Device):
     block_unenforceable_reason: Mapped[str | None] = mapped_column(
         String(255), nullable=True,
     )
+    # When the current abandon was recorded. Lets the enforcement job re-attempt
+    # an abandoned LR on a slow cadence (client_block_abandon_retry_hours) so a
+    # device that has since recovered — re-flashed (new host key, self-healed via
+    # MAC re-pin) or fixed out of band — comes back on its own, without a manual
+    # unstick. Reset to now on each fresh abandon; cleared with the reason.
+    block_unenforceable_since: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
     # ── Repli routeur ────────────────────────────────────────────────────────
     # Une règle drop est-elle en place sur le MikroTik pour ce client ? C'est le
     # filet de sécurité du blocage : le LR peut être éteint ou refuser le SSH, le

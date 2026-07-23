@@ -408,6 +408,7 @@ async def check_ssh(
         password=password,
         expected_fingerprint=fingerprint,
         fallback_passwords=get_settings().lr_fallback_password_list,
+        expected_mac=getattr(device, "mac_address", None),
     )
     if ok and observed_fp and fingerprint != observed_fp:
         device.ssh_host_fingerprint = observed_fp
@@ -451,6 +452,7 @@ async def ping_from_lr(
         targets=[device.ip_address],
         expected_fingerprint=lr.ssh_host_fingerprint,
         fallback_passwords=get_settings().lr_fallback_password_list,
+        expected_mac=getattr(lr, "mac_address", None),
     )
     if ok and observed_fp and lr.ssh_host_fingerprint != observed_fp:
         lr.ssh_host_fingerprint = observed_fp
@@ -508,6 +510,7 @@ async def ping_target(
         targets=[target],
         expected_fingerprint=device.ssh_host_fingerprint,
         fallback_passwords=get_settings().lr_fallback_password_list,
+        expected_mac=getattr(device, "mac_address", None),
     )
     if ok and observed_fp and device.ssh_host_fingerprint != observed_fp:
         device.ssh_host_fingerprint = observed_fp
@@ -839,6 +842,7 @@ async def check_ping(
         password=password,
         expected_fingerprint=fingerprint,
         fallback_passwords=get_settings().lr_fallback_password_list,
+        expected_mac=getattr(device, "mac_address", None),
     )
     if ok and observed_fp and fingerprint != observed_fp:
         device.ssh_host_fingerprint = observed_fp

@@ -364,6 +364,15 @@ class Settings(BaseSettings):
     client_block_enforcement_enabled: bool = True
     client_block_enforce_interval: int = 120
 
+    # A LR abandoned on a structural SSH failure (wrong password, host-key
+    # mismatch) is normally skipped every cycle — retrying a login that the LR
+    # keeps rejecting is pure noise. But some of those DO recover on their own:
+    # a re-flashed LR regenerates its host key (self-healed via MAC re-pinning
+    # in ssh_service._open_transport), or a technician fixes the device/creds
+    # out of band. So we re-attempt an abandoned LR once every N hours — slow
+    # enough to stay quiet, often enough to heal without a manual unstick.
+    client_block_abandon_retry_hours: int = 6
+
     # Default block flavour applied when the operator doesn't pick one:
     #   "full"          → shut the LR LAN port (total cut).
     #   "whatsapp_only" → iptables allowlist (DNS + Meta ranges) so the client

@@ -109,6 +109,18 @@ def _pin_fp(lr: Lr, ok: bool, observed_fp: str | None) -> None:
         lr.ssh_host_fingerprint = observed_fp
 
 
+def _set_unenforceable(lr: Lr, reason: str | None) -> None:
+    """Set/clear the abandon reason together with its timestamp.
+
+    Reason and timestamp must always move as a pair: a stale ``since`` on a
+    cleared reason would let the slow-retry gate misfire, and an abandon with no
+    ``since`` would be retried every cycle. Reset ``since`` to now on each fresh
+    abandon so the retry cadence restarts from the latest failure.
+    """
+    lr.block_unenforceable_reason = reason
+    lr.block_unenforceable_since = _now() if reason else None
+
+
 def _promote_password(lr: Lr, primary: str, used: str | None) -> None:
     """Auto-heal: persist the fallback password that just authenticated.
 
@@ -252,6 +264,29 @@ def _structural_failure(msg: str) -> str | None:
         if marker in low:
             return msg[:255]
     return None
+
+
+def _abandon_retry_due(lr: Lr) -> bool:
+    """Un ré-essai lent est-il dû pour un LR abandonné ? (filet self-heal)
+
+    Un abandon structurel (mauvais mot de passe, clé d'hôte) est normalement
+    sauté à chaque cycle — inutile de rejouer un login que le LR rejette. Mais
+    certains se réparent seuls : un LR re-flashé régénère sa clé d'hôte (que
+    ``ssh_service._open_transport`` ré-épingle sur confirmation de la MAC), ou
+    un technicien corrige l'équipement/les identifiants hors bande. On retente
+    donc **une** fois toutes les ``client_block_abandon_retry_hours`` : assez
+    lent pour rester silencieux, assez souvent pour guérir sans intervention.
+
+    ``since`` nul (abandon antérieur à l'ajout du timestamp) = dû tout de suite,
+    pour que les LR déjà bloqués au déploiement récupèrent au cycle suivant.
+    """
+    if lr.block_unenforceable_reason is None:
+        return False
+    since = lr.block_unenforceable_since
+    if since is None:
+        return True
+    hours = get_settings().client_block_abandon_retry_hours
+    return _now() - since >= datetime.timedelta(hours=hours)
 
 
 def _resolve_mode(mode: str | None) -> str:
@@ -449,7 +484,7 @@ async def block_client(
     label = "WhatsApp autorisé" if resolved == MODE_WHATSAPP else "coupure totale"
     if ok:
         lr.client_block_enforced_at = _now()
-        lr.block_unenforceable_reason = None
+        _set_unenforceable(lr, None)
         # La coupure LR est confirmée → le routeur n'a plus à couvrir ce client.
         await _reconcile_router(lr)
         await session.commit()
@@ -461,7 +496,7 @@ async def block_client(
         return True, f"Client {lr.name} bloqué ({label}). {msg}"
 
     structural = _structural_failure(msg)
-    lr.block_unenforceable_reason = structural  # None = transitoire → on réessaiera
+    _set_unenforceable(lr, structural)  # None = transitoire → on réessaiera
 
     # Le LR n'a pas coupé : le routeur prend le relais pour que le client soit
     # effectivement coupé malgré tout. C'est le cœur du repli.
@@ -551,7 +586,7 @@ async def unblock_client(session: AsyncSession, lr: Lr) -> tuple[bool, str]:
     ok, msg = await _clear_block(lr)
     if ok:
         lr.unblock_pending = False
-        lr.block_unenforceable_reason = None
+        _set_unenforceable(lr, None)
         await session.commit()
         logger.warning(
             "CLIENT UNBLOCK — LR '%s' (id=%d, %s) accès rétabli",
@@ -563,7 +598,7 @@ async def unblock_client(session: AsyncSession, lr: Lr) -> tuple[bool, str]:
     # Transitoire → on retente jusqu'à ce que le LR réponde. Structurel → inutile
     # d'y revenir : le port restera fermé tant qu'un technicien n'aura rien fait.
     lr.unblock_pending = structural is None
-    lr.block_unenforceable_reason = structural
+    _set_unenforceable(lr, structural)
     await session.commit()
 
     suffix = "" if was_blocked else " (le client n'était pas marqué bloqué)"
@@ -595,7 +630,7 @@ async def unblock_client(session: AsyncSession, lr: Lr) -> tuple[bool, str]:
 
 async def _abandon(lr: Lr, action: str, reason: str) -> None:
     """Take an LR out of the retry loop after a structural SSH failure."""
-    lr.block_unenforceable_reason = reason
+    _set_unenforceable(lr, reason)
     lr.unblock_pending = False
     logger.error(
         "enforce: %s ABANDONNÉ — LR '%s' (id=%d, %s) : %s — intervention "
@@ -668,9 +703,9 @@ async def enforce_blocked_clients(session: AsyncSession) -> int:
         # et c'est lui qui garantit la coupure quand le LR ne répond pas.
         await _reconcile_router(lr)
 
-        if lr.block_unenforceable_reason is not None:
+        if lr.block_unenforceable_reason is not None and not _abandon_retry_due(lr):
             await session.commit()  # persiste l'éventuel changement côté routeur
-            continue  # LR abandonné : pas de SSH, le routeur a pris le relais
+            continue  # LR abandonné (récemment) : pas de SSH, le routeur couvre
 
         if not _has_ssh(lr):
             logger.warning(
@@ -822,7 +857,7 @@ async def set_content_block(
     if ok:
         lr.blocked_categories = normalized if normalized else None
         lr.content_block_enforced_at = _now() if normalized else None
-        lr.block_unenforceable_reason = None
+        _set_unenforceable(lr, None)
         await session.commit()
         logger.warning(
             "CONTENT BLOCK appliqué — LR '%s' (id=%d, %s) — services: %s",
@@ -831,7 +866,7 @@ async def set_content_block(
         return True, f"Filtre de contenu appliqué pour {lr.name} (services: {label}). {msg}"
 
     structural = _structural_failure(msg)
-    lr.block_unenforceable_reason = structural  # None = transitoire → enforce réessaiera
+    _set_unenforceable(lr, structural)  # None = transitoire → enforce réessaiera
     await session.commit()
     if structural:
         logger.error(
@@ -867,10 +902,7 @@ async def enforce_content_blocks(session: AsyncSession) -> int:
     Skips LRs abandoned for a structural SSH failure. Returns the count applied.
     """
     result = await session.execute(
-        select(Lr).where(
-            Lr.blocked_categories.isnot(None),
-            Lr.block_unenforceable_reason.is_(None),
-        )
+        select(Lr).where(Lr.blocked_categories.isnot(None))
     )
     pending = list(result.scalars().all())
     if not pending:
@@ -878,6 +910,8 @@ async def enforce_content_blocks(session: AsyncSession) -> int:
 
     enforced = 0
     for lr in pending:
+        if lr.block_unenforceable_reason is not None and not _abandon_retry_due(lr):
+            continue
         if not _has_ssh(lr):
             continue
         categories = _normalize_categories(lr.blocked_categories)
@@ -890,7 +924,7 @@ async def enforce_content_blocks(session: AsyncSession) -> int:
                 lr.blocked_categories = None  # clear confirmed → drop out of the loop
                 lr.content_block_enforced_at = None
         elif structural := _structural_failure(msg):
-            lr.block_unenforceable_reason = structural
+            _set_unenforceable(lr, structural)
             logger.error(
                 "enforce content: LR '%s' (id=%d, %s) ABANDONNÉ : %s",
                 lr.name, lr.id, lr.ip_address, structural,

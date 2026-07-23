@@ -66,6 +66,7 @@ async def get_lr_plan(lr: Lr) -> tuple[bool, dict | None, str]:
         password=primary_pw,
         expected_fingerprint=lr.ssh_host_fingerprint,
         fallback_passwords=settings.lr_fallback_password_list,
+        expected_mac=lr.mac_address,
     )
     if ok and observed_fp and lr.ssh_host_fingerprint != observed_fp:
         lr.ssh_host_fingerprint = observed_fp

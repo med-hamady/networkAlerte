@@ -60,6 +60,7 @@ def _open_transport(
     expected_fingerprint: str | None,
     timeout: int = 6,
     fallback_passwords: list[str] | None = None,
+    expected_mac: str | None = None,
 ) -> tuple[paramiko.Transport, str, str]:
     """Open an authenticated SSH Transport and return (transport, fp, used_pw).
 
@@ -79,8 +80,36 @@ def _open_transport(
     to the primary and persist it on the LR row when it differs, so old LRs
     auto-heal to the right password after one successful cycle.
 
-    Any non-auth error (timeout, host-key mismatch, network) raises straight
-    away — we only ladder through fallbacks on real auth failures.
+    Any non-auth error (timeout, network) raises straight away — we only ladder
+    through fallbacks on real auth failures.
+
+    Host key rotation (self-heal)
+    -----------------------------
+    A pinned fingerprint that no longer matches used to raise unconditionally,
+    which was correct against a MITM but wrong against the routine case: a LR
+    that gets factory-reset / re-flashed regenerates its SSH host key (it lived
+    in the wiped config), so its key changes while it is the *same* device. That
+    left the enforcement path permanently unable to reach it (cf. /fai-journal
+    "host key mismatch").
+
+    We now DEFER the mismatch: authenticate first, then re-pin the new key ONLY
+    if the ``expected_mac`` is physically present on the device joined. The MAC
+    is burned into hardware — a reset preserves it but regenerates the key — so
+    its presence proves it is the same box, not a MITM nor an IP the DHCP handed
+    to another subscriber. ⚠️ Asymmetry with :func:`identity_refusal` is
+    deliberate: refusing an *action* when identity is unverifiable would break
+    everything (unverifiable ⇒ act), but *trusting a new host key* when identity
+    is unverifiable would be the MITM hole (unverifiable ⇒ refuse). So a caller
+    that passes no ``expected_mac`` keeps the strict old behaviour: mismatch
+    raises.
+
+    Tradeoff assumed: reading the MAC needs an authenticated session, so on a
+    changed-key host the password is presented BEFORE the MAC gate can reject —
+    the old code rejected pre-auth. On a real MITM that leaks the password. We
+    accept this only because these creds already live on ~1000 peers on a
+    management LAN behind the FortiGate (IP-allowlisted), where a positioned
+    MITM is low-probability, and because the alternative is a device that never
+    heals. Callers without ``expected_mac`` still reject pre-auth (unchanged).
     """
     candidates: list[str] = [password]
     if fallback_passwords:
@@ -96,6 +125,7 @@ def _open_transport(
             transport.start_client(timeout=timeout)
             server_key = transport.get_remote_server_key()
             observed = _fingerprint(server_key)
+            key_changed = False
             if expected_fingerprint is None:
                 # Only warn on the first attempt — successive retries land on the
                 # same host so re-logging adds noise without information.
@@ -106,10 +136,11 @@ def _open_transport(
                         observed, host,
                     )
             elif observed != expected_fingerprint:
-                raise _FingerprintMismatchError(
-                    f"Host key mismatch for {host}: "
-                    f"expected {expected_fingerprint}, got {observed}",
-                )
+                # Ne PAS rejeter tout de suite : on authentifie, puis on ne
+                # ré-épingle la nouvelle clé que si la MAC attendue est présente
+                # sur l'équipement (preuve que c'est le même matériel re-flashé).
+                # Voir le docstring — invérifiable ici = on refuse.
+                key_changed = True
             transport.auth_password(username, candidate, fallback=False)
         except paramiko.AuthenticationException as exc:
             transport.close()
@@ -118,6 +149,23 @@ def _open_transport(
         except Exception:
             transport.close()
             raise
+        if key_changed and not _host_key_rotation_confirmed(transport, expected_mac):
+            transport.close()
+            suffix = (
+                "" if expected_mac
+                else " (identité non vérifiable : aucune MAC attendue fournie)"
+            )
+            raise _FingerprintMismatchError(
+                f"Host key mismatch for {host}: "
+                f"expected {expected_fingerprint}, got {observed}{suffix}",
+            )
+        if key_changed:
+            logger.warning(
+                "SSH host key rotated for %s — MAC attendue %s confirmée sur "
+                "l'équipement : ré-épinglage de la nouvelle clé %s (LR "
+                "probablement ré-initialisé / re-flashé).",
+                host, expected_mac, observed,
+            )
         if idx > 0:
             logger.warning(
                 "SSH auth: primary password rejected on %s — fallback #%d "
@@ -560,6 +608,29 @@ def _device_macs(transport: paramiko.Transport, timeout: int = 10) -> set[str]:
     }
 
 
+def _host_key_rotation_confirmed(
+    transport: paramiko.Transport, expected_mac: str | None
+) -> bool:
+    """Peut-on faire confiance à une clé d'hôte qui a CHANGÉ ?
+
+    Oui UNIQUEMENT si la MAC attendue est physiquement présente sur
+    l'équipement joint — preuve que c'est le même matériel qui a juste
+    régénéré sa clé (ré-init / re-flash), et non un autre équipement (IP DHCP
+    réattribuée) ni un MITM. La MAC est gravée : un reset la préserve mais
+    régénère la clé SSH.
+
+    ⚠️ Asymétrie voulue avec :func:`identity_refusal` : refuser une ACTION
+    quand l'identité est invérifiable casserait tout (invérifiable → on agit) ;
+    TRUSTER une nouvelle clé quand l'identité est invérifiable serait un trou
+    MITM (invérifiable → on refuse). D'où le ``False`` par défaut : pas de MAC
+    attendue, ou MAC illisible/absente ⇒ on ne ré-épingle pas.
+    """
+    if not expected_mac:
+        return False
+    macs = _device_macs(transport)
+    return bool(macs) and expected_mac.strip().lower() in macs
+
+
 def identity_refusal(
     transport: paramiko.Transport, expected_mac: str | None, timeout: int = 10
 ) -> str | None:
@@ -629,6 +700,7 @@ def _set_iface_state_sync(
         transport, observed, used_pw = _open_transport(
             host, port, username, password, expected_fingerprint,
             fallback_passwords=fallback_passwords,
+            expected_mac=expected_mac,
         )
     except _FingerprintMismatchError as exc:
         logger.error("set_iface host-key mismatch — %s — %s", host, exc)
@@ -835,6 +907,7 @@ def _set_whatsapp_only_sync(
         transport, observed, used_pw = _open_transport(
             host, port, username, password, expected_fingerprint,
             fallback_passwords=fallback_passwords,
+            expected_mac=expected_mac,
         )
     except _FingerprintMismatchError as exc:
         logger.error("whatsapp_only host-key mismatch — %s — %s", host, exc)
@@ -1072,6 +1145,7 @@ def _set_content_block_sync(
         transport, observed, used_pw = _open_transport(
             host, port, username, password, expected_fingerprint,
             fallback_passwords=fallback_passwords,
+            expected_mac=expected_mac,
         )
     except _FingerprintMismatchError as exc:
         logger.error("content_block host-key mismatch — %s — %s", host, exc)
@@ -1272,11 +1346,13 @@ def _ssh_check_sync(
     password: str,
     expected_fingerprint: str | None,
     fallback_passwords: list[str] | None,
+    expected_mac: str | None = None,
 ) -> tuple[bool, str, str | None, str | None]:
     try:
         transport, observed, used_pw = _open_transport(
             host, port, username, password, expected_fingerprint,
             fallback_passwords=fallback_passwords,
+            expected_mac=expected_mac,
         )
         transport.close()
         logger.debug("SSH check OK — %s:%d (fp=%s)", host, port, observed)
@@ -1296,11 +1372,13 @@ def _ping_via_ssh_sync(
     password: str,
     expected_fingerprint: str | None,
     fallback_passwords: list[str] | None,
+    expected_mac: str | None = None,
 ) -> tuple[bool, str, str | None, str | None]:
     try:
         transport, observed, used_pw = _open_transport(
             host, port, username, password, expected_fingerprint,
             fallback_passwords=fallback_passwords,
+            expected_mac=expected_mac,
         )
     except _FingerprintMismatchError as exc:
         logger.error("Ping-via-SSH host-key mismatch — %s — %s", host, exc)
@@ -1344,6 +1422,7 @@ def _ping_targets_via_ssh_sync(
     targets: list[str],
     expected_fingerprint: str | None,
     fallback_passwords: list[str] | None,
+    expected_mac: str | None = None,
 ) -> tuple[bool, str, str | None, str | None]:
     """Open one SSH session and try to ping each target IP in order.
 
@@ -1354,6 +1433,7 @@ def _ping_targets_via_ssh_sync(
         transport, observed, used_pw = _open_transport(
             host, port, username, password, expected_fingerprint,
             fallback_passwords=fallback_passwords,
+            expected_mac=expected_mac,
         )
     except _FingerprintMismatchError as exc:
         logger.error("ping_targets_via_ssh host-key mismatch %s — %s", host, exc)
@@ -1380,11 +1460,12 @@ async def check_ssh_access(
     password: str,
     expected_fingerprint: str | None = None,
     fallback_passwords: list[str] | None = None,
+    expected_mac: str | None = None,
 ) -> tuple[bool, str, str | None, str | None]:
     """Return (ok, message, observed_fingerprint, used_password) — non-blocking."""
     return await asyncio.to_thread(
         _ssh_check_sync, host, port, username, password, expected_fingerprint,
-        fallback_passwords,
+        fallback_passwords, expected_mac,
     )
 
 
@@ -1395,11 +1476,12 @@ async def check_ping_via_ssh(
     password: str,
     expected_fingerprint: str | None = None,
     fallback_passwords: list[str] | None = None,
+    expected_mac: str | None = None,
 ) -> tuple[bool, str, str | None, str | None]:
     """SSH into device, run ping 8.8.8.8, return (reachable, message, fp, used_pw)."""
     return await asyncio.to_thread(
         _ping_via_ssh_sync, host, port, username, password, expected_fingerprint,
-        fallback_passwords,
+        fallback_passwords, expected_mac,
     )
 
 
@@ -1411,13 +1493,14 @@ async def ping_targets_via_ssh(
     targets: list[str],
     expected_fingerprint: str | None = None,
     fallback_passwords: list[str] | None = None,
+    expected_mac: str | None = None,
 ) -> tuple[bool, str, str | None, str | None]:
     """SSH into device and try each target IP in order.
 
     Returns (ok, target_or_msg, observed_fp, used_password)."""
     return await asyncio.to_thread(
         _ping_targets_via_ssh_sync, host, port, username, password, targets,
-        expected_fingerprint, fallback_passwords,
+        expected_fingerprint, fallback_passwords, expected_mac,
     )
 
 
@@ -1451,6 +1534,7 @@ def _measure_latency_via_ssh_sync(
     fallback_passwords: list[str] | None,
     collect_radio: bool = False,
     collect_model: bool = False,
+    expected_mac: str | None = None,
 ) -> tuple[
     bool, bool, float | None, str, str | None, str | None, str | None,
     dict[str, float | None] | None,
@@ -1488,6 +1572,7 @@ def _measure_latency_via_ssh_sync(
             host, port, username, password, expected_fingerprint,
             timeout=12,
             fallback_passwords=fallback_passwords,
+            expected_mac=expected_mac,
         )
     except _FingerprintMismatchError as exc:
         logger.error("measure_latency host-key mismatch %s — %s", host, exc)
@@ -1585,6 +1670,7 @@ async def measure_latency_via_ssh(
     fallback_passwords: list[str] | None = None,
     collect_radio: bool = False,
     collect_model: bool = False,
+    expected_mac: str | None = None,
 ) -> tuple[
     bool, bool, float | None, str, str | None, str | None, str | None,
     dict[str, float | None] | None,
@@ -1598,6 +1684,7 @@ async def measure_latency_via_ssh(
         _measure_latency_via_ssh_sync,
         host, port, username, password, target, count,
         expected_fingerprint, fallback_passwords, collect_radio, collect_model,
+        expected_mac,
     )
 
 
@@ -1746,6 +1833,7 @@ def _read_traffic_shaper_sync(
     password: str,
     expected_fingerprint: str | None,
     fallback_passwords: list[str] | None,
+    expected_mac: str | None = None,
 ) -> tuple[bool, dict | None, str, str | None, str | None]:
     """SSH into the LR and read what /tmp/system.cfg provisions on it.
 
@@ -1762,6 +1850,7 @@ def _read_traffic_shaper_sync(
         transport, observed, used_pw = _open_transport(
             host, port, username, password, expected_fingerprint,
             fallback_passwords=fallback_passwords,
+            expected_mac=expected_mac,
         )
     except _FingerprintMismatchError as exc:
         logger.error("read_traffic_shaper host-key mismatch %s — %s", host, exc)
@@ -1811,6 +1900,7 @@ async def read_traffic_shaper(
     password: str,
     expected_fingerprint: str | None = None,
     fallback_passwords: list[str] | None = None,
+    expected_mac: str | None = None,
 ) -> tuple[bool, dict | None, str, str | None, str | None]:
     """SSH into the LR and read its airOS traffic-shaper rate caps (the forfait).
 
@@ -1819,5 +1909,5 @@ async def read_traffic_shaper(
     """
     return await asyncio.to_thread(
         _read_traffic_shaper_sync, host, port, username, password,
-        expected_fingerprint, fallback_passwords,
+        expected_fingerprint, fallback_passwords, expected_mac,
     )

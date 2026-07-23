@@ -185,6 +185,7 @@ async def _measure_latency_live(
             count=settings.client_signal_ping_count,
             expected_fingerprint=lr.ssh_host_fingerprint,
             fallback_passwords=settings.lr_fallback_password_list,
+            expected_mac=lr.mac_address,
         )
     except Exception as exc:  # la mesure live ne doit jamais faire tomber l'API
         logger.warning(

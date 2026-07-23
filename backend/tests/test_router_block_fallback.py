@@ -37,6 +37,7 @@ class _FakeLr:
         self.client_blocked = False
         self.client_block_enforced_at = None
         self.block_unenforceable_reason = None
+        self.block_unenforceable_since = None
         self.router_blocked = False
         self.router_blocked_at = None
         self.__dict__.update(kwargs)
@@ -80,6 +81,45 @@ def test_le_mode_whatsapp_ne_change_rien():
     qu'on n'arrive pas à filtrer est coupé entièrement (décision 2026-07-22)."""
     lr = _FakeLr(client_blocked=True, block_mode="whatsapp_only")
     assert client_block_service.desired_router_block(lr) is True
+
+
+# ── Self-heal : re-tenter un LR abandonné, lentement ────────────────────────
+#
+# Un abandon structurel (mauvais mot de passe, clé d'hôte) est sauté à chaque
+# cycle. Mais un LR re-flashé (nouvelle clé, ré-épinglée sur MAC) ou corrigé
+# hors bande se répare seul : on le retente une fois toutes les N heures.
+
+
+def test_lr_non_abandonne_nest_pas_concerne():
+    assert client_block_service._abandon_retry_due(_FakeLr()) is False
+
+
+def test_abandon_sans_horodatage_est_du_tout_de_suite():
+    """Les LR abandonnés AVANT l'ajout de la colonne (since NULL) doivent
+    récupérer au premier cycle après déploiement, pas rester bloqués."""
+    lr = _FakeLr(
+        block_unenforceable_reason="Host key mismatch for 10.135.2.52",
+        block_unenforceable_since=None,
+    )
+    assert client_block_service._abandon_retry_due(lr) is True
+
+
+def test_abandon_recent_est_saute():
+    lr = _FakeLr(
+        block_unenforceable_reason="Authentication failed.",
+        block_unenforceable_since=_now(),
+    )
+    assert client_block_service._abandon_retry_due(lr) is False
+
+
+def test_abandon_ancien_est_retente():
+    hours = client_block_service.get_settings().client_block_abandon_retry_hours
+    old = _now() - datetime.timedelta(hours=hours + 1)
+    lr = _FakeLr(
+        block_unenforceable_reason="Host key mismatch for 10.135.2.52",
+        block_unenforceable_since=old,
+    )
+    assert client_block_service._abandon_retry_due(lr) is True
 
 
 # ── Les transitions ─────────────────────────────────────────────────────────

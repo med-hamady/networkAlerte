@@ -11,19 +11,27 @@ type Filter = 'all' | 'active' | 'blocked_full' | 'blocked_whatsapp' | 'bridge'
   | 'disconnected' | 'out_of_supervision'
   | 'out_of_supervision_30d' | 'out_of_supervision_90d'
 
-// `count` (optionnel) = clé de stats à afficher en badge sur l'onglet. Les 3
-// onglets « hors supervision » le portent pour montrer d'un coup l'ancienneté
-// (7 j = base, ≥ 30 j, ≥ 90 j) — le même découpage que le blocage routeur.
+// Les trois filtres d'ancienneté « hors supervision ». N'apparaissent qu'une fois
+// « Hors supervision » sélectionné (sous-rangée), pour ne pas charger la barre
+// principale. Découpage aligné sur le blocage de masse sur le routeur.
+const OOS_FILTERS = new Set<Filter>([
+  'out_of_supervision', 'out_of_supervision_30d', 'out_of_supervision_90d',
+])
+const OOS_SUB: { value: Filter; label: string; count: keyof AccessStats }[] = [
+  { value: 'out_of_supervision',     label: 'Tous (7 j+)', count: 'out_of_supervision' },
+  { value: 'out_of_supervision_30d', label: '≥ 30 j',      count: 'out_of_supervision_30d' },
+  { value: 'out_of_supervision_90d', label: '≥ 90 j',      count: 'out_of_supervision_90d' },
+]
+
+// `count` = clé de stats affichée en badge sur l'onglet principal.
 const FILTERS: { value: Filter; label: string; count?: keyof AccessStats }[] = [
-  { value: 'all',                   label: 'Tous'             },
-  { value: 'active',                label: 'Accès actif'      },
-  { value: 'blocked_full',          label: 'Coupure totale'   },
-  { value: 'blocked_whatsapp',      label: 'WhatsApp autorisé' },
-  { value: 'bridge',                label: 'Mode bridge ⚠'    },
-  { value: 'disconnected',          label: 'Hors ligne > 1 mois' },
-  { value: 'out_of_supervision',     label: 'Hors sup. (7 j)', count: 'out_of_supervision' },
-  { value: 'out_of_supervision_30d', label: 'Hors sup. ≥ 30 j', count: 'out_of_supervision_30d' },
-  { value: 'out_of_supervision_90d', label: 'Hors sup. ≥ 90 j', count: 'out_of_supervision_90d' },
+  { value: 'all',                label: 'Tous'             },
+  { value: 'active',             label: 'Accès actif'      },
+  { value: 'blocked_full',       label: 'Coupure totale'   },
+  { value: 'blocked_whatsapp',   label: 'WhatsApp autorisé' },
+  { value: 'bridge',             label: 'Mode bridge ⚠'    },
+  { value: 'disconnected',       label: 'Hors ligne > 1 mois' },
+  { value: 'out_of_supervision', label: 'Hors supervision', count: 'out_of_supervision' },
 ]
 
 function timeAgo(iso: string | null): string {
@@ -117,7 +125,11 @@ export default function AccessPage() {
         <div className="flex flex-wrap gap-1 rounded-lg bg-white border border-blue-100 p-1 shadow-sm">
           {FILTERS.map(({ value, label, count }) => {
             const badge = count ? stats[count] : undefined
-            const active = filter === value
+            // L'onglet « Hors supervision » reste actif quand un de ses
+            // sous-filtres d'ancienneté est sélectionné.
+            const active = value === 'out_of_supervision'
+              ? OOS_FILTERS.has(filter)
+              : filter === value
             return (
               <button
                 key={value}
@@ -146,6 +158,34 @@ export default function AccessPage() {
           className="w-full md:w-80 px-3 py-2 text-sm rounded-lg border border-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-200"
         />
       </div>
+
+      {/* Sous-filtres d'ancienneté — n'apparaissent que sous « Hors supervision ». */}
+      {OOS_FILTERS.has(filter) && (
+        <div className="flex flex-wrap items-center gap-1 -mt-2">
+          <span className="text-[11px] text-amber-600 font-semibold mr-1">Depuis :</span>
+          {OOS_SUB.map(({ value, label, count }) => {
+            const active = filter === value
+            return (
+              <button
+                key={value}
+                onClick={() => setFilter(value)}
+                className={`px-2.5 py-1 text-[11px] font-semibold rounded-md border transition-colors ${
+                  active
+                    ? 'bg-amber-500 text-white border-amber-500'
+                    : 'bg-white text-amber-700 border-amber-200 hover:bg-amber-50'
+                }`}
+              >
+                {label}
+                <span className={`ml-1 tabular-nums rounded px-1 ${
+                  active ? 'bg-white/25' : 'bg-amber-100 text-amber-700'
+                }`}>
+                  {stats[count]}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      )}
 
       {/* Table */}
       {isLoading ? (

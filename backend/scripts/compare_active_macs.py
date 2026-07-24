@@ -47,15 +47,17 @@ def _load_other(path: str) -> set[str]:
     return macs
 
 
-async def _our_active_macs() -> dict[str, str]:
-    """MAC normalisée → nom du LR, pour nos clients ACTIFS (= tuile Accès actif).
+async def _our_active_macs() -> dict[str, tuple[str, str]]:
+    """MAC normalisée → (nom, statut ping) pour nos clients ACTIFS (tuile Accès actif).
 
     Actif = non bloqué ET pas hors supervision. Hors supervision = pas d'IP ET
-    (jamais vu par UISP OU vu il y a plus de OUT_OF_SUPERVISION_DAYS).
+    (jamais vu par UISP OU vu il y a plus de OUT_OF_SUPERVISION_DAYS). Le `status`
+    (up/down/unknown) vient du sweep de ping — c'est ce qui dit si le client
+    répond réellement, indépendamment du fait qu'il soit « actif ».
     """
     async with async_session_factory() as session:
         rows = await session.execute(text("""
-            SELECT d.mac_address, d.name
+            SELECT d.mac_address, d.name, d.status
               FROM devices d JOIN lrs l ON l.id = d.id
              WHERE d.device_type = 'lr'
                AND d.mac_address IS NOT NULL
@@ -67,10 +69,10 @@ async def _our_active_macs() -> dict[str, str]:
                            - make_interval(days => :days))
                )
         """), {"days": _oos_days()})
-        out: dict[str, str] = {}
-        for mac, name in rows.all():
+        out: dict[str, tuple[str, str]] = {}
+        for mac, name, status in rows.all():
             with contextlib.suppress(ValueError):
-                out[normalize_mac(mac)] = name
+                out[normalize_mac(mac)] = (name, status or "unknown")
         return out
 
 
@@ -86,13 +88,21 @@ async def run(path: str, csv_out: str | None) -> None:
     surplus = sorted(set(ours) - other)            # actifs chez nous, absents chez eux
     missing = sorted(other - set(ours))            # chez eux, pas actifs chez nous
 
+    # Répartition du surplus par statut ping — up = vrai client que l'autre
+    # système rate ; down/unknown = probablement périmé chez nous.
+    up = sum(1 for m in surplus if ours[m][1] == "up")
+    down = sum(1 for m in surplus if ours[m][1] == "down")
+    unknown = len(surplus) - up - down
+
     print(f"Nos actifs        : {len(ours)}")
     print(f"Liste autre système : {len(other)}")
     print(f"Communs           : {len(set(ours) & other)}")
     print("=" * 70)
-    print(f"ACTIFS CHEZ NOUS, ABSENTS DE L'AUTRE SYSTÈME : {len(surplus)}\n")
-    for mac in surplus:
-        print(f"  {mac}  {ours[mac]}")
+    print(f"ACTIFS CHEZ NOUS, ABSENTS DE L'AUTRE SYSTÈME : {len(surplus)}")
+    print(f"  dont  UP (répondent) : {up}   DOWN : {down}   INCONNU : {unknown}\n")
+    for mac in sorted(surplus, key=lambda m: (ours[m][1] != "up", ours[m][0])):
+        name, status = ours[mac]
+        print(f"  [{status:<7}] {mac}  {name}")
 
     print("\n" + "=" * 70)
     print(f"(Indicatif) Dans l'autre liste mais PAS actifs chez nous : {len(missing)}")
@@ -103,9 +113,10 @@ async def run(path: str, csv_out: str | None) -> None:
         import csv
         with open(csv_out, "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
-            w.writerow(["mac", "name"])
+            w.writerow(["mac", "name", "status"])
             for mac in surplus:
-                w.writerow([mac, ours[mac]])
+                name, status = ours[mac]
+                w.writerow([mac, name, status])
         print(f"\nSurplus écrit dans {csv_out}")
 
 

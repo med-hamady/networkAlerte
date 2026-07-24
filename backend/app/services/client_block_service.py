@@ -729,6 +729,13 @@ async def enforce_blocked_clients(session: AsyncSession) -> int:
             await session.commit()
             continue
 
+        if not lr.ip_address:
+            # Sans IP, le LR est hors du sweep de ping et injoignable en SSH : rien
+            # à tenter localement. Le routeur (réconcilié ci-dessus) le couvre. Cas
+            # des clients « hors supervision » bloqués en masse sur le routeur.
+            await session.commit()
+            continue
+
         if not lr.client_blocked and not lr.unblock_pending:
             await session.commit()  # visité pour le seul nettoyage routeur
             continue

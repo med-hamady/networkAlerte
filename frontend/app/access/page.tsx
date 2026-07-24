@@ -3,21 +3,27 @@
 import React from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher, type ClientBlockResult } from '@/lib/api'
-import type { AccessClientRow, AccessClientsResponse } from '@/lib/types'
+import type { AccessClientRow, AccessClientsResponse, AccessStats } from '@/lib/types'
 import ClientAccessActionModal from '@/components/ClientAccessActionModal'
 import IpLink from '@/components/IpLink'
 
 type Filter = 'all' | 'active' | 'blocked_full' | 'blocked_whatsapp' | 'bridge'
   | 'disconnected' | 'out_of_supervision'
+  | 'out_of_supervision_30d' | 'out_of_supervision_90d'
 
-const FILTERS: { value: Filter; label: string }[] = [
-  { value: 'all',              label: 'Tous'             },
-  { value: 'active',           label: 'Accès actif'      },
-  { value: 'blocked_full',     label: 'Coupure totale'   },
-  { value: 'blocked_whatsapp', label: 'WhatsApp autorisé' },
-  { value: 'bridge',           label: 'Mode bridge ⚠'    },
-  { value: 'disconnected',     label: 'Hors ligne > 1 mois' },
-  { value: 'out_of_supervision', label: 'Hors supervision' },
+// `count` (optionnel) = clé de stats à afficher en badge sur l'onglet. Les 3
+// onglets « hors supervision » le portent pour montrer d'un coup l'ancienneté
+// (7 j = base, ≥ 30 j, ≥ 90 j) — le même découpage que le blocage routeur.
+const FILTERS: { value: Filter; label: string; count?: keyof AccessStats }[] = [
+  { value: 'all',                   label: 'Tous'             },
+  { value: 'active',                label: 'Accès actif'      },
+  { value: 'blocked_full',          label: 'Coupure totale'   },
+  { value: 'blocked_whatsapp',      label: 'WhatsApp autorisé' },
+  { value: 'bridge',                label: 'Mode bridge ⚠'    },
+  { value: 'disconnected',          label: 'Hors ligne > 1 mois' },
+  { value: 'out_of_supervision',     label: 'Hors sup. (7 j)', count: 'out_of_supervision' },
+  { value: 'out_of_supervision_30d', label: 'Hors sup. ≥ 30 j', count: 'out_of_supervision_30d' },
+  { value: 'out_of_supervision_90d', label: 'Hors sup. ≥ 90 j', count: 'out_of_supervision_90d' },
 ]
 
 function timeAgo(iso: string | null): string {
@@ -49,7 +55,7 @@ export default function AccessPage() {
 
   const stats = data?.stats ?? {
     total: 0, active: 0, blocked_full: 0, blocked_whatsapp: 0, bridge: 0, disconnected: 0,
-    out_of_supervision: 0,
+    out_of_supervision: 0, out_of_supervision_30d: 0, out_of_supervision_90d: 0,
   }
   const sorted = data?.items ?? []
   const isEmptyFleet = stats.total === 0
@@ -109,19 +115,28 @@ export default function AccessPage() {
       {/* Filters + search */}
       <div className="flex flex-wrap gap-3 items-center justify-between">
         <div className="flex flex-wrap gap-1 rounded-lg bg-white border border-blue-100 p-1 shadow-sm">
-          {FILTERS.map(({ value, label }) => (
-            <button
-              key={value}
-              onClick={() => setFilter(value)}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
-                filter === value
-                  ? 'bg-blue-600 text-white'
-                  : 'text-blue-600 hover:bg-blue-50'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
+          {FILTERS.map(({ value, label, count }) => {
+            const badge = count ? stats[count] : undefined
+            const active = filter === value
+            return (
+              <button
+                key={value}
+                onClick={() => setFilter(value)}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+                  active ? 'bg-blue-600 text-white' : 'text-blue-600 hover:bg-blue-50'
+                }`}
+              >
+                {label}
+                {badge !== undefined && (
+                  <span className={`ml-1.5 tabular-nums rounded px-1 ${
+                    active ? 'bg-white/25' : 'bg-blue-100 text-blue-600'
+                  }`}>
+                    {badge}
+                  </span>
+                )}
+              </button>
+            )
+          })}
         </div>
         <input
           type="search"
@@ -195,9 +210,17 @@ export default function AccessPage() {
                         )}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-700">
-                        {isBlocked
-                          ? timeAgo(lr.client_blocked_at)
-                          : <span className="text-blue-300">—</span>}
+                        {isBlocked ? (
+                          timeAgo(lr.client_blocked_at)
+                        ) : lr.out_of_supervision ? (
+                          <span className="text-amber-600" title="Ancienneté depuis la dernière vue UISP">
+                            {lr.days_offline != null
+                              ? `hors sup. depuis ${lr.days_offline} j`
+                              : 'jamais vu par UISP'}
+                          </span>
+                        ) : (
+                          <span className="text-blue-300">—</span>
+                        )}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">
                         {isBlocked ? (

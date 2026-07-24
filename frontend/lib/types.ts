@@ -786,17 +786,23 @@ export interface AccessClientRow {
    *  OUT_OF_SUPERVISION_DAYS : aucune source ne mesure cet abonné. Exclu des
    *  « accès actifs » — ce n'est ni une panne constatée ni un client actif. */
   out_of_supervision: boolean
+  /** Jours depuis la dernière vue UISP (null = jamais vu). */
+  days_offline: number | null
+}
+export interface AccessStats {
+  total: number
+  active: number
+  blocked_full: number
+  blocked_whatsapp: number
+  bridge: number
+  disconnected: number
+  out_of_supervision: number
+  /** Sous-ensembles de out_of_supervision par ancienneté (down ≥ 30 / 90 j). */
+  out_of_supervision_30d: number
+  out_of_supervision_90d: number
 }
 export interface AccessClientsResponse {
-  stats: {
-    total: number
-    active: number
-    blocked_full: number
-    blocked_whatsapp: number
-    bridge: number
-    disconnected: number
-    out_of_supervision: number
-  }
+  stats: AccessStats
   items: AccessClientRow[]
 }
 

@@ -20,7 +20,7 @@ router = APIRouter()
 
 AccessFilter = Literal[
     "all", "active", "blocked_full", "blocked_whatsapp", "bridge", "disconnected",
-    "out_of_supervision",
+    "out_of_supervision", "out_of_supervision_30d", "out_of_supervision_90d",
 ]
 
 

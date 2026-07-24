@@ -46,7 +46,7 @@ from sqlalchemy import or_, select
 
 from app.core.config import get_settings
 from app.db.session import async_session_factory
-from app.models.device import Device, Lr
+from app.models.device import Lr
 from app.services import client_block_service, fai_audit, mikrotik_service
 
 DEFAULT_REASON = "Hors supervision — coupé sur le routeur"
@@ -62,15 +62,16 @@ async def _load_targets(limit: int | None) -> list[Lr]:
         days=get_settings().out_of_supervision_days
     )
     async with async_session_factory() as session:
+        # Lr hérite de Device (joined-table) → select(Lr) joint déjà `devices` ;
+        # on filtre sur les colonnes héritées sans re-joindre (sinon alias dupliqué).
         stmt = (
             select(Lr)
-            .join(Device, Device.id == Lr.id)
             .where(
-                Device.ip_address.is_(None),
-                Device.mac_address.is_not(None),
+                Lr.ip_address.is_(None),
+                Lr.mac_address.is_not(None),
                 or_(Lr.uisp_last_seen.is_(None), Lr.uisp_last_seen < horizon),
             )
-            .order_by(Device.name)
+            .order_by(Lr.name)
         )
         if limit:
             stmt = stmt.limit(limit)

@@ -1,11 +1,20 @@
 """
-Blocage de masse sur le ROUTEUR des clients « hors supervision ».
+Blocage de masse sur le ROUTEUR des clients down depuis longtemps.
 
-Un client est « hors supervision » quand AUCUNE source ne parle de lui : il n'a
-pas d'IP (donc hors du sweep de ping, injoignable en SSH) ET le contrôleur UISP
-ne l'a pas vu depuis `OUT_OF_SUPERVISION_DAYS` jours. La règle est la même que
-`schemas/device.is_out_of_supervision` et `fn_access_clients` — répliquée ici en
-SQL pour ne sélectionner que ces LR.
+Cible les abonnés que UISP a provisionnés mais qui sont **hors ligne depuis
+longtemps** ET dont on a perdu l'IP (donc hors du sweep de ping, injoignables en
+SSH). Politique : un client mort depuis longtemps ne doit pas pouvoir se
+reconnecter et avoir internet gratuitement — la règle drop sur le routeur est
+inoffensive tant qu'il est down (aucun trafic à couper) et ne mord qu'à sa
+reconnexion, moment où on veut qu'il paie d'abord.
+
+⚠️ Le seuil compte. « hors supervision » (`is_out_of_supervision`) vaut 7 jours —
+trop court, et il attrape aussi les `uisp_last_seen` NULL (jamais vus par UISP,
+qui ne sont pas « down depuis longtemps » mais « jamais mesurés »). Ce script
+prend donc :
+  - `--min-days-down N` (défaut 30) : couper seulement au-delà de N jours down ;
+  - `--include-never-seen` : inclure aussi les `uisp_last_seen` NULL (exclus par
+    défaut — un provisionnement récent jamais monté ne doit pas être coupé).
 
 Comme ils n'ont pas d'IP, on ne peut PAS les couper sur leur équipement (pas de
 chemin SSH). Le seul levier est le **routeur de cœur**, qui coupe par MAC sans
@@ -52,15 +61,20 @@ from app.services import client_block_service, fai_audit, mikrotik_service
 DEFAULT_REASON = "Hors supervision — coupé sur le routeur"
 
 
-async def _load_targets(limit: int | None) -> list[Lr]:
-    """LR hors supervision (sans IP, UISP muet depuis le seuil) avec une MAC.
+async def _load_targets(
+    limit: int | None, min_days_down: int, include_never_seen: bool
+) -> list[Lr]:
+    """LR down depuis ≥ `min_days_down` jours, sans IP, avec une MAC.
 
-    Reprend `is_out_of_supervision` : ip NULL ET (uisp_last_seen NULL OU antérieur
-    au seuil). Restreint aux LR portant une MAC — sans MAC, rien à bloquer.
+    Down = `uisp_last_seen` antérieur au seuil. `include_never_seen` ajoute les
+    `uisp_last_seen` NULL (jamais vus par UISP) — exclus par défaut car « jamais
+    vu » n'est pas « down depuis longtemps ». On exige `uisp_synced_at` non nul :
+    on ne cible que des abonnés que UISP connaît, pas les fantômes radio.
     """
-    horizon = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
-        days=get_settings().out_of_supervision_days
-    )
+    horizon = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=min_days_down)
+    down_clause = Lr.uisp_last_seen < horizon
+    if include_never_seen:
+        down_clause = or_(Lr.uisp_last_seen.is_(None), down_clause)
     async with async_session_factory() as session:
         # Lr hérite de Device (joined-table) → select(Lr) joint déjà `devices` ;
         # on filtre sur les colonnes héritées sans re-joindre (sinon alias dupliqué).
@@ -69,7 +83,8 @@ async def _load_targets(limit: int | None) -> list[Lr]:
             .where(
                 Lr.ip_address.is_(None),
                 Lr.mac_address.is_not(None),
-                or_(Lr.uisp_last_seen.is_(None), Lr.uisp_last_seen < horizon),
+                Lr.uisp_synced_at.is_not(None),
+                down_clause,
             )
             .order_by(Lr.name)
         )
@@ -120,7 +135,7 @@ async def _block_one(lr_id: int, reason: str, results: dict[str, list]) -> None:
 def _report(results: dict[str, list], dry_run: bool, total: int) -> None:
     print("\n" + "=" * 70)
     if dry_run:
-        print(f"DRY-RUN — {total} client(s) hors supervision seraient bloqués sur le routeur.")
+        print(f"DRY-RUN — {total} client(s) down depuis longtemps seraient bloqués sur le routeur.")
         return
     print(f"Bloqués sur le routeur : {len(results['blocked'])}")
     print(f"Déjà bloqués (ignorés) : {len(results['already'])}")
@@ -131,13 +146,17 @@ def _report(results: dict[str, list], dry_run: bool, total: int) -> None:
     print("=" * 70)
 
 
-async def run(dry_run: bool, limit: int | None, reason: str, concurrency: int) -> None:
+async def run(
+    dry_run: bool, limit: int | None, reason: str, concurrency: int,
+    min_days_down: int, include_never_seen: bool,
+) -> None:
     if not dry_run and not mikrotik_service.is_enabled():
         print("MikroTik désactivé (MIKROTIK_ENABLED / mot de passe) — rien à faire.")
         return
 
-    targets = await _load_targets(limit)
-    print(f"{len(targets)} LR hors supervision avec une MAC. "
+    targets = await _load_targets(limit, min_days_down, include_never_seen)
+    never = " (+ jamais vus)" if include_never_seen else ""
+    print(f"{len(targets)} LR down depuis ≥ {min_days_down} j{never}, sans IP, connus de UISP. "
           f"{'DRY-RUN' if dry_run else 'BLOCAGE ROUTEUR'}.")
 
     if dry_run:
@@ -159,10 +178,14 @@ async def run(dry_run: bool, limit: int | None, reason: str, concurrency: int) -
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Bloque sur le routeur les clients hors supervision."
+        description="Bloque sur le routeur les clients down depuis longtemps."
     )
     parser.add_argument("--dry-run", action="store_true", help="Prévisualiser sans écrire.")
     parser.add_argument("--limit", type=int, default=None, help="Ne traiter que les N premiers.")
+    parser.add_argument("--min-days-down", type=int, default=30,
+                        help="Ne cibler que les LR down depuis au moins N jours (défaut 30).")
+    parser.add_argument("--include-never-seen", action="store_true",
+                        help="Inclure aussi les LR jamais vus par UISP (uisp_last_seen NULL).")
     parser.add_argument("--reason", default=DEFAULT_REASON, help="Motif enregistré.")
     parser.add_argument("--concurrency", type=int, default=5, help="Blocages routeur en parallèle.")
     args = parser.parse_args()
@@ -171,4 +194,7 @@ if __name__ == "__main__":
     s = get_settings()
     concurrency = max(1, min(args.concurrency, s.db_pool_size + s.db_max_overflow - 1))
 
-    asyncio.run(run(args.dry_run, args.limit, args.reason, concurrency))
+    asyncio.run(run(
+        args.dry_run, args.limit, args.reason, concurrency,
+        args.min_days_down, args.include_never_seen,
+    ))

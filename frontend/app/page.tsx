@@ -6,6 +6,7 @@ import { endpoints, fetcher } from '@/lib/api'
 import type { DashboardSummary } from '@/lib/types'
 import StatsBar from '@/components/StatsBar'
 import SiteOutageCharts from '@/components/SiteOutageCharts'
+import NetworkHealthBadge from '@/components/NetworkHealthBadge'
 
 const REFRESH = 15_000
 const WINDOW_DAYS = 7
@@ -71,7 +72,14 @@ export default function DashboardPage() {
         {/* Outage charts per site */}
         <section>
           <div className="flex flex-wrap items-end justify-between gap-4 mb-4">
-            <h2 className="font-semibold text-blue-900 text-lg">Pannes par site</h2>
+            <div className="flex flex-wrap items-center gap-4">
+              <h2 className="font-semibold text-blue-900 text-lg">Pannes par site</h2>
+              {/* Nombre synchronisé avec la fenêtre des graphes (Du/Au ou 7 j) */}
+              <NetworkHealthBadge
+                startIso={applied ? dayStartIso(applied.from) : undefined}
+                endIso={applied ? dayEndIso(applied.to) : undefined}
+              />
+            </div>
 
             {/* Sélecteur de période Du / Au — défaut 7 derniers jours */}
             <div className="flex flex-wrap items-end gap-3">

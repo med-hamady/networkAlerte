@@ -80,6 +80,10 @@ export const endpoints = {
     `${API_BASE}/network-uptime/downtime-log?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`,
   // Logique centralisée côté DB (fonctions RPC) — payloads prêts-à-afficher.
   dashboardSummary:     `${API_BASE}/dashboard/summary`,
+  // Santé du réseau (dispo moyenne des sites) sur la MÊME fenêtre que les
+  // graphes « Pannes par site » — d'où les bornes start/end explicites.
+  networkHealth:        (startIso: string, endIso: string) =>
+    `${API_BASE}/dashboard/network-health?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`,
   sitesOverview:        `${API_BASE}/sites/overview`,
   accessClients:        (search: string, filter: string) =>
     `${API_BASE}/access/clients?search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`,

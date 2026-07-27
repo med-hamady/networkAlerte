@@ -737,6 +737,15 @@ export interface DashboardSummary {
   open_incidents: number
 }
 
+// /dashboard/network-health — fn_network_health(start, end, gap)
+export interface NetworkHealth {
+  network_health_pct: number
+  sites_measured: number
+  window_start: string
+  window_end: string
+  sites: { site: string; availability_pct: number }[]
+}
+
 // /sites — fn_site_overview()
 export interface SitePowerDevice {
   id: number

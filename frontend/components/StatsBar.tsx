@@ -31,7 +31,9 @@ interface StatsBarProps {
   openIncidents: number
 }
 
-export default function StatsBar({ sites, pannes, clients, total, up, down, openIncidents }: StatsBarProps) {
+export default function StatsBar({
+  sites, pannes, clients, total, up, down, openIncidents,
+}: StatsBarProps) {
   return (
     <div className="space-y-4">
       {/* Équipements / disponibilité / incidents */}

@@ -88,8 +88,28 @@ async def get_journal(
     db: AsyncSession = Depends(get_db),
 ) -> JournalResponse:
     """Historique des actions de blocage + LR encore en souffrance."""
+    # Ordres aujourd'hui SATISFAITS en base : leurs vieilles lignes « non appliqué »
+    # sont rattrapées et ne doivent plus polluer l'onglet « Non appliqué ».
+    #   coupé (SSH ou routeur) → un BLOCK raté est rattrapé
+    #   plus bloqué du tout     → un UNBLOCK raté est rattrapé
+    resolved = await db.execute(
+        select(Lr.mac_address, Lr.client_blocked,
+               Lr.client_block_enforced_at, Lr.router_blocked)
+        .where(Lr.mac_address.is_not(None))
+    )
+    resolved_block_macs: set[str] = set()
+    resolved_unblock_macs: set[str] = set()
+    for mac, blocked, enforced_at, router_blocked in resolved.all():
+        m = mac.lower()
+        if blocked and (enforced_at is not None or router_blocked):
+            resolved_block_macs.add(m)
+        if not blocked:
+            resolved_unblock_macs.add(m)
+
     entries, stats = fai_audit.read_entries(
         limit=limit, action=action, status=status, search=search,
+        resolved_block_macs=resolved_block_macs,
+        resolved_unblock_macs=resolved_unblock_macs,
     )
 
     result = await db.execute(

@@ -10,10 +10,12 @@ import IpLink from '@/components/IpLink'
 type Filter = 'all' | 'active' | 'blocked_full' | 'blocked_whatsapp' | 'bridge'
   | 'disconnected' | 'out_of_supervision'
   | 'out_of_supervision_30d' | 'out_of_supervision_90d'
+  | 'blocked' | 'blocked_ssh' | 'blocked_router' | 'blocked_pending'
 
-// Les trois filtres d'ancienneté « hors supervision ». N'apparaissent qu'une fois
-// « Hors supervision » sélectionné (sous-rangée), pour ne pas charger la barre
-// principale. Découpage aligné sur le blocage de masse sur le routeur.
+// Sous-filtres imbriqués : la sous-rangée n'apparaît qu'une fois l'onglet parent
+// sélectionné, pour ne pas charger la barre principale.
+
+// « Hors supervision » → 3 tranches d'ancienneté (aligné sur le blocage routeur).
 const OOS_FILTERS = new Set<Filter>([
   'out_of_supervision', 'out_of_supervision_30d', 'out_of_supervision_90d',
 ])
@@ -23,11 +25,22 @@ const OOS_SUB: { value: Filter; label: string; count: keyof AccessStats }[] = [
   { value: 'out_of_supervision_90d', label: '≥ 90 j',      count: 'out_of_supervision_90d' },
 ]
 
+// « Bloqués » → par MÉCANISME : coupé sur son équipement (SSH) vs sur le routeur.
+const BLOCKED_FILTERS = new Set<Filter>([
+  'blocked', 'blocked_ssh', 'blocked_router', 'blocked_pending',
+])
+const BLOCKED_SUB: { value: Filter; label: string; count: keyof AccessStats }[] = [
+  { value: 'blocked',         label: 'Tous',            count: 'blocked' },
+  { value: 'blocked_ssh',     label: 'Par SSH (LR)',    count: 'blocked_ssh' },
+  { value: 'blocked_router',  label: 'Sur le routeur',  count: 'blocked_router' },
+  { value: 'blocked_pending', label: 'En attente',      count: 'blocked_pending' },
+]
+
 // `count` = clé de stats affichée en badge sur l'onglet principal.
 const FILTERS: { value: Filter; label: string; count?: keyof AccessStats }[] = [
   { value: 'all',                label: 'Tous'             },
   { value: 'active',             label: 'Accès actif'      },
-  { value: 'blocked_full',       label: 'Coupure totale'   },
+  { value: 'blocked',            label: 'Bloqués', count: 'blocked' },
   { value: 'blocked_whatsapp',   label: 'WhatsApp autorisé' },
   { value: 'bridge',             label: 'Mode bridge ⚠'    },
   { value: 'disconnected',       label: 'Hors ligne > 1 mois' },
@@ -61,9 +74,10 @@ export default function AccessPage() {
     { refreshInterval: 30_000, keepPreviousData: true },
   )
 
-  const stats = data?.stats ?? {
+  const stats: AccessStats = data?.stats ?? {
     total: 0, active: 0, blocked_full: 0, blocked_whatsapp: 0, bridge: 0, disconnected: 0,
     out_of_supervision: 0, out_of_supervision_30d: 0, out_of_supervision_90d: 0,
+    blocked: 0, blocked_ssh: 0, blocked_router: 0, blocked_pending: 0,
   }
   const sorted = data?.items ?? []
   const isEmptyFleet = stats.total === 0
@@ -125,10 +139,10 @@ export default function AccessPage() {
         <div className="flex flex-wrap gap-1 rounded-lg bg-white border border-blue-100 p-1 shadow-sm">
           {FILTERS.map(({ value, label, count }) => {
             const badge = count ? stats[count] : undefined
-            // L'onglet « Hors supervision » reste actif quand un de ses
-            // sous-filtres d'ancienneté est sélectionné.
-            const active = value === 'out_of_supervision'
-              ? OOS_FILTERS.has(filter)
+            // Un onglet parent reste actif quand un de ses sous-filtres l'est.
+            const active =
+              value === 'out_of_supervision' ? OOS_FILTERS.has(filter)
+              : value === 'blocked' ? BLOCKED_FILTERS.has(filter)
               : filter === value
             return (
               <button
@@ -158,6 +172,34 @@ export default function AccessPage() {
           className="w-full md:w-80 px-3 py-2 text-sm rounded-lg border border-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-200"
         />
       </div>
+
+      {/* Sous-filtres « Bloqués » par mécanisme — sous l'onglet « Bloqués ». */}
+      {BLOCKED_FILTERS.has(filter) && (
+        <div className="flex flex-wrap items-center gap-1 -mt-2">
+          <span className="text-[11px] text-red-600 font-semibold mr-1">Coupé :</span>
+          {BLOCKED_SUB.map(({ value, label, count }) => {
+            const active = filter === value
+            return (
+              <button
+                key={value}
+                onClick={() => setFilter(value)}
+                className={`px-2.5 py-1 text-[11px] font-semibold rounded-md border transition-colors ${
+                  active
+                    ? 'bg-red-500 text-white border-red-500'
+                    : 'bg-white text-red-700 border-red-200 hover:bg-red-50'
+                }`}
+              >
+                {label}
+                <span className={`ml-1 tabular-nums rounded px-1 ${
+                  active ? 'bg-white/25' : 'bg-red-100 text-red-700'
+                }`}>
+                  {stats[count]}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      )}
 
       {/* Sous-filtres d'ancienneté — n'apparaissent que sous « Hors supervision ». */}
       {OOS_FILTERS.has(filter) && (
@@ -234,6 +276,7 @@ export default function AccessPage() {
                           <div className="flex flex-col gap-1">
                             <span className="text-red-500 font-semibold text-xs">● Bloqué</span>
                             <ModeBadge mode={lr.block_mode} />
+                            <MechanismBadge lr={lr} />
                           </div>
                         ) : lr.out_of_supervision ? (
                           // Ni bloqué ni « actif » : aucune source ne parle de
@@ -389,6 +432,33 @@ function ModeBadge({ mode }: { mode: 'full' | 'whatsapp_only' }) {
   return (
     <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-red-100 text-red-700 text-[11px] font-semibold">
       Coupure totale
+    </span>
+  )
+}
+
+// Par quel mécanisme la coupure est appliquée : sur l'équipement (SSH), sur le
+// routeur (repli, LR injoignable), ou pas encore (le job rejoue).
+function MechanismBadge({ lr }: { lr: AccessClientRow }) {
+  if (lr.client_block_enforced_at) {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 text-[10px] font-semibold"
+        title="Coupé sur l'équipement du client (SSH)">
+        par SSH
+      </span>
+    )
+  }
+  if (lr.router_blocked) {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-200 text-slate-700 text-[10px] font-semibold"
+        title="LR injoignable — coupé sur le routeur de cœur">
+        sur le routeur
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-blue-50 text-blue-500 text-[10px] font-semibold"
+      title="Pas encore appliqué — le job de renforcement rejoue toutes les 2 min">
+      en attente
     </span>
   )
 }

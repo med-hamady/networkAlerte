@@ -107,12 +107,39 @@ def _parse(line: str) -> dict | None:
     }
 
 
+def _is_stale_failure(
+    entry: dict,
+    resolved_block_macs: set[str],
+    resolved_unblock_macs: set[str],
+) -> bool:
+    """Une ligne « non appliqué » a-t-elle été RATTRAPÉE depuis ?
+
+    Le journal est un historique append-only : une ligne « non appliqué » y reste
+    même après que l'ordre a fini par passer. Pour que l'onglet « Non appliqué »
+    reflète l'état RÉEL, on cache une ligne d'échec dont l'ordre est aujourd'hui
+    satisfait en base :
+      - un BLOCK/RETRY_OK raté est rattrapé si la MAC est désormais coupée (SSH ou
+        routeur) → `resolved_block_macs` ;
+      - un UNBLOCK raté est rattrapé si la MAC n'est plus bloquée → `resolved_unblock_macs`.
+    """
+    if entry["ok"]:
+        return False
+    mac = (entry["mac"] or "").lower()
+    if entry["action"] in ("BLOCK", "RETRY_OK"):
+        return mac in resolved_block_macs
+    if entry["action"] == "UNBLOCK":
+        return mac in resolved_unblock_macs
+    return False
+
+
 def read_entries(
     *,
     limit: int = 200,
     action: str | None = None,
     status: str | None = None,
     search: str | None = None,
+    resolved_block_macs: set[str] | None = None,
+    resolved_unblock_macs: set[str] | None = None,
 ) -> tuple[list[dict], dict]:
     """Retourne (entrées les plus récentes d'abord, compteurs).
 
@@ -121,7 +148,13 @@ def read_entries(
     ``_MAX_SCAN_LINES`` dernières lignes), pas sur le fichier entier — c'est ce que
     la page affiche, et compter tout le fichier obligerait à le relire en entier à
     chaque rafraîchissement.
+
+    ``resolved_block_macs`` / ``resolved_unblock_macs`` (MAC en minuscule) : ordres
+    aujourd'hui satisfaits en base. Les lignes d'échec correspondantes sont
+    considérées comme rattrapées → exclues de « Non appliqué » et de son compteur.
     """
+    resolved_block_macs = resolved_block_macs or set()
+    resolved_unblock_macs = resolved_unblock_macs or set()
     path = get_settings().fai_log_path
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
@@ -135,10 +168,17 @@ def read_entries(
     entries = [e for e in (_parse(line) for line in tail) if e]
     entries.reverse()  # plus récent en tête
 
+    def still_failed(e: dict) -> bool:
+        return (
+            not e["ok"]
+            and e["action"] != "ABANDON"
+            and not _is_stale_failure(e, resolved_block_macs, resolved_unblock_macs)
+        )
+
     stats = {
         "total": len(entries),
         "ok": sum(1 for e in entries if e["ok"]),
-        "failed": sum(1 for e in entries if not e["ok"] and e["action"] != "ABANDON"),
+        "failed": sum(1 for e in entries if still_failed(e)),
         "abandoned": sum(1 for e in entries if e["action"] == "ABANDON"),
     }
 
@@ -147,7 +187,8 @@ def read_entries(
     if status == "ok":
         entries = [e for e in entries if e["ok"]]
     elif status == "failed":
-        entries = [e for e in entries if not e["ok"]]
+        # « Non appliqué » = échecs ENCORE en souffrance (rattrapés exclus).
+        entries = [e for e in entries if still_failed(e)]
     elif status == "abandoned":
         entries = [e for e in entries if e["action"] == "ABANDON"]
     if search:

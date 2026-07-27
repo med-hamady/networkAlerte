@@ -752,11 +752,21 @@ async def enforce_blocked_clients(session: AsyncSession) -> int:
             # dans la boucle — invisible tant que les abandonnés étaient sautés).
             _set_unenforceable(lr, None)
             if blocking:
+                first_time = lr.client_block_enforced_at is None
                 lr.client_block_enforced_at = _now()
                 logger.info(
                     "enforce: LR '%s' (id=%d) blocage maintenu (mode=%s)",
                     lr.name, lr.id, lr.block_mode,
                 )
+                # Un blocage en attente vient d'être appliqué : le journaliser pour
+                # qu'il passe de « Non appliqué » à « Appliqué » (sinon aucune ligne
+                # de succès n'est jamais écrite pour ce rattrapage SSH).
+                if first_time:
+                    fai_audit.log_action(
+                        "RETRY_OK", ok=True, mac=lr.mac_address, name=lr.name,
+                        mode=lr.block_mode, source="enforce",
+                        message="Blocage en attente appliqué sur le LR.",
+                    )
             else:
                 lr.unblock_pending = False
                 logger.warning(

@@ -788,6 +788,8 @@ export interface AccessClientRow {
   out_of_supervision: boolean
   /** Jours depuis la dernière vue UISP (null = jamais vu). */
   days_offline: number | null
+  /** Une règle de coupure est en place sur le routeur (repli). */
+  router_blocked: boolean
 }
 export interface AccessStats {
   total: number
@@ -800,6 +802,11 @@ export interface AccessStats {
   /** Sous-ensembles de out_of_supervision par ancienneté (down ≥ 30 / 90 j). */
   out_of_supervision_30d: number
   out_of_supervision_90d: number
+  /** Bloqués, décomposés par mécanisme (mutuellement exclusifs). */
+  blocked: number
+  blocked_ssh: number      // coupé sur le LR (SSH)
+  blocked_router: number   // coupé sur le routeur (repli, LR injoignable)
+  blocked_pending: number  // ni l'un ni l'autre — le job rattrapera
 }
 export interface AccessClientsResponse {
   stats: AccessStats

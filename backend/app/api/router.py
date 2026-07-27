@@ -1,6 +1,10 @@
 from fastapi import APIRouter, Depends
 
-from app.api.deps import require_fai_client, require_user_or_api_key
+from app.api.deps import (
+    require_fai_client,
+    require_user_or_api_key,
+    require_verify_client,
+)
 from app.api.endpoints import (
     access,
     access_diagnostics,
@@ -12,6 +16,7 @@ from app.api.endpoints import (
     devices,
     fai,
     fai_journal,
+    fai_verify,
     health,
     incidents,
     lr_health,
@@ -49,6 +54,14 @@ api_router.include_router(
 api_router.include_router(
     fai.router, prefix="/fai", tags=["fai"],
     dependencies=[Depends(require_fai_client)],
+)
+# GET /fai/verify — même préfixe /fai mais AUTH PROPRE : sa clé dédiée
+# LR_VERIFY_API_KEY (require_verify_client), tenue par le système tiers de
+# vérification. Router séparé car une dépendance de router ne se surcharge pas
+# par route ; la clé de vérification n'ouvre donc que cette route.
+api_router.include_router(
+    fai_verify.router, prefix="/fai", tags=["fai"],
+    dependencies=[Depends(require_verify_client)],
 )
 # Lecture du journal : auth NORMALE (dashboard/clé maître). La clé du système de
 # paiement n'y a délibérément pas accès — elle ne sert qu'à bloquer/débloquer.

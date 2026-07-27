@@ -66,6 +66,14 @@ def _fai_api_key_matches(x_api_key: str | None) -> bool:
     return hmac.compare_digest(x_api_key or "", settings.fai_api_key)
 
 
+def _lr_verify_api_key_matches(x_api_key: str | None) -> bool:
+    """True if the header equals the dedicated /fai/verify key (timing-safe)."""
+    settings = get_settings()
+    if not settings.lr_verify_api_key:
+        return False  # no dedicated key — /fai/verify falls back to the /fai auth
+    return hmac.compare_digest(x_api_key or "", settings.lr_verify_api_key)
+
+
 async def require_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -121,3 +129,21 @@ async def require_fai_client(
     if _fai_api_key_matches(x_api_key):
         return None
     return await require_user_or_api_key(request, x_api_key, db)
+
+
+async def require_verify_client(
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """Auth for GET /fai/verify: its own dedicated key, or the /fai auth.
+
+    The verification consumer (a third party polling LR readiness, distinct from
+    the payment system) holds `lr_verify_api_key`, which unlocks ONLY this route.
+    Falling back to `require_fai_client` keeps the payment key, master api_key and
+    operator sessions working too — so the dedicated key ADDS a scoped path, it
+    never removes the existing ones.
+    """
+    if _lr_verify_api_key_matches(x_api_key):
+        return None
+    return await require_fai_client(request, x_api_key, db)

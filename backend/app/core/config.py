@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     # Empty = no dedicated key; /fai then only accepts api_key or a session.
     fai_api_key: str = ""
 
+    # Clé dédiée à la SEULE route GET /fai/verify (contrôle pré-vol d'un LR),
+    # tenue par le système tiers qui interroge l'état des LR. Scellée à cette
+    # route : elle n'ouvre ni block/unblock/status (clé `fai_api_key`) ni le
+    # reste de l'API (`api_key`), et se distribue / rotationne indépendamment.
+    # Vide = pas de clé dédiée ; /fai/verify retombe alors sur l'auth /fai
+    # (clé paiement, master api_key ou session).
+    lr_verify_api_key: str = ""
+
     # Journal d'audit des blocages / déblocages (une ligne par action). Fichier
     # texte, dans un volume bind-monté → survit aux redéploiements.
     fai_log_path: str = "/app/logs/fai_actions.log"

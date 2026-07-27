@@ -819,6 +819,12 @@ _CONTENT_DNS_END = "CONTENTBLOCK_END"
 _CONTENT_MODE_DENY = "denylist"    # allow everything except the listed services
 _CONTENT_MODE_ALLOW = "allowlist"  # block everything except the listed services
 
+# Format version of the generated dnsmasq lines, folded into the block's stamp.
+# Bump whenever the emitted directives change so already-deployed blocks are
+# rewritten on the next enforcement pass even if their (mode, domains) are
+# unchanged. v2 = added IPv6 (`::`) poisoning alongside IPv4 `0.0.0.0`.
+_CONTENT_FILTER_FORMAT = "v2"
+
 def _detect_client_context(
     transport: paramiko.Transport,
 ) -> tuple[str | None, str | None]:
@@ -1195,8 +1201,16 @@ def _set_content_block_sync(
         # The mode is part of the stamp: the same domain set means the exact
         # OPPOSITE policy in allowlist vs denylist, so a direction switch must
         # produce a different digest and force a rewrite.
+        # _CONTENT_FILTER_FORMAT is also folded in: when the *generated lines*
+        # change (not just the domains), every already-deployed block must be
+        # rewritten even though its (mode, domains) are unchanged — otherwise the
+        # `grep -q tag` guard would see the old stamp and skip the fix forever.
+        # Bumped to v2 (2026-07-27) to add IPv6 poisoning: `address=/d/0.0.0.0`
+        # only answers A records, so on a dual-stack client WhatsApp/TikTok just
+        # connected over the still-valid AAAA record — field-confirmed on an LTU
+        # LR (nslookup returned 0.0.0.0 for IPv4 AND a live IPv6).
         digest = hashlib.sha1(
-            f"{mode}|{','.join(sorted(valid_domains))}".encode()
+            f"{_CONTENT_FILTER_FORMAT}|{mode}|{','.join(sorted(valid_domains))}".encode()
         ).hexdigest()[:12]
         begin_tag = f"{begin} {digest}"
         tag_q = shlex.quote(begin_tag)
@@ -1207,17 +1221,25 @@ def _set_content_block_sync(
             # inside the marked block; DNAT, stamping and restart are identical.
             if mode == _CONTENT_MODE_ALLOW:
                 dns_lines = (
-                    # Catch-all first: every name → 0.0.0.0 …
+                    # Catch-all first: every name → 0.0.0.0 (A) and :: (AAAA).
+                    # Both families, else a dual-stack client escapes over IPv6.
                     f"  echo 'address=/#/0.0.0.0' >> {conf}; "
+                    f"  echo 'address=/#/::' >> {conf}; "
                     # … then the exceptions, which dnsmasq prefers (most specific).
+                    # server= forwards every query type, so it covers A and AAAA.
                     f"  for d in $DOMAINS; do "
                     f'    echo "server=/$d/$RESOLVER" >> {conf}; '
                     f"  done; "
                 )
             else:
+                # One line per family: address=/d/0.0.0.0 answers only A records,
+                # so we ALSO need address=/d/:: for AAAA — without it the service
+                # stays reachable over IPv6 on a dual-stack client (the bug that
+                # let WhatsApp keep working with IPv4 already poisoned).
                 dns_lines = (
                     f"  for d in $DOMAINS; do "
                     f'    echo "address=/$d/0.0.0.0" >> {conf}; '
+                    f'    echo "address=/$d/::" >> {conf}; '
                     f"  done; "
                 )
             script = (

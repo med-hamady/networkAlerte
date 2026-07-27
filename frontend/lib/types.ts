@@ -87,6 +87,7 @@ export interface UispSwitch extends DeviceBase {
   device_type: 'uisp_switch'
   max_ports: number
   rocket_port_index: number | null
+  fiber_port_index: number | null
   port_min_speed_mbps: number
 }
 
@@ -163,6 +164,7 @@ export type UispSwitchFormData = DeviceFormBase & {
   device_type: 'uisp_switch'
   max_ports: number
   rocket_port_index: number | null
+  fiber_port_index: number | null
   port_min_speed_mbps: number
 }
 

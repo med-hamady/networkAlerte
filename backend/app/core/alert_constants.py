@@ -86,6 +86,14 @@ AT_MAINS_POWER_LOST     = "mains_power_lost"
 AT_TRANSIT_UNAVAILABLE  = "transit_unavailable"
 AT_SWITCH_PORT_DOWN     = "switch_port_down"
 
+# Lien FIBRE d'un site coupé. La fibre atterrit sur un port SFP du switch : quand
+# le câble casse, le SFP perd la lumière et le port passe DOWN (contrairement au
+# port RJ45 du Rocket, qui peut rester UP derrière un convertisseur). Le même
+# `port_N_up` SNMP est déjà collecté par snmp_poll_job ; on évalue le port
+# désigné comme fibre sur le switch (`uisp_switches.fiber_port_index`). Distinct
+# de switch_port_down pour un message + un journal clairs. Critique + notif WhatsApp.
+AT_FIBER_LINK_DOWN      = "fiber_link_down"
+
 # LTU LR transit probe — SSH-based (LR joignable localement mais sans internet)
 AT_LR_NO_TRANSIT        = "lr_no_transit"
 
@@ -184,7 +192,7 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_UISP_POWER_UNREACH, AT_BATTERY_LOW_WARN, AT_BATTERY_LOW_CRIT,
     AT_BATTERY_INTERNAL_LOW, AT_BATTERY_EXTERNAL_LOW,
     AT_VOLTAGE_ANOMALY, AT_MAINS_POWER_LOST,
-    AT_TRANSIT_UNAVAILABLE, AT_SWITCH_PORT_DOWN,
+    AT_TRANSIT_UNAVAILABLE, AT_SWITCH_PORT_DOWN, AT_FIBER_LINK_DOWN,
     AT_LR_NO_TRANSIT, AT_SWITCH_PORT_SPEED_LOW, AT_LR_LINK_SUBSTANDARD,
     AT_CCQ_UL_LOW, AT_CINR_UL_LOW,
     AT_AIRMAX_DOWN,
@@ -210,6 +218,7 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
 # contrôle (chokepoint), cf. notification_service._dispatch / digest_service.
 #
 # Conditions demandées :
+#   0. Lien FIBRE d'un site coupé ... fiber_link_down (port SFP fibre DOWN)
 #   1. Port switch dégradé .......... switch_port_speed_low + switch_port_down
 #   2. Équipement instable (flapping) device_flapping
 #   3. Batterie UISP Power ........... battery_internal_low (Li-Ion UPS < 50 %)
@@ -223,7 +232,7 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
 #      device_unreachable du ping job → uisp_power_unreachable HORS liste, plus
 #      émis, pour éviter le doublon ; voltage/coupure secteur retirés).
 WHATSAPP_ALERT_TYPES: frozenset[str] = frozenset({
-    AT_SWITCH_PORT_SPEED_LOW, AT_SWITCH_PORT_DOWN,
+    AT_SWITCH_PORT_SPEED_LOW, AT_SWITCH_PORT_DOWN, AT_FIBER_LINK_DOWN,
     AT_DEVICE_FLAPPING,
     AT_BATTERY_INTERNAL_LOW, AT_BATTERY_EXTERNAL_LOW,
     AT_AF60_LINK_SUBSTANDARD, AT_AF60_LINK_DOWN,

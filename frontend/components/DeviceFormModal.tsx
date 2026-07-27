@@ -94,7 +94,7 @@ function emptyForm(type: DeviceFormData['device_type']): DeviceFormData {
     case 'uisp_power':
       return { ...base, device_type: 'uisp_power', api_username: '', api_password: '', api_port: 443 }
     case 'uisp_switch':
-      return { ...base, device_type: 'uisp_switch', max_ports: 16, rocket_port_index: null, port_min_speed_mbps: 1000 }
+      return { ...base, device_type: 'uisp_switch', max_ports: 16, rocket_port_index: null, fiber_port_index: null, port_min_speed_mbps: 1000 }
     case 'client_modem':
       return { ...base, device_type: 'client_modem', lr_id: null, management_protocol: 'ssh', management_port: 22, management_username: '', management_password: '' }
     case 'airfiber':
@@ -146,6 +146,7 @@ function deviceToForm(device: Device): DeviceFormData {
         device_type: 'uisp_switch',
         max_ports: device.max_ports,
         rocket_port_index: device.rocket_port_index,
+        fiber_port_index: device.fiber_port_index,
         port_min_speed_mbps: device.port_min_speed_mbps,
       }
     case 'client_modem':
@@ -580,6 +581,9 @@ function SwitchFields({
           <input type="number" value={form.rocket_port_index ?? 0} onChange={e => update('rocket_port_index', Number(e.target.value) || null)} min={0} max={64} className={input} />
         </Field>
       </div>
+      <Field label="Index du port FIBRE (SFP)" hint="Port où arrive le lien fibre du site. 0 = pas de fibre. Alerte immédiate si ce port tombe.">
+        <input type="number" value={form.fiber_port_index ?? 0} onChange={e => update('fiber_port_index', Number(e.target.value) || null)} min={0} max={64} className={input} />
+      </Field>
       <Field label="Vitesse minimale attendue (Mbps)">
         <input type="number" value={form.port_min_speed_mbps} onChange={e => update('port_min_speed_mbps', Number(e.target.value))} min={10} max={10000} className={input} />
       </Field>

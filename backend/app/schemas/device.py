@@ -235,12 +235,14 @@ class UispSwitchCreate(_DeviceBaseCreate):
     device_type: Literal["uisp_switch"] = "uisp_switch"
     max_ports: int = 16
     rocket_port_index: int | None = None
+    fiber_port_index: int | None = None
     port_min_speed_mbps: float = 1000.0
 
 
 class UispSwitchUpdate(_DeviceBaseUpdate):
     max_ports: int | None = None
     rocket_port_index: int | None = None
+    fiber_port_index: int | None = None
     port_min_speed_mbps: float | None = None
 
 
@@ -442,6 +444,7 @@ class UispSwitchRead(_DeviceBaseRead):
     device_type: Literal["uisp_switch"] = "uisp_switch"
     max_ports: int = 16
     rocket_port_index: int | None = None
+    fiber_port_index: int | None = None
     port_min_speed_mbps: float = 1000.0
 
 

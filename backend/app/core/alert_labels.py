@@ -29,6 +29,7 @@ from app.core.alert_constants import (
     AT_DEVICE_FLAPPING,
     AT_DEVICE_UNREACHABLE,
     AT_ETH0_DOWN,
+    AT_FIBER_LINK_DOWN,
     AT_HIGH_RX_TX_ERRORS,
     AT_LR_BRIDGE_MODE_MISCONFIG,
     AT_LR_DISCOVERED,
@@ -97,6 +98,7 @@ ALERT_TYPE_LABELS: dict[str, str] = {
     # Switch
     AT_SWITCH_PORT_DOWN:     "Port du switch coupé",
     AT_SWITCH_PORT_SPEED_LOW: "Vitesse du port switch dégradée",
+    AT_FIBER_LINK_DOWN:      "Lien fibre coupé",
 
     # airFiber 60 (backhaul 60 GHz)
     AT_AF60_LINK_DOWN:        "Lien backhaul AF60 coupé",

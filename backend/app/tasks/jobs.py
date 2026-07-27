@@ -28,6 +28,7 @@ from app.core.alert_constants import (
     AT_BATTERY_EXTERNAL_LOW,
     AT_BATTERY_INTERNAL_LOW,
     AT_DEVICE_FLAPPING,
+    AT_FIBER_LINK_DOWN,
     AT_LR_BRIDGE_MODE_MISCONFIG,
     AT_LR_LATENCY_HIGH,
     AT_LR_NO_TRANSIT,
@@ -403,6 +404,7 @@ _BATTERY_HUMAN = {
 INC_TRANSIT       = "Transit réseau indisponible"
 INC_SWITCH_PORT       = "Switch port critique down"
 INC_SWITCH_PORT_SPEED = "Port switch vitesse insuffisante"
+INC_FIBER_LINK        = "Lien fibre coupé"
 
 
 # ---------------------------------------------------------------------------
@@ -897,6 +899,7 @@ async def snmp_poll_job() -> None:
             d.max_ports if is_switch else None,
             d.rocket_port_index if is_switch else None,
             d.port_min_speed_mbps if is_switch else None,
+            d.fiber_port_index if is_switch else None,
             # airOS creds (ssh_username/ssh_password) — only needed for airMAX
             # Rockets, to read the channel width (chanbw) via status.cgi.
             d.ssh_username if is_airmax else None,
@@ -917,7 +920,8 @@ async def snmp_poll_job() -> None:
     fetched: dict[int, tuple] = {}
 
     async def _fetch(snap: tuple) -> None:
-        dev_id, name, ip, community, category, max_ports, _pidx, _pmin, airos_user, airos_pwd = snap
+        (dev_id, name, ip, community, category, max_ports, _pidx, _pmin, _fidx,
+         airos_user, airos_pwd) = snap
         async with sem:
             if category in AIRMAX_RULE_CATEGORIES:
                 metrics = await snmp_service.collect_airmax_metrics(
@@ -968,7 +972,7 @@ async def snmp_poll_job() -> None:
     snap_by_id = {s[0]: s for s in targets}
     for dev_id, (metrics, airmax_peers, channel_width_mhz) in fetched.items():
         (_id, _name, _ip, _community, category, _mp, rocket_port_index,
-         port_min_speed, _airos_user, _airos_pwd) = snap_by_id[dev_id]
+         port_min_speed, fiber_port_index, _airos_user, _airos_pwd) = snap_by_id[dev_id]
         async with async_session_factory() as session:
             dev = await session.get(Device, dev_id)
             if dev is None:
@@ -1067,6 +1071,29 @@ async def snmp_poll_job() -> None:
                                     await _resolve_and_notify(
                                         session, dev, INC_SWITCH_PORT_SPEED, alert_type=AT_SWITCH_PORT_SPEED
                                     )
+
+                # Fibre uplink monitoring — the site's fibre lands on an SFP port;
+                # when the cable breaks the SFP loses light and the port goes DOWN
+                # (unlike the RJ45 Rocket port, which can stay UP behind a media
+                # converter). Same `port_N_up` SNMP metric already collected — we
+                # just evaluate the operator-designated fibre port. Dedicated
+                # critical alert (immediate WhatsApp), distinct from the Rocket
+                # port. Down-only: a fibre uplink either passes light or it doesn't.
+                if fiber_port_index and fiber_port_index > 0:
+                    fiber_status = metrics.get(f"port_{fiber_port_index}_up")
+                    if fiber_status is not None:
+                        if fiber_status == 0.0:
+                            await _open_and_notify(
+                                session, dev, INC_FIBER_LINK, "critical",
+                                f"Lien FIBRE du {dev.name} coupé — "
+                                f"GigabitEthernet{fiber_port_index} (SFP fibre) est DOWN. "
+                                f"Vérifiez le lien fibre / le module SFP.",
+                                alert_type=AT_FIBER_LINK_DOWN,
+                            )
+                        else:
+                            await _resolve_and_notify(
+                                session, dev, INC_FIBER_LINK, alert_type=AT_FIBER_LINK_DOWN
+                            )
 
             await session.commit()
 

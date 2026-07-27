@@ -369,6 +369,10 @@ class UispSwitch(Device):
     # SNMP ifIndex of the port connected to the supervised Rocket. None = no
     # specific port monitored (we only check the device as a whole).
     rocket_port_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # SNMP ifIndex of the port where the site's FIBRE uplink lands (SFP). When
+    # the fibre breaks the SFP loses light and this port goes DOWN → fiber_link_down.
+    # None = this switch has no fibre uplink to watch.
+    fiber_port_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     port_min_speed_mbps: Mapped[float] = mapped_column(Float, default=1000.0, nullable=False)
 
     __mapper_args__ = {"polymorphic_identity": "uisp_switch", "polymorphic_load": "selectin"}

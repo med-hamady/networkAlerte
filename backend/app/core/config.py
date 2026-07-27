@@ -61,6 +61,15 @@ class Settings(BaseSettings):
     # texte, dans un volume bind-monté → survit aux redéploiements.
     fai_log_path: str = "/app/logs/fai_actions.log"
 
+    # Mot de passe SSH « standard » attendu sur un LR gérable, contrôlé par la
+    # route GET /fai/verify (le système de paiement vérifie qu'un LR est prêt à
+    # être piloté). Le check est en base : le `ssh_password` stocké sur la fiche
+    # doit valoir cette valeur ET la dernière sonde doit avoir authentifié
+    # (ssh_status=ok) — l'auto-réparation du fallback promeut sur la fiche le mot
+    # de passe qui marche, donc `ssh_password == attendu` + `ssh_status==ok`
+    # prouve que c'est bien ce mot de passe qui ouvre la session.
+    fai_expected_lr_ssh_password: str = "A2HQ@87654321"
+
     # ── Repli MikroTik ──────────────────────────────────────────────────────
     # Filet de sécurité du blocage client : quand la coupure sur le LR n'aboutit
     # pas (LR éteint, SSH refusé, mot de passe rejeté), on pose une règle drop sur

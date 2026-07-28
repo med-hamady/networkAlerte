@@ -81,6 +81,17 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
     ? devices.filter(d => parentRocketId(d) === device.id)
     : []
 
+  // Rocket parente d'un LR. La fiche s'ouvre aussi depuis des pages qui ne
+  // passent pas la liste des devices (/lr-health, /topo-preview), donc on la
+  // résout par fetch quand elle n'est pas dans `devices`.
+  const rocketId = parentRocketId(device)
+  const rocketFromList = rocketId != null ? devices.find(d => d.id === rocketId) : undefined
+  const { data: rocketFetched } = useSWR<Device>(
+    rocketId != null && !rocketFromList ? endpoints.device(rocketId) : null,
+    fetcher,
+  )
+  const parentRocket = rocketFromList ?? rocketFetched
+
   // Métriques affichées depuis le dernier snapshot en base (poll ≤ 60 s).
   // L'ancien appel live (SNMP/API direct sur l'équipement) a été retiré.
   const { data: metrics } = useSWR<DeviceMetrics>(
@@ -221,6 +232,34 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
         <Section title="Informations générales">
           <MetricRow label="Adresse IP"    value={<IpLink ip={device.ip_address} className="font-mono text-blue-700" />} />
           <MetricRow label="Type"          value={deviceLabel(device)} />
+          {device.mac_address && (
+            <MetricRow
+              label="Adresse MAC"
+              value={<span className="font-mono uppercase text-slate-600">{device.mac_address}</span>}
+            />
+          )}
+          {/* Rattachement radio : sur quelle Rocket cet abonné est connecté.
+              C'est la donnée d'identité qui manquait pour aller du client à
+              son AP sans repasser par la page du site. */}
+          {isLr && (
+            <MetricRow
+              label="Rocket associée"
+              value={
+                parentRocket
+                  ? (onNavigate
+                      ? <button
+                          onClick={() => onNavigate(parentRocket)}
+                          className="text-blue-600 hover:text-blue-800 hover:underline font-semibold"
+                        >
+                          {parentRocket.name}
+                        </button>
+                      : <span className="font-semibold text-slate-700">{parentRocket.name}</span>)
+                  : rocketId != null
+                    ? <span className="text-blue-300">chargement…</span>
+                    : <span className="text-blue-300">non rattachée</span>
+              }
+            />
+          )}
           {device.location && <MetricRow label="Localisation" value={device.location} />}
           <MetricRow
             label="Dernière vue"

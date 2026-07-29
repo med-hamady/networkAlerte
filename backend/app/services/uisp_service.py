@@ -4,7 +4,15 @@ UISP / UNMS controller REST client.
 Authenticates to the UISP controller and fetches the device inventory. Consumed
 by `uisp_sync_service` to import infrastructure devices automatically, so the
 operator doesn't enter each base-station Rocket / switch / UISP Power / AF60
-backhaul by hand. This client is READ-ONLY against the controller.
+backhaul by hand.
+
+⚠️ **Presque entièrement en LECTURE seule.** Seule exception :
+:meth:`UISPClient.assign_device_to_site`, qui rattache un équipement au site d'un
+client (`uisp_client_assignment_service`). Elle exige un **token API en
+écriture** : un token de lecture reçoit `403 "You are not authorized for this
+action."` (constaté le 2026-07-28). Toute écriture future doit rester regroupée
+ici et signalée, pour qu'un lecteur ne suppose jamais qu'un appel à ce client est
+sans effet.
 
 API (UISP/UNMS, served over HTTPS):
   POST /nms/api/v2.1/user/login {username,password}
@@ -91,6 +99,62 @@ class UISPClient:
                 logger.warning("UISP /devices returned a non-list payload (%s)", type(payload))
                 return []
             return payload
+
+    async def fetch_sites(self) -> list[dict]:
+        """Return the controller's sites (raw UISP dicts).
+
+        Sert uniquement de **table de correspondance interne** : chaque site
+        d'abonné porte `ucrm.client.{id,name}`, c'est-à-dire le lien vers le
+        client CRM. C'est le seul chemin qui relie un client CRM à ce que UISP
+        sait rattacher. Jamais exposé dans le contrat d'API.
+        """
+        async with httpx.AsyncClient(verify=self._verify, timeout=self._timeout) as client:
+            headers = await self._auth_headers(client)
+            resp = await client.get(
+                f"{self._base}/nms/api/v2.1/sites",
+                headers=headers,
+                timeout=self._timeout,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            if not isinstance(payload, list):
+                logger.warning("UISP /sites returned a non-list payload (%s)", type(payload))
+                return []
+            return payload
+
+    async def assign_device_to_site(self, device_id: str, site_id: str) -> dict:
+        """⚠️ ÉCRITURE — rattache un équipement (`POST /devices/{id}/authorize`).
+
+        C'est le geste que fait l'opérateur quand un équipement apparaît en
+        « unknown » : il le clique et choisit son client. Côté contrôleur, ce
+        rattachement passe par le site du client — d'où le `siteId`, résolu en
+        amont depuis l'id CRM.
+
+        Exige un token API en **écriture** : un token de lecture renvoie 403,
+        traduit ici en :class:`UISPAuthError` avec la marche à suivre, parce que
+        le 403 nu ferait chercher une erreur de code là où il n'y a qu'une
+        permission manquante.
+        """
+        async with httpx.AsyncClient(verify=self._verify, timeout=self._timeout) as client:
+            headers = await self._auth_headers(client)
+            resp = await client.post(
+                f"{self._base}/nms/api/v2.1/devices/{device_id}/authorize",
+                headers=headers,
+                json={"siteId": site_id},
+                timeout=self._timeout,
+            )
+            if resp.status_code in (401, 403):
+                raise UISPAuthError(
+                    f"UISP a refusé l'assignation ({resp.status_code}) : le token "
+                    f"n'a pas les droits d'écriture. Créer un token API en écriture "
+                    f"(UISP → Paramètres → Utilisateurs → jetons API) et le placer "
+                    f"dans UISP_API_TOKEN."
+                )
+            resp.raise_for_status()
+            try:
+                return resp.json()
+            except ValueError:
+                return {}
 
     async def fetch_data_links(self) -> list[dict]:
         """Return the controller's provisioned data-links (raw UISP dicts).

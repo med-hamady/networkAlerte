@@ -69,7 +69,9 @@ backend/app/
 │   ├── snmp_service.py             # SNMP : LTU radio (ath0/eth0) + Switch (ports 1..N)
 │   ├── uisp_power_service.py       # API REST UISP Power (voltage, current, batterie)
 │   ├── ltu_api_service.py          # API HTTP LTU Rocket (signal, CCQ, CINR, CPE peers)
-│   ├── ssh_service.py              # SSH via paramiko : check_ssh_access, ping_targets_via_ssh, set_lan_interface, set_whatsapp_only, garde-fou _collect_forbidden_ifaces, fallback de mot de passe (_open_transport essaie LR_FALLBACK_SSH_PASSWORDS sur AuthenticationException, retourne le mdp utilisé → promu sur le LR)
+│   ├── uisp_assignment_service.py  # **Association équipement ↔ client CRM** : reçoit une MAC + un id CRM, rien d'autre (transposition du formulaire UISP « unknown → choisir le client »). Pose la clé d'abord si l'équipement est absent du contrôleur. ⚠️ Le **site** est une plomberie INTERNE jamais exposée : UISP rattache à un site, et c'est le site qui porte `ucrm.client.id` — la traduction id CRM → site est notre travail. **Seul chemin d'ÉCRITURE vers le contrôleur** (token API en écriture requis, sinon 403)
+│   ├── uisp_enrollment_service.py  # Enrôlement UISP d'un CPE : pose la clé du contrôleur par SSH (unitaire + lot sur la liste « absents de UISP »), garde-fou MAC, concurrence SSH bornée, écrit `lrs.uisp_enrolled_at`. **Aucun enforcement** (un enrôlement est ponctuel — le rejouer dé-enrôlerait). Voir **Enrôlement UISP**
+│   ├── ssh_service.py              # SSH via paramiko : check_ssh_access, ping_targets_via_ssh, set_lan_interface, set_whatsapp_only, **set_uisp_key** (enrôlement UISP), garde-fou _collect_forbidden_ifaces, fallback de mot de passe (_open_transport essaie LR_FALLBACK_SSH_PASSWORDS sur AuthenticationException, retourne le mdp utilisé → promu sur le LR)
 │   ├── client_block_service.py     # Blocage client 2 modes (full / whatsapp_only) + enforcement
 │   ├── alert_engine.py             # Orchestrateur : évalue règles, gère AlertState, ouvre/résout incidents
 │   ├── alert_rules.py              # Règles d'alerte pure Python (sans DB) — 10+ règles
@@ -204,6 +206,8 @@ backend/app/
 | `UISP_REQUEST_TIMEOUT` | Timeout HTTP des appels UISP en s (défaut 30) |
 | `UISP_IGNORED_SITES` | Sites UISP à exclure du sync (ni créés ni màj). **Séparateur `;`** (les noms de sites contiennent des virgules, ex. `Bureau, A2`), insensible à la casse. Pour les sites bureautiques dont un switch LAN serait vu comme infra |
 | `UISP_STATION_SYNC_ENABLED` | Active l'import des **stations clientes** (LR abonnés) depuis `GET /nms/api/v2.1/devices?role=station` dans la table `lrs`, sur le même `uisp_sync_job` (après l'infra). Apporte le **mode (routeur/bridge)** + le **statut « dernier état connu »** UISP de chaque client → `/access` reste complet/exact même quand un Rocket/LR est down. Écrit les colonnes `uisp_*`, **jamais** `topology_mode` ni l'état de blocage. ⚠️ **`rocket_id`/`location`/`ip_address` sont PARTAGÉS** avec `discovery_service` depuis le 2026-07-22, sous une règle d'arbitrage unique : **la source qui a vu la station le plus récemment gagne** (`_adopt_uisp_attribution`, compare `uisp_last_seen` à `last_discovered_at`). Raison : le rattachement radio lit la liste des stations d'un AP, donc ne corrige QUE les clients **allumés** — un client qui déménage puis tombe restait figé sur son ancien AP, son ancien site et son ancienne IP (morte → « hors ligne » pour toujours), alors que son propre `uisp_ap_name` portait déjà la bonne réponse. ⚠️ **L'AP se reprend, l'IP presque jamais** : pour une station **déconnectée**, l'IP annoncée par UISP n'est qu'un **dernier état connu** que le DHCP a pu réattribuer (au 1er passage réel, UISP a rendu `10.135.3.159` pour **trois** abonnés déconnectés). L'IP n'est donc reprise que si UISP voit la station **active** **ou** l'a vue depuis moins de **`UISP_IP_TRUST_HOURS`** (défaut 24 h — une **fenêtre**, pas un booléen : une panne d'1 h ne périme pas un bail DHCP, 3 semaines si), qu'elle est dans `MANAGEMENT_IP_CIDRS`, et qu'elle est **libre** — jamais volée à un autre détenteur (ni en base, ni à une station déjà servie dans le même passage : `claimed_ips`). Un conflit incrémente `ip_conflict` et laisse les deux lignes intactes : seul le radio voit le terrain. Identité = **MAC** (converge avec la découverte radio). AF60 (backhaul) exclus. Importe le **roster complet** (UISP ne retourne que les stations provisionnées). ⚠️ **SUPPRESSION pour rester synchro** : à la fin du passage, tout LR **déjà vu par UISP** (`uisp_synced_at` renseigné — colonne écrite nulle part ailleurs) dont la MAC n'est plus dans le roster est **déprovisionné dans UISP** → **`session.delete`** (cascade métriques/incidents/historique ; le journal FAI est un fichier par MAC, préservé). Supprimé **même si `client_blocked`** (déprovisionné = plus servi). Un client **découvert par radio seul** (`uisp_synced_at` NULL) n'est **jamais** supprimé (propriété de `discovery_service` — l'effacer déclencherait une recréation en boucle). **Garde-fou anti-catastrophe** : la passe de suppression est **entièrement sautée si le roster revient vide** (`fetch_devices` lève sur erreur transport, mais un payload vide/malformé serait sinon lu comme « tout le monde déprovisionné » et purgerait tout le parc). Défaut `false` |
+| `UISP_WRITE_API_TOKEN` | Token UISP **séparé, en écriture**, réservé à l'association équipement ↔ client CRM (`POST /uisp/assign`). Tout le reste — dont le `uisp_sync_job`, qui parcourt ~1300 équipements **sans surveillance** — garde `UISP_API_TOKEN` en **lecture seule** : aucun job de fond ne peut alors modifier le contrôleur, quoi qu'il arrive, et le token d'écriture est révocable sans interrompre la supervision. Vide = repli sur `UISP_API_TOKEN` |
+| `UISP_DEVICE_KEY` | **Clé d'enrôlement du contrôleur** (UISP → Paramètres → Équipements), forme `wss://<hôte>:443+<jeton>+<option TLS>`. **UNE seule valeur pour tout le parc** — c'est un identifiant du contrôleur, pas de l'équipement. Posée sur un CPE par `ssh_service.set_uisp_key` pour le faire apparaître dans l'inventaire (cf. **Enrôlement UISP** ci-dessous). Vide = enrôlement indisponible (l'API répond 409 au lieu d'écrire une config vide) |
 | `UISP_ROCKET_SSH_USERNAME` / `UISP_ROCKET_SSH_PASSWORD_TEMPLATE` | Creds posés sur un Rocket créé par le sync. `{site}` = code extrait du nom de site UISP (`A2 SNDE`→`SNDE`). Défaut `ubnt` / `A2{site}@4321$A2` |
 | `UISP_POWER_API_USERNAME` / `UISP_POWER_API_PASSWORD` | Creds API posés sur un UISP Power créé par le sync (défaut `ubnt` / `A2@uispp2025`) |
 | `UISP_AF60_SSH_USERNAME` / `UISP_AF60_SSH_PASSWORD` | Creds API posés sur un AF60 créé par le sync (défaut `ubnt` / `A2F60@4321`) |
@@ -294,6 +298,133 @@ Réglages **séparés par famille**, aucun budget partagé (`ping_infra_reconfir
 | `network_latency_aggregate_job` | `NETWORK_LATENCY_CHECK_INTERVAL_MINUTES` (**1440 min = 24 h**) | **Contrôle quotidien** réseau-wide : part des LR `up` dont le dernier `lr_latency_ms` ≥ seuil latence 100 ms (`lr_health_service.network_latency_summary`, réutilise `_fetch_latest_latency`). Si > `NETWORK_HIGH_LATENCY_PCT` (20%) et échantillon ≥ `NETWORK_LATENCY_MIN_SAMPLE` (10) → **message WhatsApp direct** (PAS un incident : un Incident exige un device_id). **Pas de flag/rétabli** : rapport quotidien qui n'envoie que si la condition est remplie. |
 | `rocket_saturation_report_job` | **Cron quotidien `ROCKET_SATURATION_REPORT_HOUR`:00 UTC** (défaut 07:00 ; Mauritanie GMT → 07:00 locale) + **1× au démarrage** (`next_run_time=now` → rapport dès le déploiement) | **Rapport PDF quotidien** des **Rockets saturés** envoyé en **document WhatsApp**. Réutilise `network_capacity_service.get_network_capacity` ; un Rocket est saturé quand ses **clients installés ≥ capacité max** (= condition `rocket_client_overload`). `saturation_report_service` génère le PDF (lib `fpdf2`, tableau Site/Rocket/Famille/Clients/Max/Charge/Largeur, trié par charge décroissante), `whatsapp_service.send_whatsapp_document` l'upload en base64 sur Ultramsg `/messages/document`. **Envoi systématique** (même si liste vide = PDF « aucun saturé », caption ✅), contrairement à la latence. Gated `ROCKET_SATURATION_REPORT_ENABLED`. Groupe scheduler **fast** (léger, pas de SSH). Dépend des clients installés → nécessite `UISP_STATION_SYNC_ENABLED`. |
 | `site_infra_report_job` | **Cron quotidien `SITE_INFRA_REPORT_HOUR`:00 UTC** (défaut 07:00) + **1× au démarrage** (`next_run_time=now`) | **Rapport PDF quotidien** de la **capacité infra par site** envoyé en **document WhatsApp**. `site_infra_service` compte par `site` (colonne dénormalisée) les équipements d'infra **Rockets + AF60 + PTP LiteBeam** (`INFRA_COUNTED_TYPES` ; **exclut switches, UISP Power, LR clients**) et calcule la marge vs `SITE_INFRA_MAX` (14) : **+N** places libres / **-N** dépassement. PDF via `fpdf2` (tableau Site/Équip./Max/Marge, dépassements en rouge, triés dépassement d'abord). **Envoi systématique** (caption ✅ si aucun dépassement). Gated `SITE_INFRA_REPORT_ENABLED`. Groupe scheduler **fast**. La même donnée est exposée par `network_capacity_service` → `/network-capacity` (clé `infra`) → section « Capacité infra par site » de `/capacity`. |
+
+#### Enrôlement UISP d'un CPE (pose de la clé par SSH) — 2026-07-28
+
+Un CPE ne remonte dans l'inventaire UISP que s'il porte la **clé du contrôleur**
+dans ses clés `unms.*` (config airOS). Un abonné actif qui ne l'a pas est
+invisible — donc potentiellement **non facturé** : c'est la liste « découverts
+par radio mais absents de UISP » de `/access-diagnostics`. `ssh_service.set_uisp_key`
+la pose **sans reboot ni coupure** (écriture config → `cfgmtd -w -p /etc/` →
+`killall -SIGHUP udapi-bridge`, le signal que le firmware s'envoie lui-même).
+Validé sur **airOS 8.7.11** (NanoStation 5AC) et **airOS 6.3.24** (LiteBeam M5).
+
+Trois règles qu'aucune doc Ubiquiti ne donne, toutes découvertes en échouant :
+
+1. **`/tmp/system.cfg` et `/tmp/running.cfg` doivent être IDENTIQUES** au moment
+   de la pose. Modifier `system.cfg` seul : le CPE se connecte au contrôleur puis
+   refuse de persister, **en boucle 1×/s**, avec `unms_key_store_airos: … is
+   different from … not saving new UNMS key`. On écrit donc UN fichier canonique
+   aux deux emplacements. ⚠️ Le symptôme ressemble à « mauvaise clé » alors que
+   le journal dit `connection established`.
+2. **La clé qu'on écrit n'est qu'un jeton d'enrôlement.** Après adoption, le
+   contrôleur émet une clé **propre à l'équipement**, le démon réécrit `unms.uri`
+   et la persiste en flash tout seul (le suffixe change au passage :
+   `+allowSelfSignedCertificate` posé → `+allowUntrustedCertificate` en place).
+3. **`/var/run/unms-conn-status` est un drapeau de SESSION, pas un état
+   d'enrôlement** : le démon se déconnecte après 30 s d'inactivité et met ~1 min
+   à rétablir après un redémarrage, donc il vaut **0 par intermittence sur un
+   équipement parfaitement enrôlé**. Le SIGHUP ne fait d'ailleurs pas toujours
+   relire la config (une clé erronée est restée en flash pendant que la session
+   établie rapportait encore `1`).
+
+**Conséquence de conception — l'idempotence porte sur l'HÔTE de `unms.uri`**
+(`ssh_service.uisp_uri_host`), jamais sur le jeton (que le contrôleur réécrit)
+ni sur le drapeau de session (qui clignote). Le contrôleur réécrit le jeton mais
+ne déplace jamais l'équipement vers un autre hôte. Se fier au drapeau écrasait la
+clé propre d'un équipement sain dès qu'un clic tombait sur un 0 transitoire —
+reproduit sur un M5 le 2026-07-28, clé à restaurer à la main.
+`force=True` passe outre : **uniquement** pour une **clé orpheline** (équipement
+supprimé de UISP — il se connecte sans jamais être adopté ; signature :
+`connection established` toutes les ~32 s, jamais de `got unmsSetup`,
+`unms-conn-time` VIDE). Sur un équipement sain, forcer le **dé-enrôle**.
+
+**⚠️ La clé d'enrôlement cesse d'être honorée — vérifier sa fraîcheur AVANT une
+campagne.** Chronologie du 2026-07-28 : la même clé a adopté trois CPE à 09:25,
+09:39 et 09:58, puis a été **refusée à 10:23 et 10:35**. Le second échec est
+décisif : il portait sur un CPE **absent de UISP** dont la config venait d'être
+rendue correcte (deux fichiers identiques, 4 clés, flashé) — le CPE se connecte,
+ne reçoit jamais `unmsSetup`. Ni l'état de l'équipement ni le fait qu'il soit
+déjà connu du contrôleur n'expliquent donc l'échec : c'est la **clé** qui n'est
+plus valable. Indice corroborant dans le journal : `Using deprecated option
+allowSelfSignedCertificate, please replace it with allowUntrustedCertificate` —
+les équipements réellement adoptés portent tous la forme récente.
+
+**En pratique : régénérer la clé dans UISP → Paramètres → Équipements juste avant
+une campagne d'enrôlement**, et ne pas compter sur une valeur posée il y a des
+semaines. Une clé morte fait échouer *toute* la campagne, proprement (rien n'est
+cassé) mais intégralement.
+
+⚠️ **Corollaire sur `force`** : forcer avec une clé morte sur un équipement
+adopté lui fait PERDRE sa clé propre et le sort de UISP (constaté sur un 5AC
+adopté à 09:25, forcé à 10:23). Il a fallu réécrire sa clé propre, **récupérée
+dans la sauvegarde**, pour qu'il revienne (adoption en 6 s). C'est LA raison de
+toujours sauvegarder la config avant d'écrire.
+
+**Jeu de clés par famille** : airOS 8 → 4 (`status`, `ui_url`,
+`unms_redirector`, `uri`) ; airOS 6 → 2 (`status`, `uri`), et 2 suffisent. On
+écrit à chaque famille exactement la séquence validée sur elle. ⚠️ Un CPE non
+enrôlé n'a que les 2 clés **vides** : il faut en **ajouter**, pas substituer.
+
+Exposition : `POST /devices/{id}/enroll-uisp` (unitaire) +
+`POST /access-diagnostics/enroll-uisp` (lot, avec `force`), bouton par ligne et
+« Tout enrôler » sur la page **Diagnostics d'accès**. `lrs.uisp_enrolled_at`
+enregistre le dernier enrôlement réussi — il sépare « jamais tenté » de « adopté,
+en attente du sync quotidien », mais n'atteste PAS la présence dans UISP (seul
+`uisp_synced_at`, écrit par le sync, le fait). Aucun job d'enforcement : un
+enrôlement est ponctuel, le réappliquer périodiquement dé-enrôlerait.
+
+#### Association client CRM (2026-07-28)
+
+`POST /uisp/assign` transpose le geste manuel de l'opérateur : chercher la MAC
+dans UISP, la voir en « unknown », cliquer dessus et choisir le client. Le
+contrat est **volontairement minimal — une MAC et un id CRM, rien d'autre**.
+
+⚠️ **Le « site » ne fait PAS partie du contrat.** UISP ne rattache pas un
+équipement à un client mais à un **site**, et c'est le site qui porte
+`ucrm.client.{id,name}`. Traduire l'id CRM en site est de la plomberie interne :
+le mot n'apparaît ni en entrée ni en sortie de l'API. La table de correspondance
+vient de `GET /nms/api/v2.1/sites` — **aucune clé CRM n'est nécessaire** (l'API
+CRM `/crm/api/v1.0/` refuse d'ailleurs le token NMS en 401, elle a ses propres
+App Keys).
+
+**Pourquoi l'id CRM et pas le nom** (mesuré sur 1410 sites clients) : 1402 ids
+distincts contre 1395 noms — **7 noms désignent deux clients différents** (« Ba,
+Amadou » = clients 1361 et 1369). Le nom seul assignerait au mauvais abonné.
+
+**Clients à plusieurs services** : **6 sur 1402** en ont (donc plusieurs sites).
+L'id du client ne suffit alors pas → l'appelant précise `crm_service_id`. Sans
+lui : **409 avec la liste des services**, jamais d'arbitrage — choisir au hasard
+rattacherait l'abonné au mauvais service, en silence et durablement.
+
+⚠️ **Le service se désigne par son ID, jamais par son nom** : les services d'un
+même client portent régulièrement des noms **identiques** (client 11 → trois
+« 20Mb TEST » ; client 1005 → trois « AirFiber 15Mb Familial »). L'id est unique
+sur tout le contrôleur (1410 ids pour 1410 sites, **zéro doublon**), donc il
+détermine le site à lui seul. Il est quand même vérifié comme appartenant au
+client annoncé : un appelant qui intervertit deux ids rattacherait sinon
+l'équipement à un tout autre abonné sans que rien ne le signale.
+
+⚠️ **Un équipement déjà rattaché à un AUTRE client n'est jamais déplacé en
+silence** : refus 409 avec l'id du détenteur actuel, `reassign=true` pour passer
+outre. Déplacer un CPE est légitime (matériel récupéré et réinstallé ailleurs)
+mais **retire son rattachement à l'abonné actuel** — une MAC saisie de travers
+ferait ce dégât sans que rien ne le signale. Même principe que le contrôle
+d'identité avant blocage : aucune action ne doit pouvoir toucher le mauvais
+abonné par accident. Un équipement déjà chez le **bon** client est un no-op
+(aucune écriture), donc l'appel est rejouable sans effet.
+
+⚠️ **Le nom d'hôte de l'équipement n'est utilisé nulle part** — ni comme critère,
+ni en sortie (messages et journaux ne citent que MAC et ids CRM). Un CPE s'annonce
+sous un nom qu'il s'est donné (« <contrat>-<nom du client> ») ; s'en servir
+revient à identifier par un nom, et les noms se ressemblent (« Keida, Mariem
+Oumar » vs « Sall, Mariem oumar » = deux clients CRM distincts).
+
+**Ordre imposé** : vérifier le client CRM **avant** de toucher à l'équipement
+(inutile de poser une clé pour un client qui n'existe pas, et un échec ne laisse
+alors aucune trace) ; puis, si l'équipement est absent du contrôleur, lui poser
+la clé (sans elle il ne se déclare jamais → rien à associer). L'enregistrement
+n'étant pas instantané, la réponse porte `pending_registration`.
 
 #### DÉBIT vs CAPACITÉ — deux mesures distinctes (2026-07-20)
 
@@ -416,11 +547,14 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | GET | `/api/v1/incidents/{id}` | Oui | Détail incident — lecture seule |
 | GET | `/api/v1/system` | Oui | Infos système (version, uptime scheduler) |
 | POST | `/api/v1/system/test-whatsapp` | Oui | Diagnostic WhatsApp (Ultramsg) — envoie un message de test au groupe `WHATSAPP_GROUP_ID` |
+| POST | `/api/v1/uisp/assign` | Oui | **Associe un équipement à un client CRM** — body `mac` + `crm_client_id`, plus `crm_service_id` **uniquement** si le client a plusieurs services. Équivalent du formulaire UISP (chercher la MAC en « unknown », choisir le client). Si l'équipement est absent du contrôleur, sa clé lui est posée d'abord et la réponse porte `pending_registration` (rejouer dans la minute — ce n'est pas une erreur). Rapport étape par étape. 400 MAC invalide · 404 client CRM introuvable **ou service n'appartenant pas à ce client** · **409 client à plusieurs services sans `crm_service_id`** (services renvoyés) · **409 équipement déjà rattaché à un AUTRE client** (id du détenteur renvoyé ; `reassign=true` pour passer outre) · 502 clé non posée (échec SSH — surtout pas un 404) · 403 token UISP sans droits d'écriture. Voir **Association client CRM** |
 | POST | `/api/v1/uisp/sync` | Oui | Import des équipements d'infra depuis le contrôleur UISP (`?dry_run=true` = prévisualisation sans écriture). Renvoie un résumé (créés/màj/ignorés + échantillon) |
 | GET | `/api/v1/network-capacity` | Oui | Capacité clients : par famille (LTU/airMAX) et par site, clients connectés (`peer_count`) vs max (seuil `rocket_client_overload`). Rockets sans largeur connue exclus des totaux (`unknown`). `network_capacity_service`. Inclut aussi la clé **`infra`** (`site_infra_service.get_site_infra_capacity`) : budget d'équipements infra par site (Rockets+AF60+PTP) vs `SITE_INFRA_MAX`, avec marge `remaining` signée |
 | GET | `/api/v1/traffic/top-destinations` | Oui | **Volume** Internet par opérateur/CDN (ASN) sur `?period=24h\|7d\|30d` : SUM(down/up) GROUP BY asn depuis `traffic_dest_stats`, trié par total + part %. `traffic_service.get_top_destinations` |
 | GET | `/api/v1/traffic/throughput` | Oui | **Débit** (Gb/s) par opérateur sur le dernier bucket : descendant/montant Mbps + part du download. Montre le partage de la bande passante WAN en direct. `traffic_service.get_throughput` |
 | GET | `/api/v1/traffic/throughput-history` | Oui | **Historique de débit** descendant par opérateur sur `?period=1h\|6h\|24h` : re-bin des buckets 1 min (top-N opérateurs + « Autres »), séries alignées pour un graphe d'aires empilées. `traffic_service.get_throughput_history` (SQL `date_bin`) |
+| POST | `/api/v1/devices/{id}/enroll-uisp` | Oui | **Enrôle un LR dans UISP** en posant la clé du contrôleur par SSH (sans reboot ni coupure). `ok` = contrôleur ayant **adopté** l'équipement, constaté sur l'équipement. Sans effet sur un LR déjà provisionné pour ce contrôleur ; body `force` passe outre (clé orpheline seulement — sur un équipement sain, forcer le dé-enrôle). 409 si `UISP_DEVICE_KEY` absente. Cf. **Enrôlement UISP** |
+| POST | `/api/v1/access-diagnostics/enroll-uisp` | Oui | Même chose **en lot** sur les LR vus par radio mais absents de UISP. Body `lr_ids` (vide = toute la population) + `force`. Séquentiel, concurrence SSH bornée : compter jusqu'à 45 s par équipement |
 | GET | `/api/v1/access-diagnostics` | Oui | **Deux anomalies d'accès abonné** : `ssh_refused` (LR encore `up` dont `lrs.ssh_status` ∈ {`auth_failed`,`ssh_disabled`,`host_key_mismatch`}) + `radio_not_in_uisp` (LR `last_discovered_at`≠NULL **et** `uisp_synced_at`=NULL = vu par radio mais non provisionné dans UISP) + `counts`. `access_diagnostics_service` |
 | POST | `/api/v1/fai/block` | FAI | Bloque un client par **MAC** de son LR (système de paiement). Body `mac` + `reason` + `mode` (`full`/`whatsapp_only`). Même mécanisme que `/devices/{id}/block-client`, indexé par MAC. 409 si LR en bridge |
 | POST | `/api/v1/fai/unblock` | FAI | Débloque un client par **MAC** de son LR |
@@ -435,7 +569,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | Anomalies détectées | `/incidents` | Anomalies actuellement détectées (lecture seule, résolution automatique) |
 | Capacité du réseau | `/capacity` | 2 cercles (LTU/airMAX) consommé vs disponible sur tout le réseau + barres par site (LTU/airMAX séparés) ; clic site → table Rockets (connectés/max + largeur). Donut SVG custom (pas de lib de charts). Inclut la section **« Capacité infra par site »** (table Site/Équip. infra/Max/Marge, marge +N vert / -N rouge) alimentée par la clé `infra` de `/network-capacity` |
 | Destinations Internet | `/traffic` | 3 sections : **Débit en direct** (descendant/montant Gb/s + partage par opérateur, `/traffic/throughput`, refresh 30 s), **Débit descendant par opérateur** (graphe d'aires empilées SVG sur 1h/6h/24h, `/traffic/throughput-history`) et **Volume** (par opérateur sur 24h/7j/30j, down/up/total + part, `/traffic/top-destinations`). Repère les candidats à un serveur de cache. **Vide tant que `NETFLOW_COLLECTOR_ENABLED=false` ou que le routeur n'exporte pas vers le collecteur** |
-| Diagnostics d'accès | `/access-diagnostics` | 2 sections d'anomalies de gestion du parc abonné (sidebar **Anomalies**) : **LR qui refusent le SSH** (mot de passe invalide / SSH désactivé / clé d'hôte incompatible — les **offline sont exclus**, ce n'est pas un refus) et **découverts par radio mais absents de UISP** (non provisionnés, potentiellement non facturés). Source : `/access-diagnostics`. La 1re remplace côté UI l'ancien diag SSH par grep de logs |
+| Diagnostics d'accès | `/access-diagnostics` | 2 sections d'anomalies de gestion du parc abonné (sidebar **Anomalies**) : **LR qui refusent le SSH** (mot de passe invalide / SSH désactivé / clé d'hôte incompatible — les **offline sont exclus**, ce n'est pas un refus) et **découverts par radio mais absents de UISP** (non provisionnés, potentiellement non facturés). Source : `/access-diagnostics`. La 1re remplace côté UI l'ancien diag SSH par grep de logs. La 2e porte l'**action d'enrôlement** : bouton par ligne + « Tout enrôler dans UISP », avec un interrupteur **Forcer** décoché par défaut (il écrase une clé existante — cf. **Enrôlement UISP**). Une ligne déjà enrôlée affiche la date au lieu du bouton : elle attend le sync quotidien |
 
 ### À implémenter (prochaines phases)
 - [ ] Tests unitaires et d'intégration

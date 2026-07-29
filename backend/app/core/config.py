@@ -325,6 +325,14 @@ class Settings(BaseSettings):
     uisp_username: str = ""
     uisp_password: str = ""
     uisp_api_token: str = ""         # alternative to username/password
+    # Token SÉPARÉ, avec droits d'ÉCRITURE, réservé à l'association
+    # équipement ↔ client CRM (`uisp_assignment_service`). Tout le reste — dont
+    # le sync quotidien qui parcourt 1300 équipements sans surveillance — garde
+    # `uisp_api_token` en LECTURE : ainsi aucun job de fond ne peut modifier le
+    # contrôleur, quoi qu'il arrive. Révocable sans interrompre la supervision.
+    # Vide = repli sur `uisp_api_token` (qui doit alors être en écriture, sinon
+    # l'assignation répond 403 avec la marche à suivre).
+    uisp_write_api_token: str = ""
     uisp_verify_tls: bool = False    # controller usually has a self-signed cert
     # Inventory drifts slowly (new sites/APs are rare). The job runs ONCE at
     # scheduler startup (next_run_time=now) so a deploy imports immediately, then
@@ -358,6 +366,16 @@ class Settings(BaseSettings):
     # Rocket password is per-site: {site} is the code extracted from the UISP
     # site name ("A2 SNDE" → "SNDE") → "A2SNDE@4321$A2". Switches need no creds
     # (SNMP-only, community auto-filled). Override any of these via env.
+    # Clé d'enrôlement du contrôleur (UISP → Paramètres → Équipements → « clé
+    # UISP »), de la forme `wss://<hôte>:443+<jeton>+<option TLS>`. UNE seule
+    # valeur pour tout le parc : c'est un identifiant du contrôleur, pas de
+    # l'équipement. Posée sur un CPE par `ssh_service.set_uisp_key` pour le faire
+    # apparaître dans l'inventaire. ⚠️ Après adoption, le contrôleur remplace
+    # cette clé par une clé propre à l'équipement — ne jamais s'en servir pour
+    # tester si un CPE est déjà enrôlé (il ne la porte plus). Vide = enrôlement
+    # indisponible (l'API répond 409 plutôt que d'écrire une config vide).
+    uisp_device_key: str = ""
+
     uisp_rocket_ssh_username: str = "ubnt"
     uisp_rocket_ssh_password_template: str = "A2{site}@4321$A2"
     uisp_power_api_username: str = "ubnt"

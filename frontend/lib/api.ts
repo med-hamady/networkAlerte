@@ -10,6 +10,8 @@ import type {
   Incident,
   SystemInfo,
   Threshold,
+  UispEnrollBulkResult,
+  UispEnrollResult,
 } from './types'
 
 // All requests go through the same-origin Next.js route handler at /api/proxy.
@@ -94,6 +96,9 @@ export const endpoints = {
     `${API_BASE}/fai-journal?limit=300&status=${encodeURIComponent(status)}&search=${encodeURIComponent(search)}`,
   // Diagnostics d'accès : LR qui refusent le SSH + LR vus par radio hors UISP.
   accessDiagnostics:    `${API_BASE}/access-diagnostics`,
+  // Enrôlement UISP : pose de la clé du contrôleur sur le CPE (unitaire / lot).
+  enrollUisp:           (lrId: number) => `${API_BASE}/devices/${lrId}/enroll-uisp`,
+  enrollUispBulk:       `${API_BASE}/access-diagnostics/enroll-uisp`,
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +190,45 @@ export async function setClientBlock(
     throw new Error(err.detail ?? `HTTP ${res.status}`)
   }
   return res.json() as Promise<ClientBlockResult>
+}
+
+// ---------------------------------------------------------------------------
+// Enrôlement UISP — pose de la clé du contrôleur sur un CPE, par SSH
+// ---------------------------------------------------------------------------
+// Rend visible dans l'inventaire un abonné actif que UISP ne connaît pas. Long
+// par nature : l'appel attend que le contrôleur ADOPTE l'équipement (jusqu'à
+// 45 s par CPE), pour ne jamais rapporter un succès qui n'a pas eu lieu.
+
+// `force` écrase la clé même si l'équipement pointe déjà sur notre contrôleur.
+// Sur un équipement sain cela le DÉ-enrôle (sa clé propre est perdue) : à ne
+// passer que sur une action explicite de l'opérateur, pour une clé orpheline.
+export async function enrollUisp(lrId: number, force = false): Promise<UispEnrollResult> {
+  const res = await fetch(endpoints.enrollUisp(lrId), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ force }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
+  }
+  return res.json() as Promise<UispEnrollResult>
+}
+
+// `lrIds` omis = toute la population « vu par radio, absent de UISP ».
+export async function enrollUispBulk(
+  lrIds?: number[], force = false,
+): Promise<UispEnrollBulkResult> {
+  const res = await fetch(endpoints.enrollUispBulk, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lr_ids: lrIds ?? [], force }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
+  }
+  return res.json() as Promise<UispEnrollBulkResult>
 }
 
 // ---------------------------------------------------------------------------

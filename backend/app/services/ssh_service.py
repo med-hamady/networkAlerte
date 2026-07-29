@@ -35,6 +35,7 @@ import re
 import shlex
 import socket
 import threading
+import time
 
 import paramiko
 
@@ -1974,4 +1975,394 @@ async def read_traffic_shaper(
     return await asyncio.to_thread(
         _read_traffic_shaper_sync, host, port, username, password,
         expected_fingerprint, fallback_passwords, expected_mac,
+    )
+
+
+# ── Enrôlement UISP (pose de la clé de connexion au contrôleur) ──────────────
+#
+# Un CPE ne parle au contrôleur UISP que s'il porte sa « clé » — en réalité une
+# chaîne de connexion `wss://<contrôleur>:443+<jeton>+<option TLS>` rangée dans
+# les clés `unms.*` de la config airOS. Un abonné branché sans cette clé est
+# invisible de l'inventaire (donc potentiellement non facturé) : c'est la liste
+# « découverts par radio mais absents de UISP » de la page Diagnostics d'accès.
+#
+# Terrain 2026-07-28, validé sur DEUX familles (NanoStation 5AC / airOS 8.7.11 et
+# LiteBeam M5 / airOS 6.3.24). Trois choses qu'aucune doc Ubiquiti ne dit :
+#
+#   1. **`/tmp/system.cfg` et `/tmp/running.cfg` doivent être IDENTIQUES** au
+#      moment où la clé est posée. Modifier `system.cfg` seul ne suffit pas : le
+#      CPE se connecte bien au contrôleur puis refuse de persister, en boucle une
+#      fois par seconde, avec `unms_key_store_airos: /tmp/system.cfg is different
+#      from /tmp/running.cfg, not saving new UNMS key`. On écrit donc UN fichier
+#      canonique aux deux emplacements.
+#
+#   2. **La clé qu'on écrit n'est qu'un jeton d'enrôlement.** Une fois adopté, le
+#      contrôleur émet une clé propre à l'équipement et le démon réécrit
+#      `unms.uri` lui-même (le suffixe change au passage :
+#      `+allowSelfSignedCertificate` posé → `+allowUntrustedCertificate` en
+#      place), puis la persiste en flash tout seul. ⚠️ D'où la règle
+#      d'idempotence : ne JAMAIS comparer `unms.uri` à la clé partagée pour
+#      décider s'il faut agir — après enrôlement elle ne correspondra plus
+#      jamais, et la réécrire dé-enrôlerait l'équipement à chaque passage. Le
+#      seul état qui fait foi est `/var/run/unms-conn-status`.
+#
+#   3. **Le nombre de clés dépend de la famille** : airOS 8 en a 4 (`status`,
+#      `ui_url`, `unms_redirector`, `uri`), airOS 6 seulement 2 (`status`,
+#      `uri`) — et 2 suffisent, l'enrôlement du M5 a marché avec elles seules. On
+#      écrit à chaque famille EXACTEMENT la séquence validée sur elle, plutôt que
+#      d'extrapoler : un CPE non enrôlé n'a de toute façon que les 2 clés vides,
+#      donc le fichier ne dit pas ce que son firmware sait faire.
+#
+# L'application se fait par `killall -SIGHUP udapi-bridge` — le signal que le
+# firmware s'envoie à lui-même (`/var/etc/sysinit/unms.conf`). Pas de reboot,
+# pas de coupure pour l'abonné.
+
+# Fichiers de config airOS. Les deux doivent porter le même contenu (cf. 1.).
+_UISP_CFG_FILES = ("/tmp/system.cfg", "/tmp/running.cfg")
+# État de la session UISP, écrit par udapi-bridge : "1" = adopté par le
+# contrôleur. C'est LA preuve de succès, et elle vient de l'équipement.
+_UISP_CONN_STATUS = "/var/run/unms-conn-status"
+# Combien de temps attendre l'adoption après le SIGHUP. Terrain : 15 s sur les
+# deux familles. On laisse de la marge pour un contrôleur chargé, en sondant
+# souvent pour rendre la main dès que c'est bon.
+_UISP_ADOPT_TIMEOUT_S = 45
+_UISP_ADOPT_POLL_S = 3
+
+# Préfixe du message d'ABSTENTION (équipement déjà provisionné pour ce
+# contrôleur). Reconnu par les appelants via CETTE constante, jamais en cherchant
+# des mots dans la phrase — même convention que IDENTITY_REFUSAL_PREFIX.
+# Indispensable parce que l'abstention renvoie `ok=True` sans qu'on ait rien
+# fait : la confondre avec un enrôlement ferait dater `uisp_enrolled_at` d'un
+# acte qui n'a pas eu lieu, et afficherait « clé posée » sur un équipement
+# peut-être porteur d'une clé orpheline — exactement ce qu'on veut voir.
+UISP_ALREADY_PROVISIONED_PREFIX = "Déjà provisionné"
+
+
+def is_already_provisioned(message: str | None) -> bool:
+    """Le succès vient-il d'une ABSTENTION (rien écrit) plutôt que d'un enrôlement ?"""
+    return (message or "").startswith(UISP_ALREADY_PROVISIONED_PREFIX)
+
+
+def _airos_major(transport: paramiko.Transport) -> int | None:
+    """Version majeure d'airOS (8, 6…) lue dans /etc/version, ou None.
+
+    Le fichier vaut par exemple ``WA.v8.7.22`` (airOS 8 AC) ou ``XW.v6.3.24``
+    (airOS 6, LiteBeam M5). Sert UNIQUEMENT à choisir le jeu de clés `unms.*`
+    validé sur cette famille — jamais à décider si on agit.
+    """
+    try:
+        code, out = _exec_capture(transport, "cat /etc/version 2>/dev/null", 10)
+    except Exception as exc:  # noqa: BLE001 — pas de version ⇒ jeu minimal
+        logger.debug("uisp_key: version illisible sur %s (%s)", transport, exc)
+        return None
+    if code != 0:
+        return None
+    match = re.search(r"v(\d+)\.", out or "")
+    return int(match.group(1)) if match else None
+
+
+def _uisp_key_lines(key_uri: str, ui_url: str, airos_major: int | None) -> list[str]:
+    """Les lignes `unms.*` à écrire, dans l'ordre trié qu'airOS utilise lui-même.
+
+    airOS 8 → 4 clés, airOS 6 (et famille inconnue) → les 2 clés minimales, seules
+    séquences vérifiées sur le terrain. L'ordre alphabétique (`status` < `ui_url`
+    < `unms_redirector` < `uri`) reproduit ce que le firmware écrit de son côté,
+    ce qui garde le fichier lisible pour un opérateur qui le compare à un CPE sain.
+    """
+    if airos_major == 8 and ui_url:
+        return [
+            "unms.status=enabled",
+            f"unms.ui_url={ui_url}",
+            "unms.unms_redirector=enabled",
+            f"unms.uri={key_uri}",
+        ]
+    return ["unms.status=enabled", f"unms.uri={key_uri}"]
+
+
+def _awk_literal(value: str) -> str:
+    """Encode `value` en chaîne littérale awk (guillemets + échappements).
+
+    ⚠️ Ne PAS utiliser `shlex.quote` ici : elle protège pour le *shell*, et
+    laisse telle quelle toute chaîne sans métacaractère — or `unms.status=enabled`
+    et l'URI de la clé n'en contiennent aucun. On obtenait donc `print
+    unms.status=enabled`, qui n'est pas de l'awk valide (le programme entier
+    échouait). Le shell et awk sont deux niveaux de citation distincts : celui-ci
+    pour awk, le `shlex.quote` du programme complet pour le shell.
+    """
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def uisp_uri_host(value: str) -> str:
+    """Hôte du contrôleur dans une valeur `unms.uri` (ou "" si illisible).
+
+    Accepte aussi bien la ligne complète (`unms.uri=wss://h:443+jeton+opt`) que
+    l'URI seule. On extrait UNIQUEMENT l'hôte : c'est la seule partie stable de
+    la clé, puisque le contrôleur en réécrit le jeton après adoption (cf. point 2
+    ci-dessus). Comparer l'hôte répond exactement à la bonne question — « cet
+    équipement est-il déjà provisionné pour NOTRE contrôleur ? » — sans jamais
+    comparer le jeton, ce qui serait faux par construction.
+    """
+    raw = (value or "").strip()
+    if raw.startswith("unms.uri="):
+        raw = raw[len("unms.uri="):]
+    _, sep, rest = raw.partition("://")
+    if not sep:
+        return ""
+    # L'hôte s'arrête au port, au séparateur de jeton ou à un chemin.
+    host = re.split(r"[:+/]", rest, maxsplit=1)[0]
+    return host.strip().lower()
+
+
+def _read_uisp_state(transport: paramiko.Transport) -> tuple[str, str]:
+    """(conn_status, uri) courants de l'équipement — "" si illisible.
+
+    ⚠️ ``conn_status`` est un drapeau de SESSION, pas un état d'enrôlement : le
+    démon se déconnecte après 30 s d'inactivité puis se reconnecte, et met une
+    minute à rétablir après un redémarrage. Il vaut donc "0" par intermittence
+    sur un équipement parfaitement enrôlé (échantillonné sur un M5 le
+    2026-07-28). Ne JAMAIS en déduire « pas enrôlé » — c'est ``uri`` (via
+    :func:`uisp_uri_host`) qui porte cette information de façon stable.
+    """
+    try:
+        _code, out = _exec_capture(
+            transport,
+            f"cat {_UISP_CONN_STATUS} 2>/dev/null; echo '|'; "
+            "grep -h '^unms.uri=' /tmp/system.cfg 2>/dev/null",
+            10,
+        )
+    except Exception:  # noqa: BLE001 — état inconnu, l'appelant agira
+        return "", ""
+    status, _, uri = (out or "").partition("|")
+    return status.strip(), uri.strip()
+
+
+def _set_uisp_key_sync(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    key_uri: str,
+    ui_url: str,
+    expected_fingerprint: str | None,
+    fallback_passwords: list[str] | None,
+    expected_mac: str | None = None,
+    force: bool = False,
+) -> tuple[bool, str, str | None, str | None]:
+    """Pose la clé UISP sur un CPE airOS et attend son adoption par le contrôleur.
+
+    **Idempotence — sur l'HÔTE configuré, jamais sur le drapeau de session.** Un
+    équipement dont `unms.uri` désigne déjà notre contrôleur est laissé
+    STRICTEMENT intact : sa clé lui appartient (le contrôleur l'a réécrite après
+    adoption), la réécrire le dé-enrôlerait.
+
+    ⚠️ C'était le piège : la première version se fiait à `unms-conn-status`, qui
+    est un drapeau de SESSION — il retombe à "0" entre deux reconnexions du
+    démon. Un second clic tombant sur un "0" transitoire écrasait donc la clé
+    propre d'un équipement sain (reproduit sur un M5 le 2026-07-28). L'hôte, lui,
+    ne bouge jamais.
+
+    ``force=True`` écrit malgré tout. Nécessaire pour le cas « clé présente vers
+    le bon contrôleur mais jamais adoptée » (clé orpheline d'un équipement
+    supprimé de UISP) — que l'idempotence ci-dessus laisserait sinon coincé pour
+    toujours. À réserver à une action explicite de l'opérateur : sur un
+    équipement sain, forcer le dé-enrôle.
+
+    Retourne ``(ok, message, observed_fp, used_password)``. ``ok`` reflète
+    l'ADOPTION constatée sur l'équipement, pas seulement l'écriture du fichier :
+    poser une clé sans vérifier ne prouverait rien.
+    """
+    if not key_uri:
+        return False, "Aucune clé UISP configurée (UISP_DEVICE_KEY).", None, None
+
+    try:
+        transport, observed, used_pw = _open_transport(
+            host, port, username, password, expected_fingerprint,
+            fallback_passwords=fallback_passwords,
+            expected_mac=expected_mac,
+        )
+    except _FingerprintMismatchError as exc:
+        logger.error("uisp_key host-key mismatch %s — %s", host, exc)
+        return False, str(exc), None, None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("uisp_key SSH connect failed %s — %s", host, exc)
+        return False, str(exc), None, None
+
+    try:
+        # L'identité d'abord : enrôler un abonné à la place d'un autre inscrirait
+        # le mauvais client dans l'inventaire — même risque qu'une coupure.
+        refusal = identity_refusal(transport, expected_mac)
+        if refusal is not None:
+            logger.warning("Enrôlement UISP refusé sur %s — %s", host, refusal)
+            return False, refusal, observed, used_pw
+
+        status_before, uri_before = _read_uisp_state(transport)
+        target_host = uisp_uri_host(key_uri)
+        current_host = uisp_uri_host(uri_before)
+        if not force and current_host and current_host == target_host:
+            session = (
+                "session ouverte" if status_before == "1"
+                else "session momentanément fermée — normal, le démon se "
+                     "reconnecte en boucle"
+            )
+            return (
+                True,
+                f"{UISP_ALREADY_PROVISIONED_PREFIX} pour ce contrôleur "
+                f"({session}) — aucune modification apportée. Si l'équipement "
+                f"reste absent de UISP, sa clé est orpheline : relancer en mode "
+                f"« forcer ».",
+                observed, used_pw,
+            )
+
+        lines = _uisp_key_lines(key_uri, ui_url, _airos_major(transport))
+
+        # Programme awk : purge des `unms.*` puis réinsertion à leur place triée
+        # (juste avant le bloc `update.`). Le bloc END rattrape le cas d'un
+        # firmware sans clé `update.*` — sans lui, les lignes ne seraient jamais
+        # écrites et on flasherait une config SANS clé, en croyant l'avoir posée.
+        emit = "; ".join(f"print {_awk_literal(line)}" for line in lines)
+        program = (
+            "/^unms\\./ { next } "
+            f"/^update\\./ && !d {{ {emit}; d=1 }} "
+            "{ print } "
+            f"END {{ if (!d) {{ {emit} }} }}"
+        )
+        canon = "/tmp/.uisp_canon.cfg"
+        src, dst = _UISP_CFG_FILES
+
+        # Compte AVANT/APRÈS dans le même appel : une config tronquée par un awk
+        # qui a mal tourné (disque plein, fichier verrouillé) ne doit jamais
+        # partir en flash. On vérifie l'arithmétique exacte plutôt qu'un simple
+        # "non vide".
+        code, out = _exec_capture(
+            transport,
+            f"awk {shlex.quote(program)} {src} > {canon} && "
+            f"printf '%s %s %s' \"$(grep -c . {src})\" "
+            f"\"$(grep -c '^unms\\.' {src})\" \"$(grep -c . {canon})\"",
+            30,
+        )
+        parts = (out or "").split()
+        if code != 0 or len(parts) != 3:
+            return (
+                False,
+                f"Construction de la configuration impossible sur le CPE ({out or code}).",
+                observed, used_pw,
+            )
+        before, unms_before, after = (int(p) for p in parts)
+        expected = before - unms_before + len(lines)
+        if after != expected or after < 50:
+            _exec_capture(transport, f"rm -f {canon}", 10)
+            return (
+                False,
+                f"Configuration générée incohérente ({after} lignes au lieu de "
+                f"{expected}) — rien n'a été écrit sur l'équipement.",
+                observed, used_pw,
+            )
+
+        # Pose sur les DEUX fichiers (cf. point 1), par renommage — /tmp est un
+        # tmpfs, donc le remplacement est atomique et ne laisse jamais une config
+        # à moitié écrite si la session tombe.
+        code, out = _exec_capture(
+            transport,
+            f"cp {canon} {src}.new && mv {src}.new {src} && "
+            f"cp {canon} {dst}.new && mv {dst}.new {dst} && "
+            f"rm -f {canon} && diff -q {src} {dst} >/dev/null && "
+            "cfgmtd -w -p /etc/ && killall -SIGHUP udapi-bridge",
+            60,
+        )
+        if code != 0:
+            return (
+                False,
+                f"Écriture de la clé UISP échouée sur l'équipement ({out or code}).",
+                observed, used_pw,
+            )
+
+        # L'adoption est asynchrone (poignée de main WebSocket avec le
+        # contrôleur) : on la CONSTATE plutôt que de la supposer.
+        waited = 0
+        status = ""
+        while waited < _UISP_ADOPT_TIMEOUT_S:
+            time.sleep(_UISP_ADOPT_POLL_S)
+            waited += _UISP_ADOPT_POLL_S
+            status, uri_after = _read_uisp_state(transport)
+            if status == "1":
+                # Le contrôleur réécrit la clé avec une valeur propre à
+                # l'équipement : le constater confirme l'adoption côté serveur,
+                # pas seulement l'ouverture du socket.
+                rewritten = bool(uri_after) and uri_after != f"unms.uri={key_uri}"
+                detail = (
+                    " Le contrôleur a émis une clé propre à l'équipement."
+                    if rewritten else ""
+                )
+                logger.warning(
+                    "UISP ENROLL — %s adopté par le contrôleur en %ds%s",
+                    host, waited, " (clé réécrite)" if rewritten else "",
+                )
+                return (
+                    True,
+                    f"Enrôlé : le contrôleur a adopté l'équipement en {waited}s.{detail}",
+                    observed, used_pw,
+                )
+
+        # Pas adopté : la cause utile est dans le journal du démon, dont
+        # l'emplacement dépend de la famille (fichier dédié sur airOS 8, syslog
+        # sur airOS 6). On rend les deux à l'opérateur plutôt qu'un « échec » nu.
+        _code, tail = _exec_capture(
+            transport,
+            "tail -6 /var/log/unms.log 2>/dev/null || "
+            "logread 2>/dev/null | grep -i unms | tail -6",
+            15,
+        )
+        hint = ""
+        if "established" in (tail or "") and "unmsSetup" not in (tail or ""):
+            # Signature d'une clé que le contrôleur n'honore pas : le transport
+            # marche (socket ouvert), mais l'adoption ne vient jamais. Ne pas la
+            # lire comme un problème réseau.
+            hint = (
+                " Le CPE atteint le contrôleur mais n'est pas adopté : la clé "
+                "d'enrôlement n'est vraisemblablement plus honorée. Une clé "
+                "cesse d'être acceptée avec le temps (constaté le 2026-07-28 : "
+                "trois adoptions, puis refus une heure plus tard sur un CPE "
+                "pourtant absent de UISP et correctement configuré). La "
+                "régénérer dans UISP → Paramètres → Équipements et mettre à "
+                "jour UISP_DEVICE_KEY. Indice à chercher dans le journal de "
+                "l'équipement : 'Using deprecated option "
+                "allowSelfSignedCertificate' trahit une clé ancienne."
+            )
+        return (
+            False,
+            f"Clé posée mais équipement non adopté après {_UISP_ADOPT_TIMEOUT_S}s "
+            f"(unms-conn-status={status or '?'}).{hint} Journal : {tail or '(vide)'}",
+            observed, used_pw,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("uisp_key exec failed %s — %s", host, exc)
+        return False, str(exc), observed, used_pw
+    finally:
+        transport.close()
+
+
+async def set_uisp_key(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    key_uri: str,
+    ui_url: str = "",
+    expected_fingerprint: str | None = None,
+    fallback_passwords: list[str] | None = None,
+    expected_mac: str | None = None,
+    force: bool = False,
+) -> tuple[bool, str, str | None, str | None]:
+    """Enrôle un CPE airOS dans UISP en posant sa clé de connexion par SSH.
+
+    Sans reboot ni coupure pour l'abonné. Ne touche pas à un équipement déjà
+    provisionné pour ce contrôleur, sauf ``force=True``. Retourne ``(ok, message,
+    observed_fp, used_password)`` — ``ok`` signifie que le contrôleur a ADOPTÉ
+    l'équipement, constaté sur l'équipement lui-même. Voir
+    :func:`_set_uisp_key_sync`.
+    """
+    return await asyncio.to_thread(
+        _set_uisp_key_sync, host, port, username, password,
+        key_uri, ui_url, expected_fingerprint, fallback_passwords, expected_mac,
+        force,
     )

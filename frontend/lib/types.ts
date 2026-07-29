@@ -931,11 +931,42 @@ export interface RadioNotInUispRow {
   ap_name: string | null
   status: string
   last_discovered_at: string | null
+  // Dernier enrôlement RÉUSSI qu'on a poussé. Renseigné alors que la ligne est
+  // encore là = adopté par le contrôleur mais pas encore repris par le roster
+  // (sync quotidien). Sans cette date, ce cas se confond avec « jamais tenté ».
+  uisp_enrolled_at: string | null
+  // Faux quand le LR n'a ni SSH ni IP : rien à joindre, bouton grisé.
+  enrollable: boolean
 }
 export interface AccessDiagnosticsResponse {
   ssh_refused: SshRefusedRow[]
   radio_not_in_uisp: RadioNotInUispRow[]
   counts: { ssh_refused: number; radio_not_in_uisp: number }
+  // Faux si UISP_DEVICE_KEY n'est pas configurée côté serveur.
+  enrollment_available: boolean
+}
+
+// Enrôlement UISP : pose de la clé du contrôleur sur un CPE par SSH. `ok`
+// signifie ADOPTÉ par le contrôleur (constaté sur l'équipement), pas seulement
+// « clé écrite ».
+export interface UispEnrollResult {
+  ok: boolean
+  message: string
+  uisp_enrolled_at: string | null
+}
+export interface UispEnrollBulkResult {
+  attempted: number
+  enrolled: number
+  // Déjà provisionnés pour ce contrôleur : NON modifiés. Compté à part —
+  // sinon un lot de clés orphelines ressemblerait à un succès complet alors que
+  // rien n'a été régularisé.
+  skipped: number
+  failed: number
+  results: {
+    id: number; name: string; mac: string | null
+    ok: boolean; skipped: boolean; message: string
+  }[]
+  message: string
 }
 
 // ─── Historique des courbes de la fiche équipement (lr_metric_samples) ──────

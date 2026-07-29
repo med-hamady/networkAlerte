@@ -30,7 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.device import Lr
-from app.services import ssh_service
+from app.services import ssh_service, uisp_enrollment_service
 
 
 def _iso(dt: datetime.datetime | None) -> str | None:
@@ -100,6 +100,14 @@ async def get_radio_only_not_in_uisp(session: AsyncSession) -> list[dict[str, An
             "ap_name": lr.rocket.name if lr.rocket else None,
             "status": lr.status,
             "last_discovered_at": _iso(lr.last_discovered_at),
+            # Un enrôlement déjà poussé qui laisse la ligne ici veut dire que le
+            # contrôleur a adopté l'équipement mais que le roster ne l'a pas
+            # encore repris (sync quotidien) — ou plus grave, qu'il l'a perdu.
+            # Sans cette date, les deux cas se confondent avec « jamais tenté ».
+            "uisp_enrolled_at": _iso(lr.uisp_enrolled_at),
+            # Un LR sans SSH ou sans IP n'est pas enrôlable : l'UI grise le
+            # bouton plutôt que de proposer une action qui échouera.
+            "enrollable": bool(lr.ssh_username and lr.ssh_password and lr.ip_address),
         }
         for lr in rows
     ]
@@ -118,4 +126,7 @@ async def get_access_diagnostics(session: AsyncSession) -> dict[str, Any]:
             "ssh_refused": len(ssh_refused),
             "radio_not_in_uisp": len(radio_not_in_uisp),
         },
+        # Sans clé de contrôleur configurée, l'enrôlement est impossible : l'UI
+        # doit l'expliquer plutôt que d'offrir un bouton qui renverra 409.
+        "enrollment_available": uisp_enrollment_service.enrollment_available(),
     }

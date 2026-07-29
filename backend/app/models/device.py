@@ -341,6 +341,17 @@ class Lr(Device):
         DateTime(timezone=True), nullable=True,
     )
 
+    # Dernier enrôlement UISP RÉUSSI poussé par nous (ssh_service.set_uisp_key) :
+    # le contrôleur avait bien adopté l'équipement à cette date. Distingue les
+    # trois états que `uisp_synced_at` seul confond sur la page Diagnostics
+    # d'accès : jamais tenté / enrôlé et en attente du prochain sync quotidien /
+    # enrôlé mais toujours absent du roster (adoption perdue, à investiguer).
+    # N'est PAS la preuve que le CPE est dans UISP aujourd'hui — seul
+    # `uisp_synced_at`, écrit par le sync, l'atteste.
+    uisp_enrolled_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
     __mapper_args__ = {"polymorphic_identity": "lr", "polymorphic_load": "selectin"}
 
 

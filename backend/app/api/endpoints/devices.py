@@ -31,6 +31,7 @@ from app.services import (
     lr_plan_service,
     ssh_service,
     threshold_service,
+    uisp_enrollment_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -712,6 +713,60 @@ async def get_lr_plan(
         download_mbps=plan.get("download_mbps"),
         upload_mbps=plan.get("upload_mbps"),
         rules=plan.get("rules", []),
+    )
+
+
+class UispEnrollResult(BaseModel):
+    ok: bool
+    message: str
+    uisp_enrolled_at: datetime.datetime | None
+
+
+class UispEnrollRequest(BaseModel):
+    # Écrire même si l'équipement pointe déjà sur ce contrôleur. Nécessaire pour
+    # une clé orpheline (équipement supprimé de UISP) ; sur un équipement sain,
+    # forcer le DÉ-enrôle — d'où le défaut à False.
+    force: bool = False
+
+
+@router.post("/{device_id}/enroll-uisp", response_model=UispEnrollResult)
+async def enroll_uisp(
+    device_id: int,
+    body: UispEnrollRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> UispEnrollResult:
+    """Enrôle un LR dans UISP en posant la clé du contrôleur par SSH.
+
+    Rend visible dans l'inventaire un abonné actif que UISP ne connaît pas (donc
+    potentiellement non facturé). Sans reboot ni coupure : les clés `unms.*` sont
+    écrites dans la config airOS, flashées, puis appliquées par un SIGHUP au
+    démon. ``ok`` signifie que le contrôleur a **adopté** l'équipement — constaté
+    sur l'équipement, pas supposé.
+
+    Sans effet sur un LR déjà provisionné pour ce contrôleur : sa clé lui
+    appartient désormais (le contrôleur l'a réécrite), la réappliquer le
+    dé-enrôlerait. ``force`` passe outre — à réserver au cas de la clé orpheline
+    (équipement supprimé de UISP, qui se connecte sans jamais être adopté).
+    """
+    device = await device_service.get_device(db, device_id)
+    if not isinstance(device, Lr):
+        raise HTTPException(
+            status_code=400,
+            detail="L'enrôlement UISP n'est disponible que sur les LR (équipement client).",
+        )
+    if not uisp_enrollment_service.enrollment_available():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Aucune clé UISP configurée. Renseigner UISP_DEVICE_KEY dans le "
+                ".env (UISP → Paramètres → Équipements → clé UISP) puis relancer."
+            ),
+        )
+    ok, message = await uisp_enrollment_service.enroll_lr(
+        db, device, force=bool(body and body.force),
+    )
+    return UispEnrollResult(
+        ok=ok, message=message, uisp_enrolled_at=device.uisp_enrolled_at,
     )
 
 

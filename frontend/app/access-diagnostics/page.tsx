@@ -2,7 +2,7 @@
 
 import React from 'react'
 import useSWR from 'swr'
-import { endpoints, fetcher } from '@/lib/api'
+import { endpoints, enrollUisp, enrollUispBulk, fetcher } from '@/lib/api'
 import type {
   AccessDiagnosticsResponse,
   RadioNotInUispRow,
@@ -41,7 +41,7 @@ function formatTs(ts: string | null): string {
 }
 
 export default function AccessDiagnosticsPage() {
-  const { data, isLoading } = useSWR<AccessDiagnosticsResponse>(
+  const { data, isLoading, mutate } = useSWR<AccessDiagnosticsResponse>(
     endpoints.accessDiagnostics,
     fetcher,
     { refreshInterval: 60_000, keepPreviousData: true },
@@ -49,6 +49,79 @@ export default function AccessDiagnosticsPage() {
 
   const sshRefused = data?.ssh_refused ?? []
   const radioNotInUisp = data?.radio_not_in_uisp ?? []
+  const canEnroll = data?.enrollment_available ?? false
+
+  // Enrôlement en cours : id du LR visé, ou 'bulk' pour le lot. Un seul à la
+  // fois — chaque CPE prend jusqu'à 45 s (attente de l'adoption par le
+  // contrôleur), et lancer un lot pendant une unité rendrait les deux illisibles.
+  const [busy, setBusy] = React.useState<number | 'bulk' | null>(null)
+  const [report, setReport] = React.useState<{ ok: boolean; text: string } | null>(null)
+  // Écrase la clé même si l'équipement pointe déjà sur notre contrôleur. Sert au
+  // cas de la clé ORPHELINE (équipement supprimé de UISP : il se connecte mais
+  // n'est jamais adopté). ⚠️ Sur un équipement sain, forcer lui fait perdre la
+  // clé propre que le contrôleur lui avait attribuée — d'où l'interrupteur
+  // séparé, décoché par défaut, plutôt qu'un comportement implicite.
+  const [force, setForce] = React.useState(false)
+
+  async function runEnroll(row: RadioNotInUispRow) {
+    setBusy(row.id)
+    setReport(null)
+    try {
+      const res = await enrollUisp(row.id, force)
+      setReport({ ok: res.ok, text: res.message })
+    } catch (e) {
+      setReport({ ok: false, text: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setBusy(null)
+      mutate()
+    }
+  }
+
+  async function runEnrollAll() {
+    const targets = radioNotInUisp.filter((r) => r.enrollable)
+    if (targets.length === 0) return
+    if (
+      !window.confirm(
+        `Poser la clé UISP sur ${targets.length} équipement(s) ?\n\n` +
+          `Chaque CPE est joint en SSH et l'opération attend que le contrôleur ` +
+          `l'adopte — comptez jusqu'à 45 s par équipement. Aucun redémarrage, ` +
+          `aucune coupure pour les abonnés.` +
+          (force
+            ? `\n\n⚠ MODE FORCER : la clé sera écrasée même sur les équipements ` +
+              `déjà provisionnés pour ce contrôleur, ce qui leur fait PERDRE la ` +
+              `clé propre attribuée par UISP. À n'utiliser que pour des clés ` +
+              `orphelines.`
+            : ''),
+      )
+    ) return
+    setBusy('bulk')
+    setReport(null)
+    try {
+      const res = await enrollUispBulk(targets.map((r) => r.id), force)
+      const failures = res.results.filter((r) => !r.ok)
+      setReport({
+        // Un lot qui n'a RIEN enrôlé n'est pas un succès, même sans échec : ce
+        // sont des équipements déjà provisionnés dont la clé est probablement
+        // orpheline (à reprendre en mode « forcer »).
+        ok: res.failed === 0 && res.enrolled > 0,
+        text:
+          res.message +
+          (failures.length
+            ? ` Échecs : ${failures.slice(0, 5).map((f) => f.name).join(', ')}` +
+              (failures.length > 5 ? ` et ${failures.length - 5} autre(s).` : '.')
+            : '') +
+          (res.skipped > 0 && res.enrolled === 0
+            ? ` Aucun n'a été modifié : leur clé pointe déjà sur ce contrôleur sans` +
+              ` qu'ils soient adoptés — cocher « Forcer » pour la réécrire.`
+            : ''),
+      })
+    } catch (e) {
+      setReport({ ok: false, text: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setBusy(null)
+      mutate()
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -105,15 +178,72 @@ export default function AccessDiagnosticsPage() {
       {/* ── Section 2 : découverts par radio, absents de UISP ──────────────── */}
       <section className="bg-white rounded-xl border border-amber-200 overflow-hidden">
         <header className="px-5 py-3 bg-amber-50 border-b border-amber-200">
-          <h2 className="text-sm font-bold text-amber-900">
-            Découverts par radio mais absents de UISP — {radioNotInUisp.length}
-          </h2>
-          <p className="text-xs text-amber-700 mt-0.5">
-            Ces clients sont physiquement connectés à une antenne (vus par la découverte radio),
-            mais leur MAC n'apparaît dans aucune station renvoyée par UISP : ils ne sont pas
-            provisionnés dans l'inventaire — donc potentiellement non facturés. À régulariser
-            côté UISP.
-          </p>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-sm font-bold text-amber-900">
+                Découverts par radio mais absents de UISP — {radioNotInUisp.length}
+              </h2>
+              <p className="text-xs text-amber-700 mt-0.5">
+                Ces clients sont physiquement connectés à une antenne (vus par la découverte
+                radio), mais leur MAC n'apparaît dans aucune station renvoyée par UISP : ils ne
+                sont pas provisionnés dans l'inventaire — donc potentiellement non facturés.
+                L'enrôlement pose la clé du contrôleur sur l'équipement par SSH, sans
+                redémarrage ni coupure pour l'abonné.
+              </p>
+            </div>
+            {radioNotInUisp.length > 0 && (
+              <div className="shrink-0 flex flex-col items-end gap-1.5">
+              <button
+                onClick={runEnrollAll}
+                disabled={!canEnroll || busy !== null}
+                title={
+                  canEnroll
+                    ? 'Poser la clé UISP sur tous les équipements joignables de cette liste'
+                    : "Aucune clé UISP configurée côté serveur (UISP_DEVICE_KEY)"
+                }
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold border
+                           bg-amber-600 text-white border-amber-700 hover:bg-amber-700
+                           disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {busy === 'bulk' ? 'Enrôlement en cours…' : 'Tout enrôler dans UISP'}
+              </button>
+              <label
+                className="flex items-center gap-1.5 text-[11px] text-amber-800 cursor-pointer"
+                title="Écrase la clé même sur un équipement déjà provisionné pour ce
+                       contrôleur. Sur un équipement sain, il perd la clé propre que UISP
+                       lui a attribuée — à réserver aux clés orphelines."
+              >
+                <input
+                  type="checkbox"
+                  checked={force}
+                  onChange={(e) => setForce(e.target.checked)}
+                  disabled={busy !== null}
+                  className="accent-amber-600"
+                />
+                Forcer (écraser une clé existante)
+              </label>
+              </div>
+            )}
+          </div>
+          {!canEnroll && radioNotInUisp.length > 0 && (
+            <p className="text-[11px] text-amber-800 mt-1.5 bg-amber-100 border border-amber-300
+                          rounded px-2 py-1">
+              Enrôlement indisponible : aucune clé de contrôleur configurée. Renseigner
+              <code className="mx-1 font-mono">UISP_DEVICE_KEY</code>
+              (UISP → Paramètres → Équipements → clé UISP) dans le <code>.env</code> du serveur.
+            </p>
+          )}
+          {report && (
+            <p
+              className={`text-[11px] mt-1.5 rounded px-2 py-1 border ${
+                report.ok
+                  ? 'bg-green-50 text-green-800 border-green-200'
+                  : 'bg-red-50 text-red-700 border-red-200'
+              }`}
+            >
+              {report.text}
+            </p>
+          )}
         </header>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -125,11 +255,20 @@ export default function AccessDiagnosticsPage() {
                 <Th>Site / AP</Th>
                 <Th>État</Th>
                 <Th>Vu par radio</Th>
+                <Th>Enrôlement</Th>
               </tr>
             </thead>
             <tbody className="divide-y divide-blue-50">
               {radioNotInUisp.map((r) => (
-                <RadioRow key={r.id} row={r} />
+                <RadioRow
+                  key={r.id}
+                  row={r}
+                  canEnroll={canEnroll}
+                  force={force}
+                  busy={busy === r.id}
+                  disabled={busy !== null}
+                  onEnroll={() => runEnroll(r)}
+                />
               ))}
             </tbody>
           </table>
@@ -177,7 +316,16 @@ function SshRow({ row }: { row: SshRefusedRow }) {
   )
 }
 
-function RadioRow({ row }: { row: RadioNotInUispRow }) {
+function RadioRow({
+  row, canEnroll, force, busy, disabled, onEnroll,
+}: {
+  row: RadioNotInUispRow
+  canEnroll: boolean
+  force: boolean
+  busy: boolean
+  disabled: boolean
+  onEnroll: () => void
+}) {
   const up = row.status === 'up'
   return (
     <tr className="hover:bg-blue-50/40">
@@ -194,6 +342,36 @@ function RadioRow({ row }: { row: RadioNotInUispRow }) {
         </span>
       </Td>
       <Td className="whitespace-nowrap text-blue-500 tabular-nums">{formatTs(row.last_discovered_at)}</Td>
+      <Td>
+        {row.uisp_enrolled_at && !force ? (
+          // Enrôlé mais toujours dans cette liste : le contrôleur l'a adopté,
+          // le roster ne l'a pas encore repris (sync quotidien). C'est une
+          // attente normale, pas un échec — d'où le ton neutre. Le mode
+          // « forcer » ré-affiche le bouton : si la ligne persiste bien après le
+          // sync, c'est que l'adoption a été perdue et qu'il faut réécrire.
+          <span className="text-[11px] text-green-700">
+            ✓ Clé posée le {formatTs(row.uisp_enrolled_at)}
+            <span className="block text-blue-400">en attente du prochain sync UISP</span>
+          </span>
+        ) : (
+          <button
+            onClick={onEnroll}
+            disabled={!canEnroll || !row.enrollable || disabled}
+            title={
+              !canEnroll
+                ? 'Aucune clé UISP configurée côté serveur (UISP_DEVICE_KEY)'
+                : !row.enrollable
+                  ? "Sans identifiants SSH ni adresse IP, rien à joindre sur cet équipement"
+                  : "Poser la clé du contrôleur sur cet équipement (jusqu'à 45 s)"
+            }
+            className="px-2.5 py-1 rounded-md text-[11px] font-semibold border
+                       bg-white text-amber-800 border-amber-300 hover:bg-amber-50
+                       disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {busy ? 'Enrôlement…' : force ? 'Forcer' : 'Enrôler'}
+          </button>
+        )}
+      </Td>
     </tr>
   )
 }

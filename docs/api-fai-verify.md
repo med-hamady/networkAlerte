@@ -1,9 +1,16 @@
 # API — Vérification d'un LR par MAC
 
 Contrôle pré-vol d'un équipement client (LR) à partir de son adresse MAC.
-Lecture seule : l'API ne modifie rien sur l'équipement, elle renvoie un verdict.
+L'API ne modifie rien sur l'équipement, elle renvoie un verdict.
 
 Destinée à un système tiers qui transmet une MAC et lit le résultat.
+
+> **Contrôle en temps réel** : au moment de l'appel, l'API se connecte
+> réellement à l'équipement (SSH) pour vérifier son état — elle ne renvoie pas
+> une valeur mise en cache. Deux conséquences :
+> - un équipement **éteint ou injoignable** au moment de l'appel ressort en `KO` ;
+> - l'appel prend **quelques secondes** (le temps d'établir la connexion), un peu
+>   plus sur un lien radio de mauvaise qualité — prévoir un timeout ≥ 30 s.
 
 ---
 

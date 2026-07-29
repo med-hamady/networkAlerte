@@ -1,4 +1,4 @@
-"""FAI — contrôle pré-vol d'un LR par MAC (lecture seule) pour un système tiers.
+"""FAI — contrôle pré-vol LIVE d'un LR par MAC (SSH temps réel) pour un tiers.
 
 Route séparée du reste de `/fai` (block / unblock / status) pour une raison
 d'**autorisation** : elle est appelée par un consommateur DIFFÉRENT du système de
@@ -11,8 +11,13 @@ router est additive et ne peut pas être surchargée par route, donc la seule fa
 de donner à `/fai/verify` une auth propre est de la sortir dans son propre router
 (monté sous le même préfixe `/fai` dans `api/router.py`).
 
-Tout est lu en base (colonnes rafraîchies par les sondes) — cette route ne touche
-jamais au LR.
+⚠️ **Contrôle LIVE** : au moment de l'appel, on ouvre une **vraie session SSH** sur
+le LR avec le mot de passe standard attendu et on lit son mode réseau — on NE lit
+PAS les colonnes `ssh_status` / `topology_mode` remplies par les sondes. La seule
+lecture en base est la résolution MAC → équipement (IP, nom, creds) : sans elle on
+ne sait pas *quel* équipement ni *où* le joindre. Conséquence assumée : un LR
+éteint / SSH injoignable au moment de l'appel ressort en `KO` (ssh_active=false),
+et l'appel prend le temps d'une poignée de main SSH (quelques secondes).
 """
 
 from __future__ import annotations
@@ -36,12 +41,11 @@ class FaiVerifyChecks(BaseModel):
 
     # Un LR existe en base pour cette MAC.
     exists: bool
-    # `ssh_status == "ok"` : la dernière sonde a ouvert une session SSH.
+    # La poignée de main SSH a abouti au moment de l'appel (daemon SSH répond).
     ssh_active: bool
-    # SSH actif ET le mot de passe stocké sur la fiche est le standard attendu
-    # (donc c'est bien celui qui ouvre la session).
+    # Session SSH ouverte EN DIRECT avec le mot de passe standard attendu.
     password_valid: bool
-    # `topology_mode == "router"` : le LR est en mode routeur.
+    # `netmode == "router"` lu en direct dans system.cfg sur la session.
     router_mode: bool
 
 
@@ -54,21 +58,20 @@ class FaiVerifyResult(BaseModel):
     # Résumé lisible des contrôles en échec ; None quand tout est conforme.
     reason: str | None
     checks: FaiVerifyChecks
-    # Valeurs brutes utiles pour comprendre un KO (contexte, jamais None si le LR
-    # existe) : statut SSH de la dernière sonde et mode topologique détecté.
+    # Valeurs brutes issues du test LIVE : catégorie SSH constatée et mode réseau lu.
     ssh_status: str | None
     topology_mode: str | None
-    # Fraîcheur : quand la dernière sonde SSH a écrit `ssh_status`.
+    # Instant du test live (l'appel EST la mesure — pas une valeur de sonde stockée).
     ssh_checked_at: datetime.datetime | None
 
 
-# Messages de KO par statut SSH (lus de `lrs.ssh_status`, rempli par la sonde).
-_SSH_STATUS_REASONS: dict[str | None, str] = {
-    ssh_service.SSH_STATUS_AUTH_FAILED: "SSH : authentification refusée (mot de passe rejeté)",
+# Message de KO quand le SSH n'aboutit pas / le mot de passe est rejeté, par
+# catégorie retournée par `ssh_service.verify_lr_live`.
+_SSH_STATUS_REASONS: dict[str, str] = {
+    ssh_service.SSH_STATUS_AUTH_FAILED: "SSH : mot de passe standard rejeté (≠ attendu)",
     ssh_service.SSH_STATUS_DISABLED: "SSH désactivé sur le LR (connexion refusée)",
     ssh_service.SSH_STATUS_HOST_KEY_MISMATCH: "SSH : clé d'hôte incompatible",
-    ssh_service.SSH_STATUS_UNREACHABLE: "LR injoignable en SSH (hors ligne / muet)",
-    None: "SSH jamais testé (LR hors ligne — aucune sonde)",
+    ssh_service.SSH_STATUS_UNREACHABLE: "LR injoignable en SSH (hors ligne)",
 }
 
 
@@ -81,23 +84,25 @@ async def fai_verify(
     ),
     db: AsyncSession = Depends(get_db),
 ) -> FaiVerifyResult:
-    """Contrôle pré-vol d'un LR par MAC, pour un système tiers (lecture seule).
+    """Contrôle pré-vol LIVE d'un LR par MAC, pour un système tiers.
 
-    Vérifie, sans toucher au LR (tout est lu en base, rafraîchi par les sondes) :
+    Teste l'équipement **en direct par SSH** au moment de l'appel :
 
-    1. le LR **existe** (sinon `KO`, `name` = None) ;
-    2. **SSH actif** (`ssh_status == "ok"`) ;
-    3. **mot de passe standard** : la fiche porte le mot de passe attendu
-       (`fai_expected_lr_ssh_password`) ET la sonde a authentifié — l'auto-repair
-       promeut le mot de passe qui marche, donc les deux ensemble prouvent qu'il
-       ouvre bien la session ;
-    4. **mode routeur** (`topology_mode == "router"`).
+    1. le LR **existe** en base (résolution MAC → équipement ; sinon `KO`,
+       `name` = None) ;
+    2. **SSH actif** : la poignée de main SSH aboutit maintenant ;
+    3. **mot de passe standard** : la session est ouverte avec le mot de passe
+       attendu (`fai_expected_lr_ssh_password`) — succès = mot de passe valide ;
+    4. **mode routeur** : `netmode` lu en direct dans `system.cfg` sur la session.
 
-    Tout conforme → `ok=True`, `status="OK"`, `name` renseigné. Sinon `status="KO"`
-    et `reason` liste les contrôles en échec. `checks` porte le détail par contrôle.
+    Tout conforme → `ok=True`, `status="OK"`. Sinon `status="KO"` et `reason`
+    liste les contrôles en échec. `checks` porte le détail par contrôle.
 
     - 400 : MAC mal formée.
     - 200 « KO » (pas 404) : aucun LR pour cette MAC — l'existence EST un contrôle.
+
+    Un LR éteint / SSH injoignable ressort en `KO` (ssh_active=false) : un test
+    live ne peut pas se prononcer sur un équipement qu'il ne joint pas.
     """
     try:
         lr = await client_block_service.find_lr_by_mac(db, mac)
@@ -120,18 +125,46 @@ async def fai_verify(
         )
 
     settings = get_settings()
-    ssh_active = lr.ssh_status == ssh_service.SSH_STATUS_OK
-    password_valid = ssh_active and lr.ssh_password == settings.fai_expected_lr_ssh_password
-    router_mode = lr.topology_mode == "router"
+    checked_at = datetime.datetime.now(datetime.UTC)
+
+    if not lr.ip_address:
+        # Pas d'IP → aucune cible SSH : injoignable, on ne peut rien tester live.
+        return FaiVerifyResult(
+            ok=False,
+            status="KO",
+            mac=lr.mac_address,
+            name=lr.name,
+            reason="LR sans adresse IP — injoignable en SSH",
+            checks=FaiVerifyChecks(
+                exists=True, ssh_active=False, password_valid=False, router_mode=False
+            ),
+            ssh_status=ssh_service.SSH_STATUS_UNREACHABLE,
+            topology_mode=None,
+            ssh_checked_at=checked_at,
+        )
+
+    ssh_active, password_valid, netmode, ssh_status, _message = (
+        await ssh_service.verify_lr_live(
+            host=lr.ip_address,
+            port=lr.ssh_port or 22,
+            username=lr.ssh_username or "ubnt",
+            password=settings.fai_expected_lr_ssh_password,
+            expected_fingerprint=lr.ssh_host_fingerprint,
+            expected_mac=lr.mac_address,
+        )
+    )
+    router_mode = netmode == "router"
 
     reasons: list[str] = []
     if not ssh_active:
-        reasons.append(_SSH_STATUS_REASONS.get(lr.ssh_status, "SSH inactif"))
+        reasons.append(_SSH_STATUS_REASONS.get(ssh_status, "SSH inactif"))
     elif not password_valid:
-        # SSH ouvre bien, mais avec un autre mot de passe que le standard attendu.
-        reasons.append("Le mot de passe SSH n'est pas le mot de passe standard attendu")
+        # SSH répond mais l'auth avec le mot de passe standard a échoué (ou host key).
+        reasons.append(_SSH_STATUS_REASONS.get(ssh_status, "Mot de passe SSH invalide"))
     if not router_mode:
-        reasons.append(f"Le LR n'est pas en mode routeur (mode actuel : {lr.topology_mode})")
+        reasons.append(
+            f"Le LR n'est pas en mode routeur (mode : {netmode or 'inconnu'})"
+        )
 
     ok = ssh_active and password_valid and router_mode
     return FaiVerifyResult(
@@ -146,7 +179,7 @@ async def fai_verify(
             password_valid=password_valid,
             router_mode=router_mode,
         ),
-        ssh_status=lr.ssh_status,
-        topology_mode=lr.topology_mode,
-        ssh_checked_at=lr.ssh_checked_at,
+        ssh_status=ssh_status,
+        topology_mode=netmode or "unknown",
+        ssh_checked_at=checked_at,
     )

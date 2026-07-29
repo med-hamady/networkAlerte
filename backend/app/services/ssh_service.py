@@ -1753,6 +1753,98 @@ def classify_probe_ssh_status(
     return SSH_STATUS_UNREACHABLE, message
 
 
+def parse_netmode(raw: str) -> str | None:
+    """Extract the device-level network mode from a ``system.cfg`` grep.
+
+    Both radio families store it as the SAME flat key ``netmode=router|bridge``
+    in ``/tmp/system.cfg`` — field-confirmed on a LTU-LR and a LiteBeam M5
+    (2026-07-29). ⚠️ The internal ``bridge.*`` keys (br0/br1 for VLAN separation)
+    are present even in router mode, so they are NOT a mode signal — only
+    ``netmode`` is authoritative. Returns "router", "bridge", or None (absent /
+    unreadable).
+    """
+    for line in raw.splitlines():
+        line = line.strip()
+        if line.startswith("netmode="):
+            val = line.split("=", 1)[1].strip().lower()
+            if val in ("router", "bridge"):
+                return val
+    return None
+
+
+def _verify_lr_live_sync(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    expected_fingerprint: str | None,
+    expected_mac: str | None,
+) -> tuple[bool, bool, str | None, str, str]:
+    """Live SSH pre-flight of a LR. Returns (ssh_active, password_valid, netmode,
+    ssh_status, message).
+
+    Authenticates with ONLY ``password`` (no fallback ladder) so a success proves
+    that this exact password opens the session, then reads ``netmode`` on the same
+    session. Result matrix:
+
+      - reachable + auth ok       → (True,  True,  netmode, "ok",               "OK")
+      - reachable + wrong password→ (True,  False, None,    "auth_failed",      msg)
+      - host key mismatch         → (True,  False, None,    "host_key_mismatch",msg)
+      - SSH port closed / refused → (False, False, None,    "ssh_disabled",     msg)
+      - timeout / no route        → (False, False, None,    "unreachable",      msg)
+
+    ``ssh_active`` is True as soon as the SSH handshake completed (the daemon
+    answered), independently of the password — that is what lets the caller tell
+    "SSH is off" from "SSH is on but the standard password is wrong".
+    """
+    try:
+        transport, _observed, _used = _open_transport(
+            host, port, username, password, expected_fingerprint,
+            timeout=12, fallback_passwords=None, expected_mac=expected_mac,
+        )
+    except paramiko.AuthenticationException as exc:
+        # Handshake reached auth then was rejected → SSH is active, password isn't it.
+        return (True, False, None, SSH_STATUS_AUTH_FAILED, str(exc))
+    except _FingerprintMismatchError as exc:
+        # Daemon answered but the pinned host key no longer matches (and could not
+        # self-heal) — reachable, but we refuse to trust it.
+        return (True, False, None, SSH_STATUS_HOST_KEY_MISMATCH, str(exc))
+    except ConnectionRefusedError as exc:
+        return (False, False, None, SSH_STATUS_DISABLED, str(exc))
+    except Exception as exc:  # socket timeout / no route → device unreachable now
+        return (False, False, None, SSH_STATUS_UNREACHABLE, str(exc))
+
+    try:
+        try:
+            _code, out = _exec_capture(
+                transport,
+                "grep -hE '^netmode=' /tmp/system.cfg /tmp/running.cfg 2>/dev/null",
+                timeout=10,
+            )
+        except SshExecTimeoutError as exc:
+            # Session alive but the read hung — SSH + password are already proven;
+            # only the mode is unknown for this call.
+            return (True, True, None, SSH_STATUS_OK, str(exc))
+        return (True, True, parse_netmode(out), SSH_STATUS_OK, "OK")
+    finally:
+        transport.close()
+
+
+async def verify_lr_live(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    expected_fingerprint: str | None = None,
+    expected_mac: str | None = None,
+) -> tuple[bool, bool, str | None, str, str]:
+    """Async wrapper around :func:`_verify_lr_live_sync` (runs off the event loop)."""
+    return await asyncio.to_thread(
+        _verify_lr_live_sync, host, port, username, password,
+        expected_fingerprint, expected_mac,
+    )
+
+
 # ── Traffic shaper (per-client subscription plan / "forfait") ────────────────
 #
 # The customer's plan is NOT in any HTTP API (LTU /statistics, airOS status.cgi

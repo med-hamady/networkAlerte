@@ -1197,6 +1197,14 @@ async def switch_port_mapping_job() -> None:
                     for n, p in sorted(wiring.attributed.items(), key=lambda kv: kv[1])
                 ),
             )
+        if wiring.unwatched:
+            logger.debug(
+                "Switch port mapping — %s : câblage enregistré mais port NON "
+                "surveillé (type exclu) : %s",
+                wiring.switch_name,
+                ", ".join(f"port {p} = {n}" for n, p in sorted(
+                    wiring.unwatched.items(), key=lambda kv: kv[1])),
+            )
         if wiring.rejected_ports:
             # UISP named a port the switch's own IF-MIB says doesn't exist. Never
             # attributed: a wrong index would point an alert at the wrong port.

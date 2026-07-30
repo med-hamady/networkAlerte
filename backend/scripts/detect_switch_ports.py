@@ -105,6 +105,10 @@ async def main() -> int:
                          if wiring.source == "uisp"
                          else "la FDB du switch ne rend aucune de nos MAC "
                               "(firmware sans BRIDGE-MIB, cas des switches UISP)"))
+            for name, port in sorted(wiring.unwatched.items(), key=lambda kv: kv[1]):
+                print(f"    port {port:>3}  {name:<40} non surveillé (UISP Power : "
+                      f"100 Mbps est sa vitesse nominale ; down couvert par "
+                      f"device_unreachable)")
             for port, names in wiring.rejected_ports.items():
                 print(f"    port {port:>3}  REFUSÉ — annoncé par UISP mais absent de "
                       f"l'IF-MIB du switch : {', '.join(names)}")

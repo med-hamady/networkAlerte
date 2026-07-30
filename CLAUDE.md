@@ -482,6 +482,36 @@ direct à un Rocket, 16 cas) et un lien dont **les deux** bouts sont nos switche
 (uplink inter-switch : chaque bout est une affirmation valable, mais un device n'a
 qu'une colonne d'uplink, donc choisir serait arbitraire).
 
+##### Les ports d'UISP Power sont mappés mais JAMAIS surveillés
+
+`UNWATCHED_DEVICE_TYPES = ("uisp_power",)`. Le port de management d'un UISP Power
+est du **Fast Ethernet** : 100 Mb/s est sa vitesse **nominale**, pas une
+dégradation. Mesuré sur le parc le 2026-07-30 : **11 des 13 ports sous le
+gigabit étaient des UISP Power** — la règle aurait alerté en permanence sur du
+matériel sain et **enterré les 4 vraies trouvailles** (`A2-AT2-SUD1`,
+`A2-NR1-NORD`, `A2-SM1-OUEST`, `F60 CT1-NR1` bloqués à 100 Mb/s alors qu'ils
+devraient être en gigabit). Son port qui tombe n'a pas besoin de règle non plus :
+l'équipement cesse alors de répondre au ping et `device_unreachable` le couvre —
+le même raisonnement qui a retiré `uisp_power_unreachable` pour éviter le doublon.
+
+Le câblage reste **enregistré** (`devices.uplink_switch_port` est renseigné, donc
+l'opérateur voit ce qui est sur chaque port) ; seule la **surveillance** est
+retirée. Le chokepoint unique est `switch_port_service.watched_ports` : y exclure
+un type le sort des règles sans effacer l'information. Ces ports sont aussi hors
+du relevé automatique de `max_ports` (on n'élargit le scan que pour des ports
+qu'on évalue).
+
+##### ⚠️ Le refus d'un index doit être robuste, il ne l'était pas
+
+`fetch_if_descrs` fait **2 tentatives** par index, pas une. `_snmp_get` envoie un
+seul datagramme (`retries=0`) et ces switches **perdent des requêtes SNMP** :
+constaté sur TJN1, où `ifDescr.1` est resté sans réponse pendant que ses voisins
+répondaient, et où une métrique de port manquait au passage suivant. Comme une
+réponse muette **REFUSE** une attribution, un seul paquet UDP perdu suffisait à
+écarter un port légitime (`A2-TJN1-EST`, `A2-KS1-EST` au 1er essai). Un index qui
+n'existe vraiment pas répond « rien » instantanément deux fois : le coût du retry
+ne tombe que sur les trous réels.
+
 ##### Avant de compter dessus : le contrôle à blanc
 
 ```bash

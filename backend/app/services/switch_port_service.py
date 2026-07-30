@@ -64,6 +64,19 @@ logger = logging.getLogger(__name__)
 # switch — and there are ~1000 of them, which would blow the GET budget.
 CABLED_DEVICE_TYPES = ("rocket", "airfiber", "ptp_litebeam", "uisp_power", "uisp_switch")
 
+# Device types whose port is MAPPED (the wiring is real and worth recording) but
+# never WATCHED.
+#
+# UISP Power: its management port is Fast Ethernet, so it negotiates 100 Mb/s by
+# design — that is its nominal speed, not a degradation. Measured on the fleet
+# 2026-07-30: 11 of the 13 sub-gigabit ports were UISP Power, i.e. the rule would
+# have alerted permanently on healthy hardware and buried the 4 real findings
+# (Rockets and an AF60 stuck at 100 Mb/s, which genuinely should be gigabit).
+# Its port going DOWN needs no rule either: the device then stops answering ping
+# and `device_unreachable` covers it — the same reasoning that retired
+# `uisp_power_unreachable` to avoid double-reporting.
+UNWATCHED_DEVICE_TYPES = ("uisp_power",)
+
 # Highest ifIndex we will auto-raise a switch's `max_ports` to. Matches the
 # ceiling of the switch edit form.
 MAX_PORT_INDEX = 64
@@ -77,8 +90,11 @@ class SwitchWiring:
     switch_name: str
     source: str = "fdb"  # "uisp" (data-links) or "fdb" (BRIDGE-MIB fallback)
     candidates: int = 0
-    # device name -> ifIndex, newly written or confirmed this pass
+    # device name -> ifIndex, newly written or confirmed this pass (and watched)
     attributed: dict[str, int] = field(default_factory=dict)
+    # device name -> ifIndex for wiring recorded but deliberately NOT watched
+    # (see UNWATCHED_DEVICE_TYPES)
+    unwatched: dict[str, int] = field(default_factory=dict)
     # ifIndex -> [device names] for ports carrying several supervised devices
     ambiguous: dict[int, list[str]] = field(default_factory=dict)
     unmatched: list[str] = field(default_factory=list)
@@ -150,13 +166,19 @@ def _write_wiring(
             # (fiber_link_down); watching it twice would double-alert.
             continue
         device = devices[0]
-        wiring.attributed[device.name] = if_index
-        attributed.append(device)
-        highest_port = max(highest_port, if_index)
         if not dry_run:
             device.uplink_switch_id = switch.id
             device.uplink_switch_port = if_index
             device.uplink_detected_at = now
+        if device.device_type in UNWATCHED_DEVICE_TYPES:
+            # Wiring recorded, port not watched. It is also left out of the
+            # max_ports widening below: we only widen the SNMP scan for ports we
+            # actually evaluate.
+            wiring.unwatched[device.name] = if_index
+            continue
+        wiring.attributed[device.name] = if_index
+        attributed.append(device)
+        highest_port = max(highest_port, if_index)
 
     # A port we proved carries a supervised device must be inside the SNMP scan
     # range, otherwise `port_N_up` is never collected and the port stays
@@ -433,14 +455,20 @@ async def detect_all(
 async def watched_ports(session: AsyncSession, switch_id: int) -> dict[int, str]:
     """{ifIndex: device name} for every port of this switch we monitor.
 
-    These are the ports proven to carry a supervised device. `rocket_port_index`
-    is added by the caller (it is a manual override, valid even with no MAC
-    ever learned).
+    These are the ports proven to carry a supervised device, minus the types we
+    map but never watch (`UNWATCHED_DEVICE_TYPES` — UISP Power, natively 100
+    Mb/s). `rocket_port_index` is added by the caller (it is a manual override,
+    valid even with no wiring ever detected).
+
+    This is THE chokepoint for "which ports get evaluated": excluding a type here
+    keeps its wiring visible in `devices.uplink_switch_port` while removing it
+    from the alert rules.
     """
     result = await session.execute(
         select(Device.uplink_switch_port, Device.name).where(
             Device.uplink_switch_id == switch_id,
             Device.uplink_switch_port.is_not(None),
+            Device.device_type.not_in(UNWATCHED_DEVICE_TYPES),
         )
     )
     return {port: name for port, name in result.all() if port}

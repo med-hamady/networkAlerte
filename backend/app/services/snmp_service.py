@@ -130,6 +130,10 @@ _DOT1D_BASE_PORT_IFINDEX = "1.3.6.1.2.1.17.1.4.1.2"
 # normal one (which is one GET per known MAC).
 _FDB_WALK_MAX_ROWS       = 2000
 
+# Attempts per ifDescr GET in fetch_if_descrs. 2, not 1, because a silent answer
+# there REFUSES a port attribution — see the docstring.
+_IF_DESCR_ATTEMPTS       = 2
+
 
 async def _snmp_get(
     engine: SnmpEngine,
@@ -249,15 +253,23 @@ async def fetch_if_descrs(
     An index that answers nothing is reported absent; the caller decides whether
     that means "refuse this attribution" or "the switch is simply not answering"
     (a distinction it can make because it knows whether ANY index answered).
+
+    ⚠️ **Retried, because the answer is used to REFUSE.** `_snmp_get` sends one
+    datagram with `retries=0`, and these switches do drop SNMP requests (observed
+    on TJN1: `ifDescr.1` unanswered while its neighbours replied, and a port
+    metric missing on the very next pass). One lost UDP packet must not be able to
+    discard a legitimate attribution, so a silent index is asked again before
+    being reported absent. A truly non-existent index answers "nothing" instantly
+    both times, so the cost of the retry falls only on real gaps.
     """
     engine = _get_engine()
     found: dict[int, str] = {}
     for idx in indexes:
-        raw = await _snmp_get(engine, host, community, f"{_IF_DESCR}.{idx}", port, timeout)
-        if raw is not None:
-            name = str(raw).strip()
-            if name:
-                found[idx] = name
+        for _attempt in range(_IF_DESCR_ATTEMPTS):
+            raw = await _snmp_get(engine, host, community, f"{_IF_DESCR}.{idx}", port, timeout)
+            if raw is not None and str(raw).strip():
+                found[idx] = str(raw).strip()
+                break
     return found
 
 

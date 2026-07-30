@@ -230,6 +230,37 @@ async def _find_if_index(
     return None
 
 
+async def fetch_if_descrs(
+    host: str,
+    indexes: list[int],
+    community: str = "public",
+    port: int = 161,
+    timeout: int = 2,
+) -> dict[int, str]:
+    """{ifIndex: ifDescr} for the given indexes — absent keys mean "no such index".
+
+    Used to CHECK, not to discover: when the switch port of a device comes from
+    the UISP controller (`portN` / `deviceName 0/N`), this confirms that `N` is a
+    real ifIndex on the switch, i.e. the same numbering as the `port_N_*` metrics
+    the alert rules read. Without that confirmation the mapping would be an
+    assumption about UISP's naming, and a wrong one would make an alert name the
+    wrong physical port.
+
+    An index that answers nothing is reported absent; the caller decides whether
+    that means "refuse this attribution" or "the switch is simply not answering"
+    (a distinction it can make because it knows whether ANY index answered).
+    """
+    engine = _get_engine()
+    found: dict[int, str] = {}
+    for idx in indexes:
+        raw = await _snmp_get(engine, host, community, f"{_IF_DESCR}.{idx}", port, timeout)
+        if raw is not None:
+            name = str(raw).strip()
+            if name:
+                found[idx] = name
+    return found
+
+
 async def collect_ltu_metrics(
     host: str,
     community: str = "public",

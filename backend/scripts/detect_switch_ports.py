@@ -60,18 +60,31 @@ async def main() -> int:
         "--apply", action="store_true",
         help="Écrit réellement les attributions. Sans ce drapeau, affichage seul.",
     )
+    parser.add_argument(
+        "--source", choices=("uisp", "fdb", "both"), default="both",
+        help="uisp = data-links du contrôleur (la source qui fonctionne) ; "
+             "fdb = table MAC du switch en SNMP (muette sur les switches UISP).",
+    )
     args = parser.parse_args()
 
     settings = get_settings()
     async with async_session_factory() as session:
-        results = await switch_port_service.detect_all(
-            session,
+        common = dict(
             snmp_port=settings.snmp_port,
             snmp_timeout=settings.snmp_timeout,
             default_community=settings.snmp_default_community,
             dry_run=not args.apply,
-            switch_id=args.switch_id,
         )
+        results = []
+        if args.source in ("uisp", "both"):
+            results += await switch_port_service.detect_from_uisp(session, **common)
+        if args.source in ("fdb", "both"):
+            covered = {r.switch_id for r in results if r.attributed or r.error is None}
+            results += await switch_port_service.detect_all(
+                session, **common, switch_id=args.switch_id, skip_switch_ids=covered,
+            )
+        if args.switch_id is not None:
+            results = [r for r in results if r.switch_id == args.switch_id]
 
         if not results:
             print("Aucun switch éligible (il faut une IP, et le statut 'up' "
@@ -80,16 +93,21 @@ async def main() -> int:
 
         total_ports = 0
         for wiring in results:
-            print(f"\n=== {wiring.switch_name} (id={wiring.switch_id})")
+            print(f"\n=== {wiring.switch_name} (id={wiring.switch_id})  source={wiring.source}")
             if not wiring.ok:
                 print(f"    ignoré : {wiring.error}")
                 continue
 
-            print(f"    {wiring.candidates} équipement(s) supervisé(s) sur ce site")
+            print(f"    {wiring.candidates} équipement(s) candidat(s)")
             if not wiring.attributed:
-                print("    aucun port attribué — la FDB du switch ne rend aucune "
-                      "de nos MAC (firmware sans BRIDGE-MIB, ou équipements "
-                      "derrière un switch non managé)")
+                print("    aucun port attribué — "
+                      + ("UISP ne rend aucun lien ethernet pour ce switch"
+                         if wiring.source == "uisp"
+                         else "la FDB du switch ne rend aucune de nos MAC "
+                              "(firmware sans BRIDGE-MIB, cas des switches UISP)"))
+            for port, names in wiring.rejected_ports.items():
+                print(f"    port {port:>3}  REFUSÉ — annoncé par UISP mais absent de "
+                      f"l'IF-MIB du switch : {', '.join(names)}")
 
             # État SNMP courant des ports trouvés = ce qui alerterait.
             switch = await session.get(UispSwitch, wiring.switch_id)

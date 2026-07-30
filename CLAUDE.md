@@ -67,7 +67,7 @@ backend/app/
 │   ├── notification_service.py     # Dispatch des notifications — **WhatsApp (Ultramsg) est l'UNIQUE transport** (l'envoi d'email a été retiré du projet). _deliver / digest / security routent vers WhatsApp. **Liste blanche `WHATSAPP_ALERT_TYPES`** (chokepoint dans `_dispatch`) : seules 5 anomalies sont poussées, tout le reste ouvre l'incident en DB mais n'est notifié nulle part
 │   ├── whatsapp_service.py         # Envoi WhatsApp via Ultramsg (POST /{instance}/messages/chat → groupe WHATSAPP_GROUP_ID). httpx async, jamais raise (False sur échec)
 │   ├── snmp_service.py             # SNMP : LTU radio (ath0/eth0) + Switch (ports 1..N) + `resolve_mac_ports` (FDB BRIDGE-MIB : sur quel port une MAC connue est apprise)
-│   ├── switch_port_service.py      # **Quel équipement supervisé sur quel port de switch** — détecté depuis la table d'apprentissage MAC du switch, jamais saisi à la main. C'est ce qui rend les règles `switch_port_down`/`switch_port_speed_low` opérantes : elles étaient gated sur `rocket_port_index`, colonne qu'AUCUN code ne renseignait (NULL partout → aucune alerte de port n'a jamais pu partir sur aucun switch). Écrit `devices.uplink_switch_id/_port`. Voir **Surveillance des ports de switch**
+│   ├── switch_port_service.py      # **Quel équipement supervisé sur quel port de switch** — détecté, jamais saisi à la main. Source PRIMAIRE = les **data-links du contrôleur UISP** (`detect_from_uisp`) : nos switches n'exposent **pas** BRIDGE-MIB et n'émettent **pas** de LLDP (vérifié terrain), mais UISP connaît le câblage. La FDB SNMP (`detect_all`) ne reste qu'en fallback pour un switch qu'UISP ne couvre pas. C'est ce qui rend les règles `switch_port_down`/`switch_port_speed_low` opérantes : elles étaient gated sur `rocket_port_index`, colonne qu'AUCUN code ne renseignait (NULL partout → aucune alerte de port n'a jamais pu partir sur aucun switch). Écrit `devices.uplink_switch_id/_port`. Voir **Surveillance des ports de switch**
 │   ├── uisp_power_service.py       # API REST UISP Power (voltage, current, batterie)
 │   ├── ltu_api_service.py          # API HTTP LTU Rocket (signal, CCQ, CINR, CPE peers)
 │   ├── uisp_assignment_service.py  # **Association équipement ↔ client CRM** : reçoit une MAC + un id CRM, rien d'autre (transposition du formulaire UISP « unknown → choisir le client »). Pose la clé d'abord si l'équipement est absent du contrôleur. ⚠️ Le **site** est une plomberie INTERNE jamais exposée : UISP rattache à un site, et c'est le site qui porte `ucrm.client.id` — la traduction id CRM → site est notre travail. **Seul chemin d'ÉCRITURE vers le contrôleur** (token API en écriture requis, sinon 403)
@@ -295,7 +295,7 @@ Réglages **séparés par famille**, aucun budget partagé (`ping_infra_reconfir
 | `unverified_ip_cleanup_job` | `IP_CLEANUP_INTERVAL_HOURS` (12 h) | Retire l'IP des LR que plus aucune source ne confirme (ni UISP actif/récent, ni radio récent, ou IP hors plan) → `status='unknown'`. Groupe **fast**. `ip_hygiene_service.run_cleanup` |
 | `traffic_stats_retention_job` | `TRAFFIC_STATS_RETENTION_INTERVAL_MINUTES` (6 h) | Purge `traffic_dest_stats` plus vieux que `TRAFFIC_STATS_RETENTION_DAYS` (90 j) en **batches** (`DELETE … WHERE id IN (SELECT id … LIMIT n)`, jamais une grosse transaction). Groupe scheduler **fast**. La collecte elle-même tourne dans le container **`netflow-collector`** (hors APScheduler). **NB : il n'y a plus de rétention sur `device_metrics`** — les compteurs bytes de conso sont conservés indéfiniment (plage de dates `/clients` sans limite ; surveiller disque/autovacuum). |
 | `lr_latency_retention_job` | `LR_METRIC_HISTORY_RETENTION_INTERVAL_MINUTES` (6 h) | Purge `lr_metric_samples` plus vieux que `LR_METRIC_HISTORY_RETENTION_DAYS` (30 j) en **batches** (`DELETE … WHERE id IN (SELECT id … LIMIT n)`, jamais une grosse transaction). Groupe scheduler **fast**. Même forme que `traffic_stats_retention_job` |
-| `switch_port_mapping_job` | `SWITCH_PORT_MAPPING_INTERVAL_MINUTES` (60 min) + **1× au démarrage** | Détecte **quel équipement supervisé est câblé sur quel port** de chaque switch `up`, depuis la table d'apprentissage MAC (BRIDGE-MIB), et écrit `devices.uplink_switch_id/_port`. C'est la source de vérité de « quels ports surveiller » pour `snmp_poll_job`. Groupe **heavy** (SNMP, comme `snmp_poll`). Coût : ~1 GET par équipement infra du site, par switch. Voir **Surveillance des ports de switch** |
+| `switch_port_mapping_job` | `SWITCH_PORT_MAPPING_INTERVAL_MINUTES` (60 min) + **1× au démarrage** | Détecte **quel équipement supervisé est câblé sur quel port** et écrit `devices.uplink_switch_id/_port` — la source de vérité de « quels ports surveiller » pour `snmp_poll_job`. **2 sources dans l'ordre** : (1) les **data-links du contrôleur UISP** (`portN`/`0/N`, la seule qui fonctionne sur notre matériel — 1 appel API pour tout le parc, index **vérifié** contre l'`ifDescr` du switch), (2) la **FDB BRIDGE-MIB** en fallback, **uniquement** sur les switches qu'UISP ne couvre pas. Contrôleur injoignable = WARNING, la passe FDB et les attributions en base survivent. Groupe **heavy**. Voir **Surveillance des ports de switch** |
 | `uisp_sync_job` | **Cron quotidien `UISP_SYNC_HOUR`:00 UTC** (défaut 07:00 ; Mauritanie GMT → 07:00 locale) + **1× au démarrage** (`next_run_time=now` → import dès le déploiement) | **Désactivé par défaut** (`UISP_SYNC_ENABLED=false`). Importe les équipements d'**infra** (Rocket LTU/airMAX role=ap, switches `uisps`/blackBox, UISP Power `uispp`, AF60* P2P) depuis `GET /nms/api/v2.1/devices` du contrôleur UISP. Mapping `classify_device(type, role, model)` ; identité = **MAC** (sinon IP, sinon (type,nom)). Met à jour **name/IP/site(location)** ; pose les **creds par convention famille/site à la création** (jamais d'écrasement). **Abonnés (LTU-LR/LiteBeam station)** : ignorés par l'import **infra**, mais importés dans `lrs` par `sync_uisp_stations` (après l'infra) si `UISP_STATION_SYNC_ENABLED` — apporte le mode routeur/bridge + statut UISP (colonnes `uisp_*` seules, identité MAC, AF60 exclus, **roster complet**) pour que `/access` reste complet même Rocket/LR down. **Infra : aucun delete.** **Stations : suppression des LR issus de UISP (`uisp_synced_at` renseigné) absents du roster** (déprovisionnés dans UISP), même bloqués ; jamais les clients radio-seuls ; passe sautée si roster vide. Voir `uisp_sync_service`. |
 | `flap_detection_job` | `FLAP_CHECK_INTERVAL_MINUTES` (10 min) | Détecte les équipements d'**infra instables** (flapping). Compte par device les **incidents de disponibilité** (`AVAILABILITY_ALERT_TYPES`, conservés en DB après résolution) avec `detected_at` sur les dernières `FLAP_WINDOW_HOURS` ; au-delà de `FLAP_THRESHOLD_24H` (3) → ouvre `device_flapping` (critique → WhatsApp), résout sinon. **UISP Power exclus** (`device_type=="uisp_power"` filtré dans la requête : leurs up/down sur coupure secteur sont normaux). Infra-only par nature (un LR down n'est jamais un incident). |
 | `network_latency_aggregate_job` | `NETWORK_LATENCY_CHECK_INTERVAL_MINUTES` (**1440 min = 24 h**) | **Contrôle quotidien** réseau-wide : part des LR `up` dont le dernier `lr_latency_ms` ≥ seuil latence 100 ms (`lr_health_service.network_latency_summary`, réutilise `_fetch_latest_latency`). Si > `NETWORK_HIGH_LATENCY_PCT` (20%) et échantillon ≥ `NETWORK_LATENCY_MIN_SAMPLE` (10) → **message WhatsApp direct** (PAS un incident : un Incident exige un device_id). **Pas de flag/rétabli** : rapport quotidien qui n'envoie que si la condition est remplie. |
@@ -402,12 +402,93 @@ qui n'est pas actionnable sur une unité 24 ports.
 - **`ifSpeed = 0` est ignoré** (les cages SFP le font) : un débit **inconnu**
   n'est pas un débit **dégradé**.
 
+##### ⚠️ VERDICT TERRAIN 2026-07-30 : inapplicable sur les switches UISP
+
+Mesuré sur le parc réel, la détection **ne trouve rien** (16 switches, **0 port
+attribué**) — et le code n'est pas en cause. Deux constats indépendants, chacun
+vérifié sur le matériel :
+
+1. **Les switches UISP n'implémentent pas BRIDGE-MIB.** Tout le sous-arbre
+   `1.3.6.1.2.1.17` répond `NoSuchObject` : ni `dot1dBaseNumPorts`, ni
+   `dot1dTpFdbPort`, ni `dot1qTpFdbPort`, ni `dot1dBasePortIfIndex`. Le MIB privé
+   Ubiquiti (`1.3.6.1.4.1.41112`) est **absent aussi**. Le SNMP fonctionne
+   parfaitement par ailleurs (`sysDescr`, `sysName`, 36 `ifDescr`) : ces firmwares
+   n'exposent **que IF-MIB**. Vérifié sur les **deux** familles du parc —
+   `UISP Switch` (`at1-uisp-s-a1d`, 10.135.2.108) et `UISP Switch Pro`
+   (`ct1-uisp-s-pro-65a` 10.135.2.31, `arf1-uisp-s-pro-409` 10.135.2.209) — donc
+   ce n'est pas une généralisation depuis un seul équipement.
+2. **Le switch n'émet pas de LLDP/CDP**, donc la radio ne peut pas apprendre son
+   port par le câble. Vérifié en capturant 45 s sur `eth0` d'une Rocket LTU
+   (10.135.144.1, `aflturocket v2.4.1`) : `tcpdump 'ether proto 0x88cc or ether
+   dst 01:00:0c:cc:cc:cc'` rend un pcap de **24 octets = son en-tête, zéro
+   trame**. Le firmware LTU n'a d'ailleurs aucun démon LLDP (`lldpcli`/`lldpctl`/
+   `lldpd` absents ; `system.cfg` porte `discovery.cdp.status=disabled`).
+
+Le mot du câblage n'est donc **ni dans le switch, ni sur le câble**. La détection
+par FDB est **conservée en fallback** (elle est correcte, et ne coûte plus rien
+puisqu'elle ne tourne que sur les switches qu'UISP ne couvre pas) pour un futur
+switch d'un autre fabricant qui exposerait BRIDGE-MIB.
+
+##### La source qui marche : les data-links du contrôleur UISP
+
+`GET /nms/api/v2.1/data-links` — **UISP connaît le câblage** (ses propres agents
+le rapportent). Le bout switch d'un lien `ethernet` porte le numéro de port :
+
+```
+device: "TS1-UISP-S 5C5"  role=switch
+interface: name="port6"  deviceName="0/6"  description="EST"  currentSpeed="1000-full"
+```
+
+`switch_port_service.detect_from_uisp` est donc la **source PRIMAIRE**, et
+`fetch_data_links()` était déjà là (utilisé par le sync des stations). Un seul
+appel couvre tout le parc. Mesuré le 2026-07-30 : **151 liens `ethernet`**, dont
+**121 exploitables** sur les 17 switches UISP.
+
+⚠️ **Trois formes de nom de port, une seule digne de confiance** :
+
+| Forme | Nb | Matériel | Décision |
+|---|---|---|---|
+| `portN` + `deviceName` `0/N` | 121 | switches **UISP** | **exploitée** : `N` = ifIndex |
+| `ethN`, `deviceName` absent | 13 | switches **UniFi** (`HQ-USW`, `Linskis`, `SNDE-LinkSys`) | **refusée** |
+| `sfp+N` | 1 | `USW-Pro-Aggregation` → Edge router | hors parc |
+
+Le refus des `ethN` n'est pas de la prudence gratuite : **l'indexation UniFi n'est
+pas déductible du payload**, et le payload se contredit sur un même switch —
+`eth0` y est libellé `port1` (base 0) mais `eth14` est libellé `port14` (base 1).
+Deviner ferait **nommer le mauvais port physique dans une alerte critique**. On
+journalise en WARNING et on n'attribue pas.
+
+**La numérotation est VÉRIFIÉE, pas supposée** : chaque index attribué doit
+répondre à `ifDescr` sur le switch (`snmp_service.fetch_if_descrs`), donc être un
+vrai ifIndex, dans la même numérotation que les métriques `port_N_*`. Distinction
+qui compte : un switch qui ne répond à **aucun** index est *muet* → on garde ses
+attributions (stickiness) ; un switch qui répond mais **nie un index précis** →
+cette attribution-là est refusée (`rejected_ports`, WARNING). C'est ce qui
+transforme une hypothèse sur le nommage UISP en contrôle.
+
+⚠️ **La question des cages SFP est sans objet** : aucun switch UISP n'a
+d'équipement au-delà de `port18`. Les `TenGigabitEthernet` (ifIndex 25-28)
+portent la fibre vers du matériel que UISP ne gère pas — donc aucun data-link —
+et c'est déjà couvert à la main par `fiber_port_index`.
+
+⚠️ **Les libellés de port UISP ne sont PAS fiables et ne servent à rien ici** :
+`CT1-UISP-S-Pro port2` est étiqueté « SUD » alors qu'il porte `A2-CT1-EST`. Ils
+n'entrent ni dans l'identification (qui est la **MAC**, des deux côtés, comme
+partout dans le projet) ni dans les messages d'alerte — un libellé faux enverrait
+l'opérateur au mauvais mât.
+
+**Liens ignorés** : un lien dont **zéro** bout est un de nos switches (AF60 câblé
+direct à un Rocket, 16 cas) et un lien dont **les deux** bouts sont nos switches
+(uplink inter-switch : chaque bout est une affirmation valable, mais un device n'a
+qu'une colonne d'uplink, donc choisir serait arbitraire).
+
 ##### Avant de compter dessus : le contrôle à blanc
 
 ```bash
-dc exec backend python scripts/detect_switch_ports.py              # tous, DRY-RUN
-dc exec backend python scripts/detect_switch_ports.py --switch-id 42
-dc exec backend python scripts/detect_switch_ports.py --apply      # écrit vraiment
+dc exec backend python scripts/detect_switch_ports.py                  # DRY-RUN, 2 sources
+dc exec backend python scripts/detect_switch_ports.py --source uisp    # data-links seuls
+dc exec backend python scripts/detect_switch_ports.py --source fdb     # SNMP seul (muet ici)
+dc exec backend python scripts/detect_switch_ports.py --apply          # écrit vraiment
 ```
 
 Le script **n'écrit rien sans `--apply`** et affiche, pour chaque port trouvé,

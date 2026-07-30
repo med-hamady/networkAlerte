@@ -12,6 +12,7 @@ Scheduled supervision jobs.
 """
 
 import asyncio
+import collections
 import datetime
 import functools
 import logging
@@ -1134,23 +1135,52 @@ async def switch_port_mapping_job() -> None:
     watch every port that actually carries something, instead of the single
     `rocket_port_index` an operator was supposed to type in and never did.
 
+    Two sources, in order:
+      1. the UISP controller's `ethernet` data-links — the only one that works on
+         our hardware (the switches expose no BRIDGE-MIB and emit no LLDP);
+      2. the switch's own MAC forwarding table, for switches UISP doesn't cover.
+
     Hourly, and deliberately tolerant: a switch that doesn't answer keeps its
     previous attributions (a link that just died must stay watched).
     """
     settings = get_settings()
     async with async_session_factory() as session:
-        results = await switch_port_service.detect_all(
-            session,
-            snmp_port=settings.snmp_port,
-            snmp_timeout=settings.snmp_timeout,
-            default_community=settings.snmp_default_community,
+        results: list[switch_port_service.SwitchWiring] = []
+        try:
+            results.extend(
+                await switch_port_service.detect_from_uisp(
+                    session,
+                    snmp_port=settings.snmp_port,
+                    snmp_timeout=settings.snmp_timeout,
+                    default_community=settings.snmp_default_community,
+                )
+            )
+        except Exception as exc:
+            # The controller being unreachable must not cost us the FDB pass, nor
+            # the attributions already in DB.
+            logger.warning("Switch port mapping — source UISP indisponible (%s)", exc)
+
+        # FDB fallback only where UISP said nothing: re-running it on a switch the
+        # controller already mapped could only overwrite a better answer with a
+        # worse one.
+        covered = {r.switch_id for r in results if r.attributed or r.error is None}
+        results.extend(
+            r
+            for r in await switch_port_service.detect_all(
+                session,
+                snmp_port=settings.snmp_port,
+                snmp_timeout=settings.snmp_timeout,
+                default_community=settings.snmp_default_community,
+                skip_switch_ids=covered,
+            )
         )
         await session.commit()
 
     attributed = sum(len(r.attributed) for r in results)
+    by_source = collections.Counter(r.source for r in results if r.attributed)
     logger.info(
-        "Switch port mapping — %d switch(es), %d port(s) attribué(s)",
-        len(results), attributed,
+        "Switch port mapping — %d switch(es), %d port(s) attribué(s) (par source : %s)",
+        len(results), attributed, dict(by_source) or "aucune",
     )
     for wiring in results:
         if not wiring.ok:
@@ -1160,12 +1190,21 @@ async def switch_port_mapping_job() -> None:
             continue
         if wiring.attributed:
             logger.info(
-                "Switch port mapping — %s : %s",
-                wiring.switch_name,
+                "Switch port mapping — %s [%s] : %s",
+                wiring.switch_name, wiring.source,
                 ", ".join(
-                    f"port {p} = {n}"
+                    f"port {p} ({wiring.if_descrs.get(p, '?')}) = {n}"
                     for n, p in sorted(wiring.attributed.items(), key=lambda kv: kv[1])
                 ),
+            )
+        if wiring.rejected_ports:
+            # UISP named a port the switch's own IF-MIB says doesn't exist. Never
+            # attributed: a wrong index would point an alert at the wrong port.
+            logger.warning(
+                "Switch port mapping — %s : port(s) annoncé(s) par UISP mais "
+                "absent(s) de l'IF-MIB du switch, REFUSÉ(s) : %s",
+                wiring.switch_name,
+                "; ".join(f"port {p} → {', '.join(n)}" for p, n in wiring.rejected_ports.items()),
             )
         if wiring.ambiguous:
             logger.info(

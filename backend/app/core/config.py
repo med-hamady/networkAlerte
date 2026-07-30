@@ -530,6 +530,16 @@ class Settings(BaseSettings):
 
     # Switch port monitoring is configured per-UispSwitch in the database
     # (max_ports / rocket_port_index / port_min_speed_mbps). No global defaults.
+    #
+    # WHICH ports get monitored is auto-detected: switch_port_mapping_job reads
+    # each switch's MAC forwarding table and records, per supervised device,
+    # the port it is cabled to (devices.uplink_switch_port). Without it only
+    # `rocket_port_index` was watched — a column nothing ever filled, so in
+    # practice no port on no switch was ever evaluated.
+    switch_port_mapping_enabled: bool = True
+    # Hourly is plenty: cabling changes when someone visits the site. The pass
+    # costs ~1 SNMP GET per infra device per switch.
+    switch_port_mapping_interval_minutes: int = 60
 
     # Anomaly thresholds — radio link (LTU Rocket / LTU LR)
     # Operator-mandated bands (2026-05-21) : warning quand le signal descend

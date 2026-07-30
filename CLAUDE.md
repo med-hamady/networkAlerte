@@ -51,7 +51,7 @@ backend/app/
 │       ├── system.py              # GET/POST /system (infos système, /system/test-whatsapp)
 │       └── uisp.py                # POST /uisp/sync (import infra depuis le contrôleur UISP, ?dry_run=true pour prévisualiser)
 ├── models/                  # SQLAlchemy ORM (Base avec id, created_at, updated_at)
-│   ├── device.py            # Équipements supervisés (+ parent_id hiérarchie, policy_overrides JSON)
+│   ├── device.py            # Équipements supervisés (+ parent_id hiérarchie, policy_overrides JSON, **`uplink_switch_id`/`uplink_switch_port`/`uplink_detected_at`** = sur quel port de switch l'équipement est physiquement câblé, auto-détecté depuis la FDB du switch, jamais saisi à la main ; les deux NULL = câblage inconnu ⇒ port non surveillé)
 │   ├── device_metric.py     # Métriques time-series
 │   ├── incident.py          # Incidents (open/acknowledged/resolved)
 │   ├── alert_state.py       # Compteurs d'anti-flapping persistés en DB (survit aux redémarrages)
@@ -66,7 +66,8 @@ backend/app/
 │   ├── incident_service.py         # Création/résolution/déduplication d'incidents
 │   ├── notification_service.py     # Dispatch des notifications — **WhatsApp (Ultramsg) est l'UNIQUE transport** (l'envoi d'email a été retiré du projet). _deliver / digest / security routent vers WhatsApp. **Liste blanche `WHATSAPP_ALERT_TYPES`** (chokepoint dans `_dispatch`) : seules 5 anomalies sont poussées, tout le reste ouvre l'incident en DB mais n'est notifié nulle part
 │   ├── whatsapp_service.py         # Envoi WhatsApp via Ultramsg (POST /{instance}/messages/chat → groupe WHATSAPP_GROUP_ID). httpx async, jamais raise (False sur échec)
-│   ├── snmp_service.py             # SNMP : LTU radio (ath0/eth0) + Switch (ports 1..N)
+│   ├── snmp_service.py             # SNMP : LTU radio (ath0/eth0) + Switch (ports 1..N) + `resolve_mac_ports` (FDB BRIDGE-MIB : sur quel port une MAC connue est apprise)
+│   ├── switch_port_service.py      # **Quel équipement supervisé sur quel port de switch** — détecté depuis la table d'apprentissage MAC du switch, jamais saisi à la main. C'est ce qui rend les règles `switch_port_down`/`switch_port_speed_low` opérantes : elles étaient gated sur `rocket_port_index`, colonne qu'AUCUN code ne renseignait (NULL partout → aucune alerte de port n'a jamais pu partir sur aucun switch). Écrit `devices.uplink_switch_id/_port`. Voir **Surveillance des ports de switch**
 │   ├── uisp_power_service.py       # API REST UISP Power (voltage, current, batterie)
 │   ├── ltu_api_service.py          # API HTTP LTU Rocket (signal, CCQ, CINR, CPE peers)
 │   ├── uisp_assignment_service.py  # **Association équipement ↔ client CRM** : reçoit une MAC + un id CRM, rien d'autre (transposition du formulaire UISP « unknown → choisir le client »). Pose la clé d'abord si l'équipement est absent du contrôleur. ⚠️ Le **site** est une plomberie INTERNE jamais exposée : UISP rattache à un site, et c'est le site qui porte `ucrm.client.id` — la traduction id CRM → site est notre travail. **Seul chemin d'ÉCRITURE vers le contrôleur** (token API en écriture requis, sinon 403)
@@ -75,7 +76,7 @@ backend/app/
 │   ├── client_block_service.py     # Blocage client 2 modes (full / whatsapp_only) + enforcement
 │   ├── alert_engine.py             # Orchestrateur : évalue règles, gère AlertState, ouvre/résout incidents
 │   ├── alert_rules.py              # Règles d'alerte pure Python (sans DB) — 10+ règles
-│   ├── alert_formatter.py          # Formatage messages WhatsApp/log par type d'alerte
+│   ├── alert_formatter.py          # Formatage messages WhatsApp/log par type d'alerte. `_DESCRIPTION_ALERT_TYPES` = les types dont la **description** est rendue en ligne supplémentaire, parce qu'elle porte le seul contenu actionnable : batteries UISP Power (charge % + autonomie) et **ports de switch** (quels ports, et quel équipement au bout — les champs structurés ne nomment que le switch, inutile sur une unité 24 ports)
 │   ├── alert_policy.py             # Registre interne : politique (canal/groupable/recovery/immédiat) par alert_type — plus exposé en API
 │   ├── digest_service.py           # Regroupement des warnings en digest 15 min
 │   ├── lr_metric_history_service.py # Historique des courbes de la fiche (table `lr_metric_samples`). **`GRAPH_METRICS`** = l'allowlist des métriques traçables (latence, `total_capacity_mbps`, `link_potential_pct`, `dl_capacity_mbps`, `ul_capacity_mbps`, `dl_throughput_mbps`, `ul_throughput_mbps`) avec label/unité/seuil — **ajouter une clé ici suffit à rendre une métrique traçable** (pas de migration, pas de table). Le seuil peut être une chaîne (seuil unique) ou un **dict par famille radio** (`link_potential_pct` : 50 % LTU / 40 % airMAX) résolu par `threshold_setting_for(spec, device)`, qui réutilise `alert_rules._AIRMAX_LR_VARIANTS` — **importé, jamais recopié** : la ligne tracée doit être celle qui déclenche l'alerte. **ÉCRITURE** : `record_sample` est appelé depuis `persist_device_metrics` (le chokepoint de TOUS les polls → couvre sonde SSH, airOS, fan-out LTU, wstalist M5 d'un coup) et replie la valeur dans un **bucket** (60 s par défaut) par upsert (moyenne glissante recalculée EN SQL + `least`/`greatest` sur min/max). **LECTURE** : `get_history` sert 24h à la résolution native et re-binne les fenêtres larges via `date_bin` (moyenne **pondérée par `sample_count`**). `available_metrics` = les courbes que CE device possède (onglets de la modale). **Trous NON comblés** : un bucket sans relevé est absent, jamais ramené à 0
@@ -145,9 +146,10 @@ backend/app/
 | `SNMP_DEFAULT_COMMUNITY` | Community SNMP par défaut (ex: public) |
 | `SNMP_PORT` | Port SNMP (défaut 161) |
 | `SNMP_TIMEOUT` | Timeout SNMP en secondes |
-| `SWITCH_MAX_PORTS` | Nombre de ports à scanner sur le switch |
-| `SWITCH_ROCKET_PORT_INDEX` | Index du port switch connecté au Rocket (0 = désactivé) |
-| `SWITCH_PORT_MIN_SPEED_MBPS` | Vitesse minimale attendue sur ce port (défaut 1000 Mbps) |
+| `SWITCH_MAX_PORTS` | Nombre de ports à scanner sur le switch. ⚠️ Relevé automatiquement si la détection prouve qu'un équipement supervisé est au-delà (sinon `port_N_up` n'est jamais collecté et le port est invisible — le trou qui avait caché le SFP fibre à l'index 25) |
+| `SWITCH_ROCKET_PORT_INDEX` | Index du port switch connecté au Rocket (0 = désactivé). ⚠️ **Override manuel** : la désignation normale est **auto-détectée** (voir `SWITCH_PORT_MAPPING_ENABLED`). Renseigné automatiquement quand la détection ne trouve qu'**un seul** Rocket derrière le switch ; jamais écrasé s'il a été saisi |
+| `SWITCH_PORT_MIN_SPEED_MBPS` | Vitesse minimale attendue sur un port surveillé (défaut 1000 Mbps) |
+| `SWITCH_PORT_MAPPING_ENABLED` / `SWITCH_PORT_MAPPING_INTERVAL_MINUTES` | Détection automatique de **quel équipement est câblé sur quel port** (`switch_port_mapping_job`, défaut activé, 60 min). Sans elle, la surveillance des ports ne couvre que `rocket_port_index` — c.-à-d. **rien**, puisque rien ne le renseignait. Voir **Surveillance des ports de switch** |
 | `LR_LATENCY_TARGET` | Cible du ping LR → Internet (défaut `8.8.8.8`). Sert à la fois à la détection de transit et à la mesure de latence |
 | `LR_LATENCY_PING_COUNT` | Nombre de pings utilisés pour la moyenne RTT (défaut 5) |
 | `LR_LATENCY_CRITICAL_MS` | Seuil critique de latence LR → Internet en ms (défaut 100 ; incident critique si avg ≥ seuil) |
@@ -251,7 +253,7 @@ backend/app/
 - [x] **21 alert_types** centralisés — `core/alert_constants.py`
 - [x] **Détection anomalies radio** — signal dBm, CCQ, CINR, capacité lien, taux d'erreurs
 - [x] **Détection anomalies power** — batterie + voltage hors plage (20–56 V)
-- [x] **Détection port switch** — port DOWN ou vitesse < 1000 Mbps
+- [x] **Détection port switch** — port DOWN ou vitesse < 1000 Mbps, sur **tous** les ports portant un équipement supervisé. ⚠️ **Ces deux règles n'avaient jamais pu se déclencher** avant le 2026-07-30 : elles étaient gardées sur `rocket_port_index`, colonne qu'aucun code ne renseignait (NULL partout). Le port de chaque équipement est désormais **auto-détecté** depuis la table d'apprentissage MAC du switch (`switch_port_service` + `switch_port_mapping_job`). Voir **Surveillance des ports de switch**
 - [x] **Digest warnings** — `digest_service.py` + `warning_digest_job` (regroupement 15 min)
 - [x] **Auto-découverte LTU LR** — le job LTU API lit les CPE peers du Rocket et établit la hiérarchie parent/enfant automatiquement
 - [x] **Authentification API** — API key via header `X-API-Key` (`app/api/deps.py`)
@@ -293,11 +295,128 @@ Réglages **séparés par famille**, aucun budget partagé (`ping_infra_reconfir
 | `unverified_ip_cleanup_job` | `IP_CLEANUP_INTERVAL_HOURS` (12 h) | Retire l'IP des LR que plus aucune source ne confirme (ni UISP actif/récent, ni radio récent, ou IP hors plan) → `status='unknown'`. Groupe **fast**. `ip_hygiene_service.run_cleanup` |
 | `traffic_stats_retention_job` | `TRAFFIC_STATS_RETENTION_INTERVAL_MINUTES` (6 h) | Purge `traffic_dest_stats` plus vieux que `TRAFFIC_STATS_RETENTION_DAYS` (90 j) en **batches** (`DELETE … WHERE id IN (SELECT id … LIMIT n)`, jamais une grosse transaction). Groupe scheduler **fast**. La collecte elle-même tourne dans le container **`netflow-collector`** (hors APScheduler). **NB : il n'y a plus de rétention sur `device_metrics`** — les compteurs bytes de conso sont conservés indéfiniment (plage de dates `/clients` sans limite ; surveiller disque/autovacuum). |
 | `lr_latency_retention_job` | `LR_METRIC_HISTORY_RETENTION_INTERVAL_MINUTES` (6 h) | Purge `lr_metric_samples` plus vieux que `LR_METRIC_HISTORY_RETENTION_DAYS` (30 j) en **batches** (`DELETE … WHERE id IN (SELECT id … LIMIT n)`, jamais une grosse transaction). Groupe scheduler **fast**. Même forme que `traffic_stats_retention_job` |
+| `switch_port_mapping_job` | `SWITCH_PORT_MAPPING_INTERVAL_MINUTES` (60 min) + **1× au démarrage** | Détecte **quel équipement supervisé est câblé sur quel port** de chaque switch `up`, depuis la table d'apprentissage MAC (BRIDGE-MIB), et écrit `devices.uplink_switch_id/_port`. C'est la source de vérité de « quels ports surveiller » pour `snmp_poll_job`. Groupe **heavy** (SNMP, comme `snmp_poll`). Coût : ~1 GET par équipement infra du site, par switch. Voir **Surveillance des ports de switch** |
 | `uisp_sync_job` | **Cron quotidien `UISP_SYNC_HOUR`:00 UTC** (défaut 07:00 ; Mauritanie GMT → 07:00 locale) + **1× au démarrage** (`next_run_time=now` → import dès le déploiement) | **Désactivé par défaut** (`UISP_SYNC_ENABLED=false`). Importe les équipements d'**infra** (Rocket LTU/airMAX role=ap, switches `uisps`/blackBox, UISP Power `uispp`, AF60* P2P) depuis `GET /nms/api/v2.1/devices` du contrôleur UISP. Mapping `classify_device(type, role, model)` ; identité = **MAC** (sinon IP, sinon (type,nom)). Met à jour **name/IP/site(location)** ; pose les **creds par convention famille/site à la création** (jamais d'écrasement). **Abonnés (LTU-LR/LiteBeam station)** : ignorés par l'import **infra**, mais importés dans `lrs` par `sync_uisp_stations` (après l'infra) si `UISP_STATION_SYNC_ENABLED` — apporte le mode routeur/bridge + statut UISP (colonnes `uisp_*` seules, identité MAC, AF60 exclus, **roster complet**) pour que `/access` reste complet même Rocket/LR down. **Infra : aucun delete.** **Stations : suppression des LR issus de UISP (`uisp_synced_at` renseigné) absents du roster** (déprovisionnés dans UISP), même bloqués ; jamais les clients radio-seuls ; passe sautée si roster vide. Voir `uisp_sync_service`. |
 | `flap_detection_job` | `FLAP_CHECK_INTERVAL_MINUTES` (10 min) | Détecte les équipements d'**infra instables** (flapping). Compte par device les **incidents de disponibilité** (`AVAILABILITY_ALERT_TYPES`, conservés en DB après résolution) avec `detected_at` sur les dernières `FLAP_WINDOW_HOURS` ; au-delà de `FLAP_THRESHOLD_24H` (3) → ouvre `device_flapping` (critique → WhatsApp), résout sinon. **UISP Power exclus** (`device_type=="uisp_power"` filtré dans la requête : leurs up/down sur coupure secteur sont normaux). Infra-only par nature (un LR down n'est jamais un incident). |
 | `network_latency_aggregate_job` | `NETWORK_LATENCY_CHECK_INTERVAL_MINUTES` (**1440 min = 24 h**) | **Contrôle quotidien** réseau-wide : part des LR `up` dont le dernier `lr_latency_ms` ≥ seuil latence 100 ms (`lr_health_service.network_latency_summary`, réutilise `_fetch_latest_latency`). Si > `NETWORK_HIGH_LATENCY_PCT` (20%) et échantillon ≥ `NETWORK_LATENCY_MIN_SAMPLE` (10) → **message WhatsApp direct** (PAS un incident : un Incident exige un device_id). **Pas de flag/rétabli** : rapport quotidien qui n'envoie que si la condition est remplie. |
 | `rocket_saturation_report_job` | **Cron quotidien `ROCKET_SATURATION_REPORT_HOUR`:00 UTC** (défaut 07:00 ; Mauritanie GMT → 07:00 locale) + **1× au démarrage** (`next_run_time=now` → rapport dès le déploiement) | **Rapport PDF quotidien** des **Rockets saturés** envoyé en **document WhatsApp**. Réutilise `network_capacity_service.get_network_capacity` ; un Rocket est saturé quand ses **clients installés ≥ capacité max** (= condition `rocket_client_overload`). `saturation_report_service` génère le PDF (lib `fpdf2`, tableau Site/Rocket/Famille/Clients/Max/Charge/Largeur, trié par charge décroissante), `whatsapp_service.send_whatsapp_document` l'upload en base64 sur Ultramsg `/messages/document`. **Envoi systématique** (même si liste vide = PDF « aucun saturé », caption ✅), contrairement à la latence. Gated `ROCKET_SATURATION_REPORT_ENABLED`. Groupe scheduler **fast** (léger, pas de SSH). Dépend des clients installés → nécessite `UISP_STATION_SYNC_ENABLED`. |
 | `site_infra_report_job` | **Cron quotidien `SITE_INFRA_REPORT_HOUR`:00 UTC** (défaut 07:00) + **1× au démarrage** (`next_run_time=now`) | **Rapport PDF quotidien** de la **capacité infra par site** envoyé en **document WhatsApp**. `site_infra_service` compte par `site` (colonne dénormalisée) les équipements d'infra **Rockets + AF60 + PTP LiteBeam** (`INFRA_COUNTED_TYPES` ; **exclut switches, UISP Power, LR clients**) et calcule la marge vs `SITE_INFRA_MAX` (14) : **+N** places libres / **-N** dépassement. PDF via `fpdf2` (tableau Site/Équip./Max/Marge, dépassements en rouge, triés dépassement d'abord). **Envoi systématique** (caption ✅ si aucun dépassement). Gated `SITE_INFRA_REPORT_ENABLED`. Groupe scheduler **fast**. La même donnée est exposée par `network_capacity_service` → `/network-capacity` (clé `infra`) → section « Capacité infra par site » de `/capacity`. |
+
+#### Surveillance des ports de switch — quel équipement sur quel port (2026-07-30)
+
+Les deux règles de port (`switch_port_down`, `switch_port_speed_low`) **n'ont
+jamais pu se déclencher sur aucun switch**, depuis le début. Elles étaient
+gardées par `if port_idx > 0` avec `port_idx = uisp_switches.rocket_port_index`
+— une colonne qu'**aucun code ne renseignait** (ni le sync UISP, ni la
+découverte, ni un formulaire) : NULL partout, donc garde toujours fausse, donc
+ni le contrôle DOWN ni le contrôle « UP mais sous 1 Gb/s » n'ont jamais été
+évalués. Les deux types sont pourtant dans `WHATSAPP_ALERT_TYPES` : le canal
+était prêt, la mesure aussi (`port_N_up` / `port_N_speed_mbps` étaient collectés
+à chaque cycle SNMP) — seule la **désignation du port** manquait.
+
+**Remplir la colonne à la main n'aurait pas suffi** : un site porte jusqu'à
+`SITE_INFRA_MAX` (14) équipements infra derrière un seul switch, et une colonne
+ne peut désigner qu'un port. On ne désigne donc plus : **on détecte le câblage**.
+
+##### Comment (`switch_port_service` + `snmp_service.resolve_mac_ports`)
+
+La table d'apprentissage MAC du switch (**BRIDGE-MIB**) dit sur quel port chaque
+MAC a été apprise, et on connaît déjà la MAC de chaque équipement supervisé
+(c'est son **identité** — cf. découverte / sync UISP). Le croisement donne
+`port → équipement` pour tout port qui porte quelque chose qu'on supervise.
+Résultat écrit sur `devices.uplink_switch_id` / `uplink_switch_port` /
+`uplink_detected_at` (migration `ee5f6a7b8c9d`, FK `ON DELETE SET NULL` —
+supprimer un switch ne doit pas cascader sur les Rockets qui y sont branchés).
+`uplink_switch_port` est un **ifIndex IF-MIB**, la même numérotation que les
+métriques `port_N_*` — sinon la détection désignerait un port que le poll ne
+mesure pas.
+
+- **GET ciblés, pas un walk** : la FDB d'un switch de site contient **toutes**
+  les MAC clientes bridgées à travers les Rockets (des milliers de lignes, un
+  aller-retour GETNEXT chacune). Comme la FDB est indexée **par** la MAC et
+  qu'on sait lesquelles nous intéressent, c'est **1 GET par MAC connue**
+  (~14 pour un site complet). Un walk **borné** (`_FDB_WALK_MAX_ROWS=2000`) ne
+  sert que de repli quand rien ne résout (FDB exposée en Q-BRIDGE sur un VLAN
+  qu'on ne devine pas) — il distingue « firmware muet » de « aucune de nos MAC
+  derrière ce switch ».
+- **Deux dispositions de table**, dans l'ordre : `dot1dTpFdbPort` (indexée par
+  les 6 octets de MAC) puis `dot1qTpFdbPort` (indexée `<vlan>.<MAC>`, essayée
+  sur **VLAN 1**, le VLAN de management non taggé dans l'immense majorité).
+- ⚠️ **`dot1dBasePort` n'est PAS l'ifIndex** : les deux tables rendent un numéro
+  de port de bridge, traduit par `dot1dBasePortIfIndex`. Traduction
+  indisponible ⇒ on garde le numéro tel quel (identiques sur la plupart des
+  switches) ; une erreur ne peut que mal attribuer un port, ce que les
+  garde-fous d'ambiguïté ci-dessous écartent.
+- **Périmètre = le site du switch** (`Device.site`), équipements avec MAC, types
+  `CABLED_DEVICE_TYPES` (Rockets, AF60, PTP LiteBeam, UISP Power, switches).
+  **Les LR sont exclus** : ce sont des radios abonnées joignables par les ondes,
+  jamais câblées à un switch de site — et il y en a ~1000, ce qui ferait
+  exploser le budget de GET. Un switch **sans site** est sauté : périmètre
+  indéterminable.
+
+##### La règle à ne pas casser : une attribution ne s'efface jamais sur une absence
+
+Un switch **fait vieillir une MAC hors de sa FDB en quelques minutes** après que
+le port est tombé. Donc « la MAC a disparu » et « le lien vient de mourir » sont
+**la même observation** — et la seconde est exactement le moment où l'alerte doit
+partir. Effacer sur absence rendrait la fonctionnalité aveugle au seul instant
+qui compte. Une attribution n'est écrasée que par une **observation positive plus
+récente** (l'équipement a répondu sur un autre port, ou derrière un autre
+switch). Même logique au niveau du switch : un switch **injoignable** (filtré sur
+`status == "up"`) n'a rien à dire ce tour-ci, ses attributions restent intactes.
+
+**L'exception est aussi une preuve positive** : un port derrière lequel le switch
+annonce **plusieurs** équipements supervisés est un **uplink ou un switch
+chaîné**, pas le port de l'un d'eux — nommer l'un des deux enverrait l'opérateur
+au mauvais équipement (et, sur une chaîne, vers un port qui n'est même pas dans
+ce switch). Ce port est donc **non attribué**, et une attribution antérieure y
+est **effacée** : ici le switch affirme activement quelque chose, il ne se tait
+pas.
+
+##### Interactions
+
+- **`fiber_port_index` est exclu** de l'attribution : le lien fibre a déjà sa
+  règle dédiée `fiber_link_down`, le surveiller deux fois double-alerterait.
+- **`max_ports` est relevé automatiquement** si un équipement est prouvé
+  **au-delà** de la plage scannée (plafond `MAX_PORT_INDEX=64`) : sinon
+  `port_N_up` n'est jamais collecté et le port reste **invisible** — le trou
+  exact qui avait caché le SFP fibre à l'index 25.
+- **`rocket_port_index` reste un override manuel**, désormais utile : renseigné
+  automatiquement **seulement** s'il est NULL **et** qu'il n'y a qu'**un seul**
+  Rocket derrière le switch (sinon la valeur serait arbitraire) ; **jamais
+  écrasé** s'il a été saisi, et évalué **en plus** des ports auto-détectés (il
+  vaut même sans aucune MAC apprise).
+
+##### Forme de l'alerte (changée)
+
+Un incident **par switch et par type** (la déduplication porte sur
+`device_id + alert_type`), listant **tous** les ports fautifs **et l'équipement
+câblé sur chacun** : « 2 port(s) DOWN sur SW-AT1 — port 3 (Rocket AT1-Nord) ;
+port 7 (UISP Power AT1) ». Les deux types sont ajoutés à
+`_DESCRIPTION_ALERT_TYPES` (`alert_formatter`) pour que la **description passe
+dans le message WhatsApp** : les champs structurés ne nomment que le switch, ce
+qui n'est pas actionnable sur une unité 24 ports.
+
+- `port_N_up` absent (hors plage de scan, ou pas de réponse) ⇒ **rien n'est
+  affirmé**, ni ouverture ni résolution.
+- **`ifSpeed = 0` est ignoré** (les cages SFP le font) : un débit **inconnu**
+  n'est pas un débit **dégradé**.
+
+##### Avant de compter dessus : le contrôle à blanc
+
+```bash
+dc exec backend python scripts/detect_switch_ports.py              # tous, DRY-RUN
+dc exec backend python scripts/detect_switch_ports.py --switch-id 42
+dc exec backend python scripts/detect_switch_ports.py --apply      # écrit vraiment
+```
+
+Le script **n'écrit rien sans `--apply`** et affiche, pour chaque port trouvé,
+l'état et la vitesse **lus en SNMP à l'instant** — c'est-à-dire exactement ce qui
+alerterait une fois le job actif. À lancer **sur un vrai switch avant de
+déployer** : le support BRIDGE-MIB dépend du firmware, et un port légitimement à
+100 Mb/s apparaît ici en clair plutôt qu'en critique WhatsApp à 3 h du matin. La
+logique vit dans le **service** (le job et le script appliquent la même règle —
+un job ne peut pas importer depuis `scripts/`).
 
 #### Enrôlement UISP d'un CPE (pose de la clé par SSH) — 2026-07-28
 
@@ -520,8 +639,8 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | Power | `battery_low_warning` / `battery_low_critical` | ⚠️ **Plus émis depuis 2026-06-11** (remplacés par `battery_internal_low` / `battery_external_low`). Fermés silencieusement par le job. |
 | Power | `voltage_anomaly` | ⚠️ **Plus émis depuis 2026-06-11** (politique UISP Power : seules les 2 alertes batterie + down). Fermé silencieusement. |
 | Power | `mains_power_lost` | Coupure secteur (SOMELEC) : UISP Power passé sur batterie (≥ `MAINS_LOSS_THRESHOLD` cycles). **Affiché dans /incidents mais NON notifié** (hors `WHATSAPP_ALERT_TYPES`). `power_poll_job` / `_evaluate_mains_power` |
-| Switch | `switch_port_down` | Port switch connecté au Rocket = DOWN |
-| Switch | `switch_port_speed_low` | Port UP mais vitesse < 1000 Mbps |
+| Switch | `switch_port_down` | Port **surveillé** DOWN. Un incident par switch listant tous les ports fautifs et l'équipement câblé sur chacun. Critique → WhatsApp immédiat |
+| Switch | `switch_port_speed_low` | Port **surveillé** UP mais vitesse négociée < `port_min_speed_mbps` (1000). Même forme (1 incident/switch, ports + équipements + vitesses dans le message). `ifSpeed` = 0 (cage SFP) ⇒ ignoré : un débit inconnu n'est pas un débit dégradé. Critique → WhatsApp immédiat |
 | Transit | `transit_unavailable` | (réservé) |
 | Transit | `lr_no_transit` | SSH OK mais ping internet échoue depuis LTU LR |
 | Transit | `lr_latency_high` | Latence moyenne LR → `8.8.8.8` ≥ `LR_LATENCY_CRITICAL_MS` (défaut 100 ms) sur 3 cycles → critique |

@@ -68,6 +68,21 @@ class Device(Base):
     first_discovered_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     last_discovered_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # Physical uplink: which switch port this device is plugged into. Filled
+    # automatically by switch_port_service from the switch's MAC forwarding
+    # table (BRIDGE-MIB), never typed by hand — it is what makes port-level
+    # monitoring cover every port that actually carries a supervised device,
+    # instead of the single operator-designated `rocket_port_index`.
+    # Both NULL = unknown wiring (device behind an unmanaged switch, MAC not
+    # learned, or switch without a readable FDB) → that port is simply not
+    # watched. `uplink_switch_port` is an IF-MIB ifIndex, the same numbering as
+    # the `port_N_*` metrics.
+    uplink_switch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("devices.id", ondelete="SET NULL"), nullable=True,
+    )
+    uplink_switch_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    uplink_detected_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+
     # Per-device alert_policy overrides — see services/alert_policy.merge_overrides
     policy_overrides: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 

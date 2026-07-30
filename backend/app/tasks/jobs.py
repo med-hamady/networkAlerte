@@ -72,6 +72,7 @@ from app.services import (
     site_infra_service,
     snmp_service,
     ssh_service,
+    switch_port_service,
     threshold_service,
     uisp_power_service,
     uisp_sync_service,
@@ -1033,44 +1034,70 @@ async def snmp_poll_job() -> None:
                     )
 
             # Switch port monitoring (not handled by alert engine — device-level rule).
-            # Per-switch settings come from the UispSwitch row (port index + min speed).
+            # Per-switch settings come from the UispSwitch row (min speed).
+            #
+            # WHICH ports are watched: every port switch_port_mapping_job proved
+            # carries a supervised device (devices.uplink_switch_port), plus the
+            # operator's manual `rocket_port_index` if one is set. Ports with
+            # nothing known behind them are ignored — that is what keeps unused
+            # and third-party ports from alerting.
+            #
+            # Historically this block only ever looked at `rocket_port_index`,
+            # which no code filled: it is NULL on every switch, so neither the
+            # DOWN check nor the sub-gigabit check ever ran anywhere.
             if category in SWITCH_RULE_CATEGORIES:
-                port_idx = rocket_port_index or 0
                 min_speed = port_min_speed
-                if port_idx > 0:
+                watched = await switch_port_service.watched_ports(session, dev_id)
+                if rocket_port_index and rocket_port_index > 0:
+                    watched.setdefault(rocket_port_index, "port désigné manuellement")
+
+                down_ports: list[tuple[int, str]] = []
+                slow_ports: list[tuple[int, str, float]] = []
+                for port_idx, label in sorted(watched.items()):
                     port_status = metrics.get(f"port_{port_idx}_up")
-                    if port_status is not None:
-                        if port_status == 0.0:
-                            await _open_and_notify(
-                                session, dev, INC_SWITCH_PORT, "critical",
-                                f"GigabitEthernet{port_idx} du {dev.name} "
-                                f"(connecté au LTU Rocket) est DOWN. "
-                                f"Vérifiez le câble entre le switch et le LTU Rocket.",
-                                alert_type=AT_SWITCH_PORT,
-                            )
-                            await _resolve_and_notify(
-                                session, dev, INC_SWITCH_PORT_SPEED, alert_type=AT_SWITCH_PORT_SPEED
-                            )
-                        else:
-                            await _resolve_and_notify(
-                                session, dev, INC_SWITCH_PORT, alert_type=AT_SWITCH_PORT
-                            )
-                            # Port is UP — check link speed
-                            speed = metrics.get(f"port_{port_idx}_speed_mbps")
-                            if speed is not None:
-                                if speed < min_speed:
-                                    await _open_and_notify(
-                                        session, dev, INC_SWITCH_PORT_SPEED, "critical",
-                                        f"GigabitEthernet{port_idx} du {dev.name} UP "
-                                        f"mais vitesse négociée à {speed:.0f} Mbps "
-                                        f"(seuil minimum : {min_speed:.0f} Mbps). "
-                                        f"Vérifiez la qualité du câble et l'auto-négociation.",
-                                        alert_type=AT_SWITCH_PORT_SPEED,
-                                    )
-                                else:
-                                    await _resolve_and_notify(
-                                        session, dev, INC_SWITCH_PORT_SPEED, alert_type=AT_SWITCH_PORT_SPEED
-                                    )
+                    if port_status is None:
+                        # Port outside the SNMP scan range or not answering —
+                        # nothing observed, so nothing asserted.
+                        continue
+                    if port_status == 0.0:
+                        down_ports.append((port_idx, label))
+                        continue
+                    speed = metrics.get(f"port_{port_idx}_speed_mbps")
+                    # ifSpeed 0 = the switch reports no rate for that port (SFP
+                    # cages do this) — an unknown rate is not a degraded one.
+                    if speed is not None and 0 < speed < min_speed:
+                        slow_ports.append((port_idx, label, speed))
+
+                # One incident per switch per alert_type (dedup is on
+                # device_id + alert_type), listing every offending port.
+                if down_ports:
+                    detail = " ; ".join(f"port {p} ({lbl})" for p, lbl in down_ports)
+                    await _open_and_notify(
+                        session, dev, INC_SWITCH_PORT, "critical",
+                        f"{len(down_ports)} port(s) DOWN sur {dev.name} — {detail}. "
+                        f"Vérifiez le câble et l'équipement au bout du port.",
+                        alert_type=AT_SWITCH_PORT,
+                    )
+                else:
+                    await _resolve_and_notify(
+                        session, dev, INC_SWITCH_PORT, alert_type=AT_SWITCH_PORT
+                    )
+
+                if slow_ports:
+                    detail = " ; ".join(
+                        f"port {p} ({lbl}) à {spd:.0f} Mbps" for p, lbl, spd in slow_ports
+                    )
+                    await _open_and_notify(
+                        session, dev, INC_SWITCH_PORT_SPEED, "critical",
+                        f"{len(slow_ports)} port(s) UP mais en débit dégradé sur "
+                        f"{dev.name} — {detail} (seuil minimum : {min_speed:.0f} Mbps). "
+                        f"Vérifiez la qualité du câble et l'auto-négociation.",
+                        alert_type=AT_SWITCH_PORT_SPEED,
+                    )
+                else:
+                    await _resolve_and_notify(
+                        session, dev, INC_SWITCH_PORT_SPEED, alert_type=AT_SWITCH_PORT_SPEED
+                    )
 
                 # Fibre uplink monitoring — the site's fibre lands on an SFP port;
                 # when the cable breaks the SFP loses light and the port goes DOWN
@@ -1096,6 +1123,72 @@ async def snmp_poll_job() -> None:
                             )
 
             await session.commit()
+
+
+async def switch_port_mapping_job() -> None:
+    """Work out which supervised device sits on which switch port.
+
+    Reads each switch's MAC forwarding table and matches it against the MACs of
+    the infra devices on the same site (see switch_port_service). What it writes
+    — `devices.uplink_switch_port` — is what makes snmp_poll_job's port rules
+    watch every port that actually carries something, instead of the single
+    `rocket_port_index` an operator was supposed to type in and never did.
+
+    Hourly, and deliberately tolerant: a switch that doesn't answer keeps its
+    previous attributions (a link that just died must stay watched).
+    """
+    settings = get_settings()
+    async with async_session_factory() as session:
+        results = await switch_port_service.detect_all(
+            session,
+            snmp_port=settings.snmp_port,
+            snmp_timeout=settings.snmp_timeout,
+            default_community=settings.snmp_default_community,
+        )
+        await session.commit()
+
+    attributed = sum(len(r.attributed) for r in results)
+    logger.info(
+        "Switch port mapping — %d switch(es), %d port(s) attribué(s)",
+        len(results), attributed,
+    )
+    for wiring in results:
+        if not wiring.ok:
+            logger.warning(
+                "Switch port mapping — %s ignoré : %s", wiring.switch_name, wiring.error,
+            )
+            continue
+        if wiring.attributed:
+            logger.info(
+                "Switch port mapping — %s : %s",
+                wiring.switch_name,
+                ", ".join(
+                    f"port {p} = {n}"
+                    for n, p in sorted(wiring.attributed.items(), key=lambda kv: kv[1])
+                ),
+            )
+        if wiring.ambiguous:
+            logger.info(
+                "Switch port mapping — %s : port(s) partagé(s) ignoré(s) (uplink probable) : %s",
+                wiring.switch_name,
+                "; ".join(f"port {p} → {', '.join(n)}" for p, n in wiring.ambiguous.items()),
+            )
+        if wiring.max_ports_raised_to:
+            logger.warning(
+                "Switch port mapping — %s : max_ports relevé à %d "
+                "(un équipement supervisé était au-delà de la plage scannée)",
+                wiring.switch_name, wiring.max_ports_raised_to,
+            )
+        if wiring.rocket_port_index_set:
+            logger.info(
+                "Switch port mapping — %s : rocket_port_index renseigné automatiquement (%d)",
+                wiring.switch_name, wiring.rocket_port_index_set,
+            )
+        if wiring.unmatched:
+            logger.debug(
+                "Switch port mapping — %s : %d équipement(s) non localisé(s) : %s",
+                wiring.switch_name, len(wiring.unmatched), ", ".join(wiring.unmatched),
+            )
 
 
 def _fmt_autonomy(seconds: float | None) -> str:
@@ -3226,7 +3319,7 @@ _FAST_JOB_IDS = {
 _HEAVY_JOB_IDS = {
     "snmp_poll", "power_poll", "lr_internet_probe", "ltu_api_poll",
     "airos_api_poll", "af60_api_poll", "lr_plan_sync",
-    "client_block_enforcement", "uisp_sync",
+    "client_block_enforcement", "uisp_sync", "switch_port_mapping",
 }
 _PING_LR_JOB_IDS = {"client_ping"}
 
@@ -3288,6 +3381,18 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         replace_existing=True,
         **safety,
     )
+    if settings.switch_port_mapping_enabled:
+        scheduler.add_job(
+            switch_port_mapping_job,
+            trigger="interval", minutes=settings.switch_port_mapping_interval_minutes,
+            id="switch_port_mapping",
+            name="Switch port mapping (quel équipement sur quel port)",
+            replace_existing=True,
+            # Run once at startup so a fresh deployment starts watching ports
+            # immediately instead of after the first interval.
+            next_run_time=datetime.datetime.now(datetime.UTC),
+            **safety,
+        )
     scheduler.add_job(
         lr_internet_probe_job,
         trigger="interval", seconds=settings.lr_latency_interval,

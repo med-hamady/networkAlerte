@@ -117,6 +117,19 @@ _UBNT_STA_MODEL_COL = "1.3.6.1.4.1.41112.1.4.7.1.2"
 _UBNT_STA_IP_COL    = "1.3.6.1.4.1.41112.1.4.7.1.10"
 _UBNT_STA_MAX_ROWS  = 128                              # cap walk to avoid runaway loops
 
+# BRIDGE-MIB / Q-BRIDGE-MIB — MAC forwarding database, used to work out which
+# physical port a supervised device is plugged into (see resolve_mac_ports).
+#   dot1dTpFdbPort        : .<6 MAC octets>        → dot1dBasePort
+#   dot1qTpFdbPort        : .<vlan>.<6 MAC octets> → dot1dBasePort (VLAN-aware)
+#   dot1dBasePortIfIndex  : .<dot1dBasePort>       → IF-MIB ifIndex
+_DOT1D_FDB_PORT          = "1.3.6.1.2.1.17.4.3.1.2"
+_DOT1Q_FDB_PORT          = "1.3.6.1.2.1.17.7.1.2.2.1.2"
+_DOT1D_BASE_PORT_IFINDEX = "1.3.6.1.2.1.17.1.4.1.2"
+# The FDB of a site switch holds every client MAC bridged through the Rockets,
+# so the fallback walk must stay bounded — it is a diagnostic path, not the
+# normal one (which is one GET per known MAC).
+_FDB_WALK_MAX_ROWS       = 2000
+
 
 async def _snmp_get(
     engine: SnmpEngine,
@@ -494,6 +507,138 @@ async def collect_switch_port_metrics(
 
     logger.debug("Switch %s — %d ports discovered, %d metrics", host, found, len(metrics))
     return metrics
+
+
+def _mac_to_oid_suffix(mac: str) -> str | None:
+    """"aa:bb:cc:dd:ee:ff" → "170.187.204.221.238.255" (BRIDGE-MIB index form).
+
+    The FDB tables are indexed by the 6 MAC octets in decimal, so a known MAC
+    can be fetched with a single GET instead of walking the whole table.
+    """
+    cleaned = mac.strip().lower().replace(":", "").replace("-", "").replace(".", "")
+    if len(cleaned) != 12 or any(c not in "0123456789abcdef" for c in cleaned):
+        return None
+    return ".".join(str(int(cleaned[i:i + 2], 16)) for i in range(0, 12, 2))
+
+
+def _mac_from_oid_suffix(suffix: str) -> str | None:
+    """Trailing 6 decimal octets of an FDB row index → "aa:bb:cc:dd:ee:ff"."""
+    parts = suffix.split(".")
+    if len(parts) < 6:
+        return None
+    try:
+        octets = [int(p) for p in parts[-6:]]
+    except ValueError:
+        return None
+    if any(o < 0 or o > 255 for o in octets):
+        return None
+    return ":".join(f"{o:02x}" for o in octets)
+
+
+async def resolve_mac_ports(
+    host: str,
+    macs: list[str],
+    community: str = "public",
+    port: int = 161,
+    timeout: int = 2,
+    allow_walk: bool = True,
+) -> dict[str, int]:
+    """Locate on which switch port each of `macs` is learned (BRIDGE-MIB FDB).
+
+    Returns {mac: ifIndex} for the MACs the switch has actually learned —
+    absent keys simply mean "not seen behind this switch", which is the normal
+    answer for every device that is not plugged into it.
+
+    Why targeted GETs and not a walk: a site switch carries every client MAC
+    learned through the Rockets bridging their subscribers, so its FDB runs to
+    thousands of rows — one GETNEXT round-trip each. We already know the MACs
+    we care about (our supervised infra), and the FDB is indexed BY the MAC, so
+    one GET per MAC is bounded and cheap (~14 GETs for a full site switch).
+    The bounded walk is only a fallback for switches whose FDB is exposed under
+    Q-BRIDGE with a VLAN id we can't guess.
+
+    Two table layouts are tried, in order:
+      - dot1dTpFdbPort  (BRIDGE-MIB)   : indexed by <6 MAC octets>
+      - dot1qTpFdbPort  (Q-BRIDGE-MIB) : indexed by <vlan>.<6 MAC octets>
+    Both yield a dot1dBasePort (bridge port), which is NOT the ifIndex used by
+    the IF-MIB port metrics: dot1dBasePortIfIndex translates it. When that
+    translation is unavailable the bridge port is used as-is — the two are
+    identical on most switches, and a wrong guess can only mis-attribute a
+    port, which the caller's ambiguity guards then drop.
+    """
+    engine = _get_engine()
+    wanted: dict[str, str] = {}  # oid suffix -> mac
+    for mac in macs:
+        suffix = _mac_to_oid_suffix(mac)
+        if suffix:
+            wanted[suffix] = mac.strip().lower()
+    if not wanted:
+        return {}
+
+    found: dict[str, int] = {}  # mac -> bridge port
+    for suffix, mac in wanted.items():
+        raw = await _snmp_get(engine, host, community, f"{_DOT1D_FDB_PORT}.{suffix}", port, timeout)
+        if raw is None:
+            # Q-BRIDGE variant — VLAN 1 is the overwhelmingly common untagged
+            # management VLAN; other VLAN ids fall through to the walk below.
+            raw = await _snmp_get(
+                engine, host, community, f"{_DOT1Q_FDB_PORT}.1.{suffix}", port, timeout,
+            )
+        if raw is None:
+            continue
+        with contextlib.suppress(TypeError, ValueError):
+            bridge_port = int(raw)
+            if bridge_port > 0:
+                found[mac] = bridge_port
+
+    if not found and allow_walk:
+        # Nothing resolved by GET: either the switch uses Q-BRIDGE on a VLAN we
+        # didn't guess, or none of our MACs sit behind it. Walk once (bounded)
+        # to tell those two apart — and pick up whatever is there.
+        for base_oid in (_DOT1Q_FDB_PORT, _DOT1D_FDB_PORT):
+            rows = await _snmp_walk(
+                engine, host, community, base_oid, port, timeout,
+                max_rows=_FDB_WALK_MAX_ROWS,
+            )
+            for oid_str, raw in rows:
+                mac = _mac_from_oid_suffix(oid_str[len(base_oid) + 1:])
+                if mac is None or mac not in wanted.values():
+                    continue
+                with contextlib.suppress(TypeError, ValueError):
+                    bridge_port = int(raw)
+                    if bridge_port > 0:
+                        found[mac] = bridge_port
+            if rows:
+                break
+
+    if not found:
+        logger.debug("Switch %s — aucune MAC supervisée trouvée dans la FDB", host)
+        return {}
+
+    # Bridge port → ifIndex (cached per distinct bridge port for this call).
+    if_index_by_port: dict[int, int] = {}
+    resolved: dict[str, int] = {}
+    for mac, bridge_port in found.items():
+        if bridge_port not in if_index_by_port:
+            raw = await _snmp_get(
+                engine, host, community,
+                f"{_DOT1D_BASE_PORT_IFINDEX}.{bridge_port}", port, timeout,
+            )
+            if_index = bridge_port
+            if raw is not None:
+                with contextlib.suppress(TypeError, ValueError):
+                    candidate = int(raw)
+                    if candidate > 0:
+                        if_index = candidate
+            if_index_by_port[bridge_port] = if_index
+        resolved[mac] = if_index_by_port[bridge_port]
+
+    logger.info(
+        "Switch %s — %d/%d MAC supervisée(s) localisée(s) : %s",
+        host, len(resolved), len(wanted),
+        ", ".join(f"{m}→port {p}" for m, p in sorted(resolved.items(), key=lambda kv: kv[1])),
+    )
+    return resolved
 
 
 def _format_mac_from_octets(raw: Any) -> str | None:

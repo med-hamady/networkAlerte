@@ -19,6 +19,8 @@ import datetime
 from app.core.alert_constants import (
     AT_BATTERY_EXTERNAL_LOW,
     AT_BATTERY_INTERNAL_LOW,
+    AT_SWITCH_PORT_DOWN,
+    AT_SWITCH_PORT_SPEED_LOW,
     NotificationEvent,
     Severity,
 )
@@ -28,9 +30,17 @@ from app.models.incident import Incident
 
 # Alert types whose human description carries operational context not present in
 # the structured fields (charge % + estimated autonomy for the UISP Power
-# batteries). For these we render the description as an extra line so the
-# WhatsApp message exposes it; every other alert keeps the terse field layout.
-_DESCRIPTION_ALERT_TYPES = {AT_BATTERY_INTERNAL_LOW, AT_BATTERY_EXTERNAL_LOW}
+# batteries; WHICH ports are down or degraded, and what is cabled to them, for
+# the switch port alerts — the structured fields only name the switch, which is
+# not actionable on a 24-port unit). For these we render the description as an
+# extra line so the WhatsApp message exposes it; every other alert keeps the
+# terse field layout.
+_DESCRIPTION_ALERT_TYPES = {
+    AT_BATTERY_INTERNAL_LOW,
+    AT_BATTERY_EXTERNAL_LOW,
+    AT_SWITCH_PORT_DOWN,
+    AT_SWITCH_PORT_SPEED_LOW,
+}
 
 # ---------------------------------------------------------------------------
 # Visual identity per severity

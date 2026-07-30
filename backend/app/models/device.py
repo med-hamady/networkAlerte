@@ -391,7 +391,7 @@ class UispSwitch(Device):
 
     id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True)
 
-    max_ports: Mapped[int] = mapped_column(Integer, default=16, nullable=False)
+    max_ports: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
     # SNMP ifIndex of the port connected to the supervised Rocket. None = no
     # specific port monitored (we only check the device as a whole).
     rocket_port_index: Mapped[int | None] = mapped_column(Integer, nullable=True)

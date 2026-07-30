@@ -94,7 +94,7 @@ function emptyForm(type: DeviceFormData['device_type']): DeviceFormData {
     case 'uisp_power':
       return { ...base, device_type: 'uisp_power', api_username: '', api_password: '', api_port: 443 }
     case 'uisp_switch':
-      return { ...base, device_type: 'uisp_switch', max_ports: 16, rocket_port_index: null, fiber_port_index: null, port_min_speed_mbps: 1000 }
+      return { ...base, device_type: 'uisp_switch', max_ports: 30, rocket_port_index: null, fiber_port_index: null, port_min_speed_mbps: 1000 }
     case 'client_modem':
       return { ...base, device_type: 'client_modem', lr_id: null, management_protocol: 'ssh', management_port: 22, management_username: '', management_password: '' }
     case 'airfiber':

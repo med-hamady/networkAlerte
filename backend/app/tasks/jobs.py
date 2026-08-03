@@ -3378,9 +3378,12 @@ async def lr_plan_sync_job() -> None:
 # À ~1000+ devices, faire tourner TOUS les jobs dans un seul process saturait le
 # GIL : la sonde SSH (ThreadPoolExecutor) affamait le device_ping → last_seen
 # figé ~20 min. On scinde la charge sur 3 process (containers) :
-#   - "fast"    : disponibilité de l'INFRA + maintenance (async léger, latence-critique)
-#   - "heavy"   : SSH et gros fan-outs API
-#   - "ping-lr" : le ping des LR clients, SEUL
+#   - "fast"      : disponibilité de l'INFRA + maintenance (async léger, latence-critique)
+#   - "heavy"     : SSH (sonde LR, blocage) + snmp/power/uisp_sync/switch_port
+#   - "ping-lr"   : le ping des LR clients, SEUL
+#   - "poll-af60" : le poll HTTP des AF60, SEUL (courbe débit/capacité 1 pt/min)
+#   - "poll-ltu"  : le poll HTTP des Rockets LTU + fan-out LR, SEUL
+#   - "poll-airos": le poll HTTP airOS des LR airMAX, SEUL
 # Le heartbeat tourne dans CHAQUE process (liveness). En "all" (dev, process
 # unique) rien n'est élagué.
 #
@@ -3401,17 +3404,33 @@ _FAST_JOB_IDS = {
     "site_infra_report",
 }
 _HEAVY_JOB_IDS = {
-    "snmp_poll", "power_poll", "lr_internet_probe", "ltu_api_poll",
-    "airos_api_poll", "af60_api_poll", "lr_plan_sync",
+    "snmp_poll", "power_poll", "lr_internet_probe", "lr_plan_sync",
     "client_block_enforcement", "uisp_sync", "switch_port_mapping",
 }
 _PING_LR_JOB_IDS = {"client_ping"}
+
+# Chaque poll HTTP fan-out dans SON PROPRE process (un par famille radio).
+# Motif : ils partageaient la boucle d'événements de "heavy" avec la sonde SSH
+# (lr_internet_probe, paramiko) dont les threads tiennent le GIL pendant leur
+# crypto → les fetches HTTP async étaient affamés. Et entre eux, la phase 2 de
+# ltu/airos persiste des CENTAINES de LR en série (tours de 7-22 min mesurés le
+# 2026-08-03) : dans un même process, ce tour long affamait AF60 (dont le travail
+# est minuscule) → sa courbe n'avait qu'un point toutes les ~3 min au lieu d'une
+# par minute. Un process par job = aucune famine croisée. AF60 seul tombe à
+# quelques secondes/tour ; ltu/airos restent lents par leur propre phase 2 (à
+# optimiser séparément) mais ne ralentissent plus personne.
+_POLL_AF60_JOB_IDS = {"af60_api_poll"}
+_POLL_LTU_JOB_IDS = {"ltu_api_poll"}
+_POLL_AIROS_JOB_IDS = {"airos_api_poll"}
 
 # Groupe → jobs actifs. Un groupe absent d'ici = "all" (aucun élagage).
 _JOBS_BY_GROUP = {
     "fast": _FAST_JOB_IDS,
     "heavy": _HEAVY_JOB_IDS,
     "ping-lr": _PING_LR_JOB_IDS,
+    "poll-af60": _POLL_AF60_JOB_IDS,
+    "poll-ltu": _POLL_LTU_JOB_IDS,
+    "poll-airos": _POLL_AIROS_JOB_IDS,
 }
 
 
@@ -3423,9 +3442,10 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
       - coalesce=True       : if the scheduler missed several runs, only fire once
       - misfire_grace_time  : ignore runs older than this when catching up
 
-    ``settings.scheduler_group`` ("all" | "fast" | "heavy") sélectionne le
-    sous-ensemble effectif : tous les jobs sont d'abord enregistrés, puis ceux
-    hors groupe sont retirés (élagage robuste aux jobs conditionnels).
+    ``settings.scheduler_group`` (clé de ``_JOBS_BY_GROUP``, ou "all")
+    sélectionne le sous-ensemble effectif : tous les jobs sont d'abord
+    enregistrés, puis ceux hors groupe sont retirés (élagage robuste aux jobs
+    conditionnels).
     """
     settings = get_settings()
     safety = {"max_instances": 1, "coalesce": True, "misfire_grace_time": 15}

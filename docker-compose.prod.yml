@@ -109,8 +109,10 @@ services:
         max-file: "5"
 
   # Scheduler "heavy" : SSH (sonde transit/latence LR, lr_plan, client_block) +
-  # gros fan-outs API (snmp/ltu/airos/af60/power/uisp_sync). Sa pression
-  # GIL/threads reste confinée ici → n'impacte plus la disponibilité.
+  # snmp/power/uisp_sync/switch_port. Sa pression GIL/threads reste confinée ici
+  # → n'impacte plus la disponibilité. Les polls HTTP ltu/airos/af60 en ont été
+  # SORTIS (containers dédiés ci-dessous) : leurs fetches async étaient affamés
+  # par les threads SSH de ce container.
   scheduler-heavy:
     build:
       context: ./backend
@@ -136,6 +138,100 @@ services:
           # Plus de RAM que le "fast" : pool de threads SSH (lr_probe_concurrency)
           # + fan-outs API sur tout le parc.
           memory: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # Scheduler "poll-af60" : le poll HTTP des AF60, SEUL. Sorti de "heavy" parce
+  # que ses ~30 fetches HTTP async y étaient affamés par les threads SSH (GIL) et
+  # par les tours ltu/airos de plusieurs minutes. Seul, son tour tombe à quelques
+  # secondes → la courbe débit/capacité de la fiche a un point par minute.
+  scheduler-poll-af60:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./backend:/app
+    environment:
+      SCHEDULER_ENABLED: "true"
+      RUN_MODE: "scheduler"
+      SCHEDULER_GROUP: "poll-af60"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          # ~30 backhauls, HTTP async, phase 2 minuscule.
+          memory: 384m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # Scheduler "poll-ltu" : le poll HTTP des Rockets LTU + fan-out des LR, SEUL.
+  # Sa phase 2 persiste des centaines de LR en série (tour long) — isolé, ce tour
+  # ne ralentit plus af60 ni airos. (Optimiser sa phase 2 reste un chantier à part.)
+  scheduler-poll-ltu:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./backend:/app
+    environment:
+      SCHEDULER_ENABLED: "true"
+      RUN_MODE: "scheduler"
+      SCHEDULER_GROUP: "poll-ltu"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # Scheduler "poll-airos" : le poll HTTP airOS des LR airMAX, SEUL. Même raison
+  # que poll-ltu — grosse phase 2 sérielle, isolée pour ne plus affamer les autres.
+  scheduler-poll-airos:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./backend:/app
+    environment:
+      SCHEDULER_ENABLED: "true"
+      RUN_MODE: "scheduler"
+      SCHEDULER_GROUP: "poll-airos"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 768m
     logging:
       driver: json-file
       options:

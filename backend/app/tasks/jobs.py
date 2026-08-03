@@ -1577,6 +1577,14 @@ _LTU_POLL_DEADLINE_S = 40.0
 # and retried next cycle. Concurrency is settings.airos_concurrency.
 _AIROS_POLL_DEADLINE_S = 90.0
 
+# AF60 poll Phase 1 (fetch) — same shape. The parc is small (~30 backhauls) but
+# a serial tour still spread each device's samples to one point every ~4 min
+# (one auth + one fetch each). Fetched concurrently, a whole tour is a handful
+# of seconds → the curve gets a point per poll interval. Own (small) concurrency
+# constant: an AF60 offers one HTTPS session, nothing like the airOS fleet.
+_AF60_POLL_CONCURRENCY = 15
+_AF60_POLL_DEADLINE_S = 40.0
+
 
 @_timed_job
 async def ltu_api_poll_job() -> None:
@@ -2174,6 +2182,13 @@ async def af60_api_poll_job() -> None:
     règles AF60 (lien coupé, signal, SNR, lien dégradé consolidé). Lien
     point-à-point → pas d'auto-découverte de peers. Le device doit être `up`
     (joignable en mgmt) : un AF60 injoignable est géré par device_ping_job.
+
+    **Concurrent** : Phase 1 fetch de tous les AF60 EN PARALLÈLE (sémaphore
+    `_AF60_POLL_CONCURRENCY` + deadline global `_AF60_POLL_DEADLINE_S`), Phase 2
+    persist/alerting en série DB. Avant, le tour série espaçait les points d'un
+    même lien de ~4 min (une auth + un fetch chacun sur ~30 backhauls) → la
+    courbe de la fiche n'avait qu'un point toutes les 4 min. En parallèle, un
+    tour dure quelques secondes et chaque poll produit son point.
     """
     base_settings = get_settings()
     async with async_session_factory() as _ts_session:
@@ -2187,35 +2202,57 @@ async def af60_api_poll_job() -> None:
                 AirFiber.ssh_password.is_not(None),
             )
         )
-        devices = list(result.scalars().all())
+        # (id, name, ip, user, pwd, port) — on ne garde pas les ORM détachés au-delà
+        # de la session : Phase 2 recharge chaque device dans sa propre session.
+        targets = [
+            (d.id, d.name, d.ip_address, d.ssh_username, d.ssh_password, d.ssh_port or 443)
+            for d in result.scalars().all()
+        ]
 
-    if not devices:
+    if not targets:
         logger.debug("AF60 API poll — no eligible devices")
         return
 
-    logger.info("AF60 API poll — checking %d device(s)", len(devices))
+    logger.info("AF60 API poll — checking %d device(s)", len(targets))
     unit_map = af60_api_service.METRIC_UNITS
 
-    for device in devices:
-        metrics = await af60_api_service.collect_af60_metrics(
-            host=device.ip_address,
-            username=device.ssh_username,
-            password=device.ssh_password,
-            port=device.ssh_port or 443,
-        )
-        if metrics is None:
-            logger.debug("AF60 API no response — %s (%s)", device.name, device.ip_address)
-            continue
+    # ── Phase 1 : fetch UDAPI de tous les AF60 EN PARALLÈLE ──
+    sem = asyncio.Semaphore(_AF60_POLL_CONCURRENCY)
+    fetched: dict[int, dict] = {}
 
+    async def _fetch(dev_id: int, name: str, ip: str, user: str, pwd: str, port: int) -> None:
+        async with sem:
+            metrics = await af60_api_service.collect_af60_metrics(
+                host=ip, username=user, password=pwd, port=port,
+            )
+        if metrics is None:
+            logger.debug("AF60 API no response — %s (%s)", name, ip)
+            return
         logger.info(
-            "AF60 %s (%s) — %s",
-            device.name,
-            device.ip_address,
+            "AF60 %s (%s) — %s", name, ip,
             " | ".join(f"{k}={v}" for k, v in metrics.items() if v is not None),
         )
+        fetched[dev_id] = metrics
 
+    tasks = [asyncio.ensure_future(_fetch(*t)) for t in targets]
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True),
+            timeout=_AF60_POLL_DEADLINE_S,
+        )
+    except TimeoutError:  # asyncio.TimeoutError is an alias of builtin on 3.11+
+        for t in tasks:
+            t.cancel()
+        logger.warning(
+            "AF60 API poll : deadline %.0fs atteinte — %d/%d device(s) "
+            "récupéré(s), le reste sera repris au prochain cycle.",
+            _AF60_POLL_DEADLINE_S, len(fetched), len(tasks),
+        )
+
+    # ── Phase 2 : persist + alert engine en série DB ──
+    for dev_id, metrics in fetched.items():
         async with async_session_factory() as session:
-            dev = await session.get(AirFiber, device.id)
+            dev = await session.get(AirFiber, dev_id)
             if dev is None:
                 continue
 

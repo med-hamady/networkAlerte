@@ -1660,7 +1660,14 @@ async def ltu_api_poll_job() -> None:
             _LTU_POLL_DEADLINE_S, len(fetched), len(tasks),
         )
 
-    # ── Phase 2 : persist + discovery + alerting sequentially (DB-bound) ──
+    # ── Phase 2a : découverte + métriques du ROCKET, EN SÉRIE (déterministe) ──
+    # La DÉCOUVERTE (reconcile_peers) réattribue des LR par MAC : deux Rockets
+    # traités en parallèle pourraient courser sur un LR qui roame (chaque tâche ne
+    # tient que le verrou de SON Rocket, pas du LR). On la garde donc sérielle. Ici
+    # on ne touche QUE ce qui appartient au Rocket (peu nombreux) et on COLLECTE le
+    # travail par LR (nombreux, ~14 allers-retours DB chacun) pour la phase 2b
+    # concurrente. (lr_id, peer_metrics, net_mode) — jamais l'ORM détaché.
+    lr_work: list[tuple[int, dict, str | None]] = []
     for dev_id, (rocket_ap_metrics, all_peers, per_peer_metrics) in fetched.items():
         async with async_session_factory() as session:
             dev = await session.get(Device, dev_id)
@@ -1689,7 +1696,7 @@ async def ltu_api_poll_job() -> None:
             # AND the Network Capacity page, so persist it here (latest-only
             # collapse — not in HISTORY_METRICS) instead of only on the engine
             # copy. Per-link metrics (signal/CCQ/CINR/etc.) belong to each LR and
-            # are stored in the fan-out loop below.
+            # are stored in the concurrent fan-out below.
             rocket_ap_metrics["peer_count"] = len(all_peers)
 
             # DÉBIT AGRÉGÉ de l'AP = somme du trafic de tous ses CPE. L'API LTU
@@ -1723,50 +1730,77 @@ async def ltu_api_poll_job() -> None:
             )
 
             # netMode (router/bridge) per peer — the LTU equivalent of airOS
-            # netrole, free in the same API response. Keyed by MAC for the
-            # fan-out below so the client-block topology guard stays fresh
-            # every cycle without an SSH probe.
+            # netrole, free in the same API response. Keyed by MAC so the
+            # client-block topology guard stays fresh every cycle without SSH.
             net_mode_by_mac = {
                 p["mac"]: p.get("net_mode")
                 for p in all_peers
                 if p.get("mac")
             }
 
-            # Fan-out per-peer metrics to each child LR (matched by MAC).
-            # Each LR gets its own DeviceMetric rows AND its own alert engine
-            # pass so signal_low / ccq_low / cinr_low / etc. fire per-link,
-            # not just on whichever peer happened to be peers[0].
+            # Match each peer to its child LR (by MAC) and QUEUE the per-LR work.
+            # Load ALL of this Rocket's LRs in ONE query instead of one SELECT per
+            # peer (a Rocket with 60 CPE → 1 round-trip, not 60). reconcile_peers
+            # ran just above in the same transaction, so any LR it created is
+            # already visible. The heavy work (persist + alert engine + topology)
+            # is deferred to the concurrent phase 2b — the LR rows are disjoint.
+            lrs_res = await session.execute(
+                select(Lr).where(Lr.rocket_id == dev.id)
+            )
+            lr_by_mac = {lr.mac_address: lr for lr in lrs_res.scalars()}
+
             for peer_mac, peer_metrics in per_peer_metrics:
                 if not peer_mac:
                     continue
                 if not any(v is not None for v in peer_metrics.values()):
                     continue
-                lr_q = await session.execute(
-                    select(Lr).where(
-                        Lr.rocket_id == dev.id,
-                        Lr.mac_address == peer_mac,
-                    )
-                )
-                lr = lr_q.scalar_one_or_none()
+                lr = lr_by_mac.get(peer_mac)
                 if lr is None:
                     continue
+                lr_work.append((lr.id, dict(peer_metrics), net_mode_by_mac.get(peer_mac)))
+
+            await session.commit()
+
+    # ── Phase 2b : métriques + alertes + topo PAR LR, CONCURRENT (borné) ──
+    # Chaque LR est une ligne DISJOINTE ; le seul partage est le verrou advisory
+    # du Rocket parent (sérialise deux LR d'un même Rocket + évite le deadlock avec
+    # snmp_poll — cf. persist_device_metrics). La découverte est déjà faite et
+    # commitée en 2a, donc rien ne réattribue plus de LR ici.
+    persist_sem = asyncio.Semaphore(settings.poll_persist_concurrency)
+
+    async def _persist_lr(lr_id: int, peer_metrics: dict, net_mode: str | None) -> None:
+        # Un LR qui échoue ne doit ni tuer les autres ni disparaître : on isole et
+        # on logue (la session rollback via le context manager).
+        try:
+            async with persist_sem, async_session_factory() as session:
+                lr = await session.get(Lr, lr_id)
+                if lr is None:
+                    return
+                # Verrou du ROCKET PARENT avant la 1re écriture (fallback id du LR
+                # si orphelin) — cf. persist_device_metrics.
+                lock_key = lr.rocket_id or lr.id
+                await session.execute(
+                    text("SELECT pg_advisory_xact_lock(:k)"), {"k": int(lock_key)},
+                )
                 # Sync the stable distance_m column for quick UI display.
                 distance = peer_metrics.get("distance_m")
                 if distance is not None:
                     lr.distance_m = distance
-                await persist_device_metrics(session, lr.id, dict(peer_metrics), unit_map)
-                # Per-LR alert engine pass — radio-quality rules evaluate
-                # against this LR's metrics, not the Rocket's peer[0].
+                await persist_device_metrics(session, lr.id, peer_metrics, unit_map)
+                # Per-LR alert engine pass — radio-quality rules evaluate against
+                # this LR's metrics, not the Rocket's peer[0].
                 await alert_engine.evaluate_device_metrics(
                     session, lr, dict(peer_metrics), settings,
                 )
                 # Router vs bridge from the same API response (no SSH).
                 await _apply_lr_topology(
-                    session, lr, net_mode_by_mac.get(peer_mac),
-                    "netMode via API LTU Rocket",
+                    session, lr, net_mode, "netMode via API LTU Rocket",
                 )
+                await session.commit()
+        except Exception as exc:  # noqa: BLE001 — un LR ne doit pas casser le tour
+            logger.warning("LTU LR persist KO (lr_id=%s): %s", lr_id, exc)
 
-            await session.commit()
+    await asyncio.gather(*(_persist_lr(*w) for w in lr_work))
 
 
 _AIRMAX_PLATFORM_VARIANTS = (
@@ -2104,72 +2138,92 @@ async def airos_api_poll_job() -> None:
             _AIROS_POLL_DEADLINE_S, len(fetched), len(tasks),
         )
 
-    # ── Phase 2 : persist + alert engine + topologie en série DB ──
-    for dev_id, (metrics, hostname, netrole, model_variant) in fetched.items():
-        async with async_session_factory() as session:
-            dev = await session.get(Device, dev_id)
-            if dev is None:
-                continue
+    # ── Phase 2 : persist + alert engine + topologie, CONCURRENT (borné) ──
+    # Chaque LR est une ligne DISJOINTE (métriques/AlertState/incidents propres) ;
+    # aucune découverte ici (pas de reconcile_peers, contrairement au LTU) → rien
+    # de partagé entre deux LR sinon le verrou advisory du Rocket parent, qui les
+    # sérialise proprement quand ils partagent un Rocket. On les traite donc en
+    # parallèle, chacun dans SA session. La phase était sérielle → à quelques
+    # centaines de LR × ~14 allers-retours DB, un tour dépassait 10 min.
+    persist_sem = asyncio.Semaphore(settings.poll_persist_concurrency)
 
-            # Ce LR est aussi écrit par le fan-out de ltu_api_poll_job /
-            # snmp_poll_job, qui ne tiennent que la clé de leur Rocket → on prend
-            # LA MÊME, avant la 1re écriture (les mutations ORM ci-dessous partent
-            # dès l'autoflush du prochain execute()). Voir la règle complète dans
-            # persist_device_metrics. Fallback sur l'id du device sans parent (PTP
-            # LiteBeam, LR orphelin) : aucun autre job n'écrit ces lignes.
-            lock_key = dev.rocket_id if isinstance(dev, Lr) and dev.rocket_id else dev.id
-            await session.execute(
-                text("SELECT pg_advisory_xact_lock(:k)"), {"k": int(lock_key)},
-            )
+    async def _persist_one(dev_id: int, payload: tuple) -> None:
+        metrics, hostname, netrole, model_variant = payload
+        # Un LR qui échoue ne doit ni tuer les autres (ils sont indépendants) ni
+        # disparaître : on isole et on logue. La session rollback seule via le
+        # context manager. En série, une exception avortait tout le reste du tour.
+        try:
+            async with persist_sem, async_session_factory() as session:
+                dev = await session.get(Device, dev_id)
+                if dev is None:
+                    return
 
-            # Correct the LR model_variant from the airOS-reported hardware model
-            # (M5 vs 5AC). airOS is authoritative for the real device, so a peer/
-            # UISP misclassification at creation is fixed here. Restricted to the
-            # two airMAX variants by airmax_variant_from_model → can never flip an
-            # LR out of the airMAX family. LR only (PTP LiteBeam has no variant).
-            if isinstance(dev, Lr) and model_variant and dev.model_variant != model_variant:
-                logger.info(
-                    "airMAX LR model_variant ← airOS devmodel — '%s' (%s) : %s → %s",
-                    dev.name, dev.ip_address, dev.model_variant, model_variant,
+                # Ce LR est aussi écrit par le fan-out de ltu_api_poll_job /
+                # snmp_poll_job, qui ne tiennent que la clé de leur Rocket → on prend
+                # LA MÊME, avant la 1re écriture (les mutations ORM ci-dessous partent
+                # dès l'autoflush du prochain execute()). Voir la règle complète dans
+                # persist_device_metrics. C'est AUSSI ce qui sérialise deux LR d'un
+                # même Rocket traités en parallèle ici. Fallback sur l'id du device
+                # sans parent (PTP LiteBeam, LR orphelin) : personne d'autre n'écrit.
+                lock_key = dev.rocket_id if isinstance(dev, Lr) and dev.rocket_id else dev.id
+                await session.execute(
+                    text("SELECT pg_advisory_xact_lock(:k)"), {"k": int(lock_key)},
                 )
-                dev.model_variant = model_variant
 
-            # Sync the stable distance_m column for quick UI display (LR + PTP
-            # LiteBeam both carry it; a generic Device does not).
-            distance = metrics.get("distance_m")
-            if distance is not None and isinstance(dev, (Lr, PtpLiteBeam)):
-                dev.distance_m = distance
-
-            # Name always tracks the airOS-configured hostname for airMAX LRs:
-            # airOS is the source of truth, so a rename on the device propagates
-            # here every cycle. Manual renames in our UI are intentionally
-            # overwritten — change the hostname in airOS instead.
-            if hostname:
-                if dev.hostname != hostname:
-                    dev.hostname = hostname
-                if dev.name != hostname:
+                # Correct the LR model_variant from the airOS-reported hardware model
+                # (M5 vs 5AC). airOS is authoritative for the real device, so a peer/
+                # UISP misclassification at creation is fixed here. Restricted to the
+                # two airMAX variants by airmax_variant_from_model → can never flip an
+                # LR out of the airMAX family. LR only (PTP LiteBeam has no variant).
+                if isinstance(dev, Lr) and model_variant and dev.model_variant != model_variant:
                     logger.info(
-                        "airMAX LR name ← airOS hostname — '%s' (%s) → '%s'",
-                        dev.name, dev.ip_address, hostname,
+                        "airMAX LR model_variant ← airOS devmodel — '%s' (%s) : %s → %s",
+                        dev.name, dev.ip_address, dev.model_variant, model_variant,
                     )
-                    dev.name = hostname
+                    dev.model_variant = model_variant
 
-            await persist_device_metrics(session, dev.id, metrics, unit_map)
+                # Sync the stable distance_m column for quick UI display (LR + PTP
+                # LiteBeam both carry it; a generic Device does not).
+                distance = metrics.get("distance_m")
+                if distance is not None and isinstance(dev, (Lr, PtpLiteBeam)):
+                    dev.distance_m = distance
 
-            # Per-LR alert engine pass — radio-quality + link_substandard rules
-            # evaluate against this LR's metrics (engine injects model_variant
-            # so airMAX-family thresholds apply).
-            await alert_engine.evaluate_device_metrics(session, dev, dict(metrics), settings)
+                # Name always tracks the airOS-configured hostname for airMAX LRs:
+                # airOS is the source of truth, so a rename on the device propagates
+                # here every cycle. Manual renames in our UI are intentionally
+                # overwritten — change the hostname in airOS instead.
+                if hostname:
+                    if dev.hostname != hostname:
+                        dev.hostname = hostname
+                    if dev.name != hostname:
+                        logger.info(
+                            "airMAX LR name ← airOS hostname — '%s' (%s) → '%s'",
+                            dev.name, dev.ip_address, hostname,
+                        )
+                        dev.name = hostname
 
-            # Router vs bridge — netrole comes free in status.cgi, so the
-            # client-block topology guard is kept fresh every cycle without any
-            # SSH probe (the former hourly lr_topology_check_job was removed:
-            # both families now read mode from their HTTP poll). LR only: a P2P
-            # backhaul Rocket has no client-block / topology_mode column.
-            if isinstance(dev, Lr):
-                await _apply_lr_topology(session, dev, netrole, "netrole via airOS status.cgi")
+                await persist_device_metrics(session, dev.id, metrics, unit_map)
 
-            await session.commit()
+                # Per-LR alert engine pass — radio-quality + link_substandard rules
+                # evaluate against this LR's metrics (engine injects model_variant
+                # so airMAX-family thresholds apply).
+                await alert_engine.evaluate_device_metrics(session, dev, dict(metrics), settings)
+
+                # Router vs bridge — netrole comes free in status.cgi, so the
+                # client-block topology guard is kept fresh every cycle without any
+                # SSH probe (the former hourly lr_topology_check_job was removed:
+                # both families now read mode from their HTTP poll). LR only: a P2P
+                # backhaul Rocket has no client-block / topology_mode column.
+                if isinstance(dev, Lr):
+                    await _apply_lr_topology(session, dev, netrole, "netrole via airOS status.cgi")
+
+                await session.commit()
+        except Exception as exc:  # noqa: BLE001 — un LR ne doit pas casser le tour
+            logger.warning("airOS persist KO (device_id=%s): %s", dev_id, exc)
+
+    await asyncio.gather(
+        *(_persist_one(dev_id, payload) for dev_id, payload in fetched.items())
+    )
 
 
 @_timed_job

@@ -148,6 +148,19 @@ class Settings(BaseSettings):
     # deadline globale (_AIROS_POLL_DEADLINE_S), le job ne déborde plus jamais.
     airos_concurrency: int = 50
 
+    # Concurrence de la PHASE 2 (persist + alert engine) des polls ltu/airos.
+    # La phase 2 était SÉRIELLE : à ~800 LR, chaque LR fait ~14 allers-retours DB
+    # (inject deltas + open-incidents + par règle : get_or_create AlertState +
+    # increment/reset), soit ~11 000 requêtes en série → tours de 7-22 min. Les
+    # LR sont des lignes DISJOINTES (métriques/AlertState/incidents propres) : on
+    # les traite concurremment, chacun dans SA session, sous le verrou advisory du
+    # ROCKET PARENT (sérialise 2 LR d'un même Rocket + évite le deadlock avec
+    # snmp_poll — cf. persist_device_metrics). Borné pour ne pas épuiser le pool
+    # DB (chaque tâche = 1 connexion). LTU garde sa DÉCOUVERTE (reconcile_peers)
+    # sérielle : elle réattribue des LR par MAC et 2 Rockets en parallèle
+    # pourraient courser sur un LR qui roame.
+    poll_persist_concurrency: int = 8
+
     # Concurrence du snmp_poll_job. Le job était série (un walk SNMP à la fois)
     # → à 78 rockets/switches, aggravé par les timeouts des airMAX SNMP-off qui
     # s'additionnaient, un tour dépassait 60 s. Les collecteurs pysnmp sont async

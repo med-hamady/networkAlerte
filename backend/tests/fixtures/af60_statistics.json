@@ -1,0 +1,403 @@
+[
+ {
+  "timestamp": 1785750010048,
+  "device": {
+   "cpu": [
+    {
+     "identifier": "ARMv7 Processor rev 5 (v7l)",
+     "usage": 15
+    }
+   ],
+   "ram": {
+    "usage": 38,
+    "free": 148926464,
+    "total": 242155520
+   },
+   "temperatures": [],
+   "uptime": 3448643,
+   "gps": {
+    "fix": true,
+    "lat": 18.141715,
+    "lon": -15.940855,
+    "alt": 38,
+    "dop": 0.9,
+    "dim": 3,
+    "sats": 10,
+    "lastSync": 0
+   },
+   "powerTime": 3448642
+  },
+  "interfaces": [
+   {
+    "id": "eth0",
+    "name": "",
+    "statistics": {
+     "txDropped": 0,
+     "rxDropped": 0,
+     "txErrors": 0,
+     "rxErrors": 0,
+     "txRate": 66090915,
+     "rxRate": 3224675,
+     "txBytes": 54446101705559,
+     "rxBytes": 5010835227351,
+     "txPackets": 4411442663529263,
+     "rxPackets": 2812965230323596,
+     "txPPS": 6136641406990883840,
+     "rxPPS": 6138683550553940992,
+     "txJumbo": 0,
+     "rxJumbo": 0,
+     "txFlowCtrl": 0,
+     "rxFlowCtrl": 0,
+     "txBroadcast": 0,
+     "rxBroadcast": 0,
+     "txMulticast": 0,
+     "rxMulticast": 0
+    }
+   },
+   {
+    "id": "wlan0",
+    "name": "",
+    "statistics": {
+     "txDropped": 64527,
+     "rxDropped": 12379,
+     "txErrors": 0,
+     "rxErrors": 0,
+     "txRate": 3362455,
+     "rxRate": 66100104,
+     "txBytes": 5014187836320,
+     "rxBytes": 54446512220981,
+     "txPackets": 19354243152,
+     "rxPackets": 43101486084,
+     "txPPS": 2859,
+     "rxPPS": 6520,
+     "txJumbo": 0,
+     "rxJumbo": 0,
+     "txFlowCtrl": 0,
+     "rxFlowCtrl": 0,
+     "txBroadcast": 0,
+     "rxBroadcast": 0,
+     "txMulticast": 0,
+     "rxMulticast": 0
+    }
+   },
+   {
+    "id": "ubond0",
+    "name": "",
+    "statistics": {
+     "txDropped": 64527,
+     "rxDropped": 12379,
+     "txErrors": 0,
+     "rxErrors": 0,
+     "txRate": 3362455,
+     "rxRate": 66103177,
+     "txBytes": 5014187836320,
+     "rxBytes": 54446512226957,
+     "txPackets": 19354243152,
+     "rxPackets": 43101486088,
+     "txPPS": 2859,
+     "rxPPS": 6520,
+     "txJumbo": 0,
+     "rxJumbo": 0,
+     "txFlowCtrl": 0,
+     "rxFlowCtrl": 0,
+     "txBroadcast": 0,
+     "rxBroadcast": 0,
+     "txMulticast": 0,
+     "rxMulticast": 0
+    }
+   },
+   {
+    "id": "br0",
+    "name": "",
+    "statistics": {
+     "txDropped": 0,
+     "rxDropped": 0,
+     "txErrors": 0,
+     "rxErrors": 0,
+     "txRate": 135594,
+     "rxRate": 304627,
+     "txBytes": 3613281040,
+     "rxBytes": 52272322109,
+     "txPackets": 3447343,
+     "rxPackets": 393556789,
+     "txPPS": 10,
+     "rxPPS": 278,
+     "txJumbo": 0,
+     "rxJumbo": 0,
+     "txFlowCtrl": 0,
+     "rxFlowCtrl": 0,
+     "txBroadcast": 0,
+     "rxBroadcast": 0,
+     "txMulticast": 0,
+     "rxMulticast": 0
+    }
+   }
+  ],
+  "wireless": {
+   "serviceUptime": 3444796,
+   "serviceTime": 3448595,
+   "radios": [
+    {
+     "id": "main",
+     "linkState": "connected",
+     "frequency": {
+      "center": 66960
+     },
+     "channelWidth": {
+      "tx": 1080
+     },
+     "waveAi": true,
+     "serviceUptime": 3444796,
+     "dfs": {
+      "enabled": false,
+      "cacDuration": 0,
+      "cacRemaining": 0,
+      "lockouts": []
+     }
+    }
+   ],
+   "peers": [
+    {
+     "common": {
+      "hostname": "F60 AT1-AT2",
+      "mgmtIp": "10.135.20.4",
+      "uptime": 13820487,
+      "distance": 2246,
+      "timestamp": 1785750006000,
+      "powerTime": 21508981,
+      "serviceUptime": 21454565,
+      "serviceTime": 21508931,
+      "identification": {
+       "mac": "24:5a:4c:f2:8b:36",
+       "product": "airFiber 60 LR",
+       "model": "AF60-LR",
+       "family": "airfiber-60",
+       "firmwareVersion": "2.6.8",
+       "firmware": "GP.ipq806x.v2.6.8.48409.251217.1118",
+       "subsystemID": "dc9e"
+      },
+      "cpu": [
+       {
+        "usage": 11
+       }
+      ],
+      "ram": {
+       "usage": 38,
+       "free": 149426176,
+       "total": 242155520
+      },
+      "counters": {
+       "rxRate": 3640000,
+       "txRate": 71021000,
+       "rxBytes": 70617023613000,
+       "txBytes": 876187235318000
+      }
+     },
+     "local": [
+      {
+       "id": "main",
+       "connected": true,
+       "active": true,
+       "connectionTime": 70150,
+       "beamForming": {
+        "rxSector": 2,
+        "txSector": 2
+       },
+       "linkQuality": {
+        "signal": -65,
+        "snr": 12,
+        "capacity": {
+         "dl": 600000,
+         "ul": 975000,
+         "dlIdeal": 1201200,
+         "ulIdeal": 1201200
+        },
+        "linkScore": {
+         "dl": 26,
+         "ul": 43,
+         "dl24": 44,
+         "ul24": 42
+        },
+        "mcs": {
+         "txIdx": 9,
+         "txIdxIdeal": 10,
+         "rxIdx": 6,
+         "rxIdxIdeal": 10,
+         "txRate": 4,
+         "rxRate": 4,
+         "txLabel": "QPSK",
+         "rxLabel": "QPSK",
+         "rxHistogram": [
+          {
+           "idx": 0,
+           "rate": 1,
+           "value": 0
+          },
+          {
+           "idx": 1,
+           "rate": 2,
+           "value": 100
+          },
+          {
+           "idx": 2,
+           "rate": 2,
+           "value": 11
+          },
+          {
+           "idx": 3,
+           "rate": 2,
+           "value": 255
+          },
+          {
+           "idx": 4,
+           "rate": 2,
+           "value": 28325
+          },
+          {
+           "idx": 5,
+           "rate": 2,
+           "value": 0
+          },
+          {
+           "idx": 6,
+           "rate": 4,
+           "value": 417094
+          },
+          {
+           "idx": 7,
+           "rate": 4,
+           "value": 225302
+          },
+          {
+           "idx": 8,
+           "rate": 4,
+           "value": 1396671
+          },
+          {
+           "idx": 9,
+           "rate": 4,
+           "value": 137539
+          },
+          {
+           "idx": 10,
+           "rate": 8,
+           "value": 0
+          },
+          {
+           "idx": 11,
+           "rate": 8,
+           "value": 0
+          },
+          {
+           "idx": 12,
+           "rate": 8,
+           "value": 0
+          }
+         ]
+        },
+        "idealSignal": -40
+       }
+      }
+     ],
+     "remote": [
+      {
+       "id": "main",
+       "antenna": {
+        "gain": 40
+       },
+       "beamForming": {
+        "rxSector": 0,
+        "txSector": 0
+       },
+       "linkQuality": {
+        "signal": -63,
+        "snr": 15,
+        "serviceUptime": 21454565,
+        "mcs": {
+         "rxHistogram": [
+          {
+           "idx": 0,
+           "rate": 1,
+           "value": 0
+          },
+          {
+           "idx": 1,
+           "rate": 2,
+           "value": 0
+          },
+          {
+           "idx": 2,
+           "rate": 2,
+           "value": 5
+          },
+          {
+           "idx": 3,
+           "rate": 2,
+           "value": 18
+          },
+          {
+           "idx": 4,
+           "rate": 2,
+           "value": 129
+          },
+          {
+           "idx": 5,
+           "rate": 2,
+           "value": 0
+          },
+          {
+           "idx": 6,
+           "rate": 4,
+           "value": 61484
+          },
+          {
+           "idx": 7,
+           "rate": 4,
+           "value": 0
+          },
+          {
+           "idx": 8,
+           "rate": 4,
+           "value": 0
+          },
+          {
+           "idx": 9,
+           "rate": 4,
+           "value": 0
+          },
+          {
+           "idx": 10,
+           "rate": 8,
+           "value": 0
+          },
+          {
+           "idx": 11,
+           "rate": 8,
+           "value": 0
+          },
+          {
+           "idx": 12,
+           "rate": 8,
+           "value": 0
+          }
+         ]
+        },
+        "idealSignal": -40
+       },
+       "gps": {
+        "fix": true,
+        "lat": 18.140041,
+        "lon": -15.919679,
+        "alt": 39,
+        "dop": 1.0,
+        "dim": 3,
+        "sats": 12,
+        "lastSync": 0
+       }
+      }
+     ]
+    }
+   ]
+  }
+ }
+]

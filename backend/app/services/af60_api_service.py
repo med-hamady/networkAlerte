@@ -75,6 +75,57 @@ def _kbps_to_mbps(val: object) -> float | None:
     return round(f / 1000.0, 2) if f is not None else None
 
 
+# Interface radio de l'AF60 dans ``interfaces[]`` (les autres : eth0, le bond
+# ubond0 et le bridge br0). C'est la SEULE qui mesure le lien 60 GHz lui-même.
+_RADIO_IFACE_ID = "wlan0"
+
+
+def _set_throughput(raw: dict, result: dict[str, float | None]) -> None:
+    """Renseigne ``dl/ul_throughput_mbps`` depuis les compteurs de ``wlan0``.
+
+    ⚠ **Pas** depuis ``peers[0].common.counters`` (ce que faisait le code
+    précédent, recopié du LTU sans vérification). Mesuré le 2026-08-03 sur un
+    AF60-LR réel (10.135.80.1, fw v2.6.8), 6 relevés à 10 s d'intervalle : ce
+    bloc-là est **relayé par la radio et retarde**, au point d'annoncer
+    **0,06 Mb/s pendant que le lien écoulait 76,69 Mb/s**. Une courbe bâtie
+    dessus montrerait des effondrements qui n'ont pas eu lieu. Les compteurs de
+    ``wlan0``, eux, collent au bit près à ceux d'``eth0`` à chaque relevé
+    (76,69 / 76,68 — le trafic qui entre par la radio ressort par le cuivre),
+    donc ils sont la mesure locale et directe.
+
+    **Unité = bit/s**, vérifiée par le contrôle taille de paquet, comme pour le
+    LTU : ``rxRate 66_100_104 ÷ 8 ÷ rxPPS 6520 = 1267 octets/paquet`` — sous la
+    MTU, ce qui n'est vrai que si la valeur est en bits.
+
+    ⚠ **SENS** — ``rx``/``tx`` sont relatifs à l'équipement interrogé, il faut
+    donc les rattacher au ``dl``/``ul`` que le firmware emploie lui-même dans
+    ``linkQuality.capacity`` (déjà la source de ``dl/ul_capacity_mbps``), sinon
+    la fiche afficherait un débit descendant sous une capacité montante. Sur ce
+    lien le firmware annonce ``capacity.dl=600000`` / ``ul=975000`` avec
+    ``mcs.rxIdx=6`` / ``txIdx=9`` : la direction la moins bien modulée est aussi
+    la moins capable, donc **dl = ce que l'équipement REÇOIT (rx)** et
+    **ul = ce qu'il ÉMET (tx)**. ``linkScore`` (dl 26 / ul 43) concorde.
+
+    ``wlan0`` absent (firmware inattendu) ⇒ les deux clés restent None : un trou
+    dans la courbe, jamais un 0 ni une valeur reprise d'une source douteuse.
+    """
+    stats = None
+    for iface in raw.get("interfaces") or []:
+        if isinstance(iface, dict) and iface.get("id") == _RADIO_IFACE_ID:
+            stats = iface.get("statistics")
+            break
+    if not isinstance(stats, dict):
+        logger.debug("AF60 : interface %s absente — débit non mesuré", _RADIO_IFACE_ID)
+        return
+
+    rx_bps = _float(stats.get("rxRate"))
+    tx_bps = _float(stats.get("txRate"))
+    if rx_bps is not None:
+        result["dl_throughput_mbps"] = round(rx_bps / 1_000_000.0, 3)
+    if tx_bps is not None:
+        result["ul_throughput_mbps"] = round(tx_bps / 1_000_000.0, 3)
+
+
 def parse_af60_metrics(raw: dict) -> dict[str, float | None]:
     """Mappe ``/api/v1.0/statistics`` (déjà déballé) vers nos clés de métriques.
 
@@ -93,25 +144,15 @@ def parse_af60_metrics(raw: dict) -> dict[str, float | None]:
     result["cpu_pct"] = _float(_nested(raw, "device", "cpu", 0, "usage"))
     result["ram_pct"] = _float(_nested(raw, "device", "ram", "usage"))
 
+    # DÉBIT réel (trafic écoulé) — une valeur INSTANTANÉE par relevé, à ne pas
+    # confondre avec la capacité plus bas.
+    _set_throughput(raw, result)
+
     peer = _nested(raw, "wireless", "peers", 0)
     if not isinstance(peer, dict):
         return result
 
     result["distance_m"] = _float(_nested(peer, "common", "distance"))
-
-    # DÉBIT réel (trafic écoulé), à distinguer de la capacité plus bas. Même
-    # UDAPI que le LTU : compteurs `common.counters`, clés `txRate`/`rxRate`,
-    # unité **bits par seconde** (vérifié sur un lien LTU, cf. ltu_api_service).
-    # ⚠ NON VÉRIFIÉ sur un AF60 physique — le firmware 60 GHz peut ne pas
-    # exposer ce bloc. Les clés restent alors à None plutôt que de valoir 0.
-    counters = _nested(peer, "common", "counters")
-    if isinstance(counters, dict):
-        tx_bps = _float(counters.get("txRate"))
-        rx_bps = _float(counters.get("rxRate"))
-        if tx_bps is not None:
-            result["dl_throughput_mbps"] = round(tx_bps / 1_000_000.0, 3)
-        if rx_bps is not None:
-            result["ul_throughput_mbps"] = round(rx_bps / 1_000_000.0, 3)
 
     lq = _nested(peer, "local", 0, "linkQuality")
     if isinstance(lq, dict):

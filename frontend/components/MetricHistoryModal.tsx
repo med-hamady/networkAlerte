@@ -119,6 +119,19 @@ export default function MetricHistoryModal({ device, onClose }: {
   const points = data?.points ?? []
   const tabs = data?.available_metrics ?? []
 
+  // La courbe par défaut (`lr_latency_ms`) n'existe pas partout : un AF60 n'est
+  // pas sondé en RTT, un LiteBeam non plus tant qu'il n'a rien remonté. Sans ça
+  // la modale s'ouvrirait sur un graphe vide alors que l'équipement A des
+  // courbes, juste d'autres. On ne bascule que si la métrique demandée est
+  // absente de `available_metrics` — un onglet cliqué en fait partie par
+  // construction, donc aucun risque de reprendre la main sur le choix de
+  // l'opérateur ni de boucler.
+  React.useEffect(() => {
+    if (tabs.length > 0 && !tabs.some(t => t.name === metric)) {
+      setMetric(tabs[0].name)
+    }
+  }, [tabs, metric])
+
   return (
     <>
       <div className="fixed inset-0 bg-blue-900/40 backdrop-blur-sm z-[60] animate-fade-in" onClick={onClose} />
@@ -131,7 +144,7 @@ export default function MetricHistoryModal({ device, onClose }: {
                 {data?.label ?? 'Historique'} — {device.name}
               </p>
               <p className="text-blue-400 text-xs mt-0.5">
-                Mesuré sur le lien radio du client, historique agrégé par tranches courtes
+                Mesuré sur le lien radio, historique agrégé par tranches courtes
               </p>
             </div>
             <button

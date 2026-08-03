@@ -281,8 +281,10 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
               }
             />
           )}
-          {/* Seuls les LR sont sondés en RTT → le graphe n'a de sens que là. */}
-          {isLr && (
+          {/* LR : latence + qualité du lien. AF60 : débits et capacités du
+              backhaul (le RTT n'y est pas sondé, mais les onglets suivent
+              `available_metrics`, donc seule la latence manque à l'appel). */}
+          {(isLr || device.device_type === 'airfiber') && (
             <button
               onClick={() => setShowHistory(true)}
               className="w-full flex items-center justify-center gap-2 mt-1 px-3 py-2 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 text-xs font-semibold transition-colors"

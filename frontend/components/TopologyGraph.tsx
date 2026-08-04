@@ -15,8 +15,8 @@
 import { useMemo } from 'react'
 import type { NetworkTopology, TopologyEdge } from '@/lib/types'
 
-const COL_W = 190      // écart horizontal entre deux couches
-const ROW_H = 96       // hauteur d'un emplacement de site (icône + 2 lignes)
+const COL_W = 215      // écart horizontal entre deux couches
+const ROW_H = 118      // hauteur d'un emplacement de site (icône + 2 lignes + air)
 const ICON = 52        // côté du pylône
 const NODE_W = 62      // largeur d'accroche des liaisons (un peu > l'icône)
 const NODE_H = 92      // icône + libellé + compteur
@@ -54,10 +54,11 @@ export default function TopologyGraph({
     return <p className="text-sm text-slate-500">Aucun site à afficher.</p>
   }
 
-  // Les arêtes d'arbre d'abord, les hors-arbre par-dessus : une boucle doit
-  // rester lisible même quand elle croise une branche.
+  // Les arêtes d'arbre d'abord, les hors-arbre PAR-DESSUS : une boucle doit
+  // rester lisible quand elle croise une branche. (`true` trié en premier =
+  // dessiné en premier = dessous.)
   const ordered = [...topo.edges].sort(
-    (a, b) => Number(a.is_tree_edge) - Number(b.is_tree_edge),
+    (a, b) => Number(b.is_tree_edge) - Number(a.is_tree_edge),
   )
 
   return (
@@ -75,7 +76,7 @@ export default function TopologyGraph({
           return (
             <g key={`${edge.site_a}|${edge.site_b}`} opacity={dim ? 0.18 : 1}>
               <path
-                d={curve(a, b)}
+                d={curve(a, b, !edge.is_tree_edge)}
                 fill="none"
                 stroke={color}
                 strokeWidth={edge.redundant ? 3.5 : 2}
@@ -115,6 +116,13 @@ export default function TopologyGraph({
                 width={ICON} height={ICON}
                 opacity={dim ? 0.35 : 1}
               />
+              {/* Cartouche blanc sous le libellé : une liaison qui passe
+                  derrière ne doit pas barrer le nom du site. */}
+              <rect
+                x={-LABEL_W / 2} y={ICON / 2 + 4}
+                width={LABEL_W} height={34} rx={4}
+                fill="#ffffff" opacity={dim ? 0.55 : 0.92}
+              />
               <text x={0} y={ICON / 2 + 18} textAnchor="middle"
                     className={`text-[13px] font-semibold ${
                       selected ? 'fill-blue-700' : dim ? 'fill-slate-400' : 'fill-slate-900'
@@ -134,12 +142,36 @@ export default function TopologyGraph({
   )
 }
 
-// Courbe de Bézier horizontale — les couches vont de gauche à droite, donc les
-// tangentes sont horizontales : deux liaisons vers des couches différentes
-// restent distinguables même quand elles partent du même site.
-function curve(a: Pos, b: Pos): string {
-  const dx = Math.max(40, Math.abs(b.x - a.x) * 0.5)
-  return `M ${a.x + NODE_W / 2} ${a.y} C ${a.x + NODE_W / 2 + dx} ${a.y}, ${b.x - NODE_W / 2 - dx} ${b.y}, ${b.x - NODE_W / 2} ${b.y}`
+/**
+ * Tracé d'une liaison, toujours du nœud le PLUS À GAUCHE vers le plus à droite.
+ *
+ * ⚠️ Réordonner par x n'est pas cosmétique. Les arêtes arrivent triées par ordre
+ * ALPHABÉTIQUE de nom de site, pas par position : pour « A2 CT2 ↔ A2 PK1 »,
+ * `site_a` est CT2 (colonne 3) et `site_b` est PK1 (colonne 2). Tracer de a vers
+ * b partait alors vers la droite depuis le nœud de droite puis revenait — une
+ * grande boucle en S qui traversait la moitié du graphe. Trois liaisons du parc
+ * étaient dans ce cas.
+ *
+ * Les tangentes sont horizontales, comme les couches : une liaison sort par le
+ * flanc droit d'un site et entre par le flanc gauche du suivant.
+ */
+function curve(a: Pos, b: Pos, bowOut: boolean): string {
+  const [l, r] = a.x <= b.x ? [a, b] : [b, a]
+  const half = NODE_W / 2
+
+  // Même colonne : une Bézier horizontale s'effondrerait en trait droit passant
+  // sur les nœuds intermédiaires. On sort par la droite des deux et on bombe.
+  if (Math.abs(r.x - l.x) < 1) {
+    const off = 78
+    return `M ${l.x + half} ${l.y} C ${l.x + half + off} ${l.y}, ${r.x + half + off} ${r.y}, ${r.x + half} ${r.y}`
+  }
+
+  // Une boucle de redondance relie souvent des rangées éloignées : on écarte
+  // davantage les tangentes pour qu'elle contourne les nœuds au lieu de les
+  // traverser.
+  const span = Math.abs(r.y - l.y)
+  const pull = (r.x - l.x) * (bowOut ? 0.75 : 0.45) + (bowOut ? Math.min(span * 0.25, 90) : 0)
+  return `M ${l.x + half} ${l.y} C ${l.x + half + pull} ${l.y}, ${r.x - half - pull} ${r.y}, ${r.x - half} ${r.y}`
 }
 
 function edgeTooltip(edge: TopologyEdge): string {

@@ -95,7 +95,7 @@ async def _block_one(
                 results["would_block"].append((mac, label, lr.name))
                 return
             try:
-                ok, msg = await client_block_service.block_client(
+                ok, msg, evidence = await client_block_service.block_client(
                     session, lr, reason=reason, mode=mode
                 )
             except Exception as exc:  # never let one LR abort the batch
@@ -107,6 +107,7 @@ async def _block_one(
             fai_audit.log_action(
                 "BLOCK", ok=ok, mac=lr.mac_address, name=lr.name,
                 mode=lr.block_mode, source="script", message=msg,
+                evidence=evidence,
             )
             if ok:
                 results["enforced"].append((mac, label, lr.name))

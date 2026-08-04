@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     # texte, dans un volume bind-monté → survit aux redéploiements.
     fai_log_path: str = "/app/logs/fai_actions.log"
 
+    # Preuves d'exécution attachées aux entrées du journal : un fichier texte par
+    # action (la transcription de la session SSH). Séparé du journal parce qu'une
+    # entrée du journal est UNE ligne — une sortie multi-lignes n'y tient pas.
+    fai_evidence_dir: str = "/app/logs/fai_evidence"
+
     # Mot de passe SSH « standard » attendu sur un LR gérable, contrôlé par la
     # route GET /fai/verify (le système de paiement vérifie qu'un LR est prêt à
     # être piloté). Le check est en base : le `ssh_password` stocké sur la fiche

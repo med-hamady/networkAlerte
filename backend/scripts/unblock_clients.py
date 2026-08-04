@@ -87,7 +87,7 @@ async def _unblock_one(
                 results["would_restore"].append((mac, lr.name))
                 return
             try:
-                ok, msg = await client_block_service.unblock_client(session, lr)
+                ok, msg, evidence = await client_block_service.unblock_client(session, lr)
             except Exception as exc:  # une erreur ne doit pas arrêter le lot
                 await session.rollback()
                 results["pending"].append((mac, lr.name, f"exception: {exc}"))
@@ -95,6 +95,7 @@ async def _unblock_one(
             fai_audit.log_action(
                 "UNBLOCK", ok=ok, mac=lr.mac_address, name=lr.name,
                 mode=lr.block_mode, source="script", message=msg,
+                evidence=evidence,
             )
             (results["restored"] if ok else results["pending"]).append(
                 (mac, lr.name) if ok else (mac, lr.name, msg)

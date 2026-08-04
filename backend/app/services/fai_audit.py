@@ -22,6 +22,7 @@ import collections
 import datetime
 import logging
 import os
+import re
 
 from app.core.config import get_settings
 
@@ -32,10 +33,87 @@ logger = logging.getLogger(__name__)
 # on ne lit que la queue du fichier (deque à taille bornée = O(1) mémoire).
 _MAX_SCAN_LINES = 5000
 
+# ── Preuves d'exécution ──────────────────────────────────────────────────────
+# Une entrée du journal est UNE ligne (le message y est aplati). La preuve, elle,
+# est la transcription multi-lignes d'une session SSH : elle ne peut donc pas
+# tenir dans la ligne et vit dans un fichier à côté.
+#
+# ⚠️ Le nom du fichier est DÉDUIT de (timestamp, MAC, action) — les trois champs
+# que la ligne porte déjà — plutôt que référencé par une colonne supplémentaire.
+# Raison : ajouter un champ changerait le format sur disque, et `_parse` (qui
+# fait un split à arité fixe) rejetterait alors toutes les lignes déjà écrites,
+# c.-à-d. l'historique d'audit entier. Ici, une ligne sans preuve est simplement
+# une ligne dont le fichier n'existe pas — l'ancien historique reste lisible.
+#
+# Corollaire : deux actions de MÊME type sur la MÊME MAC dans la MÊME seconde
+# se recouvriraient. En pratique impossible — une session SSH de blocage dure
+# plusieurs secondes, le sémaphore les sérialise et l'enforcement est à 120 s.
+_EVIDENCE_MAX_BYTES = 256 * 1024
+_SAFE_TOKEN_RE = re.compile(r"[^A-Za-z0-9:_-]")
+
+
+def _evidence_filename(timestamp: str, mac: str | None, action: str) -> str:
+    """Nom de fichier de preuve pour une entrée — déterministe et sûr.
+
+    ⚠️ Les trois arguments arrivent de la query string côté lecture : tout
+    caractère hors de l'allowlist est remplacé, et le résultat repasse par
+    ``os.path.basename``. Sans ça, un `mac=../../etc/passwd` ferait servir un
+    fichier arbitraire du conteneur.
+    """
+    parts = [
+        _SAFE_TOKEN_RE.sub("_", (timestamp or "").strip()),
+        _SAFE_TOKEN_RE.sub("_", (mac or "nomac").strip().lower()),
+        _SAFE_TOKEN_RE.sub("_", (action or "").strip().upper()),
+    ]
+    return os.path.basename("_".join(parts).replace(":", "") + ".txt")
+
+
+def _evidence_path(timestamp: str, mac: str | None, action: str) -> str:
+    return os.path.join(
+        get_settings().fai_evidence_dir, _evidence_filename(timestamp, mac, action)
+    )
+
+
+def has_evidence(timestamp: str, mac: str | None, action: str) -> bool:
+    """Une preuve est-elle archivée pour cette entrée ?"""
+    try:
+        return os.path.isfile(_evidence_path(timestamp, mac, action))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def read_evidence(timestamp: str, mac: str | None, action: str) -> str | None:
+    """Transcription archivée pour cette entrée, ou ``None`` si absente."""
+    path = _evidence_path(timestamp, mac, action)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read(_EVIDENCE_MAX_BYTES)
+    except FileNotFoundError:
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("fai_audit: lecture de la preuve impossible (%s) : %s", path, exc)
+        return None
+
+
+def _write_evidence(timestamp: str, mac: str | None, action: str, text: str) -> None:
+    """Archive la transcription — best-effort, ne lève jamais.
+
+    Même règle que le journal : une preuve qu'on n'arrive pas à écrire ne doit
+    pas empêcher de couper un client.
+    """
+    path = _evidence_path(timestamp, mac, action)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text[:_EVIDENCE_MAX_BYTES])
+    except Exception as exc:  # noqa: BLE001 — l'audit ne doit pas casser l'action
+        logger.warning("fai_audit: écriture de la preuve impossible (%s) : %s", path, exc)
+
 
 def _line(
     action: str,
     *,
+    ts: str,
     ok: bool,
     mac: str | None,
     name: str,
@@ -43,7 +121,6 @@ def _line(
     source: str,
     message: str,
 ) -> str:
-    ts = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     flat = " ".join((message or "").split())  # jamais de retour à la ligne dans une entrée
     # `source` est dérivé du motif envoyé par l'appelant : un « | » y décalerait
     # toutes les colonnes à la relecture (le message, lui, est le dernier champ et
@@ -64,20 +141,33 @@ def log_action(
     mode: str | None = None,
     source: str = "payment",
     message: str = "",
+    evidence: str | None = None,
 ) -> None:
     """Ajoute une ligne au journal des actions FAI (best-effort, ne lève jamais).
 
     ``action`` : BLOCK | UNBLOCK | RETRY_OK | ABANDON | IDENT_KO (l'équipement
     joint n'était pas celui de la fiche → rien n'a été tenté). ``source`` : qui a demandé
     (``payment`` = API du système de paiement, ``enforce`` = job de renforcement).
+
+    ``evidence`` : transcription de la session SSH (ce qui a été envoyé à
+    l'équipement et ce qu'il a répondu). Archivée dans un fichier à part, indexé
+    par le MÊME horodatage que la ligne — d'où le calcul du ``ts`` ici plutôt que
+    dans :func:`_line` : les deux doivent porter la même seconde, sinon la ligne
+    ne retrouve plus sa preuve.
     """
+    ts = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     path = get_settings().fai_log_path
+    # La preuve d'abord : une ligne de journal qui promet une preuve absente est
+    # pire que pas de preuve du tout. Dans l'autre ordre, un échec d'écriture du
+    # journal laisse au pire un fichier orphelin, que personne ne va chercher.
+    if evidence:
+        _write_evidence(ts, mac, action, evidence)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         # O_APPEND : les écritures concurrentes (API + job) ne s'entremêlent pas.
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(_line(
-                action, ok=ok, mac=mac, name=name, mode=mode,
+                action, ts=ts, ok=ok, mac=mac, name=name, mode=mode,
                 source=source, message=message,
             ))
     except Exception as exc:  # noqa: BLE001 — l'audit ne doit pas casser l'action
@@ -104,6 +194,9 @@ def _parse(line: str) -> dict | None:
         "mode": mode.strip().removeprefix("mode="),
         "source": source.strip().removeprefix("source="),
         "message": message.strip(),
+        # Renseigné plus tard, sur les seules entrées RENDUES (cf. read_entries) :
+        # un stat() par ligne lue coûterait 5000 accès disque par affichage.
+        "has_evidence": False,
     }
 
 
@@ -198,4 +291,9 @@ def read_entries(
             if needle in (e["mac"] or "").lower() or needle in e["name"].lower()
         ]
 
-    return entries[:limit], stats
+    shown = entries[:limit]
+    # Marquer les entrées qui ont une preuve archivée — après filtre ET limite,
+    # donc au plus `limit` stat() (200 par défaut) au lieu d'un par ligne lue.
+    for e in shown:
+        e["has_evidence"] = has_evidence(e["timestamp"], e["mac"], e["action"])
+    return shown, stats

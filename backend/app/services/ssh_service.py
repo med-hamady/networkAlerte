@@ -181,7 +181,62 @@ def _open_transport(
     )
 
 
-def _exec(transport: paramiko.Transport, command: str, timeout: int) -> int:
+class SessionTranscript:
+    """Trace des commandes d'une session SSH — la PREUVE qu'un ordre est passé.
+
+    Une commande d'écriture Unix est **silencieuse** quand elle réussit :
+    ``ip link set dev eth0.1 down`` n'imprime rien, et :func:`_exec` ne retenait
+    de toute façon que son code de sortie. Après une coupure il ne restait donc
+    aucune trace de ce que l'équipement avait reçu ni répondu — seulement une
+    phrase reconstruite par nous à partir de ce qu'on avait *demandé*. Pour un
+    journal d'audit qui doit répondre à « prouve que ce client a bien été coupé
+    sur son LR », ça ne vaut rien.
+
+    On enregistre donc, commande par commande : ce qui a été envoyé, le code de
+    sortie, et la sortie brute **stdout + stderr combinés** — c'est là que le LR
+    explique ses refus (``ip: SIOCSIFFLAGS: Permission denied``), jusqu'ici
+    perdus derrière un « code 1 » opaque.
+
+    ⚠️ **Jamais de secret ici.** Le texte est archivé et relu par un opérateur.
+    Les commandes tracées sont des chaînes fixes (lectures ``/sys``, ``ip link``,
+    ``ip addr``) : aucune ne porte de mot de passe, et l'en-tête n'en écrit pas.
+
+    Enregistreur passif et optionnel : sans transcript (``None``, le défaut),
+    aucun appelant ne change de comportement et rien n'est lu sur le canal.
+    """
+
+    def __init__(self, title: str) -> None:
+        self._blocks: list[str] = []
+        started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        self._header = f"=== PREUVE D'EXÉCUTION — {title} ===\ndébut : {started} (UTC)"
+
+    def note(self, text: str) -> None:
+        """Ajoute une ligne de contexte (pas une commande)."""
+        self._blocks.append(f"[{text}]")
+
+    def record(
+        self, command: str, exit_code: int | None, output: str = ""
+    ) -> None:
+        """Enregistre une commande, son code de sortie et sa sortie brute.
+
+        ``exit_code=None`` = le pair n'a jamais renvoyé son statut (session
+        morte) : on le dit explicitement plutôt que d'inventer un code.
+        """
+        body = (output or "").strip() or "(aucune sortie)"
+        status = "exit inconnu (pas de statut renvoyé)" if exit_code is None \
+            else f"exit {exit_code}"
+        self._blocks.append(f"$ {command}\n{body}\n-- {status}")
+
+    def text(self) -> str:
+        return "\n\n".join([self._header, *self._blocks]) + "\n"
+
+
+def _exec(
+    transport: paramiko.Transport,
+    command: str,
+    timeout: int,
+    transcript: SessionTranscript | None = None,
+) -> int:
     """Run a command on a new channel and return its exit code (-1 on timeout).
 
     Same unbounded-wait trap as :func:`_exec_capture` — ``settimeout`` does not
@@ -200,19 +255,38 @@ def _exec(transport: paramiko.Transport, command: str, timeout: int) -> int:
     right verdict for a dead session — and it needs no change at any call site,
     which is what we want on the path that cuts a customer's internet. Raising
     instead would propagate uncaught: none of the five call sites wraps _exec.
+
+    ``transcript`` (optionnel) : quand il est fourni, la sortie du canal est lue
+    (stderr combiné) et consignée comme preuve. **Sans lui, rien n'est lu** —
+    c'est le comportement d'origine, et il reste celui de tous les appelants qui
+    n'ont pas besoin de preuve (le job d'enforcement toutes les 120 s).
     """
     channel = transport.open_session()
     try:
         channel.settimeout(timeout)
+        if transcript is not None:
+            # stderr combiné : c'est là que le LR motive son refus, et c'est
+            # exactement ce qui manquait derrière un « code 1 » sans explication.
+            channel.set_combine_stderr(True)
         channel.exec_command(command)
+        out = (
+            channel.makefile("rb").read().decode("utf-8", errors="replace")
+            if transcript is not None
+            else ""
+        )
         if not channel.status_event.wait(timeout):
             logger.warning(
                 "SSH exec: exit-status non reçu après %ss — session probablement "
                 "morte (lien radio tombé en cours) — commande: %s",
                 timeout, command,
             )
+            if transcript is not None:
+                transcript.record(command, None, out)
             return -1
-        return channel.recv_exit_status()
+        code = channel.recv_exit_status()
+        if transcript is not None:
+            transcript.record(command, code, out)
+        return code
     finally:
         channel.close()
 
@@ -274,12 +348,20 @@ class SshExecTimeoutError(TimeoutError):
 
 
 def _exec_capture(
-    transport: paramiko.Transport, command: str, timeout: int
+    transport: paramiko.Transport,
+    command: str,
+    timeout: int,
+    transcript: SessionTranscript | None = None,
 ) -> tuple[int, str]:
     """Run a command and return (exit_code, stdout stripped).
 
     ``timeout`` bounds BOTH the read and the exit-status wait — see below. It is
     a wall-clock bound per step, not for the whole call.
+
+    ``transcript`` (optionnel) : consigne la commande et sa sortie comme preuve.
+    Ici stderr n'est PAS combiné — les appelants parsent ce stdout (MAC, flags,
+    routes) et y mêler stderr fausserait leur lecture. La preuve montre donc ce
+    que le code a réellement lu, ce qui est bien ce qu'on veut attester.
     """
     # `timeout=` est indispensable : sans lui, open_channel compare
     # `start_ts + None` et part en TypeError dès que le pair tarde.
@@ -303,10 +385,15 @@ def _exec_capture(
         # status_event is what paramiko itself waits on; we wait on it with a
         # bound, then read the status it guards.
         if not channel.status_event.wait(timeout):
+            if transcript is not None:
+                transcript.record(command, None, out)
             raise SshExecTimeoutError(
                 f"exit status non reçu après {timeout}s — commande: {command}"
             )
-        return channel.recv_exit_status(), out.strip()
+        code = channel.recv_exit_status()
+        if transcript is not None:
+            transcript.record(command, code, out)
+        return code, out.strip()
     finally:
         channel.close()
 
@@ -464,7 +551,11 @@ class _ProtectedInterfaceError(ValueError):
     """Raised when asked to shut an interface that carries radio/management."""
 
 
-def _read_admin_up(transport: paramiko.Transport, interface: str) -> bool | None:
+def _read_admin_up(
+    transport: paramiko.Transport,
+    interface: str,
+    transcript: SessionTranscript | None = None,
+) -> bool | None:
     """Return the interface's admin (IFF_UP) state, or None if undeterminable.
 
     Reads /sys/class/net/<if>/flags — a hex bitmask whose bit 0 (0x1) is
@@ -475,7 +566,8 @@ def _read_admin_up(transport: paramiko.Transport, interface: str) -> bool | None
     iface = shlex.quote(interface)
     try:
         code, out = _exec_capture(
-            transport, f"cat /sys/class/net/{iface}/flags", timeout=8
+            transport, f"cat /sys/class/net/{iface}/flags", timeout=8,
+            transcript=transcript,
         )
     except Exception:
         return None
@@ -496,12 +588,17 @@ def _vlan_parent(name: str) -> str | None:
     return m.group(1) if m else None
 
 
-def _bridge_members(transport: paramiko.Transport, bridge: str) -> set[str]:
+def _bridge_members(
+    transport: paramiko.Transport,
+    bridge: str,
+    transcript: SessionTranscript | None = None,
+) -> set[str]:
     """List a bridge's member interfaces via sysfs (works on old airOS kernels)."""
     iface = shlex.quote(bridge)
     try:
         code, out = _exec_capture(
-            transport, f"ls /sys/class/net/{iface}/brif 2>/dev/null", timeout=8
+            transport, f"ls /sys/class/net/{iface}/brif 2>/dev/null", timeout=8,
+            transcript=transcript,
         )
     except Exception:
         return set()
@@ -510,7 +607,10 @@ def _bridge_members(transport: paramiko.Transport, bridge: str) -> set[str]:
     return {tok for tok in out.split() if tok}
 
 
-def _collect_forbidden_ifaces(transport: paramiko.Transport) -> set[str]:
+def _collect_forbidden_ifaces(
+    transport: paramiko.Transport,
+    transcript: SessionTranscript | None = None,
+) -> set[str]:
     """Compute, live from the device, the interfaces that must never be shut.
 
     The supervisor must keep reaching the LR after the cut. The management
@@ -528,7 +628,7 @@ def _collect_forbidden_ifaces(transport: paramiko.Transport) -> set[str]:
         "echo DEF; ip route show default 2>/dev/null"
     )
     try:
-        code, out = _exec_capture(transport, script, timeout=10)
+        code, out = _exec_capture(transport, script, timeout=10, transcript=transcript)
     except Exception:
         return set()
     if code != 0 or not out:
@@ -563,7 +663,7 @@ def _collect_forbidden_ifaces(transport: paramiko.Transport) -> set[str]:
 
     forbidden = set(critical)
     for c in critical:
-        forbidden |= _bridge_members(transport, c)
+        forbidden |= _bridge_members(transport, c, transcript)
         parent = _vlan_parent(c)
         if parent:
             forbidden.add(parent)
@@ -586,7 +686,11 @@ _IDENT_CMD = "cat /sys/class/net/*/address 2>/dev/null"
 IDENTITY_REFUSAL_PREFIX = "Identité refusée :"
 
 
-def _device_macs(transport: paramiko.Transport, timeout: int = 10) -> set[str]:
+def _device_macs(
+    transport: paramiko.Transport,
+    timeout: int = 10,
+    transcript: SessionTranscript | None = None,
+) -> set[str]:
     """MAC de TOUTES les interfaces de l'équipement joint, en minuscules.
 
     On compare sur l'ENSEMBLE des interfaces plutôt que sur une seule : le nom
@@ -596,7 +700,7 @@ def _device_macs(transport: paramiko.Transport, timeout: int = 10) -> set[str]:
     sans rien supposer du nommage.
     """
     try:
-        code, out = _exec_capture(transport, _IDENT_CMD, timeout)
+        code, out = _exec_capture(transport, _IDENT_CMD, timeout, transcript=transcript)
     except Exception as exc:  # noqa: BLE001 — l'invérifiable ne doit pas bloquer
         logger.debug("identité : lecture des MAC impossible (%s)", exc)
         return set()
@@ -633,7 +737,10 @@ def _host_key_rotation_confirmed(
 
 
 def identity_refusal(
-    transport: paramiko.Transport, expected_mac: str | None, timeout: int = 10
+    transport: paramiko.Transport,
+    expected_mac: str | None,
+    timeout: int = 10,
+    transcript: SessionTranscript | None = None,
 ) -> str | None:
     """`None` si on peut agir, sinon le motif du refus.
 
@@ -653,11 +760,18 @@ def identity_refusal(
     """
     if not expected_mac:
         return None
-    macs = _device_macs(transport, timeout)
+    macs = _device_macs(transport, timeout, transcript=transcript)
     if not macs:
         logger.debug("identité invérifiable (aucune MAC lisible) — action autorisée")
+        if transcript is not None:
+            transcript.note(
+                f"identité INVÉRIFIABLE (aucune MAC lisible) — MAC attendue "
+                f"{expected_mac} : action autorisée malgré tout (cf. identity_refusal)"
+            )
         return None
     if expected_mac.strip().lower() in macs:
+        if transcript is not None:
+            transcript.note(f"identité CONFIRMÉE : {expected_mac} présente sur l'équipement joint")
         return None
     return (
         f"{IDENTITY_REFUSAL_PREFIX} l'équipement joint annonce {sorted(macs)}, pas la "
@@ -676,7 +790,8 @@ def _set_iface_state_sync(
     expected_fingerprint: str | None,
     fallback_passwords: list[str] | None,
     expected_mac: str | None = None,
-) -> tuple[bool, str, str | None, str | None]:
+    capture_evidence: bool = False,
+) -> tuple[bool, str, str | None, str | None, str | None]:
     """SSH into the device and bring `interface` admin up or down.
 
     Idempotent: re-applying the same state is harmless (this is what lets the
@@ -684,18 +799,41 @@ def _set_iface_state_sync(
     `ip link` first, falls back to busybox `ifconfig`. Verifies via the admin
     flag, not operstate, so it stays correct on an unplugged port.
 
-    Returns (ok, message, observed_fp, used_password). The 4th element is the
-    password that actually authenticated — caller compares it to the primary
-    to detect a fallback hit and persist the working password on the LR.
+    Returns (ok, message, observed_fp, used_password, evidence). The 4th element
+    is the password that actually authenticated — caller compares it to the
+    primary to detect a fallback hit and persist the working password on the LR.
+
+    ``capture_evidence`` : enregistre la session (commandes envoyées, sorties
+    brutes, codes de sortie) et la rend en 5e élément, destinée au journal
+    d'audit. **Coût** : la sortie du canal est lue à chaque commande, plus un
+    ``ip addr show`` final purement lisible — d'où le drapeau plutôt qu'un
+    enregistrement systématique. Le job d'enforcement, qui repasse toutes les
+    120 s sur chaque client bloqué sans rien journaliser, laisse donc ``False``.
+
+    ⚠️ La preuve est renvoyée **aussi en cas d'échec**, et c'est là qu'elle vaut
+    le plus : un blocage qui n'a pas pris doit pouvoir montrer ce que le LR a
+    répondu (le stderr que ``_exec`` jetait), pas seulement « code 1 ».
     """
-    if not bring_up and interface in _PROTECTED_IFACES:
-        return (
-            False,
-            f"Interface protégée '{interface}' — refus : couper cette interface "
-            f"déconnecterait le superviseur du LR (radio/loopback).",
-            None,
-            None,
+    label = "DÉBLOCAGE (port UP)" if bring_up else "BLOCAGE (port DOWN)"
+    transcript = SessionTranscript(f"{label} — {interface}") if capture_evidence else None
+
+    def _ev() -> str | None:
+        return transcript.text() if transcript is not None else None
+
+    if transcript is not None:
+        transcript.note(
+            f"cible {host}:{port} — utilisateur {username} — MAC attendue "
+            f"{expected_mac or '(non précisée)'}"
         )
+
+    if not bring_up and interface in _PROTECTED_IFACES:
+        msg = (
+            f"Interface protégée '{interface}' — refus : couper cette interface "
+            f"déconnecterait le superviseur du LR (radio/loopback)."
+        )
+        if transcript is not None:
+            transcript.note(f"REFUS AVANT CONNEXION — {msg}")
+        return False, msg, None, None, _ev()
 
     try:
         transport, observed, used_pw = _open_transport(
@@ -705,17 +843,27 @@ def _set_iface_state_sync(
         )
     except _FingerprintMismatchError as exc:
         logger.error("set_iface host-key mismatch — %s — %s", host, exc)
-        return False, str(exc), None, None
+        if transcript is not None:
+            transcript.note(f"CLÉ D'HÔTE REFUSÉE — {exc}")
+        return False, str(exc), None, None, _ev()
     except Exception as exc:
         logger.debug("set_iface SSH connect failed — %s — %s", host, exc)
-        return False, str(exc), None, None
+        if transcript is not None:
+            transcript.note(f"CONNEXION SSH IMPOSSIBLE — {exc}")
+        return False, str(exc), None, None, _ev()
+
+    if transcript is not None:
+        transcript.note("session SSH établie et authentifiée")
 
     # Identité : la fiche cible une MAC, la session part sur une IP. Refuser
     # avant d'agir évite de couper un abonné qui a hérité de l'adresse.
-    refusal = identity_refusal(transport, expected_mac)
+    refusal = identity_refusal(transport, expected_mac, transcript=transcript)
     if refusal is not None:
         logger.warning("Action de blocage refusée sur %s — %s", host, refusal)
-        return False, refusal, observed, used_pw
+        if transcript is not None:
+            transcript.note(f"REFUS — {refusal}")
+        transport.close()
+        return False, refusal, observed, used_pw, _ev()
 
     action = "up" if bring_up else "down"
     iface = shlex.quote(interface)
@@ -723,48 +871,72 @@ def _set_iface_state_sync(
         # Authoritative guard — only when *cutting*. Bringing a port back up
         # can never lock us out, so unblock is never gated by this.
         if not bring_up:
-            forbidden = _collect_forbidden_ifaces(transport)
+            forbidden = _collect_forbidden_ifaces(transport, transcript)
             if interface in forbidden:
-                return (
-                    False,
+                msg = (
                     f"Interface '{interface}' refusée : sur ce LR elle porte le "
                     f"plan de management/route par défaut (chemin SSH du "
                     f"superviseur : {sorted(forbidden)}). La couper "
                     f"verrouillerait l'accès au LR. Vérifie lan_interface — "
-                    f"sur LTU c'est typiquement eth0.1, pas eth0.",
-                    observed,
-                    used_pw,
+                    f"sur LTU c'est typiquement eth0.1, pas eth0."
                 )
+                if transcript is not None:
+                    transcript.note(f"REFUS DU GARDE-FOU — {msg}")
+                return False, msg, observed, used_pw, _ev()
         code = _exec(
-            transport, f"ip link set dev {iface} {action}", timeout=12
+            transport, f"ip link set dev {iface} {action}", timeout=12,
+            transcript=transcript,
         )
         if code != 0:
             # busybox airOS builds may lack `ip` — fall back to ifconfig.
-            code = _exec(transport, f"ifconfig {iface} {action}", timeout=12)
+            code = _exec(
+                transport, f"ifconfig {iface} {action}", timeout=12,
+                transcript=transcript,
+            )
         if code != 0:
-            return (
-                False,
+            msg = (
                 f"Échec de la commande de mise {action} de {interface} "
-                f"(code {code}) — vérifier que l'utilisateur SSH est root.",
-                observed,
-                used_pw,
+                f"(code {code}) — vérifier que l'utilisateur SSH est root."
             )
-        admin_up = _read_admin_up(transport, interface)
+            if transcript is not None:
+                transcript.note(f"ÉCHEC — {msg}")
+            return False, msg, observed, used_pw, _ev()
+        admin_up = _read_admin_up(transport, interface, transcript)
+        # Rendu lisible de l'état final : `flags` est un masque hexadécimal, très
+        # bien pour le code, illisible comme preuve pour un opérateur. La même
+        # information sort en clair de `ip addr show` (le drapeau UES/UP dans les
+        # chevrons + `state`). Uniquement quand on capture — sinon c'est une
+        # commande de plus, toutes les 120 s, sur tout le parc bloqué.
+        if transcript is not None:
+            _exec(
+                transport, f"ip addr show {iface}", timeout=10,
+                transcript=transcript,
+            )
         if admin_up is not None and admin_up != bring_up:
-            return (
-                False,
+            msg = (
                 f"Commande acceptée mais {interface} toujours "
-                f"{'DOWN' if bring_up else 'UP'} — état non appliqué.",
-                observed,
-                used_pw,
+                f"{'DOWN' if bring_up else 'UP'} — état non appliqué."
             )
+            if transcript is not None:
+                transcript.note(f"ÉTAT NON APPLIQUÉ — {msg}")
+            return False, msg, observed, used_pw, _ev()
         state_str = "UP" if bring_up else "DOWN"
         verified = "" if admin_up is None else " (vérifié)"
+        if transcript is not None:
+            transcript.note(
+                f"RÉSULTAT : {interface} {state_str}"
+                + (
+                    " — confirmé par relecture du drapeau IFF_UP"
+                    if admin_up is not None
+                    else " — drapeau IFF_UP illisible, état NON confirmé"
+                )
+            )
         return (
             True,
             f"Interface {interface} mise {state_str}{verified}.",
             observed,
             used_pw,
+            _ev(),
         )
     finally:
         transport.close()
@@ -780,19 +952,23 @@ async def set_lan_interface(
     expected_fingerprint: str | None = None,
     fallback_passwords: list[str] | None = None,
     expected_mac: str | None = None,
-) -> tuple[bool, str, str | None, str | None]:
+    capture_evidence: bool = False,
+) -> tuple[bool, str, str | None, str | None, str | None]:
     """SSH into the LR and bring its LAN port admin up/down — non-blocking.
 
-    Returns (ok, message, observed_fingerprint, used_password). Refuses
-    protected interfaces (radio/management) so an operator error can't lock
-    the supervisor out. ``used_password`` is the password that actually
+    Returns (ok, message, observed_fingerprint, used_password, evidence).
+    Refuses protected interfaces (radio/management) so an operator error can't
+    lock the supervisor out. ``used_password`` is the password that actually
     authenticated — when it differs from ``password`` the caller should
-    persist it on the LR row.
+    persist it on the LR row. ``evidence`` est la transcription de la session
+    quand ``capture_evidence`` est vrai, sinon ``None`` — cf.
+    :func:`_set_iface_state_sync`.
     """
     return await asyncio.to_thread(
         _set_iface_state_sync,
         host, port, username, password, interface, bring_up,
         expected_fingerprint, fallback_passwords, expected_mac,
+        capture_evidence,
     )
 
 

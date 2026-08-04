@@ -974,6 +974,18 @@ export interface FaiJournalEntry {
   // côté backend (ex. 'Block_all.php') — affiché tel quel s'il n'est pas dans SOURCE_LABEL.
   source: string
   message: string
+  /** Une transcription de la session SSH est-elle archivée pour cette action ?
+   *  `message` est une phrase que NOUS avons rédigée ; la preuve, elle, est ce
+   *  que l'équipement a reçu et répondu. Faux sur les actions antérieures à la
+   *  fonctionnalité, en mode whatsapp_only, et sur les ordres purement routeur. */
+  has_evidence: boolean
+}
+/** Preuve d'exécution d'une action : la transcription brute de la session SSH. */
+export interface FaiEvidence {
+  timestamp: string
+  mac: string | null
+  action: string
+  transcript: string
 }
 export interface FaiJournalStats {
   total: number

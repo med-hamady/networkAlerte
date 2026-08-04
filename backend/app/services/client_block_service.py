@@ -146,12 +146,20 @@ def _promote_password(lr: Lr, primary: str, used: str | None) -> None:
 _SSH_CONCURRENCY = asyncio.Semaphore(10)
 
 
-async def _set_full(lr: Lr, cut: bool) -> tuple[bool, str]:
-    """Shut (cut=True) / restore (cut=False) the LR's LAN port over SSH."""
+async def _set_full(
+    lr: Lr, cut: bool, capture_evidence: bool = False
+) -> tuple[bool, str, str | None]:
+    """Shut (cut=True) / restore (cut=False) the LR's LAN port over SSH.
+
+    3e élément : la transcription de la session (preuve d'exécution) quand
+    ``capture_evidence`` est vrai, sinon ``None``. On ne la demande que pour les
+    actions qui seront JOURNALISÉES — cf. :func:`enforce_blocked_clients`, qui
+    repasse toutes les 120 s sans écrire de ligne et n'a donc rien à prouver.
+    """
     settings = get_settings()
     primary_pw = lr.ssh_password
     async with _SSH_CONCURRENCY:
-        ok, msg, observed_fp, used_pw = await ssh_service.set_lan_interface(
+        ok, msg, observed_fp, used_pw, evidence = await ssh_service.set_lan_interface(
             host=lr.ip_address,
             port=lr.ssh_port or 22,
             username=lr.ssh_username,
@@ -163,10 +171,11 @@ async def _set_full(lr: Lr, cut: bool) -> tuple[bool, str]:
             # La fiche cible une MAC ; la session part sur une IP qui a pu
             # être redonnée à un autre abonné. Refus si ça ne concorde pas.
             expected_mac=lr.mac_address,
+            capture_evidence=capture_evidence,
         )
     _pin_fp(lr, ok, observed_fp)
     _promote_password(lr, primary_pw, used_pw)
-    return ok, msg
+    return ok, msg, evidence
 
 
 async def _set_whatsapp(lr: Lr, on: bool) -> tuple[bool, str]:
@@ -199,28 +208,40 @@ async def _set_whatsapp(lr: Lr, on: bool) -> tuple[bool, str]:
     return ok, msg
 
 
-async def _assert_block(lr: Lr) -> tuple[bool, str]:
+async def _assert_block(
+    lr: Lr, capture_evidence: bool = False
+) -> tuple[bool, str, str | None]:
     """Re-assert the block per lr.block_mode (single SSH round-trip).
 
     This is the hot path used by the enforcement job every cycle — it only
     enforces the *active* mechanism, it does not clean the other one.
+
+    ⚠️ La preuve n'est disponible que pour le mode ``full`` (coupure du port) :
+    le mode whatsapp_only rend ``None``. Sa preuve serait d'une autre nature
+    (règles iptables + bloc dnsmasq) et reste à faire — une entrée de journal
+    whatsapp_only s'affiche donc simplement sans preuve.
     """
     if lr.block_mode == MODE_WHATSAPP:
-        return await _set_whatsapp(lr, on=True)
-    return await _set_full(lr, cut=True)
+        ok, msg = await _set_whatsapp(lr, on=True)
+        return ok, msg, None
+    return await _set_full(lr, cut=True, capture_evidence=capture_evidence)
 
 
-async def _clear_block(lr: Lr) -> tuple[bool, str]:
+async def _clear_block(
+    lr: Lr, capture_evidence: bool = False
+) -> tuple[bool, str, str | None]:
     """Fully restore internet — undo *both* mechanisms (idempotent).
 
     Operator action, not the hot loop: doing both (port up + filter removed)
     guarantees a clean state even if block_mode was switched while blocked.
     """
-    up_ok, up_msg = await _set_full(lr, cut=False)
+    up_ok, up_msg, evidence = await _set_full(
+        lr, cut=False, capture_evidence=capture_evidence
+    )
     wa_ok, wa_msg = await _set_whatsapp(lr, on=False)
     if up_ok and wa_ok:
-        return True, "Port LAN remonté et filtre WhatsApp retiré."
-    return False, f"Port LAN: {up_msg} | Filtre WhatsApp: {wa_msg}"
+        return True, "Port LAN remonté et filtre WhatsApp retiré.", evidence
+    return False, f"Port LAN: {up_msg} | Filtre WhatsApp: {wa_msg}", evidence
 
 
 # A failed SSH round-trip means one of two very different things, and conflating
@@ -305,7 +326,7 @@ async def _neutralize_other(lr: Lr) -> None:
     artifact of the other one is harmless (port already up / no iptables rule).
     """
     if lr.block_mode == MODE_WHATSAPP:
-        ok, msg = await _set_full(lr, cut=False)  # ensure port not left down
+        ok, msg, _ = await _set_full(lr, cut=False)  # ensure port not left down
     else:
         ok, msg = await _set_whatsapp(lr, on=False)  # ensure filter removed
     if not ok:
@@ -444,7 +465,7 @@ async def _clear_router_block(lr: Lr) -> str | None:
 
 async def block_client(
     session: AsyncSession, lr: Lr, reason: str | None, mode: str | None = None
-) -> tuple[bool, str]:
+) -> tuple[bool, str, str | None]:
     """Cut a client's internet on its LR — mode 'full' or 'whatsapp_only'.
 
     Records the block intent + flavour, then tries to enforce it immediately.
@@ -452,6 +473,11 @@ async def block_client(
     job retries — so the return `ok` reflects *enforcement*, not intent.
     Refuses outright when the LR has no SSH credentials: an unenforceable block
     is exactly the trap we're avoiding.
+
+    3e élément : la **preuve d'exécution** (transcription de la session SSH), à
+    passer à ``fai_audit.log_action`` pour qu'elle soit archivée avec l'entrée
+    de journal. ``None`` quand il n'y a rien à prouver (pas de SSH, mode
+    whatsapp_only).
     """
     if not _has_ssh(lr):
         return (
@@ -459,6 +485,7 @@ async def block_client(
             f"Le LR {lr.name} n'a pas d'identifiants SSH — impossible de "
             f"couper le client. Configure ssh_username/ssh_password via "
             f"PUT /api/v1/devices/{lr.id}.",
+            None,
         )
 
     resolved = _resolve_mode(mode)
@@ -480,7 +507,8 @@ async def block_client(
     await session.commit()
 
     await _neutralize_other(lr)
-    ok, msg = await _assert_block(lr)
+    # Action d'opérateur/paiement → toujours journalisée, donc toujours prouvée.
+    ok, msg, evidence = await _assert_block(lr, capture_evidence=True)
     label = "WhatsApp autorisé" if resolved == MODE_WHATSAPP else "coupure totale"
     if ok:
         lr.client_block_enforced_at = _now()
@@ -493,7 +521,7 @@ async def block_client(
             lr.name, lr.id, lr.ip_address, resolved,
             lr.client_blocked_reason or "(non précisé)",
         )
-        return True, f"Client {lr.name} bloqué ({label}). {msg}"
+        return True, f"Client {lr.name} bloqué ({label}). {msg}", evidence
 
     structural = _structural_failure(msg)
     _set_unenforceable(lr, structural)  # None = transitoire → on réessaiera
@@ -518,6 +546,7 @@ async def block_client(
         return (
             True,
             f"Client {lr.name} bloqué sur le routeur ({msg} côté LR).{suffix}",
+            evidence,
         )
 
     router_note = f" Repli routeur : {router_msg}" if router_msg else ""
@@ -532,6 +561,7 @@ async def block_client(
             f"Blocage ({label}) enregistré pour {lr.name} mais IMPOSSIBLE à "
             f"appliquer ({msg}). Connexion au LR refusée — intervention "
             f"technique requise, aucune nouvelle tentative automatique.{router_note}",
+            evidence,
         )
 
     logger.warning(
@@ -544,15 +574,20 @@ async def block_client(
         f"Blocage ({label}) enregistré pour {lr.name} mais NON appliqué "
         f"({msg}). Le job de renforcement réessaiera automatiquement dès que "
         f"le LR sera joignable.{router_note}",
+        evidence,
     )
 
 
-async def unblock_client(session: AsyncSession, lr: Lr) -> tuple[bool, str]:
+async def unblock_client(
+    session: AsyncSession, lr: Lr
+) -> tuple[bool, str, str | None]:
     """Restore a client's internet by bringing its LR's LAN port back up.
 
     Intent is cleared first so the enforcement job stops re-cutting. If the
     SSH bring-up fails the port may stay down until the operator retries (the
     LR is normally reachable via the radio, so this is rare).
+
+    3e élément : la preuve d'exécution, comme :func:`block_client`.
     """
     was_blocked = lr.client_blocked
     lr.client_blocked = False
@@ -570,6 +605,7 @@ async def unblock_client(session: AsyncSession, lr: Lr) -> tuple[bool, str]:
             f"Intention de blocage levée pour {lr.name} (et règle routeur retirée), "
             f"mais sans identifiants SSH une éventuelle coupure locale sur le LR n'a "
             f"pas pu être levée. Configure les credentials puis relance le déblocage.",
+            None,
         )
 
     # Idem block_client : on acquitte l'intention et on rend la connexion au pool
@@ -583,7 +619,7 @@ async def unblock_client(session: AsyncSession, lr: Lr) -> tuple[bool, str]:
     router_msg = await _clear_router_block(lr)
     router_note = f" Routeur : {router_msg}" if router_msg else ""
 
-    ok, msg = await _clear_block(lr)
+    ok, msg, evidence = await _clear_block(lr, capture_evidence=True)
     if ok:
         lr.unblock_pending = False
         _set_unenforceable(lr, None)
@@ -592,7 +628,7 @@ async def unblock_client(session: AsyncSession, lr: Lr) -> tuple[bool, str]:
             "CLIENT UNBLOCK — LR '%s' (id=%d, %s) accès rétabli",
             lr.name, lr.id, lr.ip_address,
         )
-        return True, f"Accès internet rétabli pour {lr.name}. {msg}{router_note}"
+        return True, f"Accès internet rétabli pour {lr.name}. {msg}{router_note}", evidence
 
     structural = _structural_failure(msg)
     # On GARDE l'intention de déblocage dans la boucle, même sur échec structurel
@@ -619,6 +655,7 @@ async def unblock_client(session: AsyncSession, lr: Lr) -> tuple[bool, str]:
             f"être rétabli ({msg}). Connexion au LR refusée — le job de renforcement "
             f"réessaiera automatiquement (clé d'hôte re-flashée ou mot de passe "
             f"corrigé = guérison sans intervention).{suffix}",
+            evidence,
         )
 
     logger.warning(
@@ -631,10 +668,13 @@ async def unblock_client(session: AsyncSession, lr: Lr) -> tuple[bool, str]:
         f"Déblocage enregistré pour {lr.name} mais l'accès n'a pas encore été "
         f"rétabli ({msg}). Le job de renforcement réessaiera automatiquement dès "
         f"que le LR sera joignable.{suffix}",
+        evidence,
     )
 
 
-async def _abandon(lr: Lr, action: str, reason: str) -> None:
+async def _abandon(
+    lr: Lr, action: str, reason: str, evidence: str | None = None
+) -> None:
     """Enregistre l'échec structurel — mais NE sort PAS un déblocage de la boucle.
 
     Le ré-essai est throttlé par `_abandon_retry_due` (via `block_unenforceable_since`
@@ -658,12 +698,14 @@ async def _abandon(lr: Lr, action: str, reason: str) -> None:
             "IDENT_KO", ok=False, mac=lr.mac_address, name=lr.name,
             mode=lr.block_mode, source="enforce",
             message=f"{action} REFUSÉ — {reason}",
+            evidence=evidence,
         )
     else:
         fai_audit.log_action(
             "ABANDON", ok=False, mac=lr.mac_address, name=lr.name,
             mode=lr.block_mode, source="enforce",
             message=f"{action} impossible (connexion refusée) : {reason}",
+            evidence=evidence,
         )
 
 
@@ -742,7 +784,19 @@ async def enforce_blocked_clients(session: AsyncSession) -> int:
 
         blocking = lr.client_blocked
         action = "BLOCK" if blocking else "UNBLOCK"
-        ok, msg = await (_assert_block(lr) if blocking else _clear_block(lr))
+        # Capturer la preuve UNIQUEMENT sur une transition — c.-à-d. exactement
+        # quand une ligne de journal sera écrite (`first_time` ci-dessous, et
+        # tout déblocage en attente). Les ré-affirmations de routine, qui
+        # repassent sur chaque client bloqué toutes les 120 s sans rien
+        # journaliser, n'ont rien à prouver : capturer y ajouterait une lecture
+        # de canal et un `ip addr show` par client et par cycle, pour des
+        # fichiers que personne n'ouvrirait.
+        capture = lr.client_block_enforced_at is None if blocking else True
+        ok, msg, evidence = await (
+            _assert_block(lr, capture_evidence=capture)
+            if blocking
+            else _clear_block(lr, capture_evidence=capture)
+        )
 
         if ok:
             enforced += 1
@@ -766,6 +820,7 @@ async def enforce_blocked_clients(session: AsyncSession) -> int:
                         "RETRY_OK", ok=True, mac=lr.mac_address, name=lr.name,
                         mode=lr.block_mode, source="enforce",
                         message="Blocage en attente appliqué sur le LR.",
+                        evidence=evidence,
                     )
             else:
                 lr.unblock_pending = False
@@ -778,9 +833,10 @@ async def enforce_blocked_clients(session: AsyncSession) -> int:
                     "RETRY_OK", ok=True, mac=lr.mac_address, name=lr.name,
                     mode=lr.block_mode, source="enforce",
                     message="Déblocage en attente appliqué sur le LR.",
+                    evidence=evidence,
                 )
         elif structural := _structural_failure(msg):
-            await _abandon(lr, action, structural)
+            await _abandon(lr, action, structural, evidence)
         else:
             logger.warning(
                 "enforce: LR '%s' (id=%d) %s non appliqué : %s — nouvelle "

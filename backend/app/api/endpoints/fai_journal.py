@@ -24,7 +24,7 @@ from __future__ import annotations
 import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,6 +45,11 @@ class JournalEntry(BaseModel):
     mode: str
     source: str  # payment | enforce
     message: str
+    # Une transcription de la session SSH est-elle archivée pour cette action ?
+    # Pilote l'affichage du bouton « Voir la preuve » — inutile de proposer
+    # l'ouverture d'une preuve qui n'existe pas (actions antérieures à la
+    # fonctionnalité, mode whatsapp_only, ordres purement routeur).
+    has_evidence: bool = False
 
 
 class JournalStats(BaseModel):
@@ -143,4 +148,45 @@ async def get_journal(
         entries=[JournalEntry(**e) for e in entries],
         stats=JournalStats(**stats),
         attention=attention,
+    )
+
+
+class EvidenceResponse(BaseModel):
+    timestamp: str
+    mac: str | None
+    action: str
+    # Transcription brute de la session SSH : commandes envoyées, sorties du LR
+    # (stderr compris) et codes de sortie. Rendue telle quelle, en monospace.
+    transcript: str
+
+
+@router.get("/evidence", response_model=EvidenceResponse)
+async def get_evidence(
+    timestamp: str = Query(..., description="Horodatage exact de l'entrée (ex. 2026-08-04T14:22:07Z)"),
+    action: str = Query(..., description="BLOCK | UNBLOCK | RETRY_OK | ABANDON | IDENT_KO"),
+    mac: str | None = Query(None, description="MAC du LR de l'entrée"),
+) -> EvidenceResponse:
+    """Preuve d'exécution d'une action : ce qui est réellement passé sur le LR.
+
+    La ligne de journal ne porte qu'une phrase que **nous** avons rédigée. Cette
+    route rend ce que l'**équipement** a reçu et répondu — c'est la différence
+    entre « on a demandé la coupure » et « le LR l'a appliquée ».
+
+    404 si aucune preuve n'est archivée pour cette entrée : actions antérieures à
+    la fonctionnalité, mode whatsapp_only (pas encore couvert), ou ordres qui
+    n'ont jamais atteint le LR par un autre chemin. L'UI n'appelle cette route
+    que sur les entrées marquées ``has_evidence``.
+
+    ⚠️ Les trois paramètres composent un nom de fichier : ils sont normalisés par
+    ``fai_audit._evidence_filename`` (allowlist + basename), sans quoi un
+    ``mac=../..`` ferait servir un fichier arbitraire du conteneur.
+    """
+    transcript = fai_audit.read_evidence(timestamp, mac, action)
+    if transcript is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Aucune preuve archivée pour cette entrée du journal.",
+        )
+    return EvidenceResponse(
+        timestamp=timestamp, mac=mac, action=action, transcript=transcript
     )

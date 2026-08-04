@@ -163,7 +163,7 @@ async def fai_block(
                 f"Reconfigurer le LR en mode routeur via airOS, puis réessayer."
             ),
         )
-    ok, message = await client_block_service.block_client(
+    ok, message, evidence = await client_block_service.block_client(
         db, lr, body.reason, body.mode
     )
     # Un refus d'identité n'est pas un échec de blocage : c'est une action NON
@@ -173,6 +173,7 @@ async def fai_block(
         "IDENT_KO" if client_block_service.is_identity_refusal(message) else "BLOCK",
         ok=ok, mac=lr.mac_address, name=lr.name,
         mode=lr.block_mode, source=_source_from_reason(body.reason), message=message,
+        evidence=evidence,
     )
     return _result(lr, ok, message)
 
@@ -188,7 +189,7 @@ async def fai_unblock(
     - 404 : aucun LR pour cette MAC.
     """
     lr = await _lookup_lr(db, body.mac)
-    ok, message = await client_block_service.unblock_client(db, lr)
+    ok, message, evidence = await client_block_service.unblock_client(db, lr)
     # Un refus d'identité n'est pas un échec de blocage : c'est une action NON
     # tentée parce que l'adresse de la fiche pointe sur un autre abonné. Le
     # journal le dit tel quel, sinon l'opérateur cherche une panne inexistante.
@@ -196,6 +197,7 @@ async def fai_unblock(
         "IDENT_KO" if client_block_service.is_identity_refusal(message) else "UNBLOCK",
         ok=ok, mac=lr.mac_address, name=lr.name,
         mode=lr.block_mode, message=message,
+        evidence=evidence,
     )
     return _result(lr, ok, message)
 

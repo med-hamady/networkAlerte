@@ -95,6 +95,13 @@ export const endpoints = {
   // Journal des blocages/déblocages (fichier d'audit) + LR encore en souffrance.
   faiJournal:           (status: string, search: string) =>
     `${API_BASE}/fai-journal?limit=300&status=${encodeURIComponent(status)}&search=${encodeURIComponent(search)}`,
+  // Preuve d'exécution d'une entrée du journal : la transcription de la session
+  // SSH. L'entrée est désignée par (horodatage, action, MAC) — les trois champs
+  // qui l'identifient dans le fichier d'audit.
+  faiJournalEvidence:   (timestamp: string, action: string, mac: string | null) =>
+    `${API_BASE}/fai-journal/evidence?timestamp=${encodeURIComponent(timestamp)}`
+    + `&action=${encodeURIComponent(action)}`
+    + (mac ? `&mac=${encodeURIComponent(mac)}` : ''),
   // Diagnostics d'accès : LR qui refusent le SSH + LR vus par radio hors UISP.
   accessDiagnostics:    `${API_BASE}/access-diagnostics`,
   // Enrôlement UISP : pose de la clé du contrôleur sur le CPE (unitaire / lot).

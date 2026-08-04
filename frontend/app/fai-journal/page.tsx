@@ -3,7 +3,9 @@
 import React from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
-import type { FaiAttentionRow, FaiJournalEntry, FaiJournalResponse } from '@/lib/types'
+import type {
+  FaiAttentionRow, FaiEvidence, FaiJournalEntry, FaiJournalResponse,
+} from '@/lib/types'
 import IpLink from '@/components/IpLink'
 
 type StatusFilter = '' | 'ok' | 'failed' | 'abandoned'
@@ -50,6 +52,8 @@ function formatTs(ts: string): string {
 }
 
 export default function FaiJournalPage() {
+  // Entrée dont on affiche la preuve d'exécution (null = modale fermée).
+  const [proofOf, setProofOf] = React.useState<FaiJournalEntry | null>(null)
   const [status, setStatus] = React.useState<StatusFilter>('')
   const [search, setSearch] = React.useState('')
   const [debounced, setDebounced] = React.useState('')
@@ -159,6 +163,7 @@ export default function FaiJournalPage() {
                 <Th>MAC</Th>
                 <Th>Origine</Th>
                 <Th>Résultat</Th>
+                <Th>Preuve</Th>
               </tr>
             </thead>
             <tbody className="divide-y divide-blue-50">
@@ -185,6 +190,19 @@ export default function FaiJournalPage() {
                     </span>
                     <p className="text-xs text-blue-400 mt-0.5 max-w-xl">{e.message}</p>
                   </Td>
+                  <Td className="whitespace-nowrap">
+                    {e.has_evidence ? (
+                      <button
+                        onClick={() => setProofOf(e)}
+                        className="px-2.5 py-1 rounded-md border border-blue-200 bg-white text-xs
+                                   font-semibold text-blue-700 hover:bg-blue-50 transition-colors"
+                      >
+                        Voir la preuve
+                      </button>
+                    ) : (
+                      <span className="text-xs text-blue-300">—</span>
+                    )}
+                  </Td>
                 </tr>
               ))}
             </tbody>
@@ -200,6 +218,86 @@ export default function FaiJournalPage() {
               : 'Aucune action enregistrée pour le moment.'}
           </p>
         )}
+      </div>
+
+      {proofOf && <EvidenceModal entry={proofOf} onClose={() => setProofOf(null)} />}
+    </div>
+  )
+}
+
+/** Ce que l'ÉQUIPEMENT a reçu et répondu — pas ce que nous avons rédigé.
+ *
+ *  La colonne « Résultat » du journal porte une phrase construite par le
+ *  backend à partir de ce qu'il a *demandé* ; elle ne prouve rien. La
+ *  transcription ci-dessous est la trace de la session SSH : chaque commande
+ *  envoyée, la sortie brute du LR (stderr compris) et le code de sortie.
+ *
+ *  ⚠️ Rendue en `<pre>` sans coloration ni reformatage : une preuve qu'on
+ *  embellit n'est plus une preuve. Le seul traitement est le défilement.
+ */
+function EvidenceModal({ entry, onClose }: { entry: FaiJournalEntry; onClose: () => void }) {
+  const { data, error, isLoading } = useSWR<FaiEvidence>(
+    endpoints.faiJournalEvidence(entry.timestamp, entry.action, entry.mac),
+    fetcher,
+  )
+
+  React.useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => { if (ev.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-blue-950/40 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl border border-blue-200 shadow-xl w-full max-w-3xl
+                   max-h-[85vh] flex flex-col"
+        onClick={(ev) => ev.stopPropagation()}
+      >
+        <header className="px-5 py-3 border-b border-blue-100 flex items-start gap-4">
+          <div className="min-w-0">
+            <h2 className="text-sm font-bold text-blue-900">
+              Preuve d'exécution — {ACTION_STYLE[entry.action]?.label ?? entry.action}
+            </h2>
+            <p className="text-xs text-blue-400 mt-0.5">
+              {entry.name} · <span className="font-mono">{entry.mac ?? '—'}</span> ·{' '}
+              {formatTs(entry.timestamp)}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="ml-auto shrink-0 px-2.5 py-1 rounded-md border border-blue-200 text-xs
+                       font-semibold text-blue-700 hover:bg-blue-50"
+          >
+            Fermer
+          </button>
+        </header>
+
+        <div className="px-5 py-3 overflow-auto">
+          {isLoading && <p className="text-sm text-blue-400">Chargement de la preuve…</p>}
+          {error && (
+            <p className="text-sm text-amber-800">
+              Preuve introuvable — elle n'a pas été archivée pour cette action.
+            </p>
+          )}
+          {data && (
+            <pre className="text-xs font-mono text-blue-900 whitespace-pre-wrap break-words
+                            bg-blue-50/50 rounded-lg p-3 border border-blue-100">
+              {data.transcript}
+            </pre>
+          )}
+        </div>
+
+        <footer className="px-5 py-2.5 border-t border-blue-100">
+          <p className="text-[11px] text-blue-400">
+            Chaque bloc <span className="font-mono">$ commande</span> montre ce qui a été envoyé
+            au LR, sa réponse brute et son code de sortie. Une commande d'écriture Unix qui
+            réussit n'imprime rien — c'est la relecture d'état qui l'atteste.
+          </p>
+        </footer>
       </div>
     </div>
   )

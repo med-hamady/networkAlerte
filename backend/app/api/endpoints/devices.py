@@ -639,7 +639,10 @@ async def block_client(
                 f"(airOS), puis réessayer."
             ),
         )
-    ok, message = await client_block_service.block_client(
+    # 3e élément = la preuve d'exécution. Ignorée ici : cette route n'écrit
+    # AUCUNE entrée au journal FAI (elle ne l'a jamais fait), donc il n'y a rien
+    # à quoi l'attacher. Trou d'audit préexistant, à traiter séparément.
+    ok, message, _evidence = await client_block_service.block_client(
         db, device, body.reason, body.mode
     )
     return _block_result(device, ok, message)
@@ -782,7 +785,8 @@ async def unblock_client(
             status_code=400,
             detail="Le déblocage client n'est disponible que sur les LR.",
         )
-    ok, message = await client_block_service.unblock_client(db, device)
+    # Preuve ignorée : cette route ne journalise pas (cf. block_client ci-dessus).
+    ok, message, _evidence = await client_block_service.unblock_client(db, device)
     return _block_result(device, ok, message)
 
 

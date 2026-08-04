@@ -18,12 +18,14 @@ Toute la logique vit dans `app/services/site_topology_service.py` : l'API et ce
 script appliquent EXACTEMENT la même règle (un service ne peut pas importer
 depuis `scripts/`). Ici il ne reste que le pilotage et l'affichage.
 
-Lecture seule par construction : pas de `--apply`, aucune écriture en base ni sur
-le contrôleur.
+Par défaut le script **ne contacte pas le contrôleur** : il lit le câblage déjà
+rapatrié en base par le job quotidien. `--sync` force le rapatriement d'abord —
+utile juste après une intervention terrain.
 
 Usage :
 
     dc exec backend python scripts/dump_site_topology.py
+    dc exec backend python scripts/dump_site_topology.py --sync
     dc exec backend python scripts/dump_site_topology.py --root "A2 HQ"
     dc exec backend python scripts/dump_site_topology.py --json > topo.json
 """
@@ -90,10 +92,23 @@ async def main() -> int:
              "sur le site de plus haut degré — le lien Internet→HQ n'étant pas "
              "un data-link, la racine ne se déduit pas du contrôleur).",
     )
+    parser.add_argument(
+        "--sync", action="store_true",
+        help="Rapatrie d'abord le câblage depuis le contrôleur (ce que fait le "
+             "job quotidien). Sans ce drapeau, on lit la base — aucun appel UISP.",
+    )
     parser.add_argument("--json", action="store_true", help="Sortie JSON brute.")
     args = parser.parse_args()
 
     async with async_session_factory() as session:
+        if args.sync:
+            result = await site_topology_service.sync_site_links(session)
+            if result.get("ok"):
+                await session.commit()
+                print(f"Câblage rapatrié : {result['physical_links']} lien(s) "
+                      f"physique(s) sur {result['edges']} liaison(s).\n")
+            else:
+                print(f"Sync non appliqué : {result['reason']}\n")
         topo = await site_topology_service.get_site_topology(session, root=args.root)
 
     if not topo["available"]:
@@ -107,14 +122,12 @@ async def main() -> int:
     stats, layout = topo["stats"], topo["layout"]
 
     print("=" * 74)
-    print("GRAPHE INTER-SITES — source : GET /nms/api/v2.1/data-links (lecture seule)")
+    print("GRAPHE INTER-SITES — câblage en base (sync quotidien des data-links UISP)")
     print("=" * 74)
-    print(f"{stats['uisp_devices']} équipements · {stats['uisp_sites']} sites "
-          f"(dont {stats['infra_sites']} d'infra) · {stats['data_links']} data-links")
-    print(f"  → {stats['edges']} liaison(s) inter-sites "
+    print(f"câblage rapatrié le {topo['synced_at']}  "
+          f"(la santé affichée, elle, est de maintenant)")
+    print(f"{stats['infra_sites']} sites d'infra · {stats['edges']} liaison(s) "
           f"({stats['physical_links']} lien(s) physique(s))")
-    for reason, count in sorted(stats["skipped_links"].items(), key=lambda kv: -kv[1]):
-        print(f"     écarté : {reason} ×{count}")
 
     print(f"\n--- LIAISONS ({stats['edges']}) " + "-" * 48)
     if not topo["edges"]:
@@ -194,7 +207,10 @@ async def main() -> int:
     if not problems:
         print("  rien : graphe connexe, tous les sites reliés et mesurés.")
 
-    print("\n(lecture seule — aucune écriture en base ni sur le contrôleur)")
+    if args.sync:
+        print("\n(câblage rapatrié et écrit ; la santé vient de nos polls)")
+    else:
+        print("\n(lecture de la base — aucun appel au contrôleur ; --sync pour rapatrier)")
     return 0
 
 

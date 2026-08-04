@@ -376,6 +376,15 @@ class Settings(BaseSettings):
     # read as a deduction.
     topology_root_site: str = "A2 HQ"
 
+    # Sync du CÂBLAGE inter-sites (data-links UISP → table `site_links`). Le
+    # graphe ne bouge que lorsque le terrain pose un backhaul : une fois par jour
+    # suffit largement. Sans ce sync, /topology interrogeait le contrôleur à
+    # chaque affichage (~1300 équipements + ~1400 sites + ~1300 liens), et le
+    # rafraîchissement de l'onglet le refaisait toutes les 2 minutes.
+    # La SANTÉ des liaisons n'est pas concernée : elle reste lue en direct.
+    topology_sync_enabled: bool = True
+    topology_sync_hour: int = 7  # UTC (Mauritanie GMT) — à :30, après uisp_sync
+
     # LR subscription-plan sync (traffic-shaper rate caps read over SSH). The
     # plan changes rarely, and the read is a per-LR SSH round-trip (bounded by
     # lr_probe_concurrency), so a slow cadence is plenty. Runs once at scheduler

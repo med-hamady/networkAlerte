@@ -22,12 +22,19 @@ Ce que ces tests verrouillent, et pourquoi ça compte :
   plus coûteux que la carte pourrait produire.
 """
 
+import types
+
+import pytest
+from sqlalchemy.sql.dml import Delete
+
+from app.services import site_topology_service
 from app.services.site_topology_service import (
     build_edges,
     device_index,
     edge_health,
     infra_site_ids,
     layered_graph,
+    sync_site_links,
 )
 
 # --- Construction du jeu de données ----------------------------------------
@@ -330,3 +337,173 @@ def test_down_end_makes_the_edge_down_even_with_stale_measures():
         {"status": "up", "metrics": {"total_capacity_mbps": 3902, "link_potential_pct": 66}},
     )
     assert health["state"] == "down"
+
+
+# ---------------------------------------------------------------------------
+# Le sync quotidien du câblage
+# ---------------------------------------------------------------------------
+#
+# Le câblage est rapatrié 1×/jour dans `site_links` ; la page ne parle plus au
+# contrôleur. Ces tests portent sur l'écriture, avec une session factice : ce qui
+# compte ici est CE QUI EST ÉCRIT et surtout QUAND ON EFFACE.
+
+
+class _FakeSession:
+    """Session minimale : retient les ajouts et si un DELETE a été émis."""
+
+    def __init__(self):
+        self.added = []
+        self.deleted = False
+
+    async def execute(self, statement):
+        if isinstance(statement, Delete):
+            self.deleted = True
+        return None
+
+    def add(self, obj):
+        self.added.append(obj)
+
+
+def _patch_controller(monkeypatch, *, devices, sites, links):
+    """Remplace le client UISP et les réglages par des doubles."""
+
+    class _StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def fetch_devices(self):
+            return devices
+
+        async def fetch_sites(self):
+            return sites
+
+        async def fetch_data_links(self):
+            return links
+
+    monkeypatch.setattr(site_topology_service.uisp_service, "UISPClient", _StubClient)
+    monkeypatch.setattr(
+        site_topology_service, "get_settings",
+        lambda: types.SimpleNamespace(
+            uisp_base_url="https://uisp.test", uisp_username="", uisp_password="",
+            uisp_api_token="tok", uisp_verify_tls=False, uisp_request_timeout=30,
+            topology_root_site="A2 HQ",
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_sync_writes_one_row_per_physical_link(monkeypatch):
+    sites, devices, links = _build()
+    _patch_controller(monkeypatch, devices=devices, sites=sites, links=links)
+
+    session = _FakeSession()
+    result = await sync_site_links(session)
+
+    assert result["ok"] is True
+    assert result["physical_links"] == len(_BACKHAULS)
+    assert len(session.added) == len(_BACKHAULS)
+    assert session.deleted is True   # remplacement intégral
+
+    # Sites ordonnés à l'écriture : une liaison ne doit pas changer d'identité
+    # selon le sens dans lequel UISP a provisionné le lien.
+    for row in session.added:
+        assert row.site_a <= row.site_b
+    # La MAC est conservée des deux côtés — c'est par elle que la lecture
+    # rejoint notre inventaire pour colorer la liaison.
+    assert all(row.mac_a and row.mac_b for row in session.added)
+
+
+@pytest.mark.asyncio
+async def test_sync_never_wipes_the_table_on_an_empty_payload(monkeypatch):
+    """LE garde-fou. Un fetch qui ne rend aucun lien ne doit PAS être lu comme
+    « le parc n'a plus aucun backhaul » : effacer la table sur ce signal
+    supprimerait toute la topologie. Même leçon que la passe de suppression du
+    sync des stations."""
+    sites, devices, _ = _build()
+    _patch_controller(monkeypatch, devices=devices, sites=sites, links=[])
+
+    session = _FakeSession()
+    result = await sync_site_links(session)
+
+    assert result["ok"] is False
+    assert session.deleted is False, "la table ne doit pas être vidée"
+    assert session.added == []
+
+
+@pytest.mark.asyncio
+async def test_sync_ignores_links_that_resolve_to_no_infra_site(monkeypatch):
+    """Un contrôleur qui ne rend que des liens AP↔abonné laisse la table
+    intacte : zéro liaison résolue tombe sous le même garde-fou."""
+    sites, devices, links = _build()
+    # Ne garder que le lien vers un abonné (le Rocket SK1 ↔ LR Ousmane).
+    client_links = [
+        link for link in links
+        if any(
+            (link[side]["device"]["identification"]["id"] or "").startswith("dev-")
+            and "Ousmane" in next(
+                (d["identification"]["name"] for d in devices
+                 if d["identification"]["id"] == link[side]["device"]["identification"]["id"]),
+                "",
+            )
+            for side in ("from", "to")
+        )
+    ]
+    _patch_controller(monkeypatch, devices=devices, sites=sites, links=client_links)
+
+    session = _FakeSession()
+    result = await sync_site_links(session)
+
+    assert result["ok"] is False
+    assert session.deleted is False
+
+
+# ---------------------------------------------------------------------------
+# État d'un site : la règle qui décide de la couleur des liaisons
+# ---------------------------------------------------------------------------
+
+
+class _FakeResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _CountSession:
+    """Session qui rend un agrégat (site, status, count) figé."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def execute(self, statement):
+        return _FakeResult(self._rows)
+
+
+@pytest.mark.asyncio
+async def test_site_is_down_only_when_every_device_is_down():
+    """LE critère de couleur. Un équipement HS ne met pas un site à terre :
+    peindre en rouge les liaisons d'un site qui fonctionne enverrait chercher
+    une panne de backhaul là où il n'y en a pas."""
+    session = _CountSession([
+        ("A2 HQ", "up", 13), ("A2 HQ", "down", 1),      # panne isolée
+        ("A2 CT1", "down", 7),                           # site entièrement tombé
+        ("A2 NR1", "up", 7),                             # site sain
+        ("A2 AT2", "up", 9), ("A2 AT2", "unknown", 1),   # inconnu ≠ down
+    ])
+    health = await site_topology_service.site_device_health(session)
+
+    assert health["A2 HQ"] == {"total": 14, "down": 1, "is_down": False}
+    assert health["A2 CT1"] == {"total": 7, "down": 7, "is_down": True}
+    assert health["A2 NR1"]["is_down"] is False
+    # Un équipement `unknown` n'est pas compté comme tombé — on n'affirme une
+    # panne que sur constat, jamais sur une absence d'information.
+    assert health["A2 AT2"] == {"total": 10, "down": 0, "is_down": False}
+
+
+@pytest.mark.asyncio
+async def test_blank_site_names_are_ignored_in_counts():
+    """Un site vide/blanc n'est pas un site : il ne doit pas créer un nœud."""
+    session = _CountSession([("   ", "up", 3), (None, "down", 2), ("A2 HQ", "up", 1)])
+    health = await site_topology_service.site_device_health(session)
+    assert set(health) == {"A2 HQ"}

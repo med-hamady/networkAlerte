@@ -71,6 +71,7 @@ from app.services import (
     poller,
     saturation_report_service,
     site_infra_service,
+    site_topology_service,
     snmp_service,
     ssh_service,
     switch_port_service,
@@ -3411,6 +3412,41 @@ async def uisp_sync_job() -> None:
         logger.error("UISP sync cycle failed: %s", exc)
 
 
+async def site_topology_sync_job() -> None:
+    """Rapatrie le CÂBLAGE inter-sites (data-links UISP) dans `site_links`.
+
+    Quotidien, parce que c'est la cadence de la donnée : un backhaul est posé
+    quelques fois par an. Avant ce job, la page /topology interrogeait le
+    contrôleur à CHAQUE affichage — ~1300 équipements + ~1400 sites + ~1300 liens
+    par ouverture d'onglet, et le rafraîchissement automatique le refaisait
+    toutes les 2 minutes.
+
+    Ne synchronise QUE le câblage. La santé des liaisons (statut, capacité,
+    potentiel) reste relue en direct à l'affichage depuis nos propres polls :
+    la figer ici afficherait l'état d'hier comme celui de maintenant.
+    """
+    settings = get_settings()
+    if not settings.topology_sync_enabled:
+        return
+    has_auth = settings.uisp_api_token or (settings.uisp_username and settings.uisp_password)
+    if not settings.uisp_base_url or not has_auth:
+        logger.warning(
+            "Sync topologie activé mais UISP_BASE_URL / credentials manquants — cycle ignoré",
+        )
+        return
+    try:
+        async with async_session_factory() as session:
+            result = await site_topology_service.sync_site_links(session)
+            # Le garde-fou « aucune liaison résolue » a déjà laissé la table
+            # intacte ; ne pas committer évite en plus tout effet de bord.
+            if result.get("ok"):
+                await session.commit()
+    except site_topology_service.uisp_service.UISPAuthError as exc:
+        logger.error("Sync topologie : authentification UISP refusée : %s", exc)
+    except Exception as exc:
+        logger.error("Sync topologie : cycle échoué : %s", exc)
+
+
 async def lr_plan_sync_job() -> None:
     """Lit le forfait (caps du traffic shaper airOS) de chaque LR up via SSH et
     le met en cache (plan_download_mbps / plan_upload_mbps / plan_synced_at).
@@ -3460,6 +3496,7 @@ _FAST_JOB_IDS = {
 _HEAVY_JOB_IDS = {
     "snmp_poll", "power_poll", "lr_internet_probe", "lr_plan_sync",
     "client_block_enforcement", "uisp_sync", "switch_port_mapping",
+    "site_topology_sync",
 }
 _PING_LR_JOB_IDS = {"client_ping"}
 
@@ -3742,6 +3779,19 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
             # Run once right after the scheduler boots (i.e. at deploy) so the
             # import happens immediately; the cron then fires daily at
             # uisp_sync_hour:00 UTC (Mauritania is GMT/UTC+0 → 07:00 local).
+            next_run_time=datetime.datetime.now(),
+            max_instances=1, coalesce=True, misfire_grace_time=3600,
+        )
+    if settings.topology_sync_enabled:
+        scheduler.add_job(
+            site_topology_sync_job,
+            trigger="cron", hour=settings.topology_sync_hour, minute=30, timezone="UTC",
+            id="site_topology_sync",
+            name="Inter-site topology sync (UISP data-links → site_links)",
+            replace_existing=True,
+            # 1× au démarrage : sans ça, la page reste vide jusqu'au lendemain
+            # après un premier déploiement (la table part vide).
+            # minute=30 pour ne pas se superposer au uisp_sync de la même heure.
             next_run_time=datetime.datetime.now(),
             max_instances=1, coalesce=True, misfire_grace_time=3600,
         )

@@ -53,7 +53,12 @@ const sections: NavSection[] = [
   },
 ]
 
-export default function Sidebar() {
+/**
+ * `onCollapse` — fourni par AppShell, qui possède l'état d'affichage. Le
+ * contrôle de repli vit ici plutôt qu'en bouton flottant sur le contenu : à
+ * gauche du contenu il recouvrirait le titre de chacune des pages.
+ */
+export default function Sidebar({ onCollapse }: { onCollapse?: () => void }) {
   const pathname = usePathname()
   const router = useRouter()
   const { data: health } = useSWR<HealthResponse>(
@@ -96,12 +101,27 @@ export default function Sidebar() {
       <div className="px-5 py-5 border-b border-blue-800">
         <div className="flex items-center gap-3">
           <A2LogoMark />
-          <div>
+          <div className="min-w-0">
             <p className="text-white font-bold text-sm tracking-widest uppercase leading-none">
               A2 Holding
             </p>
             <p className="text-blue-300 text-xs mt-1">Network Supervisor</p>
           </div>
+          {onCollapse && (
+            <button
+              onClick={onCollapse}
+              title="Masquer le menu (plein écran)"
+              aria-label="Masquer le menu"
+              className="ml-auto shrink-0 flex items-center justify-center w-7 h-7 rounded-md
+                         text-blue-300 hover:text-white hover:bg-blue-800 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24"
+                   stroke="currentColor" strokeWidth={1.9}>
+                <path strokeLinecap="round" strokeLinejoin="round"
+                      d="M4 6h16M4 12h10M4 18h16M19 15l-3-3 3-3" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 

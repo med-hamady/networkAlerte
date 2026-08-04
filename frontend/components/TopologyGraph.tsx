@@ -30,13 +30,17 @@ const ANTENNA_SRC = '/devices/antenne.png'
 
 type Pos = { x: number; y: number }
 
-// Couleurs des liaisons. `unmeasured` est délibérément NEUTRE (gris) et non
-// vert : un lien qu'on ne mesure pas n'est pas un lien sain.
-function edgeColor(edge: TopologyEdge): string {
-  if (edge.health.state === 'down') return '#dc2626'
-  if (edge.health.state === 'unmeasured') return '#9ca3af'
-  if (edge.health.degraded) return '#f59e0b'
-  return '#16a34a'
+// Couleur d'une liaison = l'état des SITES qu'elle relie, pas celui des deux
+// radios à ses bouts. Rouge seulement si un site est ENTIÈREMENT tombé.
+//
+// Un équipement HS ne met pas un site à terre : peindre en rouge toutes les
+// liaisons d'un site qui fonctionne enverrait chercher une panne de backhaul là
+// où il n'y en a pas. La panne isolée reste visible — c'est le compteur « 14/1 »
+// sous le nœud qui la porte, comme le fait le contrôleur.
+function edgeColor(edge: TopologyEdge, downSites: Set<string>): string {
+  return downSites.has(edge.site_a) || downSites.has(edge.site_b)
+    ? '#dc2626'
+    : '#16a34a'
 }
 
 export default function TopologyGraph({
@@ -60,6 +64,7 @@ export default function TopologyGraph({
   const ordered = [...topo.edges].sort(
     (a, b) => Number(b.is_tree_edge) - Number(a.is_tree_edge),
   )
+  const downSites = new Set(topo.sites.filter(s => s.is_down).map(s => s.site))
 
   return (
     <div className="overflow-x-auto">
@@ -69,7 +74,7 @@ export default function TopologyGraph({
           const a = positions.get(edge.site_a)
           const b = positions.get(edge.site_b)
           if (!a || !b) return null
-          const color = edgeColor(edge)
+          const color = edgeColor(edge, downSites)
           const dashed = !edge.is_tree_edge
           const dim = selectedSite != null
             && selectedSite !== edge.site_a && selectedSite !== edge.site_b
@@ -123,16 +128,30 @@ export default function TopologyGraph({
                 width={LABEL_W} height={34} rx={4}
                 fill="#ffffff" opacity={dim ? 0.55 : 0.92}
               />
+              {/* Un site ENTIÈREMENT tombé porte son nom en rouge — même
+                  critère que la couleur de ses liaisons, pour qu'on ne cherche
+                  pas deux lectures différentes de la même panne. */}
               <text x={0} y={ICON / 2 + 18} textAnchor="middle"
                     className={`text-[13px] font-semibold ${
-                      selected ? 'fill-blue-700' : dim ? 'fill-slate-400' : 'fill-slate-900'
+                      selected ? 'fill-blue-700'
+                        : dim ? 'fill-slate-400'
+                        : site.is_down ? 'fill-red-600'
+                        : 'fill-slate-900'
                     }`}>
                 {site.site}
               </text>
+              {/* Compteur d'équipements façon contrôleur : « 14/1 », la part
+                  en panne en rouge. C'est ce qui garde une panne isolée
+                  visible alors que la liaison, elle, reste verte. */}
               <text x={0} y={ICON / 2 + 33} textAnchor="middle"
                     className={`text-[11px] ${dim ? 'fill-slate-300' : 'fill-slate-500'}`}>
-                {site.degree} liaison{site.degree > 1 ? 's' : ''}
-                {isRoot ? ' · racine' : ''}
+                <tspan>{site.device_count}</tspan>
+                {site.device_down_count > 0 && (
+                  <tspan className={dim ? 'fill-red-300' : 'fill-red-600'}>
+                    /{site.device_down_count}
+                  </tspan>
+                )}
+                <tspan> équip.{isRoot ? ' · racine' : ''}</tspan>
               </text>
             </g>
           )
@@ -174,21 +193,19 @@ function curve(a: Pos, b: Pos, bowOut: boolean): string {
   return `M ${l.x + half} ${l.y} C ${l.x + half + pull} ${l.y}, ${r.x - half - pull} ${r.y}, ${r.x - half} ${r.y}`
 }
 
+// Le détail reste accessible au survol : la carte est épurée, elle n'est pas
+// muette. On y nomme les équipements DOWN — le trait dit qu'il y a une panne,
+// l'infobulle dit de quel côté.
 function edgeTooltip(edge: TopologyEdge): string {
   const parts = [`${edge.site_a} ↔ ${edge.site_b}`]
-  if (edge.health.state === 'down') parts.push('liaison DOWN')
-  else if (edge.health.state === 'unmeasured') parts.push('aucune mesure de notre côté')
-  else {
-    if (edge.health.capacity_mbps != null) {
-      parts.push(`${Math.round(edge.health.capacity_mbps)} Mb/s`)
-    }
-    if (edge.health.link_potential_pct != null) {
-      parts.push(`potentiel ${Math.round(edge.health.link_potential_pct)} %`)
-    }
-    if (edge.health.degraded) parts.push(`sous le plancher (${edge.health.floor_mbps} Mb/s)`)
+  const down = edge.links.flatMap(link =>
+    [link.device_a, link.device_b].filter(d => d.status === 'down').map(d => d.name),
+  )
+  if (down.length) parts.push(`hors ligne : ${[...new Set(down)].join(', ')}`)
+  if (edge.health.capacity_mbps != null) {
+    parts.push(`${Math.round(edge.health.capacity_mbps)} Mb/s`)
   }
   if (edge.redundant) parts.push(`${edge.links.length} liens physiques`)
-  if (!edge.is_tree_edge) parts.push('boucle de redondance')
   return parts.join(' · ')
 }
 

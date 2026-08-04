@@ -1,16 +1,18 @@
 """Inter-site topology endpoint — thin wrapper over site_topology_service.
 
-The graph (which site is linked to which, its layered layout, and each link's
-health read from OUR poll) lives in ``app.services.site_topology_service``; this
-module only wires the HTTP route.
+``GET`` is served **entirely from our own database** and never talks to the UISP
+controller. The wiring lives in ``site_links``, refreshed once a day by
+``site_topology_sync_job``; the health of each link is read live from
+``devices``/``device_metrics``, which our pollers already keep current.
 
-⚠️ **Live read of the controller.** Three calls to UISP per request (devices,
-sites, data-links) — the wiring is not stored anywhere on our side, so there is
-nothing in the database to serve from. The graph changes only when the field team
-installs a backhaul, so this is deliberately NOT on a poll: paying three API
-calls on the rare page view beats keeping a table in sync with something that
-moves a few times a year. If the page ever gets hot, the fix is a scheduled job
-writing the edges down — not a cache with a made-up TTL.
+That split is the point. The wiring only changes when the field team installs a
+backhaul — a few times a year — whereas link health changes constantly. Serving
+the page straight from the controller meant downloading ~1300 devices, ~1400
+sites and ~1300 links on every tab open, and again every two minutes through the
+page's auto-refresh.
+
+``POST /sync`` forces a refresh for the case the daily cadence cannot cover: a
+backhaul installed this morning, which the operator wants on the map now.
 """
 
 from __future__ import annotations
@@ -38,27 +40,48 @@ async def get_network_topology(
     ),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Graphe inter-sites : sites, arêtes, couches et santé de chaque liaison.
+    """Graphe inter-sites : sites, liaisons, couches et santé de chaque liaison.
+
+    Lecture de notre base uniquement. `synced_at` date le **câblage** ; la santé
+    affichée, elle, est de maintenant.
 
     Le graphe n'est **pas un arbre** (boucles de redondance mesurées sur le
     parc) : `sites[].depth` donne la couche, et `layout.extra_edges` les arêtes
     hors arbre, à tracer autrement — jamais à masquer.
 
-    Une erreur de transport vers le contrôleur remonte en **502** plutôt que de
-    rendre un graphe partiel : une carte amputée serait lue comme une carte
-    complète, donc comme des sites sans liaison.
+    `available: false` tant que le câblage n'a jamais été synchronisé : la carte
+    est alors absente plutôt que vide, une carte vide se lisant comme un réseau
+    sans liaisons.
+    """
+    return await site_topology_service.get_site_topology(db, root=root)
+
+
+@router.post("/sync")
+async def sync_network_topology(db: AsyncSession = Depends(get_db)) -> dict:
+    """Rapatrie le câblage depuis le contrôleur maintenant, sans attendre le job.
+
+    Le seul chemin de ce module qui parle à UISP. À utiliser après une
+    intervention terrain — sinon le job quotidien suffit.
+
+    Une erreur de transport remonte en **502** : mieux vaut dire que le
+    rapatriement a échoué que laisser croire à une topologie à jour. La table
+    reste intacte dans ce cas, comme lorsque le contrôleur ne rend aucun lien.
     """
     try:
-        return await site_topology_service.get_site_topology(db, root=root)
+        result = await site_topology_service.sync_site_links(db)
     except uisp_service.UISPAuthError as exc:
-        logger.warning("Topologie : authentification UISP refusée (%s)", exc)
+        logger.warning("Sync topologie : authentification UISP refusée (%s)", exc)
         raise HTTPException(
             status_code=502,
             detail="Le contrôleur UISP a refusé l'authentification.",
         ) from exc
     except httpx.HTTPError as exc:
-        logger.warning("Topologie : contrôleur UISP injoignable (%s)", exc)
+        logger.warning("Sync topologie : contrôleur UISP injoignable (%s)", exc)
         raise HTTPException(
             status_code=502,
             detail=f"Contrôleur UISP injoignable : {exc}",
         ) from exc
+
+    if result.get("ok"):
+        await db.commit()
+    return result

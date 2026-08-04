@@ -14,6 +14,23 @@ câblage des ports de switch (:mod:`switch_port_service`), qui n'en retient que
 les liens ``ethernet`` ; les liens **radio** de la même réponse portent nos
 backhauls.
 
+Deux fraîcheurs, deux chemins
+-----------------------------
+:func:`sync_site_links` est le **seul** code ici qui parle au contrôleur, et il
+tourne **1×/jour** : il rapatrie le câblage dans la table ``site_links``.
+:func:`get_site_topology` sert la page depuis notre base, **sans aucun appel à
+UISP**.
+
+Ce découpage n'est pas une optimisation tardive, c'est la nature de la donnée.
+Le câblage ne bouge que quand le terrain pose un backhaul — quelques fois par an.
+La santé d'une liaison, elle, change en permanence : elle est donc relue à chaque
+affichage depuis ``devices``/``device_metrics``, jamais figée dans la table
+quotidienne (ce serait montrer l'état d'hier comme celui de maintenant).
+
+Avant ce découpage, chaque ouverture de la page téléchargeait ~1300 équipements,
+~1400 sites et ~1300 liens — et le rafraîchissement automatique de l'onglet le
+refaisait toutes les 2 minutes.
+
 Ce qui fait qu'une arête existe
 -------------------------------
 Un data-link dont les deux bouts se résolvent sur deux **sites d'infra
@@ -61,14 +78,16 @@ toujours tous les deux (mesuré : 6 arêtes radio sur 15 mesurées des deux côt
 
 from __future__ import annotations
 
+import datetime
 import logging
 from collections import defaultdict, deque
 
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models.device import Device
+from app.models.site_link import SiteLink
 from app.services import uisp_service
 from app.services.uisp_sync_service import classify_device
 
@@ -76,6 +95,14 @@ logger = logging.getLogger(__name__)
 
 # Métriques relues en base pour qualifier une arête (cf. docstring du module).
 EDGE_METRICS: tuple[str, ...] = ("total_capacity_mbps", "link_potential_pct", "signal_dbm")
+
+# Types d'équipement qui font d'un site un site d'INFRA dans notre inventaire.
+# Sert uniquement à faire apparaître un site dépourvu de backhaul provisionné :
+# sans lui, un tel site serait absent de la carte au lieu d'y être signalé
+# orphelin. Les LR (abonnés) en sont exclus — un site client n'est pas un nœud.
+INFRA_SITE_DEVICE_TYPES: tuple[str, ...] = (
+    "rocket", "airfiber", "ptp_litebeam", "uisp_switch", "uisp_power",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -428,24 +455,33 @@ def edge_health(end_a: dict | None, end_b: dict | None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Point d'entrée unique — le script ET l'API passent par là
+# SYNC quotidien — le seul chemin qui parle au contrôleur
 # ---------------------------------------------------------------------------
 
 
-async def get_site_topology(session: AsyncSession, root: str | None = None) -> dict:
-    """Le graphe inter-sites complet, prêt à rendre ou à imprimer.
+async def sync_site_links(session: AsyncSession) -> dict:
+    """Rapatrier le câblage inter-sites depuis UISP et le persister.
 
-    Trois appels au contrôleur (devices, sites, data-links) : c'est une lecture
-    du provisioning, jamais une écriture. Les erreurs de transport remontent —
-    une carte vide vaut mieux qu'une carte partielle qu'on croirait complète.
+    Trois appels au contrôleur, **une fois par jour** : c'est une lecture du
+    provisioning, jamais une écriture. Les data-links désignent leurs extrémités
+    par l'id UISP de l'équipement — id que nous ne stockons pas — d'où le besoin
+    de ``/devices`` pour traduire en MAC, notre identité partout ailleurs.
+
+    ⚠️ **Remplacement intégral** de la table, et c'est volontaire : contrairement
+    à la FDB d'un switch (où l'absence d'une MAC et la chute du port sont la même
+    observation), UISP **ne retire pas** un lien qui tombe — il le rapporte
+    ``state="disconnected"``, vérifié sur le lien CT1↔SK1 en panne. Une absence
+    ici signifie donc « l'opérateur a dé-provisionné ce lien », pas « le lien est
+    down ».
+
+    ⚠️ **Garde-fou** : un fetch qui ne rend AUCUN lien ne vide pas la table. Un
+    payload vide ou malformé serait sinon lu comme « plus aucun backhaul » et
+    effacerait toute la topologie — même leçon que la passe de suppression du
+    sync des stations.
     """
     settings = get_settings()
     if not settings.uisp_base_url:
-        return {
-            "available": False,
-            "reason": "UISP_BASE_URL non configuré",
-            "sites": [], "edges": [], "layout": {}, "stats": {},
-        }
+        return {"ok": False, "reason": "UISP_BASE_URL non configuré"}
 
     client = uisp_service.UISPClient(
         settings.uisp_base_url,
@@ -460,8 +496,103 @@ async def get_site_topology(session: AsyncSession, root: str | None = None) -> d
     links = await client.fetch_data_links()
 
     infra = infra_site_ids(raw_sites, raw_devices)
-    devices = device_index(raw_devices)
-    edges, skipped = build_edges(links, devices, infra)
+    edges, skipped = build_edges(links, device_index(raw_devices), infra)
+
+    if not edges:
+        logger.warning(
+            "Sync topologie : aucune liaison inter-sites résolue sur %d data-links "
+            "— table CONSERVÉE en l'état (un payload vide ne vaut pas un parc "
+            "sans backhaul). Motifs de rejet : %s",
+            len(links), skipped,
+        )
+        return {
+            "ok": False,
+            "reason": "aucune liaison résolue — table conservée",
+            "data_links": len(links),
+            "skipped": skipped,
+        }
+
+    now = datetime.datetime.now(datetime.UTC)
+    await session.execute(delete(SiteLink))
+    for edge in edges:
+        session.add(
+            SiteLink(
+                site_a=edge["site_a"],
+                site_b=edge["site_b"],
+                link_type=edge["type"],
+                state=edge["state"],
+                mac_a=edge["device_a"]["mac"],
+                mac_b=edge["device_b"]["mac"],
+                name_a=edge["device_a"]["name"],
+                name_b=edge["device_b"]["name"],
+                synced_at=now,
+            )
+        )
+
+    pairs = {frozenset((e["site_a"], e["site_b"])) for e in edges}
+    logger.info(
+        "Sync topologie : %d lien(s) physique(s) sur %d liaison(s), %d sites d'infra "
+        "(%d data-links lus, rejets %s)",
+        len(edges), len(pairs), len(infra), len(links), skipped,
+    )
+    return {
+        "ok": True,
+        "physical_links": len(edges),
+        "edges": len(pairs),
+        "infra_sites": len(infra),
+        "data_links": len(links),
+        "skipped": skipped,
+        "synced_at": now,
+    }
+
+
+# ---------------------------------------------------------------------------
+# LECTURE — base seule, aucun appel au contrôleur
+# ---------------------------------------------------------------------------
+
+
+async def get_site_topology(session: AsyncSession, root: str | None = None) -> dict:
+    """Le graphe inter-sites, servi depuis notre base — zéro appel à UISP.
+
+    Deux fraîcheurs différentes, assemblées ici :
+
+    * le **câblage** vient de ``site_links``, synchronisé 1×/jour (il ne bouge
+      que quand le terrain pose un backhaul) ;
+    * la **santé** — statut, capacité, potentiel — est relue MAINTENANT depuis
+      ``devices``/``device_metrics``. La figer dans la table quotidienne
+      afficherait l'état d'hier comme s'il était celui de maintenant.
+    """
+    settings = get_settings()
+    rows = (await session.execute(select(SiteLink))).scalars().all()
+    if not rows:
+        return {
+            "available": False,
+            "reason": "câblage jamais synchronisé — lancer le sync de topologie",
+            "sites": [], "edges": [], "layout": {}, "stats": {},
+        }
+
+    # Reconstruire la forme d'arête que le reste du module attend. Les sites
+    # d'infra sont ceux que le câblage relie, plus ceux que notre inventaire
+    # porte (un site sans backhaul doit rester visible comme orphelin).
+    edges = [
+        {
+            "type": r.link_type,
+            "state": r.state,
+            "site_a": r.site_a,
+            "site_b": r.site_b,
+            "device_a": {"name": r.name_a, "mac": r.mac_a, "site_name": r.site_a},
+            "device_b": {"name": r.name_b, "mac": r.mac_b, "site_name": r.site_b},
+        }
+        for r in rows
+    ]
+    synced_at = max(r.synced_at for r in rows)
+
+    # Les sites de l'inventaire ET ceux que le câblage relie : un site d'infra
+    # sans backhaul provisionné doit apparaître (c'est justement l'anomalie à
+    # montrer), et un site nommé par un lien doit apparaître même si notre
+    # inventaire ne le porte pas encore.
+    health = await site_device_health(session)
+    infra_sites = set(health) | {r.site_a for r in rows} | {r.site_b for r in rows}
 
     macs = {
         e[side]["mac"]
@@ -470,7 +601,7 @@ async def get_site_topology(session: AsyncSession, root: str | None = None) -> d
     }
     ours = await supervised_by_mac(session, macs)
 
-    layout = layered_graph(edges, set(infra.values()), root or settings.topology_root_site)
+    layout = layered_graph(edges, infra_sites, root or settings.topology_root_site)
 
     # Agrégation pour le rendu : une seule arête par paire de sites, portant ses
     # liaisons physiques. Deux radios entre deux sites sont UNE liaison logique
@@ -509,8 +640,13 @@ async def get_site_topology(session: AsyncSession, root: str | None = None) -> d
             "parent": layout["parent"].get(name),
             "degree": len(layout["adjacency"].get(name, [])),
             "reachable": name in layout["depth"],
+            # Compteur affiché sous le site, façon contrôleur : « 14/1 ».
+            "device_count": health.get(name, {}).get("total", 0),
+            "device_down_count": health.get(name, {}).get("down", 0),
+            # Site ENTIÈREMENT tombé — le seul cas qui rougit ses liaisons.
+            "is_down": health.get(name, {}).get("is_down", False),
         }
-        for name in sorted(infra.values())
+        for name in sorted(infra_sites)
     ]
 
     unsupervised = sorted({
@@ -523,6 +659,9 @@ async def get_site_topology(session: AsyncSession, root: str | None = None) -> d
         "available": True,
         "root": layout["root"],
         "root_source": layout["root_source"],
+        # Date du dernier rapatriement du CÂBLAGE. La santé affichée, elle, est
+        # de maintenant — l'UI doit dire lequel des deux elle date.
+        "synced_at": synced_at.isoformat(),
         "sites": sites,
         "edges": sorted(merged.values(), key=lambda e: (e["site_a"], e["site_b"])),
         "layout": {
@@ -535,16 +674,48 @@ async def get_site_topology(session: AsyncSession, root: str | None = None) -> d
             ],
         },
         "stats": {
-            "uisp_devices": len(raw_devices),
-            "uisp_sites": len(raw_sites),
-            "infra_sites": len(infra),
-            "data_links": len(links),
+            "infra_sites": len(infra_sites),
             "edges": len(merged),
             "physical_links": len(edges),
-            "skipped_links": skipped,
             "unsupervised_ends": unsupervised,
         },
     }
+
+
+async def site_device_health(session: AsyncSession) -> dict[str, dict]:
+    """Par site : combien d'équipements d'infra, et combien ne répondent plus.
+
+    Deux usages, et la distinction est le cœur du rendu :
+
+    * ``down`` alimente le compteur affiché sous chaque site (« 14/1 »), à la
+      manière du contrôleur — une panne isolée reste visible ;
+    * ``is_down`` ne vaut True que si **TOUS** les équipements du site sont
+      tombés. C'est lui, et lui seul, qui rougit les liaisons du site : un
+      équipement HS ne met pas un site à terre, et peindre en rouge les liaisons
+      d'un site qui fonctionne enverrait chercher une panne de backhaul là où il
+      n'y en a pas.
+
+    ⚠️ Seuls les **types d'infra** sont comptés. Les LR portent le `site` de leur
+    AP (le sync fait suivre le site au CPE), donc les inclure ferait afficher
+    « 9 » comme « 87 » et un seul abonné éteint suffirait à fausser le compteur.
+    """
+    rows = await session.execute(
+        select(Device.site, Device.status, func.count())
+        .where(Device.device_type.in_(INFRA_SITE_DEVICE_TYPES), Device.site.is_not(None))
+        .group_by(Device.site, Device.status)
+    )
+    out: dict[str, dict] = {}
+    for site, status, count in rows.all():
+        key = (site or "").strip()
+        if not key:
+            continue
+        entry = out.setdefault(key, {"total": 0, "down": 0})
+        entry["total"] += count
+        if (status or "").lower() == "down":
+            entry["down"] += count
+    for entry in out.values():
+        entry["is_down"] = entry["total"] > 0 and entry["down"] == entry["total"]
+    return out
 
 
 def _end_payload(end: dict, ours: dict | None) -> dict:

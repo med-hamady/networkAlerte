@@ -6,12 +6,17 @@
 // montre ce qu'il y a derrière un switch. Ici c'est le niveau au-dessus : quel
 // site est raccordé à quel autre.
 //
-// La donnée est lue EN DIRECT sur le contrôleur UISP (le câblage n'est stocké
-// nulle part chez nous), mais la SANTÉ de chaque liaison vient de notre poll —
-// c'est ce que la carte du contrôleur ne sait pas montrer.
+// Tout vient de NOTRE base : le câblage depuis `site_links` (rapatrié 1×/jour
+// depuis UISP), la santé de chaque liaison depuis nos polls. Aucun appel au
+// contrôleur à l'affichage.
+//
+// ⚠️ PAS de `refreshInterval` ici, contrairement aux autres pages du projet.
+// Elles affichent des métriques vivantes ; celle-ci affiche du câblage, qui ne
+// bouge que quand le terrain pose un backhaul. Un rafraîchissement périodique
+// n'apporterait rien et rejouerait la requête indéfiniment sur un onglet oublié.
 //
 // Cette page ne fait que le fetch et les états d'erreur ; le rendu vit dans
-// components/TopologyView.tsx, que l'aperçu réutilise tel quel.
+// components/TopologyView.tsx.
 
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
@@ -20,26 +25,32 @@ import TopologyView from '@/components/TopologyView'
 
 export default function TopologyPage() {
   const { data, error, isLoading } = useSWR<NetworkTopology>(
-    endpoints.networkTopology, fetcher, { refreshInterval: 120_000 },
+    endpoints.networkTopology, fetcher,
   )
 
   if (error) {
     return (
       <div className="space-y-2">
         <h1 className="text-xl font-bold text-slate-900">Topologie du réseau</h1>
-        <p className="text-sm text-red-600">
-          Impossible de lire la topologie : le contrôleur UISP est injoignable ou
-          a refusé l&apos;authentification. Le câblage inter-sites n&apos;existe que
-          là-bas — rien à afficher depuis notre base.
-        </p>
+        <p className="text-sm text-red-600">Erreur de chargement de la topologie.</p>
       </div>
     )
   }
   if (isLoading || !data) {
-    return <p className="text-sm text-slate-500">Lecture du contrôleur UISP…</p>
+    return <p className="text-sm text-slate-500">Chargement…</p>
   }
   if (!data.available) {
-    return <p className="text-sm text-amber-700">Topologie indisponible : {data.reason}</p>
+    return (
+      <div className="space-y-2">
+        <h1 className="text-xl font-bold text-slate-900">Topologie du réseau</h1>
+        <p className="text-sm text-amber-700">Topologie indisponible : {data.reason}</p>
+        <p className="text-xs text-slate-500">
+          Le câblage est rapatri&eacute; du contr&ocirc;leur UISP une fois par jour.
+          Pour le forcer maintenant :{' '}
+          <code>dc exec backend python scripts/dump_site_topology.py --sync</code>
+        </p>
+      </div>
+    )
   }
 
   return <TopologyView topo={data} />

@@ -56,7 +56,8 @@ backend/app/
 │   ├── incident.py          # Incidents (open/acknowledged/resolved)
 │   ├── alert_state.py       # Compteurs d'anti-flapping persistés en DB (survit aux redémarrages)
 │   ├── lr_metric_sample.py # Historique des COURBES de la fiche équipement en buckets (largeur `LR_METRIC_HISTORY_BUCKET_SECONDS`, défaut 60 s ; 1 ligne/(device_id, **metric_name**, bucket_start), avg/min/max/sample_count). Une courbe par métrique (latence, capacité du lien, capacités DL/UL, débits DL/UL). Table DÉDIÉE et pas `device_metrics` : empiler les polls ferait ~1M lignes/jour (cf. l'épisode de bloat) — le bucket ramène à 1440 lignes/jour/(device, métrique) à 60 s. **Le coût est ∝ au nombre de métriques de `GRAPH_METRICS`**
-│   └── power_status_log.py  # Relevés UISP Power (voltage, current, power)
+│   ├── power_status_log.py  # Relevés UISP Power (voltage, current, power)
+│   └── site_link.py         # **Câblage INTER-SITES** (backhauls), rapatrié 1×/jour depuis les data-links UISP. 1 ligne = 1 **lien physique** (2 radios entre les mêmes sites = 2 lignes ; le regroupement par paire est fait à la lecture). Porte les **MAC** des deux bouts (c'est par elles que la lecture rejoint notre inventaire) + les noms UISP (une extrémité peut ne pas être supervisée : le switch UniFi du HQ porte les 3 liaisons fibre de la racine). ⚠️ **La SANTÉ n'y est PAS** : statut/capacité/potentiel sont relus en direct à l'affichage — les figer ici afficherait l'état d'hier
 ├── schemas/                 # Pydantic — validation I/O API
 │   ├── device.py
 │   └── incident.py
@@ -206,6 +207,7 @@ backend/app/
 | `UISP_VERIFY_TLS` | Vérif TLS du contrôleur (défaut `false` — cert auto-signé) |
 | `UISP_SYNC_HOUR` | Heure quotidienne du `uisp_sync_job` (défaut `7` = **07:00 UTC** ; la Mauritanie est GMT/UTC+0 → 07:00 locale). Le job tourne aussi **1× au démarrage** du scheduler (déploiement) |
 | `UISP_REQUEST_TIMEOUT` | Timeout HTTP des appels UISP en s (défaut 30) |
+| `TOPOLOGY_SYNC_ENABLED` / `TOPOLOGY_SYNC_HOUR` | Sync quotidien du **câblage** inter-sites (data-links UISP → table `site_links`), défaut `true` / `7` (= **07:30 UTC**, à `:30` pour ne pas se superposer au `uisp_sync` de la même heure). Tourne aussi **1× au démarrage** (sinon la page reste vide jusqu'au lendemain après un premier déploiement). ⚠️ Ne synchronise **que le câblage** : la santé des liaisons reste lue en direct. Groupe scheduler **heavy** |
 | `TOPOLOGY_ROOT_SITE` | Site racine du graphe inter-sites de `/topology` (défaut `A2 HQ`). **Ne se déduit pas** : le lien Internet→HQ n'est pas un data-link, le contrôleur ignore quel site fait face à l'amont. Site absent du graphe ⇒ repli sur le site de plus haut degré, **annoncé** dans `root_source` (un repli silencieux se lirait comme une déduction) |
 | `UISP_IGNORED_SITES` | Sites UISP à exclure du sync (ni créés ni màj). **Séparateur `;`** (les noms de sites contiennent des virgules, ex. `Bureau, A2`), insensible à la casse. Pour les sites bureautiques dont un switch LAN serait vu comme infra |
 | `UISP_STATION_SYNC_ENABLED` | Active l'import des **stations clientes** (LR abonnés) depuis `GET /nms/api/v2.1/devices?role=station` dans la table `lrs`, sur le même `uisp_sync_job` (après l'infra). Apporte le **mode (routeur/bridge)** + le **statut « dernier état connu »** UISP de chaque client → `/access` reste complet/exact même quand un Rocket/LR est down. Écrit les colonnes `uisp_*`, **jamais** `topology_mode` ni l'état de blocage. ⚠️ **`rocket_id`/`location`/`ip_address` sont PARTAGÉS** avec `discovery_service` depuis le 2026-07-22, sous une règle d'arbitrage unique : **la source qui a vu la station le plus récemment gagne** (`_adopt_uisp_attribution`, compare `uisp_last_seen` à `last_discovered_at`). Raison : le rattachement radio lit la liste des stations d'un AP, donc ne corrige QUE les clients **allumés** — un client qui déménage puis tombe restait figé sur son ancien AP, son ancien site et son ancienne IP (morte → « hors ligne » pour toujours), alors que son propre `uisp_ap_name` portait déjà la bonne réponse. ⚠️ **L'AP se reprend, l'IP presque jamais** : pour une station **déconnectée**, l'IP annoncée par UISP n'est qu'un **dernier état connu** que le DHCP a pu réattribuer (au 1er passage réel, UISP a rendu `10.135.3.159` pour **trois** abonnés déconnectés). L'IP n'est donc reprise que si UISP voit la station **active** **ou** l'a vue depuis moins de **`UISP_IP_TRUST_HOURS`** (défaut 24 h — une **fenêtre**, pas un booléen : une panne d'1 h ne périme pas un bail DHCP, 3 semaines si), qu'elle est dans `MANAGEMENT_IP_CIDRS`, et qu'elle est **libre** — jamais volée à un autre détenteur (ni en base, ni à une station déjà servie dans le même passage : `claimed_ips`). Un conflit incrémente `ip_conflict` et laisse les deux lignes intactes : seul le radio voit le terrain. Identité = **MAC** (converge avec la découverte radio). AF60 (backhaul) exclus. Importe le **roster complet** (UISP ne retourne que les stations provisionnées). ⚠️ **SUPPRESSION pour rester synchro** : à la fin du passage, tout LR **déjà vu par UISP** (`uisp_synced_at` renseigné — colonne écrite nulle part ailleurs) dont la MAC n'est plus dans le roster est **déprovisionné dans UISP** → **`session.delete`** (cascade métriques/incidents/historique ; le journal FAI est un fichier par MAC, préservé). Supprimé **même si `client_blocked`** (déprovisionné = plus servi). Un client **découvert par radio seul** (`uisp_synced_at` NULL) n'est **jamais** supprimé (propriété de `discovery_service` — l'effacer déclencherait une recréation en boucle). **Garde-fou anti-catastrophe** : la passe de suppression est **entièrement sautée si le roster revient vide** (`fetch_devices` lève sur erreur transport, mais un payload vide/malformé serait sinon lu comme « tout le monde déprovisionné » et purgerait tout le parc). Défaut `false` |
@@ -296,6 +298,7 @@ Réglages **séparés par famille**, aucun budget partagé (`ping_infra_reconfir
 | `unverified_ip_cleanup_job` | `IP_CLEANUP_INTERVAL_HOURS` (12 h) | Retire l'IP des LR que plus aucune source ne confirme (ni UISP actif/récent, ni radio récent, ou IP hors plan) → `status='unknown'`. Groupe **fast**. `ip_hygiene_service.run_cleanup` |
 | `traffic_stats_retention_job` | `TRAFFIC_STATS_RETENTION_INTERVAL_MINUTES` (6 h) | Purge `traffic_dest_stats` plus vieux que `TRAFFIC_STATS_RETENTION_DAYS` (90 j) en **batches** (`DELETE … WHERE id IN (SELECT id … LIMIT n)`, jamais une grosse transaction). Groupe scheduler **fast**. La collecte elle-même tourne dans le container **`netflow-collector`** (hors APScheduler). **NB : il n'y a plus de rétention sur `device_metrics`** — les compteurs bytes de conso sont conservés indéfiniment (plage de dates `/clients` sans limite ; surveiller disque/autovacuum). |
 | `lr_latency_retention_job` | `LR_METRIC_HISTORY_RETENTION_INTERVAL_MINUTES` (6 h) | Purge `lr_metric_samples` plus vieux que `LR_METRIC_HISTORY_RETENTION_DAYS` (30 j) en **batches** (`DELETE … WHERE id IN (SELECT id … LIMIT n)`, jamais une grosse transaction). Groupe scheduler **fast**. Même forme que `traffic_stats_retention_job` |
+| `site_topology_sync_job` | **Cron quotidien `TOPOLOGY_SYNC_HOUR`:30 UTC** (défaut 07:30) + **1× au démarrage** | Rapatrie le **câblage inter-sites** (`GET /data-links` + `/devices` + `/sites`) dans la table **`site_links`** → alimente `/topology`. Avant ce job, la page interrogeait le contrôleur **à chaque affichage** (~1300 équipements + ~1400 sites + ~1300 liens) et son `refreshInterval` le rejouait **toutes les 2 min**. Ne touche **pas** à la santé des liaisons (lue en direct). Remplacement intégral de la table, **sauté si aucune liaison n'est résolue** (anti-purge). Gated `TOPOLOGY_SYNC_ENABLED`. Groupe **heavy**. Voir **Topologie inter-sites** |
 | `switch_port_mapping_job` | `SWITCH_PORT_MAPPING_INTERVAL_MINUTES` (60 min) + **1× au démarrage** | Détecte **quel équipement supervisé est câblé sur quel port** et écrit `devices.uplink_switch_id/_port` — la source de vérité de « quels ports surveiller » pour `snmp_poll_job`. **2 sources dans l'ordre** : (1) les **data-links du contrôleur UISP** (`portN`/`0/N`, la seule qui fonctionne sur notre matériel — 1 appel API pour tout le parc, index **vérifié** contre l'`ifDescr` du switch), (2) la **FDB BRIDGE-MIB** en fallback, **uniquement** sur les switches qu'UISP ne couvre pas. Contrôleur injoignable = WARNING, la passe FDB et les attributions en base survivent. Groupe **heavy**. Voir **Surveillance des ports de switch** |
 | `uisp_sync_job` | **Cron quotidien `UISP_SYNC_HOUR`:00 UTC** (défaut 07:00 ; Mauritanie GMT → 07:00 locale) + **1× au démarrage** (`next_run_time=now` → import dès le déploiement) | **Désactivé par défaut** (`UISP_SYNC_ENABLED=false`). Importe les équipements d'**infra** (Rocket LTU/airMAX role=ap, switches `uisps`/blackBox, UISP Power `uispp`, AF60* P2P) depuis `GET /nms/api/v2.1/devices` du contrôleur UISP. Mapping `classify_device(type, role, model)` ; identité = **MAC** (sinon IP, sinon (type,nom)). Met à jour **name/IP/site(location)** ; pose les **creds par convention famille/site à la création** (jamais d'écrasement). **Abonnés (LTU-LR/LiteBeam station)** : ignorés par l'import **infra**, mais importés dans `lrs` par `sync_uisp_stations` (après l'infra) si `UISP_STATION_SYNC_ENABLED` — apporte le mode routeur/bridge + statut UISP (colonnes `uisp_*` seules, identité MAC, AF60 exclus, **roster complet**) pour que `/access` reste complet même Rocket/LR down. **Infra : aucun delete.** **Stations : suppression des LR issus de UISP (`uisp_synced_at` renseigné) absents du roster** (déprovisionnés dans UISP), même bloqués ; jamais les clients radio-seuls ; passe sautée si roster vide. Voir `uisp_sync_service`. |
 | `flap_detection_job` | `FLAP_CHECK_INTERVAL_MINUTES` (10 min) | Détecte les équipements d'**infra instables** (flapping). Compte par device les **incidents de disponibilité** (`AVAILABILITY_ALERT_TYPES`, conservés en DB après résolution) avec `detected_at` sur les dernières `FLAP_WINDOW_HOURS` ; au-delà de `FLAP_THRESHOLD_24H` (3) → ouvre `device_flapping` (critique → WhatsApp), résout sinon. **UISP Power exclus** (`device_type=="uisp_power"` filtré dans la requête : leurs up/down sur coupure secteur sont normaux). Infra-only par nature (un LR down n'est jamais un incident). |
@@ -542,6 +545,40 @@ sait (ses agents le rapportent) et le publie sur `GET /nms/api/v2.1/data-links` 
 la même source que le câblage des ports de switch, qui n'en retient que les liens
 `ethernet`. Les liens **radio** de la même réponse portent nos backhauls.
 
+##### ⚠️ Deux fraîcheurs, deux chemins — la règle centrale
+
+| | Cadence | Source |
+|---|---|---|
+| **Câblage** (qui est relié à qui) | **1×/jour** (`site_topology_sync_job`) | UISP → table **`site_links`** |
+| **Santé** (statut, capacité, potentiel) | **à chaque affichage** | notre base (`devices`/`device_metrics`) |
+
+`sync_site_links` est le **seul** code du module qui parle au contrôleur.
+`get_site_topology` sert la page **sans aucun appel à UISP**.
+
+Ce n'est pas une optimisation tardive, c'est la nature de la donnée : un backhaul
+est posé quelques fois par an, alors que la santé d'une liaison change en
+permanence. **Ne jamais figer la santé dans `site_links`** — ce serait afficher
+l'état d'hier comme celui de maintenant. Et ne jamais remettre la page en lecture
+live : avant ce découpage, chaque ouverture d'onglet téléchargeait ~1300
+équipements + ~1400 sites + ~1300 liens, et le `refreshInterval` de la page le
+**rejouait toutes les 2 minutes** sur un onglet oublié. La page n'a donc
+**délibérément pas** de `refreshInterval`, contrairement aux autres du projet —
+elles affichent des métriques vivantes, celle-ci du câblage.
+
+Pourquoi une table plutôt qu'un cache : les data-links désignent leurs extrémités
+par l'**id UISP de l'équipement**, id qu'on ne stocke pas — résoudre un lien exige
+donc `/devices`. On stocke le résultat résolu (les **MAC** des deux bouts, notre
+identité partout ailleurs), pas la réponse brute.
+
+⚠️ **Remplacement intégral de la table à chaque sync**, et c'est correct **ici** :
+contrairement à la FDB d'un switch (où l'absence d'une MAC et la chute du port
+sont la même observation), UISP **ne retire pas** un lien qui tombe — il le
+rapporte `state="disconnected"` (vérifié sur CT1↔SK1 en panne). Une absence
+signifie donc « dé-provisionné », pas « down ». **Garde-fou** : un fetch qui ne
+résout **aucune** liaison ne vide **pas** la table (un payload vide serait sinon
+lu comme « plus aucun backhaul » et effacerait toute la topologie — même leçon
+que la passe de suppression du sync des stations).
+
 ##### Ce qui fait qu'une arête existe
 
 Un data-link dont les deux bouts se résolvent sur deux **sites d'infra
@@ -579,6 +616,36 @@ fait face à l'amont. La racine est donc un réglage (`TOPOLOGY_ROOT_SITE`, déf
 laquelle a servi (`root_source`), parce qu'un repli silencieux se lirait comme
 une déduction.
 
+##### Couleur d'une liaison = état des SITES, pas des radios (2026-08-04)
+
+La page est volontairement **dépouillée** : le graphe et rien d'autre. Pas de
+tuiles de comptage, pas de légende, pas de liste des liaisons — le détail d'un
+lien est au **survol** du trait. Deux couleurs seulement :
+
+- **rouge** si l'un des deux sites est **ENTIÈREMENT** tombé (`is_down` =
+  tous ses équipements d'infra `down`) ;
+- **vert** sinon.
+
+⚠️ **Un équipement HS ne met pas un site à terre.** Peindre en rouge les
+liaisons d'un site qui fonctionne enverrait chercher une panne de backhaul là où
+il n'y en a pas. La panne isolée reste visible : le compteur **« 14/1 »** sous le
+nœud (part en panne en rouge), comme le fait le contrôleur, et le nom du site
+passe en rouge quand il est entièrement tombé.
+
+⚠️ **Conséquence assumée** : un backhaul dont la radio est tombée reste **vert**
+tant que le reste de son site répond. Le trait ne porte plus cette information —
+le compteur du nœud si.
+
+⚠️ **Seuls les types d'INFRA sont comptés** (`INFRA_SITE_DEVICE_TYPES`). Les LR
+portent le `site` de leur AP (le sync fait suivre le site au CPE) : les inclure
+afficherait « 9 » comme « 87 », et un seul abonné éteint fausserait le compteur.
+Un statut `unknown` n'est **pas** compté comme tombé — on n'affirme une panne que
+sur constat.
+
+Les notions de capacité et de plancher ci-dessous **restent calculées** (elles
+alimentent `health` et l'infobulle) mais ne pilotent plus la couleur ; leur vue
+dédiée est la section « Liaisons entre sites » de `/lr-health`.
+
 ##### Colorer une liaison : ce que la carte UISP ne sait pas faire
 
 Les mesures viennent de **notre** poll (`total_capacity_mbps`,
@@ -611,15 +678,16 @@ d'un lien, où les deux extrémités décrivent le même lien physique.
 ##### Contrôle en ligne de commande
 
 ```bash
-dc exec backend python scripts/dump_site_topology.py
+dc exec backend python scripts/dump_site_topology.py            # lit la base, 0 appel UISP
+dc exec backend python scripts/dump_site_topology.py --sync     # rapatrie d'abord le câblage
 dc exec backend python scripts/dump_site_topology.py --root "A2 HQ"
 dc exec backend python scripts/dump_site_topology.py --json > topo.json
 ```
 
 Le script imprime le **même graphe** que la page et nomme ce qui cloche. La
 logique vit dans le **service** (l'API et le script appliquent la même règle — un
-service ne peut pas importer depuis `scripts/`). Lecture seule par construction :
-pas de `--apply`.
+service ne peut pas importer depuis `scripts/`). **Par défaut il ne contacte pas
+le contrôleur** ; `--sync` force le rapatriement, comme `POST /network-topology/sync`.
 
 #### Enrôlement UISP d'un CPE (pose de la clé par SSH) — 2026-07-28
 
@@ -872,7 +940,8 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | POST | `/api/v1/uisp/assign` | Oui | **Associe un équipement à un client CRM** — body `mac` + `crm_client_id`, plus `crm_service_id` **uniquement** si le client a plusieurs services. Équivalent du formulaire UISP (chercher la MAC en « unknown », choisir le client). Si l'équipement est absent du contrôleur, sa clé lui est posée d'abord et la réponse porte `pending_registration` (rejouer dans la minute — ce n'est pas une erreur). Rapport étape par étape. 400 MAC invalide · 404 client CRM introuvable **ou service n'appartenant pas à ce client** · **409 client à plusieurs services sans `crm_service_id`** (services renvoyés) · **409 équipement déjà rattaché à un AUTRE client** (id du détenteur renvoyé ; `reassign=true` pour passer outre) · 502 clé non posée (échec SSH — surtout pas un 404) · 403 token UISP sans droits d'écriture. Voir **Association client CRM** |
 | POST | `/api/v1/uisp/sync` | Oui | Import des équipements d'infra depuis le contrôleur UISP (`?dry_run=true` = prévisualisation sans écriture). Renvoie un résumé (créés/màj/ignorés + échantillon) |
 | GET | `/api/v1/network-capacity` | Oui | Capacité clients : par famille (LTU/airMAX) et par site, clients connectés (`peer_count`) vs max (seuil `rocket_client_overload`). Rockets sans largeur connue exclus des totaux (`unknown`). `network_capacity_service`. Inclut aussi la clé **`infra`** (`site_infra_service.get_site_infra_capacity`) : budget d'équipements infra par site (Rockets+AF60+PTP) vs `SITE_INFRA_MAX`, avec marge `remaining` signée |
-| GET | `/api/v1/network-topology` | Oui | **Graphe INTER-SITES** (le maillage des backhauls). ⚠️ **Lecture LIVE du contrôleur** (3 appels : devices, sites, data-links) — le câblage inter-sites n'est stocké **nulle part** chez nous, il n'y a rien en base à servir. Pas de job de fond : le graphe ne bouge que quand le terrain pose un backhaul. Renvoie `sites[]` (avec `depth` = couche, `parent`, `degree`, `reachable`), `edges[]` (une **liaison logique** par paire de sites, portant 1..n `links[]` physiques, `redundant`, `is_tree_edge`, `health`), `layout` (`components`, `orphan_sites`, `unreached_sites`, `extra_edges`) et `stats` (dont `skipped_links` par motif et `unsupervised_ends`). `?root=` sinon `TOPOLOGY_ROOT_SITE`. **502** si le contrôleur est injoignable — jamais un graphe partiel, qui se lirait comme un graphe complet. Voir **Topologie inter-sites** |
+| GET | `/api/v1/network-topology` | Oui | **Graphe INTER-SITES** (le maillage des backhauls). **Servi depuis NOTRE base — zéro appel au contrôleur.** Le câblage vient de la table `site_links` (rapatrié 1×/jour par `site_topology_sync_job`) ; la **santé** de chaque liaison est relue **en direct** depuis `devices`/`device_metrics`. Renvoie `synced_at` (date du **câblage** — l'état, lui, est de maintenant), `sites[]` (`depth` = couche, `parent`, `degree`, `reachable`, **`device_count`/`device_down_count`** = le compteur « 14/1 », **`is_down`** = site ENTIÈREMENT tombé, le seul cas qui rougit ses liaisons), `edges[]` (une **liaison logique** par paire de sites, portant 1..n `links[]` physiques, `redundant`, `is_tree_edge`, `health`), `layout` (`components`, `orphan_sites`, `unreached_sites`, `extra_edges`) et `stats`. `?root=` sinon `TOPOLOGY_ROOT_SITE`. `available:false` tant que le câblage n'a jamais été synchronisé — carte **absente** plutôt que vide (une carte vide se lit comme un réseau sans liaisons). Voir **Topologie inter-sites** |
+| POST | `/api/v1/network-topology/sync` | Oui | **Rapatrie le câblage maintenant** (le seul chemin de ce module qui parle à UISP), sans attendre le job quotidien — après une intervention terrain. **502** si le contrôleur est injoignable ; la table reste alors intacte |
 | GET | `/api/v1/traffic/top-destinations` | Oui | **Volume** Internet par opérateur/CDN (ASN) sur `?period=24h\|7d\|30d` : SUM(down/up) GROUP BY asn depuis `traffic_dest_stats`, trié par total + part %. `traffic_service.get_top_destinations` |
 | GET | `/api/v1/traffic/throughput` | Oui | **Débit** (Gb/s) par opérateur sur le dernier bucket : descendant/montant Mbps + part du download. Montre le partage de la bande passante WAN en direct. `traffic_service.get_throughput` |
 | GET | `/api/v1/traffic/throughput-history` | Oui | **Historique de débit** descendant par opérateur sur `?period=1h\|6h\|24h` : re-bin des buckets 1 min (top-N opérateurs + « Autres »), séries alignées pour un graphe d'aires empilées. `traffic_service.get_throughput_history` (SQL `date_bin`) |
@@ -891,7 +960,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | Accès clients | `/access` | Table des LR abonnés (source UISP). Filtres dont **« Hors supervision »** : LR sans IP **et** non vu par UISP depuis `OUT_OF_SUPERVISION_DAYS` — badge ambre, **exclu du compteur « Accès actif »** (la tuile indique combien sont exclus). Distinct de « Hors ligne > 1 mois » (`long_offline`, absence prolongée vue par UISP) : ici c'est une absence de **mesure**, pas une absence constatée |
 | Anomalies détectées | `/incidents` | Anomalies actuellement détectées (lecture seule, résolution automatique) |
 | Capacité du réseau | `/capacity` | 2 cercles (LTU/airMAX) consommé vs disponible sur tout le réseau + barres par site (LTU/airMAX séparés) ; clic site → table Rockets (connectés/max + largeur). Donut SVG custom (pas de lib de charts). Inclut la section **« Capacité infra par site »** (table Site/Équip. infra/Max/Marge, marge +N vert / -N rouge) alimentée par la clé `infra` de `/network-capacity` |
-| Topologie du réseau | `/topology` | **Graphe inter-sites** : rendu SVG **en couches** (jamais en arbre — le graphe porte de vraies boucles), nœuds cliquables pour filtrer les liaisons d'un site, liaisons colorées par **notre** mesure (vert au-dessus du plancher / ambre dégradée / rouge hors service / **gris non mesurée**), boucles de redondance en pointillé. Sous le graphe : la liste des liaisons avec leurs liens physiques et l'état de chaque bout, puis la section **« Ce que la carte ne montre pas »** (sites sans liaison, composantes séparées, liaisons sans mesure, extrémités non supervisées). Complète `SiteTopology` (intra-site, sur `/sites`). Source : `/network-topology` |
+| Topologie du réseau | `/topology` | **Graphe inter-sites** — sites rendus par l'icône de pylône (`public/devices/antenne.png` ; ⚠️ **dans `devices/`** car le middleware d'auth intercepte tout sauf ce dossier — ailleurs l'image serait redirigée vers `/login`). **Pas de `refreshInterval`**, contrairement aux autres pages : elle affiche du **câblage**, pas des métriques vivantes. Affiche la date du dernier rapatriement du câblage, distincte de l'état des équipements qui est de maintenant. **Écran dépouillé** : le graphe seul (ni tuiles, ni légende, ni liste des liaisons — le détail d'un lien est au survol). **Pleine largeur + menu replié à l'arrivée** (`FULL_WIDTH_ROUTES` dans `AppShell` : la colonne perd son `max-w-6xl` et la barre latérale se masque). Le repli se commande par un bouton dans l'en-tête du menu, et un bouton flottant le ramène quand il est masqué — **jamais un clic n'importe où** : le graphe est lui-même cliquable (sélection d'un site), un basculement au moindre clic ferait disparaître le menu par accident. L'effet est clé sur `pathname` seul, donc un repli/dépli manuel n'est pas écrasé tant qu'on reste sur la page. Sous chaque site, le compteur **« 14/1 »** (équipements d'infra / en panne, la part rouge). Rendu SVG **en couches** (jamais en arbre — le graphe porte de vraies boucles), nœuds cliquables pour filtrer les liaisons d'un site, liaisons colorées par **notre** mesure (vert au-dessus du plancher / ambre dégradée / rouge hors service / **gris non mesurée**), boucles de redondance en pointillé. Sous le graphe : la liste des liaisons avec leurs liens physiques et l'état de chaque bout, puis la section **« Ce que la carte ne montre pas »** (sites sans liaison, composantes séparées, liaisons sans mesure, extrémités non supervisées). Complète `SiteTopology` (intra-site, sur `/sites`). Source : `/network-topology` |
 | Destinations Internet | `/traffic` | 3 sections : **Débit en direct** (descendant/montant Gb/s + partage par opérateur, `/traffic/throughput`, refresh 30 s), **Débit descendant par opérateur** (graphe d'aires empilées SVG sur 1h/6h/24h, `/traffic/throughput-history`) et **Volume** (par opérateur sur 24h/7j/30j, down/up/total + part, `/traffic/top-destinations`). Repère les candidats à un serveur de cache. **Vide tant que `NETFLOW_COLLECTOR_ENABLED=false` ou que le routeur n'exporte pas vers le collecteur** |
 | Diagnostics d'accès | `/access-diagnostics` | 2 sections d'anomalies de gestion du parc abonné (sidebar **Anomalies**) : **LR qui refusent le SSH** (mot de passe invalide / SSH désactivé / clé d'hôte incompatible — les **offline sont exclus**, ce n'est pas un refus) et **découverts par radio mais absents de UISP** (non provisionnés, potentiellement non facturés). Source : `/access-diagnostics`. La 1re remplace côté UI l'ancien diag SSH par grep de logs. La 2e porte l'**action d'enrôlement** : bouton par ligne + « Tout enrôler dans UISP », avec un interrupteur **Forcer** décoché par défaut (il écrase une clé existante — cf. **Enrôlement UISP**). Une ligne déjà enrôlée affiche la date au lieu du bouton : elle attend le sync quotidien |
 

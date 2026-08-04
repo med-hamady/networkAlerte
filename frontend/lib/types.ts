@@ -691,11 +691,22 @@ export interface TopologySite {
   parent: string | null
   degree: number
   reachable: boolean
+  // Compteur affiché sous le site, façon contrôleur (« 14/1 ») : nombre
+  // d'équipements d'INFRA du site, et combien ne répondent plus.
+  device_count: number
+  device_down_count: number
+  // Site ENTIÈREMENT tombé (tous ses équipements down). C'est le seul cas qui
+  // rougit ses liaisons — un équipement HS ne met pas un site à terre.
+  is_down: boolean
 }
 
 export interface NetworkTopology {
   available: boolean
   reason?: string
+  // Date du dernier rapatriement du CÂBLAGE (job quotidien). La santé des
+  // liaisons affichée à côté est, elle, de maintenant — l'UI doit distinguer les
+  // deux, sinon tout l'écran semble avoir le même âge.
+  synced_at: string | null
   root: string | null
   // 'paramètre' (TOPOLOGY_ROOT_SITE) ou 'degré maximal' (repli). Affiché : un
   // repli silencieux se lirait comme une déduction.
@@ -709,13 +720,9 @@ export interface NetworkTopology {
     extra_edges: { site_a: string; site_b: string; type: string }[]
   }
   stats: {
-    uisp_devices: number
-    uisp_sites: number
     infra_sites: number
-    data_links: number
     edges: number
     physical_links: number
-    skipped_links: Record<string, number>
     unsupervised_ends: string[]
   }
 }

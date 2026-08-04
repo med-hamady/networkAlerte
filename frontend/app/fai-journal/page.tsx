@@ -225,21 +225,91 @@ export default function FaiJournalPage() {
   )
 }
 
+// ─── Lecture de la transcription ────────────────────────────────────────────
+// La preuve archivée est faite de trois sortes de blocs : l'en-tête, des notes
+// `[…]` (contexte, verdicts) et des commandes `$ … / sortie / -- exit N`.
+type ProofBlock = { kind: 'header' | 'note' | 'cmd'; text: string }
+
+/** Découpe la transcription en blocs.
+ *
+ *  Découpage LIGNE À LIGNE et non sur les lignes vides : la sortie d'une
+ *  commande peut en contenir une, ce qui couperait le bloc en deux et ferait
+ *  passer la moitié d'une sortie d'équipement pour un bloc autonome. Une
+ *  commande court donc de sa ligne `$ …` jusqu'à son `-- exit`.
+ */
+function parseTranscript(raw: string): ProofBlock[] {
+  const blocks: ProofBlock[] = []
+  let cur: ProofBlock | null = null
+  let inCmd = false  // dans une commande dont on n'a pas encore vu le `-- exit`
+  const flush = () => {
+    if (cur && cur.text.trim() !== '') blocks.push({ ...cur, text: cur.text.replace(/\s+$/, '') })
+    cur = null
+  }
+
+  for (const line of raw.split('\n')) {
+    if (line.startsWith('$ ')) {
+      flush(); cur = { kind: 'cmd', text: line }; inCmd = true; continue
+    }
+    if (!inCmd && line.startsWith('[')) {
+      flush(); cur = { kind: 'note', text: line }; continue
+    }
+    if (!cur) {
+      if (line.trim() === '') continue
+      cur = { kind: 'header', text: line }; continue
+    }
+    cur.text += '\n' + line
+    if (inCmd && line.startsWith('-- exit')) inCmd = false
+  }
+  flush()
+  return blocks
+}
+
+/** Ce qu'un opérateur a besoin de voir : la DERNIÈRE étape et son verdict.
+ *
+ *  C'est elle qui atteste l'état final de l'équipement — le reste de la session
+ *  (identité, garde-fous) est la traçabilité, utile en cas de contestation mais
+ *  pas à la lecture courante.
+ *
+ *  On ne coupe pas « les N dernières lignes » : on garde le dernier bloc de
+ *  commande PLUS les notes qui le suivent. La règle tient sur tous les chemins —
+ *  succès (`ip addr show` + RÉSULTAT), refus d'identité (lecture des MAC +
+ *  REFUS), refus du garde-fou. Et quand AUCUNE commande n'a tourné (connexion
+ *  refusée, interface protégée), le motif est dans la dernière note : c'est tout
+ *  ce qu'il y a à dire, et la version courte le dit quand même.
+ */
+function summarizeTranscript(blocks: ProofBlock[]): ProofBlock[] {
+  let lastCmd = -1
+  blocks.forEach((b, i) => { if (b.kind === 'cmd') lastCmd = i })
+  if (lastCmd >= 0) return blocks.slice(lastCmd)
+  const notes = blocks.filter((b) => b.kind === 'note')
+  return notes.length > 0 ? [notes[notes.length - 1]] : blocks
+}
+
 /** Ce que l'ÉQUIPEMENT a reçu et répondu — pas ce que nous avons rédigé.
  *
  *  La colonne « Résultat » du journal porte une phrase construite par le
  *  backend à partir de ce qu'il a *demandé* ; elle ne prouve rien. La
- *  transcription ci-dessous est la trace de la session SSH : chaque commande
- *  envoyée, la sortie brute du LR (stderr compris) et le code de sortie.
+ *  transcription est la trace de la session SSH : chaque commande envoyée, la
+ *  sortie brute du LR (stderr compris) et le code de sortie.
  *
- *  ⚠️ Rendue en `<pre>` sans coloration ni reformatage : une preuve qu'on
- *  embellit n'est plus une preuve. Le seul traitement est le défilement.
+ *  ⚠️ Ouvre sur la dernière étape de vérification, mais la session COMPLÈTE
+ *  reste à un clic — et surtout, l'archive, elle, n'est jamais tronquée : ce qui
+ *  est réduit ici est l'affichage, pas la preuve. Rendu en `<pre>` sans
+ *  coloration ni reformatage : une preuve qu'on embellit n'est plus une preuve.
  */
 function EvidenceModal({ entry, onClose }: { entry: FaiJournalEntry; onClose: () => void }) {
+  const [full, setFull] = React.useState(false)
   const { data, error, isLoading } = useSWR<FaiEvidence>(
     endpoints.faiJournalEvidence(entry.timestamp, entry.action, entry.mac),
     fetcher,
   )
+
+  const blocks = React.useMemo(
+    () => (data ? parseTranscript(data.transcript) : []),
+    [data],
+  )
+  const shown = full ? blocks : summarizeTranscript(blocks)
+  const hidden = blocks.length - shown.length
 
   React.useEffect(() => {
     const onKey = (ev: KeyboardEvent) => { if (ev.key === 'Escape') onClose() }
@@ -284,18 +354,44 @@ function EvidenceModal({ entry, onClose }: { entry: FaiJournalEntry; onClose: ()
             </p>
           )}
           {data && (
-            <pre className="text-xs font-mono text-blue-900 whitespace-pre-wrap break-words
-                            bg-blue-50/50 rounded-lg p-3 border border-blue-100">
-              {data.transcript}
-            </pre>
+            <>
+              {!full && (
+                <p className="text-[11px] text-blue-400 mb-2">
+                  Dernière étape de vérification — l'état de l'équipement après l'action.
+                </p>
+              )}
+              <pre className="text-xs font-mono text-blue-900 whitespace-pre-wrap break-words
+                              bg-blue-50/50 rounded-lg p-3 border border-blue-100">
+                {shown.map((b) => b.text).join('\n\n')}
+              </pre>
+              {hidden > 0 && (
+                <button
+                  onClick={() => setFull(true)}
+                  className="mt-2 text-xs font-semibold text-blue-700 hover:underline"
+                >
+                  Afficher la session complète ({hidden} étape{hidden > 1 ? 's' : ''} en amont)
+                </button>
+              )}
+              {full && (
+                <button
+                  onClick={() => setFull(false)}
+                  className="mt-2 text-xs font-semibold text-blue-700 hover:underline"
+                >
+                  Réduire à la vérification finale
+                </button>
+              )}
+            </>
           )}
         </div>
 
         <footer className="px-5 py-2.5 border-t border-blue-100">
           <p className="text-[11px] text-blue-400">
-            Chaque bloc <span className="font-mono">$ commande</span> montre ce qui a été envoyé
-            au LR, sa réponse brute et son code de sortie. Une commande d'écriture Unix qui
-            réussit n'imprime rien — c'est la relecture d'état qui l'atteste.
+            {full
+              ? <>Chaque bloc <span className="font-mono">$ commande</span> montre ce qui a été
+                  envoyé au LR, sa réponse brute et son code de sortie. Une commande d'écriture
+                  Unix qui réussit n'imprime rien — c'est la relecture d'état qui l'atteste.</>
+              : <>Affichage réduit. La session complète reste archivée intégralement —
+                  contrôle d'identité MAC et garde-fous compris.</>}
           </p>
         </footer>
       </div>

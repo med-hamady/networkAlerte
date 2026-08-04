@@ -368,6 +368,14 @@ class Settings(BaseSettings):
     # classified as infra but must not be supervised.
     uisp_ignored_sites: str = ""
 
+    # Inter-site topology graph (/network-topology) — the site the layered layout
+    # is rooted on. It CANNOT be derived: the Internet→HQ hop is not a UISP
+    # data-link, so the controller has no idea which site faces upstream. When
+    # this site is absent from the graph, the layout falls back to the
+    # highest-degree site and SAYS SO (`root_source`) — a silent fallback would
+    # read as a deduction.
+    topology_root_site: str = "A2 HQ"
+
     # LR subscription-plan sync (traffic-shaper rate caps read over SSH). The
     # plan changes rarely, and the read is a per-LR SSH round-trip (bounded by
     # lr_probe_concurrency), so a slow cadence is plenty. Runs once at scheduler

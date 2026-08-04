@@ -21,6 +21,7 @@ from app.api.endpoints import (
     incidents,
     lr_health,
     network_capacity,
+    network_topology,
     network_uptime,
     sites,
     system,
@@ -74,6 +75,7 @@ api_router.include_router(client_signal.router, prefix="/client-signal", tags=["
 api_router.include_router(clients.router, prefix="/clients", tags=["clients"], dependencies=_auth)
 api_router.include_router(network_capacity.router, prefix="/network-capacity", tags=["network-capacity"], dependencies=_auth)
 api_router.include_router(network_uptime.router, prefix="/network-uptime", tags=["network-uptime"], dependencies=_auth)
+api_router.include_router(network_topology.router, prefix="/network-topology", tags=["network-topology"], dependencies=_auth)
 api_router.include_router(traffic.router, prefix="/traffic", tags=["traffic"], dependencies=_auth)
 api_router.include_router(system.router, prefix="/system", tags=["system"], dependencies=_auth)
 api_router.include_router(uisp.router, prefix="/uisp", tags=["uisp"], dependencies=_auth)

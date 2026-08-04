@@ -206,6 +206,7 @@ backend/app/
 | `UISP_VERIFY_TLS` | Vérif TLS du contrôleur (défaut `false` — cert auto-signé) |
 | `UISP_SYNC_HOUR` | Heure quotidienne du `uisp_sync_job` (défaut `7` = **07:00 UTC** ; la Mauritanie est GMT/UTC+0 → 07:00 locale). Le job tourne aussi **1× au démarrage** du scheduler (déploiement) |
 | `UISP_REQUEST_TIMEOUT` | Timeout HTTP des appels UISP en s (défaut 30) |
+| `TOPOLOGY_ROOT_SITE` | Site racine du graphe inter-sites de `/topology` (défaut `A2 HQ`). **Ne se déduit pas** : le lien Internet→HQ n'est pas un data-link, le contrôleur ignore quel site fait face à l'amont. Site absent du graphe ⇒ repli sur le site de plus haut degré, **annoncé** dans `root_source` (un repli silencieux se lirait comme une déduction) |
 | `UISP_IGNORED_SITES` | Sites UISP à exclure du sync (ni créés ni màj). **Séparateur `;`** (les noms de sites contiennent des virgules, ex. `Bureau, A2`), insensible à la casse. Pour les sites bureautiques dont un switch LAN serait vu comme infra |
 | `UISP_STATION_SYNC_ENABLED` | Active l'import des **stations clientes** (LR abonnés) depuis `GET /nms/api/v2.1/devices?role=station` dans la table `lrs`, sur le même `uisp_sync_job` (après l'infra). Apporte le **mode (routeur/bridge)** + le **statut « dernier état connu »** UISP de chaque client → `/access` reste complet/exact même quand un Rocket/LR est down. Écrit les colonnes `uisp_*`, **jamais** `topology_mode` ni l'état de blocage. ⚠️ **`rocket_id`/`location`/`ip_address` sont PARTAGÉS** avec `discovery_service` depuis le 2026-07-22, sous une règle d'arbitrage unique : **la source qui a vu la station le plus récemment gagne** (`_adopt_uisp_attribution`, compare `uisp_last_seen` à `last_discovered_at`). Raison : le rattachement radio lit la liste des stations d'un AP, donc ne corrige QUE les clients **allumés** — un client qui déménage puis tombe restait figé sur son ancien AP, son ancien site et son ancienne IP (morte → « hors ligne » pour toujours), alors que son propre `uisp_ap_name` portait déjà la bonne réponse. ⚠️ **L'AP se reprend, l'IP presque jamais** : pour une station **déconnectée**, l'IP annoncée par UISP n'est qu'un **dernier état connu** que le DHCP a pu réattribuer (au 1er passage réel, UISP a rendu `10.135.3.159` pour **trois** abonnés déconnectés). L'IP n'est donc reprise que si UISP voit la station **active** **ou** l'a vue depuis moins de **`UISP_IP_TRUST_HOURS`** (défaut 24 h — une **fenêtre**, pas un booléen : une panne d'1 h ne périme pas un bail DHCP, 3 semaines si), qu'elle est dans `MANAGEMENT_IP_CIDRS`, et qu'elle est **libre** — jamais volée à un autre détenteur (ni en base, ni à une station déjà servie dans le même passage : `claimed_ips`). Un conflit incrémente `ip_conflict` et laisse les deux lignes intactes : seul le radio voit le terrain. Identité = **MAC** (converge avec la découverte radio). AF60 (backhaul) exclus. Importe le **roster complet** (UISP ne retourne que les stations provisionnées). ⚠️ **SUPPRESSION pour rester synchro** : à la fin du passage, tout LR **déjà vu par UISP** (`uisp_synced_at` renseigné — colonne écrite nulle part ailleurs) dont la MAC n'est plus dans le roster est **déprovisionné dans UISP** → **`session.delete`** (cascade métriques/incidents/historique ; le journal FAI est un fichier par MAC, préservé). Supprimé **même si `client_blocked`** (déprovisionné = plus servi). Un client **découvert par radio seul** (`uisp_synced_at` NULL) n'est **jamais** supprimé (propriété de `discovery_service` — l'effacer déclencherait une recréation en boucle). **Garde-fou anti-catastrophe** : la passe de suppression est **entièrement sautée si le roster revient vide** (`fetch_devices` lève sur erreur transport, mais un payload vide/malformé serait sinon lu comme « tout le monde déprovisionné » et purgerait tout le parc). Défaut `false` |
 | `UISP_WRITE_API_TOKEN` | Token UISP **séparé, en écriture**, réservé à l'association équipement ↔ client CRM (`POST /uisp/assign`). Tout le reste — dont le `uisp_sync_job`, qui parcourt ~1300 équipements **sans surveillance** — garde `UISP_API_TOKEN` en **lecture seule** : aucun job de fond ne peut alors modifier le contrôleur, quoi qu'il arrive, et le token d'écriture est révocable sans interrompre la supervision. Vide = repli sur `UISP_API_TOKEN` |
@@ -529,6 +530,97 @@ déployer** : le support BRIDGE-MIB dépend du firmware, et un port légitimemen
 logique vit dans le **service** (le job et le script appliquent la même règle —
 un job ne peut pas importer depuis `scripts/`).
 
+#### Topologie inter-sites — le maillage des backhauls (2026-08-04)
+
+`site_topology_service` + `/network-topology` + page `/topology`. Complète la
+topologie **intra-site** (composant `SiteTopology`, sur `/sites`) : ici c'est le
+niveau au-dessus, quel site est raccordé à quel autre.
+
+**La donnée n'existe pas chez nous.** On connaît le `site` de chaque AF60 et de
+chaque PTP LiteBeam, jamais **quel AF60 parle à quel AF60**. Le contrôleur le
+sait (ses agents le rapportent) et le publie sur `GET /nms/api/v2.1/data-links` —
+la même source que le câblage des ports de switch, qui n'en retient que les liens
+`ethernet`. Les liens **radio** de la même réponse portent nos backhauls.
+
+##### Ce qui fait qu'une arête existe
+
+Un data-link dont les deux bouts se résolvent sur deux **sites d'infra
+différents**. Trois précisions portent tout le résultat :
+
+- **Un site d'infra est un site qui PORTE de l'infra** — au moins un équipement
+  que `uisp_sync_service.classify_device` reconnaît (le classificateur unique du
+  projet, réutilisé et jamais recopié). ⚠️ **Le filtre `ucrm.client` seul ne
+  suffit pas** : mesuré le 2026-08-04, **deux sites d'abonnés ont été créés à la
+  main dans UISP sans rattachement CRM** (« Haydara, Ousmane », « El id, Mohamed
+  fall »). Ils passaient donc pour de l'infra — le premier s'affichait comme un
+  **site enfant de SK1** alors que le lien est un banal AP↔abonné, le second comme
+  un site d'infra orphelin. (Ces deux lignes sont par ailleurs une anomalie de
+  gestion : un abonné sans lien CRM est un abonné **potentiellement non facturé**,
+  même famille que la section « absents de UISP » de `/access-diagnostics`.)
+- **Le type de lien n'est PAS un filtre.** **3 des 5 liaisons du HQ sont en
+  `ethernet`** (fibre vers ARF1, AT1, CT1) : filtrer sur `wireless` amputerait le
+  graphe de sa racine.
+- **L'identité est la MAC** des deux côtés, jamais le nom.
+
+##### ⚠️ Le graphe N'EST PAS un arbre — layout en couches obligatoire
+
+Mesuré sur le parc : **17 sites, 19 liaisons, dont 2 hors arbre** (`SK1↔CT2` et
+`KS1↔SM1`). Ce sont de vraies boucles de redondance — CT2 est joignable par PK1
+**et** par SK1. Un rendu arborescent devrait en jeter une **sans le dire**. Le
+service produit donc des **couches** (parcours en largeur : `sites[].depth`) et
+rend les arêtes surnuméraires à part (`layout.extra_edges`), tracées en
+pointillé. Ne jamais « simplifier » en arbre.
+
+##### La racine ne se déduit pas
+
+Le lien Internet→HQ **n'est pas un data-link** : le contrôleur ignore quel site
+fait face à l'amont. La racine est donc un réglage (`TOPOLOGY_ROOT_SITE`, défaut
+`A2 HQ`), avec repli sur le site de plus haut degré — et la réponse dit toujours
+laquelle a servi (`root_source`), parce qu'un repli silencieux se lirait comme
+une déduction.
+
+##### Colorer une liaison : ce que la carte UISP ne sait pas faire
+
+Les mesures viennent de **notre** poll (`total_capacity_mbps`,
+`link_potential_pct`), et le verdict `degraded` est calculé **côté service**
+contre les planchers réels — `af60_capacity_display_min_mbps` (1,95 Gb/s) et
+`airmax_backhaul_capacity_min_mbps` (150 Mb/s), **les mêmes que**
+`lr_health_service.get_site_link_health`. Une liaison est donc rendue dégradée
+sur la carte **exactement quand** la section « Liaisons entre sites » la
+listerait. Recopier un barème dans le frontend les ferait diverger au premier
+ajustement de seuil.
+
+⚠️ **Une liaison a DEUX bouts et ils ne répondent pas toujours tous les deux**
+(mesuré : 6 liaisons radio sur 15 mesurées des deux côtés, 6 d'un seul, 3
+d'aucun) :
+- deux bouts mesurés → on retient le **pire** (un lien vaut son extrémité la plus
+  dégradée) ;
+- un seul → celui-là ;
+- **aucun → `state="unmeasured"`, rendu NEUTRE (gris), jamais vert.** Un lien
+  qu'on ne mesure pas n'est pas un lien sain — ce serait le mensonge le plus
+  coûteux de la carte.
+- Un bout **`down`** l'emporte sur tout : sa dernière capacité en base est stale
+  et ne doit pas maquiller la panne (cas réel `CT1↔SK1`, où le F60 côté CT1 est
+  down mais porte encore 3902 Mb/s).
+
+Pour une liaison **redondante** (plusieurs radios entre les deux mêmes sites), on
+remonte au contraire la **meilleure** branche : le trafic passe par celle qui
+marche, une branche morte ne coupe pas la liaison. Règle inverse **à l'intérieur**
+d'un lien, où les deux extrémités décrivent le même lien physique.
+
+##### Contrôle en ligne de commande
+
+```bash
+dc exec backend python scripts/dump_site_topology.py
+dc exec backend python scripts/dump_site_topology.py --root "A2 HQ"
+dc exec backend python scripts/dump_site_topology.py --json > topo.json
+```
+
+Le script imprime le **même graphe** que la page et nomme ce qui cloche. La
+logique vit dans le **service** (l'API et le script appliquent la même règle — un
+service ne peut pas importer depuis `scripts/`). Lecture seule par construction :
+pas de `--apply`.
+
 #### Enrôlement UISP d'un CPE (pose de la clé par SSH) — 2026-07-28
 
 Un CPE ne remonte dans l'inventaire UISP que s'il porte la **clé du contrôleur**
@@ -780,6 +872,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | POST | `/api/v1/uisp/assign` | Oui | **Associe un équipement à un client CRM** — body `mac` + `crm_client_id`, plus `crm_service_id` **uniquement** si le client a plusieurs services. Équivalent du formulaire UISP (chercher la MAC en « unknown », choisir le client). Si l'équipement est absent du contrôleur, sa clé lui est posée d'abord et la réponse porte `pending_registration` (rejouer dans la minute — ce n'est pas une erreur). Rapport étape par étape. 400 MAC invalide · 404 client CRM introuvable **ou service n'appartenant pas à ce client** · **409 client à plusieurs services sans `crm_service_id`** (services renvoyés) · **409 équipement déjà rattaché à un AUTRE client** (id du détenteur renvoyé ; `reassign=true` pour passer outre) · 502 clé non posée (échec SSH — surtout pas un 404) · 403 token UISP sans droits d'écriture. Voir **Association client CRM** |
 | POST | `/api/v1/uisp/sync` | Oui | Import des équipements d'infra depuis le contrôleur UISP (`?dry_run=true` = prévisualisation sans écriture). Renvoie un résumé (créés/màj/ignorés + échantillon) |
 | GET | `/api/v1/network-capacity` | Oui | Capacité clients : par famille (LTU/airMAX) et par site, clients connectés (`peer_count`) vs max (seuil `rocket_client_overload`). Rockets sans largeur connue exclus des totaux (`unknown`). `network_capacity_service`. Inclut aussi la clé **`infra`** (`site_infra_service.get_site_infra_capacity`) : budget d'équipements infra par site (Rockets+AF60+PTP) vs `SITE_INFRA_MAX`, avec marge `remaining` signée |
+| GET | `/api/v1/network-topology` | Oui | **Graphe INTER-SITES** (le maillage des backhauls). ⚠️ **Lecture LIVE du contrôleur** (3 appels : devices, sites, data-links) — le câblage inter-sites n'est stocké **nulle part** chez nous, il n'y a rien en base à servir. Pas de job de fond : le graphe ne bouge que quand le terrain pose un backhaul. Renvoie `sites[]` (avec `depth` = couche, `parent`, `degree`, `reachable`), `edges[]` (une **liaison logique** par paire de sites, portant 1..n `links[]` physiques, `redundant`, `is_tree_edge`, `health`), `layout` (`components`, `orphan_sites`, `unreached_sites`, `extra_edges`) et `stats` (dont `skipped_links` par motif et `unsupervised_ends`). `?root=` sinon `TOPOLOGY_ROOT_SITE`. **502** si le contrôleur est injoignable — jamais un graphe partiel, qui se lirait comme un graphe complet. Voir **Topologie inter-sites** |
 | GET | `/api/v1/traffic/top-destinations` | Oui | **Volume** Internet par opérateur/CDN (ASN) sur `?period=24h\|7d\|30d` : SUM(down/up) GROUP BY asn depuis `traffic_dest_stats`, trié par total + part %. `traffic_service.get_top_destinations` |
 | GET | `/api/v1/traffic/throughput` | Oui | **Débit** (Gb/s) par opérateur sur le dernier bucket : descendant/montant Mbps + part du download. Montre le partage de la bande passante WAN en direct. `traffic_service.get_throughput` |
 | GET | `/api/v1/traffic/throughput-history` | Oui | **Historique de débit** descendant par opérateur sur `?period=1h\|6h\|24h` : re-bin des buckets 1 min (top-N opérateurs + « Autres »), séries alignées pour un graphe d'aires empilées. `traffic_service.get_throughput_history` (SQL `date_bin`) |
@@ -798,6 +891,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | Accès clients | `/access` | Table des LR abonnés (source UISP). Filtres dont **« Hors supervision »** : LR sans IP **et** non vu par UISP depuis `OUT_OF_SUPERVISION_DAYS` — badge ambre, **exclu du compteur « Accès actif »** (la tuile indique combien sont exclus). Distinct de « Hors ligne > 1 mois » (`long_offline`, absence prolongée vue par UISP) : ici c'est une absence de **mesure**, pas une absence constatée |
 | Anomalies détectées | `/incidents` | Anomalies actuellement détectées (lecture seule, résolution automatique) |
 | Capacité du réseau | `/capacity` | 2 cercles (LTU/airMAX) consommé vs disponible sur tout le réseau + barres par site (LTU/airMAX séparés) ; clic site → table Rockets (connectés/max + largeur). Donut SVG custom (pas de lib de charts). Inclut la section **« Capacité infra par site »** (table Site/Équip. infra/Max/Marge, marge +N vert / -N rouge) alimentée par la clé `infra` de `/network-capacity` |
+| Topologie du réseau | `/topology` | **Graphe inter-sites** : rendu SVG **en couches** (jamais en arbre — le graphe porte de vraies boucles), nœuds cliquables pour filtrer les liaisons d'un site, liaisons colorées par **notre** mesure (vert au-dessus du plancher / ambre dégradée / rouge hors service / **gris non mesurée**), boucles de redondance en pointillé. Sous le graphe : la liste des liaisons avec leurs liens physiques et l'état de chaque bout, puis la section **« Ce que la carte ne montre pas »** (sites sans liaison, composantes séparées, liaisons sans mesure, extrémités non supervisées). Complète `SiteTopology` (intra-site, sur `/sites`). Source : `/network-topology` |
 | Destinations Internet | `/traffic` | 3 sections : **Débit en direct** (descendant/montant Gb/s + partage par opérateur, `/traffic/throughput`, refresh 30 s), **Débit descendant par opérateur** (graphe d'aires empilées SVG sur 1h/6h/24h, `/traffic/throughput-history`) et **Volume** (par opérateur sur 24h/7j/30j, down/up/total + part, `/traffic/top-destinations`). Repère les candidats à un serveur de cache. **Vide tant que `NETFLOW_COLLECTOR_ENABLED=false` ou que le routeur n'exporte pas vers le collecteur** |
 | Diagnostics d'accès | `/access-diagnostics` | 2 sections d'anomalies de gestion du parc abonné (sidebar **Anomalies**) : **LR qui refusent le SSH** (mot de passe invalide / SSH désactivé / clé d'hôte incompatible — les **offline sont exclus**, ce n'est pas un refus) et **découverts par radio mais absents de UISP** (non provisionnés, potentiellement non facturés). Source : `/access-diagnostics`. La 1re remplace côté UI l'ancien diag SSH par grep de logs. La 2e porte l'**action d'enrôlement** : bouton par ligne + « Tout enrôler dans UISP », avec un interrupteur **Forcer** décoché par défaut (il écrase une clé existante — cf. **Enrôlement UISP**). Une ligne déjà enrôlée affiche la date au lieu du bouton : elle attend le sync quotidien |
 

@@ -29,6 +29,7 @@ const sections: NavSection[] = [
       { href: '/lr-health',  label: 'Liaisons clients',    icon: LinkIcon      },
       { href: '/clients',    label: 'Consommation clients', icon: TrafficIcon  },
       { href: '/capacity',   label: 'Capacité du réseau',  icon: CapacityIcon },
+      { href: '/topology',   label: 'Topologie du réseau', icon: TopologyIcon },
       { href: '/map',        label: 'Carte des clients',   icon: MapIcon      },
       { href: '/traffic',    label: 'Destinations Internet', icon: GlobeIcon  },
       { href: '/access',     label: 'FAI',                 icon: ShieldIcon   },
@@ -265,6 +266,16 @@ function TrafficIcon({ className }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round"
         d="M3 17l4-4 4 4 7-7m0 0V5m0 5h-5" />
+    </svg>
+  )
+}
+
+function TopologyIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round"
+        d="M12 3v4m0 0L6 11m6-4l6 4M6 11v3m12-3v3M6 18h.01M12 18h.01M18 18h.01M12 11v3" />
+      <circle cx="12" cy="3" r="1.6" />
     </svg>
   )
 }

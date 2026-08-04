@@ -630,6 +630,96 @@ export interface NetworkCapacity {
   infra: NetworkInfraCapacity
 }
 
+// ─── Topologie inter-sites (graphe des backhauls, source : data-links UISP) ──
+// Le maillage site→site n'est stocké nulle part chez nous : il est lu en direct
+// sur le contrôleur. Le graphe N'EST PAS un arbre — d'où `depth` (couche) plutôt
+// qu'un parent unique suffisant, et `layout.extra_edges` pour les boucles de
+// redondance, qui doivent être TRACÉES et non masquées.
+
+// Un bout de liaison. `supervised=false` ⇒ ni statut ni mesure de ce côté (le
+// switch UniFi du HQ, hors de notre inventaire).
+export interface TopologyEnd {
+  uisp_name: string
+  mac: string | null
+  site: string | null
+  supervised: boolean
+  device_id: number | null
+  name: string
+  device_type: string | null
+  status: string | null
+  capacity_mbps: number | null
+  link_potential_pct: number | null
+}
+
+// Santé d'une liaison. `unmeasured` = AUCUN des deux bouts ne rend de mesure :
+// à rendre neutre, JAMAIS en vert — un lien qu'on ne mesure pas n'est pas un
+// lien sain.
+export interface TopologyHealth {
+  state: 'down' | 'unmeasured' | 'measured'
+  capacity_mbps: number | null
+  link_potential_pct: number | null
+  measured_ends: number
+  // Plancher applicable à la famille de matériel (AF60 vs PTP LiteBeam), et le
+  // verdict. Les deux sont calculés côté BACKEND contre les réglages réels :
+  // recopier un barème ici le ferait diverger du seuil qui déclenche l'alerte.
+  floor_mbps: number | null
+  degraded: boolean
+}
+
+export interface TopologyPhysicalLink {
+  type: string
+  state: string | null
+  device_a: TopologyEnd
+  device_b: TopologyEnd
+  health: TopologyHealth
+}
+
+// Une arête = une liaison LOGIQUE entre deux sites, portant 1..n liens
+// physiques (`redundant` quand plusieurs radios relient les deux mêmes sites).
+export interface TopologyEdge {
+  site_a: string
+  site_b: string
+  is_tree_edge: boolean
+  redundant: boolean
+  links: TopologyPhysicalLink[]
+  health: TopologyHealth
+}
+
+export interface TopologySite {
+  site: string
+  depth: number | null
+  parent: string | null
+  degree: number
+  reachable: boolean
+}
+
+export interface NetworkTopology {
+  available: boolean
+  reason?: string
+  root: string | null
+  // 'paramètre' (TOPOLOGY_ROOT_SITE) ou 'degré maximal' (repli). Affiché : un
+  // repli silencieux se lirait comme une déduction.
+  root_source: string
+  sites: TopologySite[]
+  edges: TopologyEdge[]
+  layout: {
+    components: string[][]
+    orphan_sites: string[]
+    unreached_sites: string[]
+    extra_edges: { site_a: string; site_b: string; type: string }[]
+  }
+  stats: {
+    uisp_devices: number
+    uisp_sites: number
+    infra_sites: number
+    data_links: number
+    edges: number
+    physical_links: number
+    skipped_links: Record<string, number>
+    unsupervised_ends: string[]
+  }
+}
+
 // ─── Top destinations Internet par opérateur/CDN (collecteur NetFlow) ───────
 // Trafic client↔Internet agrégé par ASN/opérateur. Deux vues : volume (octets
 // sur une période) et débit (Gb/s sur le dernier bucket). down = descendant

@@ -208,6 +208,7 @@ backend/app/
 | `UISP_SYNC_HOUR` | Heure quotidienne du `uisp_sync_job` (défaut `7` = **07:00 UTC** ; la Mauritanie est GMT/UTC+0 → 07:00 locale). Le job tourne aussi **1× au démarrage** du scheduler (déploiement) |
 | `UISP_REQUEST_TIMEOUT` | Timeout HTTP des appels UISP en s (défaut 30) |
 | `TOPOLOGY_SYNC_ENABLED` / `TOPOLOGY_SYNC_HOUR` | Sync quotidien du **câblage** inter-sites (data-links UISP → table `site_links`), défaut `true` / `7` (= **07:30 UTC**, à `:30` pour ne pas se superposer au `uisp_sync` de la même heure). Tourne aussi **1× au démarrage** (sinon la page reste vide jusqu'au lendemain après un premier déploiement). ⚠️ Ne synchronise **que le câblage** : la santé des liaisons reste lue en direct. Groupe scheduler **heavy** |
+| `TOPOLOGY_TRAFFIC_MIN_MBPS` | Débit (descendant + montant) au-dessus duquel une liaison inter-sites est jugée **écoulante** → verte sur `/topology` ; en dessous elle est debout mais **inerte** → jaune (défaut **0,1** Mb/s). Il ne s'agit pas de juger la charge mais de distinguer « ça passe » de « ça ne passe pas ». ⚠️ Une liaison **sans relevé** de débit (les liaisons fibre : un switch n'expose aucun débit en SNMP) reste **verte** — « pas mesuré » n'est pas « pas de trafic » |
 | `TOPOLOGY_ROOT_SITE` | Site racine du graphe inter-sites de `/topology` (défaut `A2 HQ`). **Ne se déduit pas** : le lien Internet→HQ n'est pas un data-link, le contrôleur ignore quel site fait face à l'amont. Site absent du graphe ⇒ repli sur le site de plus haut degré, **annoncé** dans `root_source` (un repli silencieux se lirait comme une déduction) |
 | `UISP_IGNORED_SITES` | Sites UISP à exclure du sync (ni créés ni màj). **Séparateur `;`** (les noms de sites contiennent des virgules, ex. `Bureau, A2`), insensible à la casse. Pour les sites bureautiques dont un switch LAN serait vu comme infra |
 | `UISP_STATION_SYNC_ENABLED` | Active l'import des **stations clientes** (LR abonnés) depuis `GET /nms/api/v2.1/devices?role=station` dans la table `lrs`, sur le même `uisp_sync_job` (après l'infra). Apporte le **mode (routeur/bridge)** + le **statut « dernier état connu »** UISP de chaque client → `/access` reste complet/exact même quand un Rocket/LR est down. Écrit les colonnes `uisp_*`, **jamais** `topology_mode` ni l'état de blocage. ⚠️ **`rocket_id`/`location`/`ip_address` sont PARTAGÉS** avec `discovery_service` depuis le 2026-07-22, sous une règle d'arbitrage unique : **la source qui a vu la station le plus récemment gagne** (`_adopt_uisp_attribution`, compare `uisp_last_seen` à `last_discovered_at`). Raison : le rattachement radio lit la liste des stations d'un AP, donc ne corrige QUE les clients **allumés** — un client qui déménage puis tombe restait figé sur son ancien AP, son ancien site et son ancienne IP (morte → « hors ligne » pour toujours), alors que son propre `uisp_ap_name` portait déjà la bonne réponse. ⚠️ **L'AP se reprend, l'IP presque jamais** : pour une station **déconnectée**, l'IP annoncée par UISP n'est qu'un **dernier état connu** que le DHCP a pu réattribuer (au 1er passage réel, UISP a rendu `10.135.3.159` pour **trois** abonnés déconnectés). L'IP n'est donc reprise que si UISP voit la station **active** **ou** l'a vue depuis moins de **`UISP_IP_TRUST_HOURS`** (défaut 24 h — une **fenêtre**, pas un booléen : une panne d'1 h ne périme pas un bail DHCP, 3 semaines si), qu'elle est dans `MANAGEMENT_IP_CIDRS`, et qu'elle est **libre** — jamais volée à un autre détenteur (ni en base, ni à une station déjà servie dans le même passage : `claimed_ips`). Un conflit incrémente `ip_conflict` et laisse les deux lignes intactes : seul le radio voit le terrain. Identité = **MAC** (converge avec la découverte radio). AF60 (backhaul) exclus. Importe le **roster complet** (UISP ne retourne que les stations provisionnées). ⚠️ **SUPPRESSION pour rester synchro** : à la fin du passage, tout LR **déjà vu par UISP** (`uisp_synced_at` renseigné — colonne écrite nulle part ailleurs) dont la MAC n'est plus dans le roster est **déprovisionné dans UISP** → **`session.delete`** (cascade métriques/incidents/historique ; le journal FAI est un fichier par MAC, préservé). Supprimé **même si `client_blocked`** (déprovisionné = plus servi). Un client **découvert par radio seul** (`uisp_synced_at` NULL) n'est **jamais** supprimé (propriété de `discovery_service` — l'effacer déclencherait une recréation en boucle). **Garde-fou anti-catastrophe** : la passe de suppression est **entièrement sautée si le roster revient vide** (`fetch_devices` lève sur erreur transport, mais un payload vide/malformé serait sinon lu comme « tout le monde déprovisionné » et purgerait tout le parc). Défaut `false` |
@@ -620,11 +621,63 @@ une déduction.
 
 La page est volontairement **dépouillée** : le graphe et rien d'autre. Pas de
 tuiles de comptage, pas de légende, pas de liste des liaisons — le détail d'un
-lien est au **survol** du trait. Deux couleurs seulement :
+lien est au **survol** du trait.
 
-- **rouge** si l'un des deux sites est **ENTIÈREMENT** tombé (`is_down` =
-  tous ses équipements d'infra `down`) ;
-- **vert** sinon.
+**Couleur** — cinq valeurs, dans cet **ordre de priorité strict** :
+
+| # | Condition | Couleur |
+|---|---|---|
+| 1 | Site **ENTIÈREMENT** tombé (`is_down` = tous ses équipements d'infra `down`) | **rouge** |
+| 2 | **Boucle de redondance** (`!is_tree_edge`) — chemin de secours, pas la dorsale | **gris** |
+| 3 | **Fibre / cuivre** (`medium === "wired"`) | **bleu** |
+| 4 | Radio debout mais **INERTE** (débit relevé sous `TOPOLOGY_TRAFFIC_MIN_MBPS`) | **jaune** |
+| 5 | Radio qui écoule | **vert** |
+
+⚠️ **Le rouge est en tête et doit y rester** : une panne ne doit jamais être
+masquée par une couleur de support ou de rôle — une dorsale fibre coupée doit
+crier, pas rester bleue. (Vérifié sur le parc : `HQ↔CT1` est fibre *et* rouge.)
+
+##### Pastilles de PORT aux extrémités
+
+Chaque extrémité de liaison porte une **pastille** à son point d'accroche : la
+**vitesse négociée du port de switch** sur lequel l'équipement est câblé.
+**Vert ≥ 1 Gb/s**, **jaune à 100 Mb/s**, **rouge sous 100**.
+
+Ce n'est pas décoratif : le parc porte de vrais backhauls **bloqués à 100 Mb/s
+alors qu'ils devraient être en gigabit** (`A2-AT2-SUD1`, `A2-NR1-NORD`,
+`A2-SM1-OUEST`, `F60 CT1-NR1`, relevés le 2026-07-30). Une carte qui ne montre
+que haut/bas ne peut pas le révéler.
+
+Aucune requête nouvelle sur le terrain : le port vient de
+`devices.uplink_switch_id/_port` (posé par `switch_port_mapping_job` depuis les
+data-links) et la vitesse de `port_N_speed_mbps`, déjà relevée à chaque cycle
+SNMP sur le switch. `_attach_uplink_port_speed` ne fait que croiser les deux.
+
+⚠️ **Pas de port connu, ou `ifSpeed = 0` (cage SFP) ⇒ AUCUNE pastille.** Les
+liaisons **fibre** sont exactement dans ce cas : leurs deux bouts sont des
+switches, et l'uplink inter-switch n'est volontairement pas attribué (chaque bout
+est une affirmation valable, mais un équipement n'a qu'une colonne d'uplink). Une
+pastille grise « indéterminée » se lirait comme un diagnostic ; l'absence, non.
+Sur une liaison **redondante**, c'est le port le **plus lent** qui est retenu —
+c'est lui qui bride.
+
+**Style** = le **support** : liaison **radio en tirets**, **fibre/cuivre en trait
+plein** (`edges[].medium`, `wireless` seulement si TOUS les liens physiques le
+sont — une liaison mixte compte comme filaire, le chemin cuivre étant le plus
+capable). Les tirets ne distinguent plus les boucles (toutes radio) : c'est leur
+**couleur grise** qui s'en charge.
+
+⚠️ **`traffic="unknown"` est rendu VERT, jamais jaune.** Le cas est massif : les
+liaisons **fibre** ont des **switches** aux deux bouts, et un switch **n'expose
+aucun débit en SNMP**. Les jaunir signalerait trois pannes de trafic permanentes
+sur la dorsale du HQ, ce qui est faux. **Jaune = « mesuré à zéro », jamais « pas
+mesuré »** — la même règle que partout ici.
+
+Le débit retenu est le **maximum** des deux extrémités (`dl+ul`) : les deux bouts
+décrivent le même lien, mais l'un peut n'avoir aucun relevé frais ; prendre le
+maximum évite de déclarer inerte une liaison que l'autre extrémité voit passer.
+Pour une liaison **redondante**, une branche qui écoule l'emporte — si une
+branche passe, la liaison passe.
 
 ⚠️ **Un équipement HS ne met pas un site à terre.** Peindre en rouge les
 liaisons d'un site qui fonctionne enverrait chercher une panne de backhaul là où

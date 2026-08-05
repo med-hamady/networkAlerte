@@ -32,6 +32,7 @@ from app.services.site_topology_service import (
     build_edges,
     device_index,
     edge_health,
+    edge_traffic,
     infra_site_ids,
     layered_graph,
     sync_site_links,
@@ -507,3 +508,62 @@ async def test_blank_site_names_are_ignored_in_counts():
     session = _CountSession([("   ", "up", 3), (None, "down", 2), ("A2 HQ", "up", 1)])
     health = await site_topology_service.site_device_health(session)
     assert set(health) == {"A2 HQ"}
+
+
+# ---------------------------------------------------------------------------
+# Trafic : ce qui distingue une liaison qui écoule d'une liaison inerte
+# ---------------------------------------------------------------------------
+
+
+def _end(status="up", dtype="airfiber", dl=None, ul=None):
+    metrics = {}
+    if dl is not None:
+        metrics["dl_throughput_mbps"] = dl
+    if ul is not None:
+        metrics["ul_throughput_mbps"] = ul
+    return {"status": status, "device_type": dtype, "metrics": metrics}
+
+
+def test_traffic_unknown_when_no_end_reports_a_rate():
+    """LE piège à ne pas rouvrir. Les liaisons FIBRE ont des switches aux deux
+    bouts, et un switch n'expose aucun débit en SNMP. Les compter comme inertes
+    signalerait trois pannes de trafic permanentes sur la dorsale du HQ."""
+    state, mbps = edge_traffic(_end(dtype="uisp_switch"), _end(dtype="uisp_switch"))
+    assert state == "unknown"
+    assert mbps is None
+
+
+def test_traffic_idle_only_on_a_measured_zero():
+    state, mbps = edge_traffic(_end(dl=0.0, ul=0.0), _end())
+    assert state == "idle"
+    assert mbps == 0.0
+
+
+def test_traffic_active_above_the_floor():
+    state, mbps = edge_traffic(_end(dl=40.0, ul=2.5), _end())
+    assert state == "active"
+    assert mbps == 42.5
+
+
+def test_traffic_keeps_the_busiest_end():
+    """Les deux bouts décrivent le même lien, mais l'un peut n'avoir aucun
+    relevé frais : prendre le maximum évite de déclarer inerte une liaison que
+    l'autre extrémité voit passer du trafic."""
+    state, mbps = edge_traffic(_end(dl=0.0, ul=0.0), _end(dl=88.0, ul=4.0))
+    assert state == "active"
+    assert mbps == 92.0
+
+
+def test_health_carries_the_traffic_verdict():
+    health = edge_health(_end(dl=0.0, ul=0.0), _end(dl=0.0, ul=0.0))
+    assert health["traffic"] == "idle"
+    assert health["traffic_mbps"] == 0.0
+
+
+def test_redundant_link_is_active_if_one_branch_carries():
+    """Si UNE branche écoule, la liaison écoule — le trafic passe par celle qui
+    marche, exactement comme pour la santé."""
+    idle = edge_health(_end(dl=0.0, ul=0.0), _end(dl=0.0, ul=0.0))
+    busy = edge_health(_end(dl=30.0, ul=1.0), _end(dl=30.0, ul=1.0))
+    from app.services.site_topology_service import _worst
+    assert _worst([idle, busy])["traffic"] == "active"

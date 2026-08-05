@@ -94,7 +94,12 @@ from app.services.uisp_sync_service import classify_device
 logger = logging.getLogger(__name__)
 
 # Métriques relues en base pour qualifier une arête (cf. docstring du module).
-EDGE_METRICS: tuple[str, ...] = ("total_capacity_mbps", "link_potential_pct", "signal_dbm")
+# Les débits servent à distinguer une liaison qui ÉCOULE du trafic d'une liaison
+# debout mais inerte — voir `edge_traffic`.
+EDGE_METRICS: tuple[str, ...] = (
+    "total_capacity_mbps", "link_potential_pct", "signal_dbm",
+    "dl_throughput_mbps", "ul_throughput_mbps",
+)
 
 # Types d'équipement qui font d'un site un site d'INFRA dans notre inventaire.
 # Sert uniquement à faire apparaître un site dépourvu de backhaul provisionné :
@@ -374,7 +379,7 @@ async def supervised_by_mac(session: AsyncSession, macs: set[str]) -> dict[str, 
     for row in result.all():
         latest[row.device_id][row.metric_name] = float(row.metric_value)
 
-    return {
+    out = {
         mac: {
             "id": d.id,
             "name": d.name,
@@ -382,9 +387,77 @@ async def supervised_by_mac(session: AsyncSession, macs: set[str]) -> dict[str, 
             "status": d.status,
             "site": d.site,
             "metrics": latest.get(d.id, {}),
+            "uplink_switch_id": d.uplink_switch_id,
+            "uplink_port": d.uplink_switch_port,
+            "uplink_switch": None,
+            "port_speed_mbps": None,
         }
         for mac, d in by_mac.items()
     }
+    await _attach_uplink_port_speed(session, out)
+    return out
+
+
+async def _attach_uplink_port_speed(session: AsyncSession, ours: dict[str, dict]) -> None:
+    """Renseigne la VITESSE NÉGOCIÉE du port de switch de chaque extrémité.
+
+    Le port physique de chaque équipement est déjà connu (`uplink_switch_id` /
+    `uplink_switch_port`, posés par `switch_port_mapping_job` d'après les
+    data-links du contrôleur), et sa vitesse est relevée à chaque cycle SNMP
+    dans `port_N_speed_mbps` sur le switch. Il ne reste qu'à croiser les deux.
+
+    Ça vaut la requête : le parc porte de vrais backhauls **bloqués à 100 Mb/s
+    alors qu'ils devraient être en gigabit** (relevé le 2026-07-30 sur
+    `A2-AT2-SUD1`, `A2-NR1-NORD`, `A2-SM1-OUEST`, `F60 CT1-NR1`). C'est
+    invisible sur une carte qui ne montre que l'état haut/bas.
+
+    ⚠️ Beaucoup d'extrémités n'ont AUCUN port connu — au premier chef les
+    liaisons fibre, dont les deux bouts sont des switches (les uplinks
+    inter-switch sont volontairement non attribués : chaque bout est une
+    affirmation valable, mais un équipement n'a qu'une colonne d'uplink). Elles
+    restent à ``None`` : pas de port connu, pas de point affiché, aucune
+    affirmation.
+    """
+    wanted: dict[int, set[int]] = defaultdict(set)
+    for info in ours.values():
+        if info["uplink_switch_id"] and info["uplink_port"]:
+            wanted[info["uplink_switch_id"]].add(info["uplink_port"])
+    if not wanted:
+        return
+
+    metric_names = sorted({
+        f"port_{port}_speed_mbps" for ports in wanted.values() for port in ports
+    })
+    result = await session.execute(
+        text(
+            """
+            SELECT DISTINCT ON (dm.device_id, dm.metric_name)
+                   dm.device_id, dm.metric_name, dm.metric_value
+            FROM device_metrics dm
+            WHERE dm.device_id = ANY(CAST(:ids AS integer[]))
+              AND dm.metric_name = ANY(CAST(:names AS text[]))
+            ORDER BY dm.device_id, dm.metric_name, dm.collected_at DESC
+            """
+        ),
+        {"ids": sorted(wanted), "names": metric_names},
+    )
+    speeds = {(r.device_id, r.metric_name): float(r.metric_value) for r in result.all()}
+
+    switch_names = dict(
+        (await session.execute(
+            select(Device.id, Device.name).where(Device.id.in_(sorted(wanted)))
+        )).all()
+    )
+
+    for info in ours.values():
+        sid, port = info["uplink_switch_id"], info["uplink_port"]
+        if not sid or not port:
+            continue
+        info["uplink_switch"] = switch_names.get(sid)
+        speed = speeds.get((sid, f"port_{port}_speed_mbps"))
+        # `ifSpeed = 0` (cages SFP) : une vitesse INCONNUE n'est pas une vitesse
+        # dégradée — même règle que la surveillance des ports.
+        info["port_speed_mbps"] = speed if speed else None
 
 
 def capacity_floor(end_a: dict | None, end_b: dict | None) -> float | None:
@@ -405,6 +478,38 @@ def capacity_floor(end_a: dict | None, end_b: dict | None) -> float | None:
     if "ptp_litebeam" in types:
         return float(settings.airmax_backhaul_capacity_min_mbps)
     return None
+
+
+def edge_traffic(end_a: dict | None, end_b: dict | None) -> tuple[str, float | None]:
+    """Trafic écoulé par la liaison → ``("active"|"idle"|"unknown", Mb/s)``.
+
+    On additionne descendant + montant, et on retient l'extrémité qui annonce le
+    PLUS : les deux bouts décrivent le même lien, mais l'un peut n'avoir aucun
+    relevé frais. Prendre le maximum évite de déclarer inerte une liaison que
+    l'autre extrémité voit passer du trafic.
+
+    ⚠️ **« Pas mesuré » n'est pas « pas de trafic »** — c'est ``unknown``, et le
+    rendu doit alors s'abstenir (vert, pas jaune). Le cas est réel et il est
+    massif : les liaisons FIBRE ont des switches aux deux bouts, et un switch
+    n'expose aucun débit en SNMP. Les peindre en jaune reviendrait à signaler
+    trois pannes de trafic permanentes sur la dorsale du HQ, ce qui est faux.
+    C'est la même règle que partout ici : on n'affirme que sur constat.
+    """
+    settings = get_settings()
+    best: float | None = None
+    for end in (end_a, end_b):
+        if not end:
+            continue
+        metrics = end.get("metrics") or {}
+        dl, ul = metrics.get("dl_throughput_mbps"), metrics.get("ul_throughput_mbps")
+        if dl is None and ul is None:
+            continue
+        total = (dl or 0.0) + (ul or 0.0)
+        best = total if best is None else max(best, total)
+    if best is None:
+        return "unknown", None
+    floor = float(settings.topology_traffic_min_mbps)
+    return ("active" if best >= floor else "idle"), best
 
 
 def edge_health(end_a: dict | None, end_b: dict | None) -> dict:
@@ -442,12 +547,16 @@ def edge_health(end_a: dict | None, end_b: dict | None) -> dict:
     # Un lien vaut son extrémité la plus dégradée.
     capacity = min(caps) if caps else None
     floor = capacity_floor(end_a, end_b)
+    traffic, traffic_mbps = edge_traffic(end_a, end_b)
     return {
         "state": state,
         "capacity_mbps": capacity,
         "link_potential_pct": min(pots) if pots else None,
         "measured_ends": len(caps),
         "floor_mbps": floor,
+        # "active" | "idle" | "unknown" — `unknown` ⇒ le rendu s'abstient.
+        "traffic": traffic,
+        "traffic_mbps": traffic_mbps,
         # Une capacité inconnue n'est PAS une capacité dégradée (même règle que
         # `ifSpeed = 0` sur les cages SFP) : sans mesure, on n'affirme rien.
         "degraded": bool(floor is not None and capacity is not None and capacity < floor),
@@ -632,6 +741,20 @@ async def get_site_topology(session: AsyncSession, root: str | None = None) -> d
         healths = [link_["health"] for link_ in entry["links"]]
         entry["health"] = _worst(healths)
         entry["redundant"] = len(entry["links"]) > 1
+        # Support physique de la liaison, pour le style du trait. Une liaison
+        # mixte compte comme filaire : le chemin cuivre/fibre est le plus
+        # capable des deux, et c'est lui qui décrit le mieux la liaison.
+        entry["medium"] = (
+            "wireless"
+            if all(link_["type"] == "wireless" for link_ in entry["links"])
+            else "wired"
+        )
+        # Port de switch de chaque CÔTÉ de la liaison (a = site_a, b = site_b :
+        # `build_edges` garantit que device_a est bien l'extrémité de site_a).
+        # Sur une liaison redondante on retient le port le PLUS LENT : c'est
+        # celui qui bride, et c'est lui qu'un opérateur doit aller voir.
+        entry["port_a"] = _slowest_port([link_["device_a"] for link_ in entry["links"]])
+        entry["port_b"] = _slowest_port([link_["device_b"] for link_ in entry["links"]])
 
     sites = [
         {
@@ -731,10 +854,39 @@ def _end_payload(end: dict, ours: dict | None) -> dict:
         "status": ours["status"] if ours else None,
         "capacity_mbps": (ours["metrics"].get("total_capacity_mbps") if ours else None),
         "link_potential_pct": (ours["metrics"].get("link_potential_pct") if ours else None),
+        # Port de switch sur lequel cette extrémité est câblée, et sa vitesse
+        # négociée. `None` = câblage inconnu (cas des liaisons fibre) → le rendu
+        # n'affiche alors aucun point.
+        "uplink_switch": ours["uplink_switch"] if ours else None,
+        "uplink_port": ours["uplink_port"] if ours else None,
+        "port_speed_mbps": ours["port_speed_mbps"] if ours else None,
+    }
+
+
+def _slowest_port(ends: list[dict]) -> dict | None:
+    """Le port le plus lent parmi les extrémités d'un même côté, ou ``None``.
+
+    ``None`` quand AUCUNE extrémité n'a de port connu : le rendu n'affiche alors
+    pas de point plutôt que d'en inventer un. Un port connu mais sans vitesse
+    lue reste retourné (avec ``speed_mbps`` à ``None``) — savoir sur quel port
+    l'équipement est câblé a de la valeur même sans sa vitesse.
+    """
+    known = [e for e in ends if e.get("uplink_port")]
+    if not known:
+        return None
+    with_speed = [e for e in known if e.get("port_speed_mbps") is not None]
+    pick = min(with_speed, key=lambda e: e["port_speed_mbps"]) if with_speed else known[0]
+    return {
+        "switch": pick.get("uplink_switch"),
+        "port": pick.get("uplink_port"),
+        "speed_mbps": pick.get("port_speed_mbps"),
     }
 
 
 _HEALTH_RANK = {"down": 0, "unmeasured": 1, "measured": 2}
+# `unknown` au-dessus d'`idle` : ne pas mesurer vaut mieux que mesurer zéro pour
+# départager deux branches — on ne préfère pas une branche prouvée inerte.
+_TRAFFIC_RANK = {"idle": 0, "unknown": 1, "active": 2}
 
 
 def _worst(healths: list[dict]) -> dict:
@@ -748,11 +900,17 @@ def _worst(healths: list[dict]) -> dict:
     """
     if not healths:
         return {"state": "unmeasured", "capacity_mbps": None, "link_potential_pct": None,
-                "measured_ends": 0, "floor_mbps": None, "degraded": False}
+                "measured_ends": 0, "floor_mbps": None, "degraded": False,
+                "traffic": "unknown", "traffic_mbps": None}
     # Une branche saine l'emporte sur une branche dégradée : sans ce second
     # critère, `max` rendrait la première rencontrée et une liaison redondante
-    # pourrait s'afficher dégradée alors qu'elle a une branche intacte.
+    # pourrait s'afficher dégradée alors qu'elle a une branche intacte. Même
+    # raison pour le trafic : si UNE branche écoule, la liaison écoule.
     return max(
         healths,
-        key=lambda h: (_HEALTH_RANK.get(h["state"], 1), not h.get("degraded", False)),
+        key=lambda h: (
+            _HEALTH_RANK.get(h["state"], 1),
+            _TRAFFIC_RANK.get(h.get("traffic", "unknown"), 1),
+            not h.get("degraded", False),
+        ),
     )

@@ -387,6 +387,16 @@ class Settings(BaseSettings):
     # chaque affichage (~1300 équipements + ~1400 sites + ~1300 liens), et le
     # rafraîchissement de l'onglet le refaisait toutes les 2 minutes.
     # La SANTÉ des liaisons n'est pas concernée : elle reste lue en direct.
+    # Débit (descendant + montant, Mb/s) au-dessus duquel une liaison inter-sites
+    # est considérée comme ÉCOULANT du trafic — verte sur /topology ; en dessous
+    # elle est debout mais inerte (jaune). Volontairement bas : un backhaul qui
+    # porte des clients ne descend jamais aussi près de zéro, et il ne s'agit pas
+    # de juger la charge mais de distinguer « ça passe » de « ça ne passe pas ».
+    # ⚠️ Une liaison SANS relevé de débit (les liaisons fibre : un switch
+    # n'expose aucun débit en SNMP) reste verte — « pas mesuré » n'est pas
+    # « pas de trafic ».
+    topology_traffic_min_mbps: float = 0.1
+
     topology_sync_enabled: bool = True
     topology_sync_hour: int = 7  # UTC (Mauritanie GMT) — à :30, après uisp_sync
 

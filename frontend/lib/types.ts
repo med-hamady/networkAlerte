@@ -649,6 +649,20 @@ export interface TopologyEnd {
   status: string | null
   capacity_mbps: number | null
   link_potential_pct: number | null
+  // Port de switch sur lequel cette extrémité est câblée (détecté depuis les
+  // data-links UISP) et sa vitesse négociée, relevée en SNMP sur le switch.
+  uplink_switch: string | null
+  uplink_port: number | null
+  port_speed_mbps: number | null
+}
+
+/** Port de switch d'un CÔTÉ d'une liaison. `null` = câblage inconnu. */
+export interface TopologyPort {
+  switch: string | null
+  port: number | null
+  // `null` = port connu mais vitesse non lue (ou ifSpeed=0, cage SFP) : une
+  // vitesse inconnue n'est pas une vitesse dégradée.
+  speed_mbps: number | null
 }
 
 // Santé d'une liaison. `unmeasured` = AUCUN des deux bouts ne rend de mesure :
@@ -664,6 +678,11 @@ export interface TopologyHealth {
   // recopier un barème ici le ferait diverger du seuil qui déclenche l'alerte.
   floor_mbps: number | null
   degraded: boolean
+  // Trafic écoulé par la liaison. ⚠️ `unknown` n'est PAS `idle` : les liaisons
+  // fibre ont des switches aux deux bouts, et un switch n'expose aucun débit en
+  // SNMP. Le rendu doit s'abstenir (vert) plutôt que les déclarer inertes.
+  traffic: 'active' | 'idle' | 'unknown'
+  traffic_mbps: number | null
 }
 
 export interface TopologyPhysicalLink {
@@ -681,8 +700,15 @@ export interface TopologyEdge {
   site_b: string
   is_tree_edge: boolean
   redundant: boolean
+  // Support physique : pilote le STYLE du trait (radio en tirets, filaire en
+  // trait plein). Une liaison mixte compte comme filaire.
+  medium: 'wireless' | 'wired'
   links: TopologyPhysicalLink[]
   health: TopologyHealth
+  // Port de switch de chaque côté (a = site_a, b = site_b). Sur une liaison
+  // redondante, c'est le port le PLUS LENT qui est retenu : c'est lui qui bride.
+  port_a: TopologyPort | null
+  port_b: TopologyPort | null
 }
 
 export interface TopologySite {

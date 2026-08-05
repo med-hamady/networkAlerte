@@ -19,33 +19,58 @@ export default function TopologyView({ topo }: { topo: NetworkTopology }) {
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-start justify-between gap-4">
-        <h1 className="text-xl font-bold text-slate-900">Topologie du réseau</h1>
-        {selectedSite && (
-          <button onClick={() => setSelectedSite(null)}
-                  className="text-xs text-blue-700 hover:underline shrink-0">
-            Tout afficher
-          </button>
-        )}
+    <>
+      {/*
+        Colonne flex haute d'exactement un écran (moins le seul padding que
+        AppShell ajoute autour du contenu, py-6 = 3rem).
+
+        ⚠️ Ne PAS revenir à une hauteur devinée du type `h-[calc(100vh-9rem)]`
+        sur la seule zone du graphe. Le nombre réservé doit couvrir le titre, les
+        marges, le padding de la carte ET la note de bas — cinq valeurs qui
+        changent au moindre retouche de style. Sous-estimé d'une trentaine de
+        pixels, la section dépasse le viewport et c'est la PAGE qui défile : le
+        graphe tient dans son cadre, mais on ne le voit pas entier. Ici c'est le
+        navigateur qui calcule le reste (`flex-1`), donc le compte est toujours
+        juste.
+
+        `min-h-0` est indispensable sur les enfants flex : sans lui un enfant
+        qui contient un `overflow-auto` refuse de se comprimer et repousse la
+        colonne au-delà de l'écran — le même symptôme, par un autre chemin.
+      */}
+      <div className="flex h-[calc(100vh-3rem)] flex-col gap-3">
+        <div className="flex shrink-0 items-start justify-between gap-4">
+          <h1 className="text-xl font-bold text-slate-900">Topologie du réseau</h1>
+          {selectedSite && (
+            <button onClick={() => setSelectedSite(null)}
+                    className="text-xs text-blue-700 hover:underline shrink-0">
+              Tout afficher
+            </button>
+          )}
+        </div>
+
+        <section className="flex min-h-0 flex-1 flex-col rounded-xl border
+                            border-slate-200 bg-white p-3 shadow-sm">
+          <div className="min-h-0 flex-1">
+            <TopologyGraph topo={topo} onSelectSite={setSelectedSite}
+                           selectedSite={selectedSite} />
+          </div>
+
+          {/* Deux fraîcheurs, et il faut le dire : le câblage date du dernier
+              rapatriement, l'état des équipements est de maintenant. Une seule
+              date laisserait croire que tout l'écran a le même âge. */}
+          <p className="shrink-0 pt-2 text-xs text-slate-400">
+            Racine : {topo.root} ({topo.root_source}). Le lien Internet→HQ
+            n&apos;existe pas dans le contrôleur — la racine est un réglage, pas
+            une déduction. Câblage rapatrié le {formatSynced(topo.synced_at)} ;
+            état des équipements relevé en direct.
+          </p>
+        </section>
       </div>
 
-      <section className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-4">
-        <TopologyGraph topo={topo} onSelectSite={setSelectedSite} selectedSite={selectedSite} />
-
-        {/* Deux fraîcheurs, et il faut le dire : le câblage date du dernier
-            rapatriement, l'état des équipements est de maintenant. Une seule
-            date laisserait croire que tout l'écran a le même âge. */}
-        <p className="text-xs text-slate-400">
-          Racine : {topo.root} ({topo.root_source}). Le lien Internet→HQ
-          n&apos;existe pas dans le contrôleur — la racine est un réglage, pas une
-          déduction. Câblage rapatrié le {formatSynced(topo.synced_at)} ; état des
-          équipements relevé en direct.
-        </p>
-      </section>
-
+      {/* Volontairement SOUS la ligne de flottaison : la carte occupe l'écran
+          d'entrée, ces avertissements se consultent en descendant. */}
       <Anomalies layout={topo.layout} stats={topo.stats} />
-    </div>
+    </>
   )
 }
 

@@ -3,16 +3,18 @@
 // Rendu de la topologie inter-sites — la partie PRÉSENTATION, séparée du fetch.
 //
 // Volontairement dépouillée : le graphe, et c'est tout. Pas de tuiles de
-// comptage, pas de légende, pas de liste des liaisons — la carte se lit d'un
-// coup d'œil, et le détail d'une liaison est au survol du trait.
+// comptage, pas de légende, pas de liste des liaisons, pas de bloc d'anomalies
+// sous la carte — elle se lit d'un coup d'œil, et le détail d'une liaison est au
+// survol du trait.
 //
-// La couleur ne code qu'une chose : l'équipement répond ou ne répond pas
-// (cf. `edgeColor` dans TopologyGraph). Les notions de capacité et de plancher
-// vivent sur /lr-health, section « Liaisons entre sites » — les afficher ici
-// aussi obligeait à une légende à cinq entrées pour un écran de vue d'ensemble.
+// Ce que le graphe ne dit plus explicitement (site sans aucune liaison,
+// composante séparée, extrémité non supervisée) reste EXACT dans la réponse
+// d'API (`layout.orphan_sites`, `layout.components`, `stats.unsupervised_ends`)
+// et visible sur le dessin : un site orphelin y est dessiné, simplement flottant.
+// `scripts/dump_site_topology.py` continue de les nommer en clair.
 
 import { useState } from 'react'
-import type { NetworkTopology, TopologyEdge } from '@/lib/types'
+import type { NetworkTopology } from '@/lib/types'
 import TopologyGraph from '@/components/TopologyGraph'
 
 export default function TopologyView({ topo }: { topo: NetworkTopology }) {
@@ -66,10 +68,6 @@ export default function TopologyView({ topo }: { topo: NetworkTopology }) {
           </p>
         </section>
       </div>
-
-      {/* Volontairement SOUS la ligne de flottaison : la carte occupe l'écran
-          d'entrée, ces avertissements se consultent en descendant. */}
-      <Anomalies layout={topo.layout} stats={topo.stats} />
     </>
   )
 }
@@ -80,50 +78,4 @@ function formatSynced(iso: string | null | undefined): string {
   return Number.isNaN(d.getTime())
     ? 'jamais'
     : d.toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })
-}
-
-// Ce que le graphe ne peut PAS dire tout seul : un site flottant se lit comme un
-// site sans panne. On les nomme — c'est la seule chose qui reste sous la carte,
-// parce qu'elle n'est pas déductible du dessin.
-function Anomalies({ layout, stats }: {
-  layout: NetworkTopology['layout']
-  stats: NetworkTopology['stats']
-}) {
-  const blocks: { title: string; body: React.ReactNode }[] = []
-
-  if (layout.orphan_sites.length) {
-    blocks.push({
-      title: `${layout.orphan_sites.length} site(s) sans aucune liaison`,
-      body: <>Aucun backhaul provisionné dans UISP les concernant — dessinés
-        flottants, ils se liraient comme « pas de panne » : {layout.orphan_sites.join(', ')}</>,
-    })
-  }
-  if (layout.components.length > 1) {
-    blocks.push({
-      title: `${layout.components.length} composantes séparées`,
-      body: <>Le graphe ne se dessine pas d&apos;un seul tenant :{' '}
-        {layout.components.map(g => `${g.length} site(s) (${g.join(', ')})`).join(' — ')}</>,
-    })
-  }
-  if (stats.unsupervised_ends.length) {
-    blocks.push({
-      title: `${stats.unsupervised_ends.length} extrémité(s) non supervisée(s)`,
-      body: <>Absentes de notre inventaire : leur état n&apos;est pas connu, elles
-        ne peuvent donc jamais rendre une liaison rouge.{' '}
-        {stats.unsupervised_ends.join(', ')}</>,
-    })
-  }
-
-  if (!blocks.length) return null
-  return (
-    <section className="space-y-2">
-      <h2 className="text-base font-semibold text-slate-900">Ce que la carte ne montre pas</h2>
-      {blocks.map(b => (
-        <div key={b.title} className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-          <div className="text-sm font-semibold text-amber-900">{b.title}</div>
-          <div className="text-xs text-amber-800 mt-1">{b.body}</div>
-        </div>
-      ))}
-    </section>
-  )
 }

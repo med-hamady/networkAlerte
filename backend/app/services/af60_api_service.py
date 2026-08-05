@@ -184,19 +184,42 @@ def parse_af60_metrics(raw: dict) -> dict[str, float | None]:
 
 
 async def collect_af60_metrics(
-    host: str, username: str, password: str, port: int = 443
-) -> dict[str, float | None] | None:
+    host: str,
+    username: str,
+    password: str,
+    port: int = 443,
+    *,
+    fallback_passwords: list[str] | None = None,
+) -> tuple[dict[str, float | None], str] | None:
     """Authentifie + récupère + parse les statistiques AF60.
 
-    Retourne le dict de métriques, ou None si l'équipement est injoignable /
-    l'auth échoue (l'appelant le traite comme un poll raté, sans alerte ici)."""
-    raw = await LTUApiClient(host, username, password, port).fetch_stats()
-    if raw is None:
-        return None
-    metrics = parse_af60_metrics(raw)
-    # af60_link_up est toujours défini ; on vérifie qu'au moins une métrique de
-    # lien a été lue (sinon réponse vide/inattendue → traiter comme injoignable).
-    if all(v is None for k, v in metrics.items() if k != "af60_link_up"):
-        logger.warning("AF60 API : réponse sans données de lien (%s)", host)
-        return None
-    return metrics
+    Essaie le ``password`` stocké puis, s'il échoue, chaque ``fallback_passwords``
+    dans l'ordre (plusieurs AF60 ont été flashés avec une variante du mot de passe
+    de convention). S'arrête au premier qui authentifie ET rend des données de
+    lien.
+
+    Retourne ``(métriques, mot_de_passe_qui_a_marché)`` — l'appelant compare ce
+    mot de passe au stocké pour promouvoir un repli sur la fiche. Retourne None si
+    l'équipement est injoignable ou si AUCUN mot de passe n'authentifie (poll raté,
+    sans alerte ici). Le coût des replis ne tombe QUE sur les AF60 dont le mot de
+    passe stocké échoue (un AF60 sain auth au 1er essai)."""
+    candidates = [password, *(fallback_passwords or [])]
+    for idx, candidate in enumerate(candidates):
+        raw = await LTUApiClient(host, username, candidate, port).fetch_stats()
+        if raw is None:
+            # Auth refusée OU injoignable — on ne distingue pas ici : on tente le
+            # repli suivant. Un AF60 vraiment injoignable épuisera la liste (borné).
+            continue
+        metrics = parse_af60_metrics(raw)
+        # af60_link_up est toujours défini ; on vérifie qu'au moins une métrique de
+        # lien a été lue (sinon réponse vide/inattendue). Ici l'auth a RÉUSSI, donc
+        # c'est un souci device et pas de mot de passe → on ne tente pas d'autre pw.
+        if all(v is None for k, v in metrics.items() if k != "af60_link_up"):
+            logger.warning("AF60 API : réponse sans données de lien (%s)", host)
+            return None
+        if idx > 0:
+            logger.info(
+                "AF60 %s — mot de passe de repli #%d accepté (à promouvoir)", host, idx
+            )
+        return metrics, candidate
+    return None

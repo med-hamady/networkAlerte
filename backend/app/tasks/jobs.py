@@ -2270,24 +2270,30 @@ async def af60_api_poll_job() -> None:
 
     logger.info("AF60 API poll — checking %d device(s)", len(targets))
     unit_map = af60_api_service.METRIC_UNITS
+    # Replis essayés quand le mot de passe stocké échoue à l'auth (403). Le mot de
+    # passe qui marche est promu sur la fiche en phase 2 (auto-réparation).
+    fallback_pws = base_settings.af60_fallback_password_list
 
     # ── Phase 1 : fetch UDAPI de tous les AF60 EN PARALLÈLE ──
     sem = asyncio.Semaphore(_AF60_POLL_CONCURRENCY)
-    fetched: dict[int, dict] = {}
+    # dev_id -> (metrics, working_password)
+    fetched: dict[int, tuple[dict, str]] = {}
 
     async def _fetch(dev_id: int, name: str, ip: str, user: str, pwd: str, port: int) -> None:
         async with sem:
-            metrics = await af60_api_service.collect_af60_metrics(
+            result = await af60_api_service.collect_af60_metrics(
                 host=ip, username=user, password=pwd, port=port,
+                fallback_passwords=fallback_pws,
             )
-        if metrics is None:
+        if result is None:
             logger.debug("AF60 API no response — %s (%s)", name, ip)
             return
+        metrics, working_pw = result
         logger.info(
             "AF60 %s (%s) — %s", name, ip,
             " | ".join(f"{k}={v}" for k, v in metrics.items() if v is not None),
         )
-        fetched[dev_id] = metrics
+        fetched[dev_id] = (metrics, working_pw)
 
     tasks = [asyncio.ensure_future(_fetch(*t)) for t in targets]
     try:
@@ -2305,11 +2311,22 @@ async def af60_api_poll_job() -> None:
         )
 
     # ── Phase 2 : persist + alert engine en série DB ──
-    for dev_id, metrics in fetched.items():
+    for dev_id, (metrics, working_pw) in fetched.items():
         async with async_session_factory() as session:
             dev = await session.get(AirFiber, dev_id)
             if dev is None:
                 continue
+
+            # Promotion du mot de passe de repli qui a authentifié : la fiche est
+            # mise à jour → le cycle suivant auth du premier coup (auto-réparation,
+            # comme le fallback SSH des LR). Le SELECT de session.get n'a rien
+            # flushé ; l'UPDATE part au commit avec le reste.
+            if working_pw and dev.ssh_password != working_pw:
+                logger.info(
+                    "AF60 %s (%s) — ssh_password promu depuis un mot de passe de repli",
+                    dev.name, dev.ip_address,
+                )
+                dev.ssh_password = working_pw
 
             distance = metrics.get("distance_m")
             if distance is not None:

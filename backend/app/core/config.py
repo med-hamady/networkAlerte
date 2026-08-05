@@ -428,6 +428,22 @@ class Settings(BaseSettings):
     uisp_af60_ssh_username: str = "ubnt"
     uisp_af60_ssh_password: str = "A2F60@4321"
 
+    # Mots de passe de repli essayés (dans l'ordre) quand le `ssh_password` stocké
+    # d'un AF60 échoue à l'auth de l'API UDAPI (HTTP 403). Même principe que le
+    # fallback SSH des LR (`lr_fallback_ssh_passwords`) : plusieurs AF60 du parc
+    # ont été flashés avec une variante suffixée du mot de passe de convention
+    # (constaté 2026-08-03 : 17 AF60 en 403 avec le seul `A2F60@4321`). Quand un
+    # repli authentifie, il est PROMU sur la fiche (`ssh_password`) → le cycle
+    # suivant auth du premier coup. CSV. ⚠️ Les valeurs contiennent un `$` : sûr
+    # ici (défaut Python littéral) mais à ÉCHAPPER si surchargé via `.env`
+    # (docker-compose substitue `$VAR`) — préférer la surcharge par ce défaut.
+    af60_fallback_api_passwords: str = "A2F60@4321$A2,A2F60@4321$a2"
+
+    @property
+    def af60_fallback_password_list(self) -> list[str]:
+        """Parse af60_fallback_api_passwords into a list (possibly empty)."""
+        return [p for p in self.af60_fallback_api_passwords.split(",") if p]
+
     @property
     def uisp_ignored_site_set(self) -> set[str]:
         """Normalised (lower/trimmed) set of UISP site names to skip.

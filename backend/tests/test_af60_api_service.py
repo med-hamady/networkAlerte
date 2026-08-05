@@ -20,7 +20,12 @@ from pathlib import Path
 
 import pytest
 
-from app.services.af60_api_service import METRIC_UNITS, parse_af60_metrics
+import app.services.af60_api_service as af60
+from app.services.af60_api_service import (
+    METRIC_UNITS,
+    collect_af60_metrics,
+    parse_af60_metrics,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "af60_statistics.json"
 
@@ -86,3 +91,71 @@ def test_wlan0_absent_laisse_un_trou_jamais_un_zero(raw):
 def test_toutes_les_cles_declarees_sont_produites(raw):
     """Le dict rendu couvre exactement METRIC_UNITS (les unités du job)."""
     assert set(parse_af60_metrics(raw)) == set(METRIC_UNITS)
+
+
+# ── Fallback de mot de passe (auto-réparation des AF60 en 403) ───────────────
+#
+# collect_af60_metrics essaie le mot de passe stocké puis chaque repli, et rend
+# CELUI qui a authentifié pour que le job le promeuve sur la fiche. On simule
+# l'auth en monkeypatchant LTUApiClient.fetch_stats : elle rend la vraie payload
+# UNIQUEMENT pour le "bon" mot de passe, None sinon (= 403/injoignable). C'est
+# exactement le comportement du firmware. Aucun réseau, aucune DB.
+
+
+def _patch_fetch(monkeypatch, good_password: str, raw: dict) -> list[str]:
+    """Fait réussir fetch_stats seulement pour `good_password`. Renvoie la liste
+    (mutable) des mots de passe réellement essayés, dans l'ordre."""
+    tried: list[str] = []
+
+    async def fake_fetch(self):
+        tried.append(self._password)
+        return raw if self._password == good_password else None
+
+    monkeypatch.setattr(af60.LTUApiClient, "fetch_stats", fake_fetch)
+    return tried
+
+
+@pytest.mark.asyncio
+async def test_le_mot_de_passe_stocke_marche_aucun_repli_essaye(raw, monkeypatch):
+    tried = _patch_fetch(monkeypatch, "PRIMARY", raw)
+
+    result = await collect_af60_metrics(
+        "10.0.0.1", "ubnt", "PRIMARY", fallback_passwords=["FB1", "FB2"],
+    )
+
+    assert result is not None
+    metrics, working = result
+    assert working == "PRIMARY"          # le pw retourné = celui qui a marché
+    assert metrics["dl_capacity_mbps"] == 600.0
+    assert tried == ["PRIMARY"]          # un AF60 sain n'essaie AUCUN repli
+
+
+@pytest.mark.asyncio
+async def test_repli_accepte_et_rendu_pour_promotion(raw, monkeypatch):
+    # Le stocké échoue (403), le 2e repli authentifie.
+    tried = _patch_fetch(monkeypatch, "A2F60@4321$a2", raw)
+
+    result = await collect_af60_metrics(
+        "10.0.0.1", "ubnt", "A2F60@4321",
+        fallback_passwords=["A2F60@4321$A2", "A2F60@4321$a2"],
+    )
+
+    assert result is not None
+    _metrics, working = result
+    # C'est le repli qui a marché qui est rendu → le job le promeut sur la fiche.
+    assert working == "A2F60@4321$a2"
+    # Essayés dans l'ordre, stockage d'abord, arrêt au 1er succès.
+    assert tried == ["A2F60@4321", "A2F60@4321$A2", "A2F60@4321$a2"]
+
+
+@pytest.mark.asyncio
+async def test_aucun_mot_de_passe_ne_marche_rend_none(raw, monkeypatch):
+    tried = _patch_fetch(monkeypatch, "JAMAIS_CELUI_LA", raw)
+
+    result = await collect_af60_metrics(
+        "10.0.0.1", "ubnt", "A2F60@4321",
+        fallback_passwords=["A2F60@4321$A2", "A2F60@4321$a2"],
+    )
+
+    assert result is None                # aucun candidat n'authentifie
+    assert tried == ["A2F60@4321", "A2F60@4321$A2", "A2F60@4321$a2"]

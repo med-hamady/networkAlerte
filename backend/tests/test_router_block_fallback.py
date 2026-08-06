@@ -16,7 +16,7 @@ Deux propriétés sont testées ici, et elles comptent autant l'une que l'autre 
 """
 
 import datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -214,6 +214,87 @@ async def test_un_echec_laisse_letat_en_desaccord_pour_reessayer():
         await client_block_service._reconcile_router(lr)
     assert lr.router_blocked is False
     assert client_block_service.desired_router_block(lr) is True  # écart persistant
+
+
+# ── Le retrait INCONDITIONNEL (actions ponctuelles) ─────────────────────────
+#
+# `_reconcile_router` ne parle au routeur que sur transition — indispensable pour
+# le job des 120 s, mais aveugle à une règle qu'on n'a pas posée : legacy
+# `add_rules.php`, ou base désynchronisée. Sur un blocage/déblocage d'opérateur, on
+# DEMANDE donc au routeur au lieu de le déduire de notre base.
+
+
+def _no_rule():
+    from app.services import mikrotik_service
+
+    return mikrotik_service.NO_RULE_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_le_retrait_inconditionnel_interroge_le_routeur_meme_aligne():
+    """Base et routeur « d'accord » (aucune règle attendue) : on demande quand même,
+    sinon une règle legacy survivrait à la coupure LR."""
+    lr = _FakeLr(client_blocked=True, client_block_enforced_at=_now(), router_blocked=False)
+    ctx, _block, unblock = _router()
+    with ctx, patch("app.services.client_block_service.fai_audit.log_action"):
+        removed, _msg = await client_block_service._clear_router_block(lr, source="block")
+    assert unblock.await_count == 1
+    assert removed is True  # le mock répond « ok », donc une règle a été retirée
+
+
+@pytest.mark.asyncio
+async def test_routeur_vide_ne_rapporte_aucun_retrait():
+    """« Aucune règle » n'est pas une action : ni journal FAI, ni mention à
+    l'opérateur — sinon chaque blocage réussi parlerait du routeur pour rien."""
+    lr = _FakeLr(client_blocked=True, router_blocked=True)
+    unblock = AsyncMock(return_value=(True, _no_rule()))
+    audit = MagicMock()  # log_action est synchrone
+    with patch.multiple(
+        "app.services.mikrotik_service",
+        is_enabled=lambda: True,
+        unblock_by_mac=unblock,
+    ), patch("app.services.client_block_service.fai_audit.log_action", audit):
+        removed, _msg = await client_block_service._clear_router_block(lr)
+    assert removed is False
+    assert audit.call_count == 0
+    assert lr.router_blocked is False  # l'état est quand même remis d'aplomb
+
+
+@pytest.mark.asyncio
+async def test_regle_legacy_retiree_est_journalisee():
+    """La règle n'a pas été posée par nous (`router_blocked` faux) mais la retirer
+    est bien une action sur le réseau : elle doit se lire au journal FAI."""
+    lr = _FakeLr(client_blocked=True, client_block_enforced_at=_now(), router_blocked=False)
+    audit = MagicMock()  # log_action est synchrone
+    ctx, _block, _unblock = _router()
+    with ctx, patch("app.services.client_block_service.fai_audit.log_action", audit):
+        await client_block_service._clear_router_block(lr, source="block")
+    assert audit.call_count == 1
+    assert audit.call_args.args[0] == "ROUTER_UNBLOCK"
+    assert audit.call_args.kwargs["source"] == "block"
+
+
+@pytest.mark.asyncio
+async def test_routeur_injoignable_ne_pretend_pas_avoir_retire():
+    lr = _FakeLr(client_blocked=True, router_blocked=True)
+    ctx, _block, _unblock = _router(unblock_ok=False)
+    with ctx:
+        removed, _msg = await client_block_service._clear_router_block(lr)
+    assert removed is False
+    assert lr.router_blocked is True  # écart conservé → le cycle suivant réessaie
+
+
+@pytest.mark.asyncio
+async def test_retrait_inconditionnel_sans_repli_ne_touche_a_rien():
+    lr = _FakeLr(client_blocked=True)
+    unblock = AsyncMock()
+    with patch.multiple(
+        "app.services.mikrotik_service",
+        is_enabled=lambda: False,
+        unblock_by_mac=unblock,
+    ):
+        assert await client_block_service._clear_router_block(lr) is None
+    assert unblock.await_count == 0
 
 
 @pytest.mark.asyncio

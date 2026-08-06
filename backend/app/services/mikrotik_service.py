@@ -56,6 +56,12 @@ logger = logging.getLogger(__name__)
 # d'un coup, ce que le routeur refuserait. Les appels au-delà attendent leur tour.
 _API_CONCURRENCY = asyncio.Semaphore(5)
 
+# Message rendu quand le routeur ne portait AUCUNE règle pour cette MAC. Constante
+# plutôt que littéral : l'appelant s'en sert pour distinguer « j'ai retiré quelque
+# chose » de « il n'y avait rien », et un texte recopié des deux côtés divergerait
+# à la première reformulation.
+NO_RULE_MESSAGE = "Aucune règle de blocage sur le routeur."
+
 
 def _normalize_mac(mac: str) -> str:
     """MAC en MAJUSCULES avec deux-points — la forme que RouterOS compare."""
@@ -151,7 +157,7 @@ def _unblock_sync(mac: str) -> tuple[bool, str]:
     with _session() as api:
         rule_ids = _find_drop_rule_ids(api, mac)
         if not rule_ids:
-            return True, "Aucune règle de blocage sur le routeur."
+            return True, NO_RULE_MESSAGE
         removed, failed = 0, 0
         for rule_id in rule_ids:
             try:

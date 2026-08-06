@@ -437,30 +437,51 @@ async def _reconcile_router(lr: Lr) -> str | None:
     return msg
 
 
-async def _clear_router_block(lr: Lr) -> str | None:
-    """Retrait inconditionnel des règles routeur de ce client (déblocage).
+async def _clear_router_block(
+    lr: Lr, source: str = "enforce"
+) -> tuple[bool, str] | None:
+    """Retrait inconditionnel des règles routeur de ce client. Ne lève jamais.
 
     Tenté même quand `router_blocked` est faux : le retrait cible TOUTES les règles
     drop de cette MAC, y compris celles posées par le système historique. Un client
-    débloqué chez nous ne doit pas rester coupé par une règle qu'on n'a pas posée.
+    dont le sort est désormais tranché sur son LR ne doit pas rester coupé par une
+    règle qu'on n'a pas posée — ni au déblocage (il resterait coupé), ni après un
+    blocage `whatsapp_only` réussi (la règle routeur est un DROP total, elle
+    couperait le WhatsApp qu'on vient justement d'autoriser).
+
+    C'est la différence avec :func:`_reconcile_router`, qui sort sans rien demander
+    au routeur quand la base croit déjà l'état aligné : ici on **demande**, parce
+    qu'une règle peut exister sans qu'on l'ait posée.
+
+    Retourne `(une_règle_a_été_retirée, message)`, ou `None` si le repli routeur est
+    désactivé. Le booléen sert à ne rapporter à l'opérateur que ce qui a eu lieu.
     """
     if not mikrotik_service.is_enabled():
         return None
     ok, msg = await mikrotik_service.unblock_by_mac(lr.mac_address)
-    if ok:
-        if lr.router_blocked:
-            fai_audit.log_action(
-                "ROUTER_UNBLOCK", ok=True, mac=lr.mac_address, name=lr.name,
-                mode=lr.block_mode, source="enforce", message=msg,
-            )
-        lr.router_blocked = False
-        lr.router_blocked_at = None
-    else:
+    if not ok:
         logger.warning(
-            "ROUTER UNBLOCK (déblocage) non appliqué — LR '%s' (id=%d) : %s",
+            "ROUTER UNBLOCK non appliqué — LR '%s' (id=%d) : %s",
             lr.name, lr.id, msg,
         )
-    return msg
+        return False, msg
+
+    # Journalisé sur le RETRAIT RÉEL, pas sur notre `router_blocked` : une règle
+    # legacy retirée est une action sur le réseau et doit se lire au journal, alors
+    # qu'un `router_blocked` à True face à un routeur vide n'en est pas une.
+    removed = msg != mikrotik_service.NO_RULE_MESSAGE
+    if removed:
+        logger.warning(
+            "ROUTER UNBLOCK — LR '%s' (id=%d, %s) : %s",
+            lr.name, lr.id, lr.mac_address, msg,
+        )
+        fai_audit.log_action(
+            "ROUTER_UNBLOCK", ok=True, mac=lr.mac_address, name=lr.name,
+            mode=lr.block_mode, source=source, message=msg,
+        )
+    lr.router_blocked = False
+    lr.router_blocked_at = None
+    return removed, msg
 
 
 async def block_client(
@@ -513,15 +534,20 @@ async def block_client(
     if ok:
         lr.client_block_enforced_at = _now()
         _set_unenforceable(lr, None)
-        # La coupure LR est confirmée → le routeur n'a plus à couvrir ce client.
-        await _reconcile_router(lr)
+        # La coupure LR est confirmée → le routeur n'a plus à couvrir ce client, et
+        # on le lui DEMANDE au lieu de le déduire de notre base : `_reconcile_router`
+        # sortirait sans appel dès qu'elle croit qu'aucune règle n'est posée, laissant
+        # en place une règle legacy (`add_rules.php`) ou une désynchronisation.
+        router = await _clear_router_block(lr, source="block")
         await session.commit()
         logger.warning(
             "CLIENT BLOCK appliqué — LR '%s' (id=%d, %s) mode=%s — motif: %s",
             lr.name, lr.id, lr.ip_address, resolved,
             lr.client_blocked_reason or "(non précisé)",
         )
-        return True, f"Client {lr.name} bloqué ({label}). {msg}", evidence
+        # On ne mentionne le routeur que s'il y avait vraiment une règle à retirer.
+        router_note = f" Routeur : {router[1]}" if router and router[0] else ""
+        return True, f"Client {lr.name} bloqué ({label}). {msg}{router_note}", evidence
 
     structural = _structural_failure(msg)
     _set_unenforceable(lr, structural)  # None = transitoire → on réessaiera
@@ -598,7 +624,7 @@ async def unblock_client(
     if not _has_ssh(lr):
         # Même sans SSH, une règle routeur a pu couper ce client : la retirer est
         # justement ce qui lui rend l'accès dans ce cas.
-        await _clear_router_block(lr)
+        await _clear_router_block(lr, source="unblock")
         await session.commit()
         return (
             False,
@@ -616,8 +642,8 @@ async def unblock_client(
     # Retrait routeur INCONDITIONNEL, avant même le SSH : c'est ce qui rend l'accès
     # aux clients que seul le routeur coupait, et ça nettoie au passage les règles
     # posées par le système historique pour cette MAC.
-    router_msg = await _clear_router_block(lr)
-    router_note = f" Routeur : {router_msg}" if router_msg else ""
+    router = await _clear_router_block(lr, source="unblock")
+    router_note = f" Routeur : {router[1]}" if router and router[0] else ""
 
     ok, msg, evidence = await _clear_block(lr, capture_evidence=True)
     if ok:

@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import datetime
 import unicodedata
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
@@ -46,6 +46,25 @@ _REASON_SOURCES: tuple[tuple[str, str], ...] = (
 # Origine par défaut quand le `reason` ne correspond à aucune signature connue.
 _DEFAULT_SOURCE = "payment"
 
+# L'agent transmis par l'appelant est écrit tel quel dans la piste d'audit : c'est
+# une chaîne libre venue d'un système tiers, on la borne. 120 caractères tiennent
+# largement une adresse e-mail (RFC 5321 en autorise 254, mais aucun agent réel
+# n'en approche) sans qu'une valeur aberrante puisse noyer une ligne de journal.
+_USER_MAX_LEN = 120
+
+
+def _clean_user(user: str | None) -> str | None:
+    """Normalise l'identifiant d'agent — jamais de refus, seulement du cadrage.
+
+    Une valeur inattendue (trop longue, avec des retours à la ligne) ne doit PAS
+    faire échouer une coupure : l'agent est une information de traçabilité, pas
+    une condition de l'action. On la normalise donc au lieu de rejeter l'appel.
+    Le journal se charge en plus des `|` (cf. ``fai_audit._line``).
+    """
+    if not user:
+        return None
+    return " ".join(user.split())[:_USER_MAX_LEN] or None
+
 
 def _strip_accents(text: str) -> str:
     return "".join(
@@ -64,16 +83,41 @@ def _source_from_reason(reason: str | None) -> str:
     return _DEFAULT_SOURCE
 
 
+# L'AGENT à l'origine de l'action, tel que l'appelant nous le transmet : e-mail
+# d'un opérateur pour un geste manuel, ou libellé automatique (« auto system »
+# pour la campagne d'impayés, « auto retry » pour le rejeu).
+#
+# ⚠️ **Facultatif, et il doit le rester** : il ne sert qu'à la traçabilité, et le
+# rendre obligatoire ferait échouer les coupures de tout appelant pas encore mis à
+# jour — un abonné impayé resterait en ligne pour un champ d'audit manquant.
+# L'absence se lit simplement « agent non transmis » dans le journal.
+#
+# Distinct de `source` (déduit du motif) : celui-ci dit quel SCRIPT a appelé,
+# `user` dit QUI est derrière — deux agents passent par le même script.
+AgentUser = Annotated[
+    str | None,
+    Field(
+        description=(
+            "Agent à l'origine de l'action : e-mail de l'opérateur (action "
+            "manuelle) ou libellé automatique (« auto system », « auto retry »). "
+            "Facultatif."
+        ),
+    ),
+]
+
+
 class FaiBlockRequest(BaseModel):
     mac: str
     reason: str | None = None
     # "full" = coupure totale (port LAN fermé). "whatsapp_only" = filtre iptables
     # laissant DNS + WhatsApp/Meta joignables. Omis → défaut serveur.
     mode: Literal["full", "whatsapp_only"] | None = None
+    user: AgentUser = None
 
 
 class FaiUnblockRequest(BaseModel):
     mac: str
+    user: AgentUser = None
 
 
 class FaiBlockResult(BaseModel):
@@ -149,6 +193,9 @@ async def fai_block(
     iptables laissant DNS + WhatsApp). Le blocage est persisté et ré-appliqué
     automatiquement — il survit à un reboot du LR.
 
+    `user` (facultatif) : l'agent à l'origine de l'ordre, journalisé tel quel et
+    affiché dans le journal des blocages du dashboard.
+
     - 400 : MAC mal formée.
     - 404 : aucun LR pour cette MAC.
     - 409 : LR en mode bridge (le blocage ne peut pas fonctionner).
@@ -172,7 +219,8 @@ async def fai_block(
     fai_audit.log_action(
         "IDENT_KO" if client_block_service.is_identity_refusal(message) else "BLOCK",
         ok=ok, mac=lr.mac_address, name=lr.name,
-        mode=lr.block_mode, source=_source_from_reason(body.reason), message=message,
+        mode=lr.block_mode, source=_source_from_reason(body.reason),
+        user=_clean_user(body.user), message=message,
         evidence=evidence,
     )
     return _result(lr, ok, message)
@@ -185,6 +233,8 @@ async def fai_unblock(
 ) -> FaiBlockResult:
     """Débloque l'accès internet d'un client à partir de la MAC de son LR.
 
+    `user` (facultatif) : l'agent à l'origine de l'ordre, journalisé tel quel.
+
     - 400 : MAC mal formée.
     - 404 : aucun LR pour cette MAC.
     """
@@ -196,7 +246,7 @@ async def fai_unblock(
     fai_audit.log_action(
         "IDENT_KO" if client_block_service.is_identity_refusal(message) else "UNBLOCK",
         ok=ok, mac=lr.mac_address, name=lr.name,
-        mode=lr.block_mode, message=message,
+        mode=lr.block_mode, user=_clean_user(body.user), message=message,
         evidence=evidence,
     )
     return _result(lr, ok, message)

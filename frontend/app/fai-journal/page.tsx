@@ -36,11 +36,25 @@ const ACTION_STYLE: Record<FaiJournalEntry['action'], { label: string; cls: stri
   ROUTER_UNBLOCK: { label: 'Rétabli (routeur)', cls: 'bg-slate-100 text-slate-700 border-slate-300' },
 }
 
-// Qui a demandé l'action. `script` = blocage de masse (migration depuis le MikroTik).
+// Quel SYSTÈME a appelé. `script` = blocage de masse (migration depuis le MikroTik).
 const SOURCE_LABEL: Record<string, string> = {
   payment: 'Système de paiement',
   enforce: 'Renforcement auto',
   script:  'Blocage de masse',
+}
+
+// QUI est derrière l'action — distinct de l'origine : les gestes manuels d'un
+// opérateur et les campagnes automatiques passent par le même système de paiement.
+// Un e-mail est affiché tel quel ; seuls les deux libellés automatiques connus
+// sont traduits, pour qu'on ne les lise pas comme des noms d'agents.
+const USER_LABEL: Record<string, string> = {
+  'auto system': 'Campagne impayés (auto)',
+  'auto retry':  'Rejeu automatique (auto)',
+}
+
+function userLabel(user: string | null): string | null {
+  if (!user) return null
+  return USER_LABEL[user.trim().toLowerCase()] ?? user
 }
 
 function formatTs(ts: string): string {
@@ -145,7 +159,7 @@ export default function FaiJournalPage() {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Filtrer par MAC ou nom du client…"
+          placeholder="Filtrer par MAC, nom du client ou agent…"
           className="ml-auto w-72 px-3 py-1.5 rounded-lg border border-blue-200 text-sm
                      focus:outline-none focus:ring-2 focus:ring-blue-300"
         />
@@ -183,7 +197,21 @@ export default function FaiJournalPage() {
                   </Td>
                   <Td className="font-medium text-blue-900">{e.name}</Td>
                   <Td className="font-mono text-xs text-blue-500">{e.mac ?? '—'}</Td>
-                  <Td className="text-xs text-blue-500">{SOURCE_LABEL[e.source] ?? e.source}</Td>
+                  {/* Une seule colonne pour deux faits distincts : le SCRIPT qui a
+                      appelé (déduit du motif) et l'AGENT derrière (transmis par
+                      l'appelant). L'agent en seconde ligne, comme le message sous
+                      le résultat — pas de colonne à lui, mais pas fondu dans
+                      l'origine non plus : un même script porte plusieurs agents.
+                      Absent = l'appelant ne l'a pas transmis (ou action interne) :
+                      la ligne disparaît simplement, sans « inconnu ». */}
+                  <Td className="text-xs text-blue-500">
+                    {SOURCE_LABEL[e.source] ?? e.source}
+                    {e.user && (
+                      <p className="text-[11px] text-blue-400 mt-0.5 break-all max-w-[14rem]">
+                        {userLabel(e.user)}
+                      </p>
+                    )}
+                  </Td>
                   <Td>
                     <span className={`font-semibold ${e.ok ? 'text-green-700' : 'text-red-700'}`}>
                       {e.ok ? 'Appliqué' : 'Non appliqué'}
@@ -335,6 +363,9 @@ function EvidenceModal({ entry, onClose }: { entry: FaiJournalEntry; onClose: ()
             <p className="text-xs text-blue-400 mt-0.5">
               {entry.name} · <span className="font-mono">{entry.mac ?? '—'}</span> ·{' '}
               {formatTs(entry.timestamp)}
+              {/* Sur ordre de qui : c'est la moitié manquante d'une preuve
+                  d'exécution — elle atteste ce qui a été fait, pas qui l'a voulu. */}
+              {entry.user && <> · demandé par {userLabel(entry.user)}</>}
             </p>
           </div>
           <button

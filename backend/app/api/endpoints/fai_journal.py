@@ -44,6 +44,13 @@ class JournalEntry(BaseModel):
     name: str
     mode: str
     source: str  # payment | enforce
+    # L'AGENT à l'origine de l'action, quand l'appelant nous l'a transmis :
+    # e-mail d'un opérateur, ou libellé automatique (« auto system », « auto
+    # retry »). `null` = non transmis — soit un appelant qui ne l'envoie pas, soit
+    # une action interne (renforcement, script), soit une ligne écrite avant que
+    # le champ existe. L'UI ne distingue pas ces cas : dans les trois, on ne sait
+    # pas qui a demandé.
+    user: str | None = None
     message: str
     # Une transcription de la session SSH est-elle archivée pour cette action ?
     # Pilote l'affichage du bouton « Voir la preuve » — inutile de proposer
@@ -94,7 +101,9 @@ async def get_journal(
     limit: int = Query(200, ge=1, le=50_000),
     action: str | None = Query(None, description="BLOCK | UNBLOCK | RETRY_OK | ABANDON | IDENT_KO"),
     status: str | None = Query(None, description="ok | failed | abandoned"),
-    search: str | None = Query(None, description="Filtre sur la MAC ou le nom du client"),
+    search: str | None = Query(
+        None, description="Filtre sur la MAC, le nom du client ou l'agent"
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> JournalResponse:
     """Historique des actions de blocage + LR encore en souffrance."""

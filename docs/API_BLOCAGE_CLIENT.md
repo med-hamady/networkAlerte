@@ -71,7 +71,8 @@ Content-Type: application/json
 {
   "mac": "d0:21:f9:f6:07:c2",
   "mode": "full",
-  "reason": "Impayé facture 2026-07"
+  "reason": "Impayé facture 2026-07",
+  "user": "ali.brahim@a2ict.com"
 }
 ```
 
@@ -80,17 +81,47 @@ Content-Type: application/json
 | `mac` | oui | MAC de l'équipement du client |
 | `mode` | non | `full` = coupure totale. `whatsapp_only` = le client garde WhatsApp (pour vous joindre et payer), tout le reste est coupé. Omis → valeur par défaut du serveur. |
 | `reason` | non | Motif, texte libre. Visible par les opérateurs sur le tableau de bord et dans le journal d'audit. |
+| `user` | non | **Qui déclenche l'action** (voir §4) |
 
 ---
 
-## 4. Débloquer un client
+## 4. Tracer l'agent : le champ `user`
+
+`user` identifie **qui** est à l'origine de l'ordre. Il est accepté sur `/block` **et**
+sur `/unblock`, et se retrouve tel quel dans notre journal d'audit, affiché sous l'origine
+de l'appel sur le tableau de bord — recherchable, au même titre que la MAC et le nom du
+client.
+
+Deux natures de valeur, envoyées dans le même champ :
+
+| Valeur | Cas |
+|---|---|
+| `ali.brahim@a2ict.com` | Geste **manuel** d'un opérateur — son e-mail |
+| `auto system` | Campagne automatique d'impayés |
+| `auto retry` | Rejeu automatique de votre côté |
+
+Trois précisions qui évitent des surprises :
+
+- **Le champ est facultatif et le restera.** Un appel sans `user` reste parfaitement
+  valide — la coupure d'un abonné impayé ne doit jamais échouer pour une information
+  d'audit manquante. Elle apparaît alors comme « agent non transmis ».
+- **Aucun contrôle sur la valeur** : ce n'est pas un compte chez nous, et nous ne
+  refusons pas un agent inconnu. La valeur est simplement normalisée (espaces réduits,
+  tronquée à 120 caractères).
+- **Distinct de `reason`.** Continuez à envoyer le motif ; `user` n'est pas une manière
+  plus courte de l'écrire. Le motif explique *pourquoi*, `user` dit *qui* — et seul le
+  second est exploitable comme colonne (tri, recherche, comptage par agent).
+
+---
+
+## 5. Débloquer un client
 
 ```http
 POST /api/v1/fai/unblock
 X-API-Key: <clé>
 Content-Type: application/json
 
-{ "mac": "d0:21:f9:f6:07:c2" }
+{ "mac": "d0:21:f9:f6:07:c2", "user": "ali.brahim@a2ict.com" }
 ```
 
 Rétablit l'accès complet **quel que soit le mode** qui avait été appliqué — vous n'avez
@@ -98,7 +129,7 @@ pas à savoir comment le client avait été coupé.
 
 ---
 
-## 5. Consulter l'état d'un client
+## 6. Consulter l'état d'un client
 
 ```http
 GET /api/v1/fai/status?mac=d0:21:f9:f6:07:c2
@@ -111,7 +142,7 @@ votre intégration** : il n'existe pas d'environnement de test, les appels `bloc
 
 ---
 
-## 6. La réponse (identique pour les trois routes)
+## 7. La réponse (identique pour les trois routes)
 
 ```json
 {
@@ -144,7 +175,7 @@ votre intégration** : il n'existe pas d'environnement de test, les appels `bloc
 
 ---
 
-## 7. Le point clé de l'intégration : `ok: true` = coupure garantie
+## 8. Le point clé de l'intégration : `ok: true` = coupure garantie
 
 `ok: true` signifie que **le client est effectivement coupé**, peu importe comment :
 sur son propre équipement (`enforced_by: "lr"`) ou, si celui-ci ne répondait pas, sur
@@ -171,11 +202,11 @@ La règle tient en trois lignes :
 
 ---
 
-## 8. Codes d'erreur
+## 9. Codes d'erreur
 
 | Code | Cas | Conduite à tenir |
 |---|---|---|
-| `200` | Demande prise en compte (voir §7) | — |
+| `200` | Demande prise en compte (voir §8) | — |
 | `400` | MAC mal formée | Corriger la MAC envoyée |
 | `401` | Clé API absente ou invalide | Vérifier l'en-tête `X-API-Key` |
 | `404` | Aucun équipement connu pour cette MAC | Le client n'est pas dans le parc supervisé — **nous le signaler**, ne pas réessayer |
@@ -185,25 +216,25 @@ La règle tient en trois lignes :
 
 ---
 
-## 9. Exemples
+## 10. Exemples
 
 ### curl
 
 ```bash
-# Bloquer (coupure totale)
+# Bloquer (coupure totale), action manuelle d'un opérateur
 curl -k -X POST https://102.215.95.233/api/v1/fai/block \
   -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  -d '{"mac":"d0:21:f9:f6:07:c2","mode":"full","reason":"Impayé"}'
+  -d '{"mac":"d0:21:f9:f6:07:c2","mode":"full","reason":"Impayé","user":"ali.brahim@a2ict.com"}'
 
-# Bloquer en laissant WhatsApp accessible
+# Bloquer en laissant WhatsApp accessible, depuis la campagne automatique
 curl -k -X POST https://102.215.95.233/api/v1/fai/block \
   -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  -d '{"mac":"d0:21:f9:f6:07:c2","mode":"whatsapp_only","reason":"Impayé"}'
+  -d '{"mac":"d0:21:f9:f6:07:c2","mode":"whatsapp_only","reason":"Impayé","user":"auto system"}'
 
 # Débloquer
 curl -k -X POST https://102.215.95.233/api/v1/fai/unblock \
   -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  -d '{"mac":"d0:21:f9:f6:07:c2"}'
+  -d '{"mac":"d0:21:f9:f6:07:c2","user":"ali.brahim@a2ict.com"}'
 
 # Consulter (sans effet)
 curl -k "https://102.215.95.233/api/v1/fai/status?mac=d0:21:f9:f6:07:c2" \
@@ -219,11 +250,14 @@ BASE = "https://102.215.95.233/api/v1/fai"
 HEADERS = {"X-API-Key": API_KEY}
 
 
-def bloquer(mac: str, motif: str, mode: str = "full") -> bool:
-    """Coupe l'accès d'un client. Retourne True si l'ordre est accepté."""
+def bloquer(mac: str, motif: str, agent: str, mode: str = "full") -> bool:
+    """Coupe l'accès d'un client. Retourne True si l'ordre est accepté.
+
+    `agent` : e-mail de l'opérateur, ou "auto system" / "auto retry".
+    """
     r = requests.post(
         f"{BASE}/block",
-        json={"mac": mac, "mode": mode, "reason": motif},
+        json={"mac": mac, "mode": mode, "reason": motif, "user": agent},
         headers=HEADERS,
         verify=False,   # certificat auto-signé
         timeout=60,     # l'appel attend l'équipement
@@ -237,9 +271,9 @@ def bloquer(mac: str, motif: str, mode: str = "full") -> bool:
     return data["client_blocked"]
 
 
-def debloquer(mac: str) -> bool:
+def debloquer(mac: str, agent: str) -> bool:
     r = requests.post(
-        f"{BASE}/unblock", json={"mac": mac},
+        f"{BASE}/unblock", json={"mac": mac, "user": agent},
         headers=HEADERS, verify=False, timeout=60,
     )
     r.raise_for_status()
@@ -260,6 +294,7 @@ curl_setopt_array($ch, [
         "mac"    => "d0:21:f9:f6:07:c2",
         "mode"   => "full",
         "reason" => "Impayé",
+        "user"   => "ali.brahim@a2ict.com",   // ou "auto system" / "auto retry"
     ]),
 ]);
 $data = json_decode(curl_exec($ch), true);
@@ -268,7 +303,7 @@ $estBloque = $data["client_blocked"];   // fait foi — pas $data["ok"]
 
 ---
 
-## 10. Notes d'exploitation
+## 11. Notes d'exploitation
 
 - **Idempotence** : bloquer un client déjà bloqué (ou débloquer un client déjà actif) ne
   pose aucun problème et renvoie simplement l'état courant.

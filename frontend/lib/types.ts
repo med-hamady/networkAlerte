@@ -683,6 +683,12 @@ export interface TopologyHealth {
   // SNMP. Le rendu doit s'abstenir (vert) plutôt que les déclarer inertes.
   traffic: 'active' | 'idle' | 'unknown'
   traffic_mbps: number | null
+  // Débit PAR DIRECTION, nommé par les sites (a = site_a, b = site_b).
+  // ⚠️ Pas de « descendant/montant » ici : ces mots n'ont de sens que vu d'un
+  // bout, et `dl` d'une extrémité est le `ul` de l'autre. C'est le rendu, qui
+  // connaît la relation parent/enfant, qui les traduit.
+  traffic_a_to_b_mbps: number | null
+  traffic_b_to_a_mbps: number | null
 }
 
 export interface TopologyPhysicalLink {
@@ -999,6 +1005,12 @@ export interface FaiJournalEntry {
   // 'payment' | 'enforce' | 'script', ou le nom du script appelant déduit du motif
   // côté backend (ex. 'Block_all.php') — affiché tel quel s'il n'est pas dans SOURCE_LABEL.
   source: string
+  /** L'AGENT à l'origine de l'action, transmis par l'appelant : e-mail d'un
+   *  opérateur (geste manuel) ou libellé automatique ('auto system', 'auto
+   *  retry'). `null` = non transmis — appelant qui ne l'envoie pas, action
+   *  interne (renforcement, script), ou ligne antérieure au champ. Distinct de
+   *  `source`, qui dit quel SYSTÈME a appelé, pas qui est derrière. */
+  user: string | null
   message: string
   /** Une transcription de la session SSH est-elle archivée pour cette action ?
    *  `message` est une phrase que NOUS avons rédigée ; la preuve, elle, est ce

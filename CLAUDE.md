@@ -869,6 +869,43 @@ alors aucune trace) ; puis, si l'équipement est absent du contrôleur, lui pose
 la clé (sans elle il ne se déclare jamais → rien à associer). L'enregistrement
 n'étant pas instantané, la réponse porte `pending_registration`.
 
+#### Agent d'une action FAI — le champ `user` (2026-08-06)
+
+Le système de paiement transmet désormais **qui** déclenche chaque coupure :
+`user` dans le corps de `POST /fai/block` et `/fai/unblock` — e-mail de l'agent
+pour un geste manuel, ou libellé automatique (`auto system` pour la campagne
+d'impayés, `auto retry` pour le rejeu). Écrit dans la piste d'audit
+(`fai_audit`), rendu **en seconde ligne de la colonne « Origine »** de
+`/fai-journal` (pas de colonne à lui : le tableau en porte déjà 7) et **inclus
+dans la recherche** de la page (« toutes les coupures ordonnées par untel » est la
+question qu'on pose à un journal d'audit).
+
+⚠️ **`user` n'est pas `source`.** `source` est déduit du **motif** et dit quel
+SCRIPT a appelé (`Block_all.php`, `enforce`, `script`…) ; `user` dit qui est
+derrière — deux agents passent par le même script. Les deux colonnes coexistent.
+
+⚠️ **Facultatif, et ça n'est pas une facilité** : un ordre de coupure ne doit
+jamais échouer sur un champ d'audit manquant (un abonné impayé resterait en ligne
+pour ça). Aucun contrôle sur la valeur non plus — ce n'est pas un compte chez
+nous ; elle est seulement normalisée (espaces réduits, 120 caractères max, `|`
+neutralisé) puis journalisée telle quelle.
+
+⚠️ **Le format du journal a changé sur un fichier DÉJÀ écrit** — c'est le vrai
+risque de ce changement, et il porte sur la RELECTURE : `fai_audit._parse`
+reconnaît le champ à sa **forme** (`_USER_FIELD_RE`), pas à sa position, parce
+que le nombre de champs ne sépare pas les deux formats (un ancien message
+contenant un ` | ` produit lui aussi 9 morceaux). Repasser à un split à arité
+fixe rejetterait d'un coup **tout l'historique antérieur** — c.-à-d. effacerait
+la piste d'audit en la laissant sur disque. Verrouillé par
+`tests/test_fai_audit_user.py`.
+
+⚠️ **Portée : la ligne de la DEMANDE, pas ses suites.** L'agent est journalisé
+sur l'action que l'API a reçue. Les lignes émises **plus tard** par le job
+d'enforcement pour le même ordre (`RETRY_OK`, `ABANDON`, `IDENT_KO`,
+`ROUTER_BLOCK`) restent sans agent : rien ne le porte en base. L'attribuer aussi
+aux rejeux demanderait une colonne sur `lrs` (donc une migration) — non fait,
+délibérément.
+
 #### DÉBIT vs CAPACITÉ — deux mesures distinctes (2026-07-20)
 
 Piège corrigé le 2026-07-20 : le « débit » de la fiche équipement était lu dans
@@ -1001,8 +1038,8 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | POST | `/api/v1/devices/{id}/enroll-uisp` | Oui | **Enrôle un LR dans UISP** en posant la clé du contrôleur par SSH (sans reboot ni coupure). `ok` = contrôleur ayant **adopté** l'équipement, constaté sur l'équipement. Sans effet sur un LR déjà provisionné pour ce contrôleur ; body `force` passe outre (clé orpheline seulement — sur un équipement sain, forcer le dé-enrôle). 409 si `UISP_DEVICE_KEY` absente. Cf. **Enrôlement UISP** |
 | POST | `/api/v1/access-diagnostics/enroll-uisp` | Oui | Même chose **en lot** sur les LR vus par radio mais absents de UISP. Body `lr_ids` (vide = toute la population) + `force`. Séquentiel, concurrence SSH bornée : compter jusqu'à 45 s par équipement |
 | GET | `/api/v1/access-diagnostics` | Oui | **Deux anomalies d'accès abonné** : `ssh_refused` (LR encore `up` dont `lrs.ssh_status` ∈ {`auth_failed`,`ssh_disabled`,`host_key_mismatch`}) + `radio_not_in_uisp` (LR `last_discovered_at`≠NULL **et** `uisp_synced_at`=NULL = vu par radio mais non provisionné dans UISP) + `counts`. `access_diagnostics_service` |
-| POST | `/api/v1/fai/block` | FAI | Bloque un client par **MAC** de son LR (système de paiement). Body `mac` + `reason` + `mode` (`full`/`whatsapp_only`). Même mécanisme que `/devices/{id}/block-client`, indexé par MAC. 409 si LR en bridge |
-| POST | `/api/v1/fai/unblock` | FAI | Débloque un client par **MAC** de son LR |
+| POST | `/api/v1/fai/block` | FAI | Bloque un client par **MAC** de son LR (système de paiement). Body `mac` + `reason` + `mode` (`full`/`whatsapp_only`) + **`user`** (l'**agent** à l'origine de l'ordre — cf. **Agent d'une action FAI**). Même mécanisme que `/devices/{id}/block-client`, indexé par MAC. 409 si LR en bridge |
+| POST | `/api/v1/fai/unblock` | FAI | Débloque un client par **MAC** de son LR. Body `mac` + **`user`** (idem) |
 | GET | `/api/v1/fai/status` | FAI | État de blocage actuel d'un client par **MAC** (lecture seule, ne touche pas au LR) |
 | GET | `/api/v1/fai/verify` | **Verify** | **Contrôle pré-vol LIVE d'un LR par MAC** pour un système tiers. **Teste l'équipement en direct par SSH au moment de l'appel** (PAS les colonnes de sonde) : `ssh_service.verify_lr_live` ouvre une session avec le mot de passe attendu **uniquement** (`fai_expected_lr_ssh_password`, défaut `A2HQ@87654321`, pas de fallback) et lit `netmode` dans `system.cfg` sur la même session. La seule lecture DB est la résolution MAC → équipement (IP/nom/creds). **Clé API DÉDIÉE `LR_VERIFY_API_KEY`** (router `fai_verify.py` séparé, `require_verify_client`) : scellée à cette seule route — n'ouvre pas block/unblock/status ; repli accepté sur l'auth /fai (FAI_API_KEY / master / session). 4 contrôles : **existe** (sinon `KO`, `name=null`, **200 pas 404**), **ssh_active** (poignée de main SSH aboutit maintenant), **password_valid** (auth live réussie avec `A2HQ@87654321` — distinct de ssh_active : daemon qui répond mais mauvais mdp ⇒ ssh_active=true/password_valid=false), **router_mode** (`netmode=="router"` en direct — **même clé sur LTU et airOS**, valider sur `netmode` PAS sur les `bridge.*` internes VLAN). ⚠️ **LR éteint / SSH injoignable ⇒ `KO` ssh_active=false** (un live ne se prononce pas sur ce qu'il ne joint pas) ; l'appel dure une poignée de main SSH (quelques s). Renvoie `ok`/`status` (`OK`/`KO`) + `name` + `reason` + `checks{}` + brut `ssh_status`/`topology_mode`/`ssh_checked_at` (= instant du test). 400 si MAC mal formée |
 

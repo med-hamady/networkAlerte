@@ -11,7 +11,13 @@ Le fichier vit dans un volume bind-monté (`FAI_LOG_PATH`, défaut
 horodatée UTC :
 
     2026-07-14T11:02:47Z | BLOCK   | ok=False | d0:21:f9:f6:07:c2 | 36086261-Toutou |
-    mode=full | source=payment | Blocage enregistré mais NON appliqué (timed out)
+    mode=full | source=payment | user=ali.brahim@a2ict.com |
+    Blocage enregistré mais NON appliqué (timed out)
+
+⚠️ Le champ ``user=`` (l'agent à l'origine de l'action) a été ajouté sur un
+journal DÉJÀ écrit : la relecture accepte donc les deux formats (cf. ``_parse``).
+Ne jamais transformer ça en split à arité fixe — ce serait rejeter d'un coup tout
+l'historique antérieur.
 
 L'écriture ne doit JAMAIS faire échouer l'action métier : un disque plein ou un
 volume mal monté ne peut pas empêcher de couper un client. Toute erreur d'écriture
@@ -114,16 +120,19 @@ def _line(
     name: str,
     mode: str | None,
     source: str,
+    user: str | None,
     message: str,
 ) -> str:
     flat = " ".join((message or "").split())  # jamais de retour à la ligne dans une entrée
     # `source` est dérivé du motif envoyé par l'appelant : un « | » y décalerait
     # toutes les colonnes à la relecture (le message, lui, est le dernier champ et
-    # peut en contenir sans risque).
+    # peut en contenir sans risque). Même précaution sur `user`, qui vient
+    # littéralement du corps de la requête d'un système tiers.
     src = " ".join((source or "-").split()).replace("|", "/")
+    usr = " ".join((user or "-").split()).replace("|", "/") or "-"
     return (
         f"{ts} | {action:<9} | ok={str(ok):<5} | {mac or '-':<17} | {name} "
-        f"| mode={mode or '-'} | source={src} | {flat}\n"
+        f"| mode={mode or '-'} | source={src} | user={usr} | {flat}\n"
     )
 
 
@@ -135,6 +144,7 @@ def log_action(
     name: str,
     mode: str | None = None,
     source: str = "payment",
+    user: str | None = None,
     message: str = "",
     evidence: str | None = None,
 ) -> None:
@@ -143,6 +153,13 @@ def log_action(
     ``action`` : BLOCK | UNBLOCK | RETRY_OK | ABANDON | IDENT_KO (l'équipement
     joint n'était pas celui de la fiche → rien n'a été tenté). ``source`` : qui a demandé
     (``payment`` = API du système de paiement, ``enforce`` = job de renforcement).
+
+    ``user`` : l'**agent** à l'origine de l'action, transmis par l'appelant —
+    e-mail d'un opérateur pour un geste manuel, ou libellé automatique
+    (``auto system``, ``auto retry``) pour une campagne. Distinct de ``source``,
+    qui dit quel SYSTÈME a appelé : deux agents différents passent par le même
+    système de paiement. ``None`` sur tout ce qui n'a pas d'agent (jobs internes,
+    scripts, appelants qui ne le transmettent pas) → rendu ``user=-``.
 
     ``evidence`` : transcription de la session SSH (ce qui a été envoyé à
     l'équipement et ce qu'il a répondu). Archivée dans un fichier à part, indexé
@@ -163,10 +180,19 @@ def log_action(
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(_line(
                 action, ts=ts, ok=ok, mac=mac, name=name, mode=mode,
-                source=source, message=message,
+                source=source, user=user, message=message,
             ))
     except Exception as exc:  # noqa: BLE001 — l'audit ne doit pas casser l'action
         logger.warning("fai_audit: écriture du journal impossible (%s) : %s", path, exc)
+
+
+# Le champ `user=` a été ajouté APRÈS coup, sur un journal déjà écrit. Il est
+# donc reconnu à sa forme plutôt que compté par sa position : une ligne
+# antérieure n'en a pas, et doit continuer de se lire — c'est tout l'historique
+# d'audit qui en dépend. `[^|]*` parce que `_line` remplace les `|` de l'agent :
+# le vrai champ n'en contient jamais, un début de message qui dirait « user=… »
+# avec un pipe derrière ne peut donc pas se faire passer pour lui.
+_USER_FIELD_RE = re.compile(r"^user=[^|]*$")
 
 
 def _parse(line: str) -> dict | None:
@@ -175,11 +201,27 @@ def _parse(line: str) -> dict | None:
     Le séparateur est ` | ` et le **message est le dernier champ** : il peut donc
     contenir n'importe quoi (y compris un `|`), d'où le maxsplit — sans lui, un
     message contenant un pipe décalerait toutes les colonnes.
+
+    Deux formats coexistent, distingués par la **forme** du 8e champ (cf.
+    :data:`_USER_FIELD_RE`) et non par le nombre de champs, qui ne les sépare pas
+    (un vieux message contenant un ` | ` produit lui aussi 9 morceaux) :
+
+        … | source=payment | message                    (avant le champ agent)
+        … | source=payment | user=a@b.com | message     (depuis)
     """
-    parts = line.rstrip("\n").split(" | ", 7)
+    parts = line.rstrip("\n").split(" | ", 8)
     if len(parts) < 8:
         return None
-    ts, action, ok, mac, name, mode, source, message = parts
+    ts, action, ok, mac, name, mode, source = parts[:7]
+    tail = parts[7:]
+    if len(tail) > 1 and _USER_FIELD_RE.match(tail[0]):
+        user = tail[0].removeprefix("user=").strip()
+        message = tail[1]
+    else:
+        user = ""
+        # Ligne d'avant le champ agent : le message était le dernier champ et
+        # peut porter des ` | ` — le maxsplit plus large vient de les couper.
+        message = " | ".join(tail)
     return {
         "timestamp": ts.strip(),
         "action": action.strip(),
@@ -188,6 +230,9 @@ def _parse(line: str) -> dict | None:
         "name": name.strip(),
         "mode": mode.strip().removeprefix("mode="),
         "source": source.strip().removeprefix("source="),
+        # `-` = pas d'agent transmis, comme `null` — l'UI n'a pas à distinguer
+        # « champ absent » (ligne ancienne) de « appelant sans agent ».
+        "user": None if user in ("", "-") else user,
         "message": message.strip(),
         # Renseigné plus tard, sur les seules entrées RENDUES (cf. read_entries) :
         # un stat() par ligne lue coûterait un accès disque par ligne du journal.
@@ -244,8 +289,9 @@ def read_entries(
 ) -> tuple[list[dict], dict]:
     """Retourne (entrées les plus récentes d'abord, compteurs).
 
-    ``status`` : ``ok`` | ``failed`` | ``abandoned``. ``search`` filtre sur la MAC
-    ou le nom du client.
+    ``status`` : ``ok`` | ``failed`` | ``abandoned``. ``search`` filtre sur la MAC,
+    le nom du client ou l'**agent** (``user``) — « toutes les coupures ordonnées
+    par untel » est précisément la question qu'on pose à une piste d'audit.
 
     ⚠️ Le fichier est lu **EN ENTIER**, jamais sur une fenêtre. Un journal d'audit
     ne répond à sa question (« pourquoi ce client était coupé le 14 ? ») que s'il
@@ -303,7 +349,8 @@ def read_entries(
                 if status == "abandoned" and entry["action"] != "ABANDON":
                     continue
                 if needle and needle not in (entry["mac"] or "").lower() \
-                        and needle not in entry["name"].lower():
+                        and needle not in entry["name"].lower() \
+                        and needle not in (entry["user"] or "").lower():
                     continue
                 kept.append(entry)
     except FileNotFoundError:

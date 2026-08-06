@@ -28,11 +28,6 @@ from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# Plafond de lignes remontées en mémoire pour l'affichage. Le journal est un
-# fichier qui grossit sans fin ; la page ne montre que l'historique récent, donc
-# on ne lit que la queue du fichier (deque à taille bornée = O(1) mémoire).
-_MAX_SCAN_LINES = 5000
-
 # ── Preuves d'exécution ──────────────────────────────────────────────────────
 # Une entrée du journal est UNE ligne (le message y est aplati). La preuve, elle,
 # est la transcription multi-lignes d'une session SSH : elle ne peut donc pas
@@ -195,9 +190,22 @@ def _parse(line: str) -> dict | None:
         "source": source.strip().removeprefix("source="),
         "message": message.strip(),
         # Renseigné plus tard, sur les seules entrées RENDUES (cf. read_entries) :
-        # un stat() par ligne lue coûterait 5000 accès disque par affichage.
+        # un stat() par ligne lue coûterait un accès disque par ligne du journal.
         "has_evidence": False,
     }
+
+
+def _still_failed(
+    entry: dict,
+    resolved_block_macs: set[str],
+    resolved_unblock_macs: set[str],
+) -> bool:
+    """L'entrée est-elle un échec ENCORE en souffrance ?"""
+    return (
+        not entry["ok"]
+        and entry["action"] != "ABANDON"
+        and not _is_stale_failure(entry, resolved_block_macs, resolved_unblock_macs)
+    )
 
 
 def _is_stale_failure(
@@ -237,10 +245,20 @@ def read_entries(
     """Retourne (entrées les plus récentes d'abord, compteurs).
 
     ``status`` : ``ok`` | ``failed`` | ``abandoned``. ``search`` filtre sur la MAC
-    ou le nom du client. Les compteurs portent sur la **fenêtre lue** (les
-    ``_MAX_SCAN_LINES`` dernières lignes), pas sur le fichier entier — c'est ce que
-    la page affiche, et compter tout le fichier obligerait à le relire en entier à
-    chaque rafraîchissement.
+    ou le nom du client.
+
+    ⚠️ Le fichier est lu **EN ENTIER**, jamais sur une fenêtre. Un journal d'audit
+    ne répond à sa question (« pourquoi ce client était coupé le 14 ? ») que s'il
+    remonte aussi loin qu'il a été écrit : borner la lecture à la queue du fichier
+    rendait invisibles les actions anciennes, faisait mentir les compteurs, et —
+    le pire — faisait répondre « aucun événement » à une recherche sur une MAC
+    dont les lignes étaient simplement hors fenêtre. Un négatif faux dans un
+    audit vaut moins que pas d'audit du tout.
+
+    La mémoire reste **bornée** malgré le scan complet : on n'accumule que les
+    ``limit`` dernières entrées retenues (deque à taille fixe), les compteurs
+    s'incrémentant au fil de la lecture. Le coût est donc en E/S/CPU, ∝ à la
+    taille du fichier, pas en mémoire.
 
     ``resolved_block_macs`` / ``resolved_unblock_macs`` (MAC en minuscule) : ordres
     aujourd'hui satisfaits en base. Les lignes d'échec correspondantes sont
@@ -249,51 +267,55 @@ def read_entries(
     resolved_block_macs = resolved_block_macs or set()
     resolved_unblock_macs = resolved_unblock_macs or set()
     path = get_settings().fai_log_path
+    want_action = action.upper() if action else None
+    needle = search.strip().lower() if search else None
+
+    stats = {"total": 0, "ok": 0, "failed": 0, "abandoned": 0}
+    # Les `limit` DERNIÈRES entrées retenues en ordre de fichier = les plus
+    # récentes. Le deque les garde sans jamais matérialiser tout le journal.
+    kept: collections.deque[dict] = collections.deque(maxlen=max(limit, 0))
+
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
-            tail = collections.deque(fh, maxlen=_MAX_SCAN_LINES)
+            for line in fh:
+                entry = _parse(line)
+                if entry is None:
+                    continue
+
+                # Compteurs : sur TOUT le fichier, avant filtrage — ils décrivent
+                # le journal, pas la vue courante.
+                stats["total"] += 1
+                if entry["ok"]:
+                    stats["ok"] += 1
+                failed = _still_failed(entry, resolved_block_macs, resolved_unblock_macs)
+                if failed:
+                    stats["failed"] += 1
+                if entry["action"] == "ABANDON":
+                    stats["abandoned"] += 1
+
+                if want_action and entry["action"] != want_action:
+                    continue
+                if status == "ok" and not entry["ok"]:
+                    continue
+                # « Non appliqué » = échecs ENCORE en souffrance (rattrapés exclus).
+                if status == "failed" and not failed:
+                    continue
+                if status == "abandoned" and entry["action"] != "ABANDON":
+                    continue
+                if needle and needle not in (entry["mac"] or "").lower() \
+                        and needle not in entry["name"].lower():
+                    continue
+                kept.append(entry)
     except FileNotFoundError:
         return [], {"total": 0, "ok": 0, "failed": 0, "abandoned": 0}
     except Exception as exc:  # noqa: BLE001
         logger.warning("fai_audit: lecture du journal impossible (%s) : %s", path, exc)
         return [], {"total": 0, "ok": 0, "failed": 0, "abandoned": 0}
 
-    entries = [e for e in (_parse(line) for line in tail) if e]
-    entries.reverse()  # plus récent en tête
-
-    def still_failed(e: dict) -> bool:
-        return (
-            not e["ok"]
-            and e["action"] != "ABANDON"
-            and not _is_stale_failure(e, resolved_block_macs, resolved_unblock_macs)
-        )
-
-    stats = {
-        "total": len(entries),
-        "ok": sum(1 for e in entries if e["ok"]),
-        "failed": sum(1 for e in entries if still_failed(e)),
-        "abandoned": sum(1 for e in entries if e["action"] == "ABANDON"),
-    }
-
-    if action:
-        entries = [e for e in entries if e["action"] == action.upper()]
-    if status == "ok":
-        entries = [e for e in entries if e["ok"]]
-    elif status == "failed":
-        # « Non appliqué » = échecs ENCORE en souffrance (rattrapés exclus).
-        entries = [e for e in entries if still_failed(e)]
-    elif status == "abandoned":
-        entries = [e for e in entries if e["action"] == "ABANDON"]
-    if search:
-        needle = search.strip().lower()
-        entries = [
-            e for e in entries
-            if needle in (e["mac"] or "").lower() or needle in e["name"].lower()
-        ]
-
-    shown = entries[:limit]
-    # Marquer les entrées qui ont une preuve archivée — après filtre ET limite,
-    # donc au plus `limit` stat() (200 par défaut) au lieu d'un par ligne lue.
+    shown = list(kept)
+    shown.reverse()  # plus récent en tête
+    # Marquer les entrées qui ont une preuve archivée — sur les seules entrées
+    # RENDUES, donc au plus `limit` stat() (200 par défaut), pas un par ligne lue.
     for e in shown:
         e["has_evidence"] = has_evidence(e["timestamp"], e["mac"], e["action"])
     return shown, stats

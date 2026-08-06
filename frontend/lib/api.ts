@@ -93,8 +93,12 @@ export const endpoints = {
   siteOutageSummary:    (startIso: string, endIso: string) =>
     `${API_BASE}/network-uptime/site-summary?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`,
   // Journal des blocages/déblocages (fichier d'audit) + LR encore en souffrance.
+  // ⚠️ `limit` haut À DESSEIN : le journal est une piste d'audit, on veut TOUT
+  // l'historique, pas une fenêtre récente. Un plafond bas faisait répondre
+  // « aucun événement » sur une MAC dont les lignes étaient simplement plus
+  // anciennes — un négatif faux, le pire défaut possible pour un audit.
   faiJournal:           (status: string, search: string) =>
-    `${API_BASE}/fai-journal?limit=300&status=${encodeURIComponent(status)}&search=${encodeURIComponent(search)}`,
+    `${API_BASE}/fai-journal?limit=50000&status=${encodeURIComponent(status)}&search=${encodeURIComponent(search)}`,
   // Preuve d'exécution d'une entrée du journal : la transcription de la session
   // SSH. L'entrée est désignée par (horodatage, action, MAC) — les trois champs
   // qui l'identifient dans le fichier d'audit.

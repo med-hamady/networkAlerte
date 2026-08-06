@@ -86,7 +86,12 @@ class JournalResponse(BaseModel):
 
 @router.get("", response_model=JournalResponse)
 async def get_journal(
-    limit: int = Query(200, ge=1, le=1000),
+    # Le journal est lu EN ENTIER côté service (compteurs et recherche portent sur
+    # tout l'historique) ; `limit` ne borne donc que la TAILLE DE LA RÉPONSE, pas
+    # ce qui est examiné. Le plafond reste haut pour que la page puisse rendre le
+    # journal complet, et existe seulement pour qu'une réponse ne devienne jamais
+    # illimitée quand le fichier aura grossi de plusieurs années.
+    limit: int = Query(200, ge=1, le=50_000),
     action: str | None = Query(None, description="BLOCK | UNBLOCK | RETRY_OK | ABANDON | IDENT_KO"),
     status: str | None = Query(None, description="ok | failed | abandoned"),
     search: str | None = Query(None, description="Filtre sur la MAC ou le nom du client"),

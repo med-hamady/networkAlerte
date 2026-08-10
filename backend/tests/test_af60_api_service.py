@@ -64,6 +64,10 @@ def test_le_sens_du_debit_suit_celui_de_la_capacite(raw):
 
     assert m["dl_capacity_mbps"] == 600.0
     assert m["ul_capacity_mbps"] == 975.0
+    # Capacité totale = MOYENNE des deux sens (lien TDD), pas leur somme : le
+    # dashboard airFiber de l'équipement l'affiche ainsi (vérifié 2026-08-05).
+    # (600 + 975) / 2 = 787.5 — surtout PAS 1575.
+    assert m["total_capacity_mbps"] == 787.5
     # Le sens majoritaire du trafic (reçu) est aussi celui étiqueté "dl".
     assert m["dl_throughput_mbps"] > m["ul_throughput_mbps"]
     # Et un débit ne peut pas dépasser la capacité de son propre sens.

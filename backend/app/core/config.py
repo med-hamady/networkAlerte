@@ -691,11 +691,14 @@ class Settings(BaseSettings):
     af60_snr_critical_db: float = 6.0     # below → critical
     af60_snr_tolerance_db: float = 0.0
     # Lien dégradé (consolidé) : potentiel sous ce plancher OU capacité totale
-    # (dl+ul) sous ce plancher → critique. Plancher capacité aligné sur le seuil
-    # d'affichage /lr-health (1.95 Gb/s = capacité nominale d'un backhaul AF60-LR
-    # sain) : un lien P2P qui descend sous 1.95 Gb/s est considéré dégradé.
+    # sous ce plancher → critique. ⚠️ Depuis le 2026-08-05 `total_capacity_mbps`
+    # est la MOYENNE des deux sens (lien TDD), plus leur somme — le firmware
+    # affiche lui-même la moyenne (« TOTAL CAPACITY » du dashboard airFiber). Le
+    # plancher a donc été HALVÉ 1950 → 975 pour garder EXACTEMENT le même verdict
+    # qu'avant : `(dl+ul) < 1950` ⟺ `moyenne < 975`. Aligné sur le seuil
+    # d'affichage /lr-health `af60_capacity_display_min_mbps`.
     af60_link_potential_min_pct: float = 30.0
-    af60_total_capacity_min_mbps: float = 1950.0
+    af60_total_capacity_min_mbps: float = 975.0
 
     # Liens P2P LiteBeam (device_type ptp_litebeam) : plancher
     # de capacité totale (Mbps) sous lequel le lien inter-site est jugé dégradé
@@ -707,8 +710,10 @@ class Settings(BaseSettings):
     # Seuil d'AFFICHAGE de la section « Liaisons entre sites » de /lr-health :
     # un AF60 dont la dernière capacité totale est < ce plancher y est surfacé
     # (critère unique, sur la dernière valeur en base — pas de fetch live).
-    # 1.95 Gb/s = capacité nominale d'un backhaul AF60-LR sain.
-    af60_capacity_display_min_mbps: float = 1950.0
+    # ⚠️ `total_capacity_mbps` = MOYENNE des deux sens (lien TDD, cf.
+    # af60_api_service) → plancher HALVÉ 1950 → 975 en même temps que le calcul,
+    # pour que les liaisons saines (moyenne ~1.5-1.9 Gb/s) ne virent pas au rouge.
+    af60_capacity_display_min_mbps: float = 975.0
 
     # Anomaly thresholds — RX/TX error rate (errors / total bytes, %)
     rx_tx_error_warning_pct: float = 1.0    # above → warning

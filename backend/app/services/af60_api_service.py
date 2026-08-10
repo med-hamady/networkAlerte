@@ -160,11 +160,18 @@ def parse_af60_metrics(raw: dict) -> dict[str, float | None]:
         result["snr_db"] = _float(lq.get("snr"))          # 60 GHz : SNR, pas CINR
         result["dl_capacity_mbps"] = _kbps_to_mbps(_nested(lq, "capacity", "dl"))
         result["ul_capacity_mbps"] = _kbps_to_mbps(_nested(lq, "capacity", "ul"))
-        # Capacité totale = dl + ul (pas de capacity.combined sur l'AF60).
+        # Capacité totale = MOYENNE des deux sens, PAS leur somme. L'AF60-LR est
+        # un lien TDD (une porteuse 60 GHz, dl et ul se partagent le temps
+        # d'antenne) → additionner surcompte un agrégat qui n'existe pas. VÉRIFIÉ
+        # sur l'équipement le 2026-08-05 : sur 10.135.140.2 (dl=1501/ul=1801) son
+        # propre dashboard airFiber affiche « TOTAL CAPACITY 1.65 Gbps » = pile
+        # (1501+1801)/2 = 1651. On reproduit ce que le firmware montre.
+        # (LTU/airMAX ont un champ `combined`/`cb_capacity` fourni par le
+        # firmware ; l'AF60 n'en a pas, d'où ce calcul.)
         dl = _float(_nested(lq, "capacity", "dl"))
         ul = _float(_nested(lq, "capacity", "ul"))
         if dl is not None and ul is not None:
-            result["total_capacity_mbps"] = round((dl + ul) / 1000.0, 2)
+            result["total_capacity_mbps"] = round((dl + ul) / 2 / 1000.0, 2)
         # Potentiel du lien = moyenne des linkScore DL/UL (comme LTU/airMAX).
         sd = _float(_nested(lq, "linkScore", "dl"))
         su = _float(_nested(lq, "linkScore", "ul"))

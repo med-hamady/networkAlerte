@@ -1084,6 +1084,11 @@ export interface RouterRuleRow {
   blocked_reason: string | null
   router_blocked: boolean | null
   enforced_on_lr: boolean | null
+  // Le LR coupe déjà ce client → la règle du routeur double la coupure et aurait
+  // dû être retirée. Calculé côté backend par client_block_service : un LR
+  // abandonné garde un enforced_on_lr tout en restant couvert par le routeur
+  // exprès, donc ce drapeau n'est PAS déductible de enforced_on_lr.
+  redundant: boolean
 }
 export interface RouterMissingRule {
   lr_id: number
@@ -1109,6 +1114,7 @@ export interface RouterRulesResponse {
     legacy: number
     unexpected: number
     unknown: number
+    redundant: number
     disabled: number
     missing: number
   }

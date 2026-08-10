@@ -57,6 +57,10 @@ class RouterRuleRow(BaseModel):
     blocked_reason: str | None
     router_blocked: bool | None
     enforced_on_lr: bool | None
+    # Le LR coupe déjà ce client : la règle du routeur double la coupure et
+    # aurait dû être retirée. Verdict de `client_block_service`, pas déduit de
+    # `enforced_on_lr` (un LR abandonné reste couvert par le routeur exprès).
+    redundant: bool
 
 
 class MissingRuleRow(BaseModel):
@@ -77,6 +81,7 @@ class RouterRulesStats(BaseModel):
     legacy: int
     unexpected: int
     unknown: int
+    redundant: int
     disabled: int
     missing: int
 

@@ -19,12 +19,16 @@ import { endpoints, fetcher } from '@/lib/api'
 import type { RouterRuleRow, RouterRulesResponse } from '@/lib/types'
 import IpLink from '@/components/IpLink'
 
-type StateFilter = '' | 'unexpected' | 'unknown' | 'expected'
+// Quatre premiers = l'état vis-à-vis de la base ; `redundant` est transverse (une
+// règle redondante est forcément une « coupure voulue ») d'où un filtre à part et
+// non une cinquième valeur d'état.
+type RuleFilter = '' | 'unexpected' | 'unknown' | 'expected' | 'redundant'
 
-const FILTERS: { value: StateFilter; label: string }[] = [
+const FILTERS: { value: RuleFilter; label: string }[] = [
   { value: '',           label: 'Tout'                 },
   { value: 'unexpected', label: 'À libérer ⚠'          },
   { value: 'unknown',    label: 'MAC inconnue'         },
+  { value: 'redundant',  label: 'Règles redondantes'   },
   { value: 'expected',   label: 'Coupures voulues'     },
 ]
 
@@ -66,7 +70,7 @@ function formatBytes(bytes: number | null): string {
 }
 
 export default function RouterRulesPage() {
-  const [state, setState] = React.useState<StateFilter>('')
+  const [state, setState] = React.useState<RuleFilter>('')
   const [search, setSearch] = React.useState('')
 
   const { data, error, isLoading, isValidating, mutate } = useSWR<RouterRulesResponse>(
@@ -82,7 +86,7 @@ export default function RouterRulesPage() {
 
   const needle = search.trim().toLowerCase()
   const shown = rules.filter((r) => {
-    if (state && r.state !== state) return false
+    if (state === 'redundant' ? !r.redundant : Boolean(state) && r.state !== state) return false
     if (!needle) return true
     return (
       r.mac.toLowerCase().includes(needle)
@@ -149,10 +153,11 @@ export default function RouterRulesPage() {
       )}
 
       {stats && (
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
           <StatCard label="Règles de coupure" value={stats.total} tone="neutral" />
           <StatCard label="Coupés à tort" value={stats.unexpected} tone="red" />
           <StatCard label="MAC inconnues" value={stats.unknown} tone="amber" />
+          <StatCard label="Redondantes" value={stats.redundant} tone="blue" />
           <StatCard label="Coupures manquantes" value={stats.missing} tone="red" />
           <StatCard label="Posées par nous" value={stats.supervisor} tone="blue" />
         </div>
@@ -278,7 +283,7 @@ export default function RouterRulesPage() {
                         {r.blocked_reason}
                       </p>
                     )}
-                    {r.state === 'expected' && r.enforced_on_lr && (
+                    {r.redundant && (
                       <p className="text-[11px] text-blue-400 mt-0.5">
                         déjà coupé sur son LR — règle redondante
                       </p>

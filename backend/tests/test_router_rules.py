@@ -12,6 +12,8 @@ Ce que ces tests protègent, dans l'ordre d'importance :
      `print` sur le routeur.
 """
 
+import datetime
+
 from app.services import mikrotik_service, router_rules_service
 
 
@@ -106,9 +108,14 @@ def test_un_commentaire_legacy_nest_pas_le_notre():
 # ── Les désaccords base ↔ routeur ───────────────────────────────────────────
 
 
+_NOW = datetime.datetime.now(datetime.UTC)
+
+
 class _FakeLr:
     def __init__(self, **kwargs):
         self.client_blocked = True
+        self.client_block_enforced_at = None
+        self.block_unenforceable_reason = None
         self.__dict__.update(kwargs)
 
 
@@ -121,6 +128,47 @@ def test_client_a_ne_plus_couper_est_signale():
     routeur le coupe encore. Personne d'autre ne le voit — le renforcement ne
     parle au routeur que sur transition."""
     assert router_rules_service.classify(_rule(), _FakeLr(client_blocked=False)) == "unexpected"
+
+
+def test_regle_redondante_quand_le_lr_coupe_deja():
+    """Le routeur ne doit garder que les irréductibles : une coupure confirmée
+    sur l'équipement du client rend sa règle superflue."""
+    lr = _FakeLr(client_blocked=True, client_block_enforced_at=_NOW,
+                 block_unenforceable_reason=None)
+    assert router_rules_service.is_redundant(lr) is True
+
+
+def test_lr_abandonne_nest_pas_redondant():
+    """LE test qui compte. Un LR abandonné (mot de passe rejeté, clé d'hôte)
+    porte un `client_block_enforced_at` d'une coupure passée, mais le job ne le
+    retentera plus : la règle du routeur est la SEULE chose qui coupe encore ce
+    client. La déclarer redondante enverrait un opérateur la retirer, et un
+    simple reboot du LR remettrait l'impayé en ligne pour toujours.
+
+    C'est pourquoi le verdict est délégué à `desired_router_block` et jamais
+    déduit du seul `enforced_at`."""
+    lr = _FakeLr(client_blocked=True, client_block_enforced_at=_NOW,
+                 block_unenforceable_reason="Authentication failed.")
+    assert router_rules_service.is_redundant(lr) is False
+
+
+def test_coupure_jamais_appliquee_nest_pas_redondante():
+    """Le cas de masse : le routeur est le seul à couper."""
+    lr = _FakeLr(client_blocked=True, client_block_enforced_at=None,
+                 block_unenforceable_reason=None)
+    assert router_rules_service.is_redundant(lr) is False
+
+
+def test_client_a_liberer_nest_pas_classe_redondant():
+    """Il est « coupé à tort », ce qui est plus grave — ne pas diluer les deux."""
+    lr = _FakeLr(client_blocked=False, client_block_enforced_at=None,
+                 block_unenforceable_reason=None)
+    assert router_rules_service.is_redundant(lr) is False
+
+
+def test_mac_hors_inventaire_nest_jamais_redondante():
+    """On ne sait rien de ce client : on n'affirme pas que sa règle est superflue."""
+    assert router_rules_service.is_redundant(None) is False
 
 
 def test_mac_hors_inventaire_nest_pas_une_anomalie_de_coupure():

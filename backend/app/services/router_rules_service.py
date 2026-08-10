@@ -42,7 +42,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.device import Lr
-from app.services import mikrotik_service
+from app.services import client_block_service, mikrotik_service
 
 
 def classify(rule: dict, lr: Lr | None) -> str:
@@ -58,6 +58,28 @@ def classify(rule: dict, lr: Lr | None) -> str:
     if lr is None:
         return "unknown"
     return "expected" if lr.client_blocked else "unexpected"
+
+
+def is_redundant(lr: Lr | None) -> bool:
+    """Le routeur coupe un client que son PROPRE équipement coupe déjà.
+
+    La règle ne fait de mal à personne (le client doit être coupé, et il l'est
+    deux fois) mais elle ne devrait plus être là : le routeur est censé ne garder
+    que les irréductibles. Sa présence signale que le retrait n'a pas eu lieu —
+    routeur injoignable au moment où la coupure LR a abouti, ou règle que notre
+    base n'a jamais su avoir été posée (``router_blocked`` faux ⇒ aucune
+    transition ⇒ jamais retirée).
+
+    ⚠️ Le verdict est délégué à ``desired_router_block``, jamais réécrit ici. Un
+    LR **abandonné** (mot de passe rejeté, clé d'hôte) porte lui aussi un
+    ``client_block_enforced_at``, et il reste pourtant couvert par le routeur
+    **exprès** — sans ça un reboot le remettrait en ligne pour toujours. Déduire
+    la redondance du seul ``enforced_at`` désignerait donc comme superflue la
+    seule règle qui coupe encore ce client.
+    """
+    if lr is None or not lr.client_blocked:
+        return False
+    return not client_block_service.desired_router_block(lr)
 
 
 async def get_router_client_blocks(session: AsyncSession) -> dict:
@@ -109,9 +131,11 @@ async def get_router_client_blocks(session: AsyncSession) -> dict:
             # une règle `expected` n'est pas une anomalie : la coupure a pu être
             # posée par le système historique, ou notre base restaurée depuis.
             "router_blocked": lr.router_blocked if lr else None,
-            # Coupé sur son propre équipement en plus du routeur : la règle du
-            # routeur est alors redondante et sera retirée au prochain cycle.
             "enforced_on_lr": bool(lr.client_block_enforced_at) if lr else None,
+            # Le routeur double une coupure que le LR applique déjà. Verdict rendu
+            # par `desired_router_block`, PAS par `enforced_on_lr` seul (un LR
+            # abandonné garde un enforced_at tout en restant couvert exprès).
+            "redundant": is_redundant(lr),
         })
 
     # L'écart INVERSE : notre base affirme une coupure routeur que le routeur ne
@@ -150,6 +174,7 @@ async def get_router_client_blocks(session: AsyncSession) -> dict:
             "legacy": sum(1 for r in rows if r["origin"] == "legacy"),
             "unexpected": sum(1 for r in rows if r["state"] == "unexpected"),
             "unknown": sum(1 for r in rows if r["state"] == "unknown"),
+            "redundant": sum(1 for r in rows if r["redundant"]),
             "disabled": sum(1 for r in rows if r["disabled"]),
             "missing": len(missing),
         },

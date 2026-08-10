@@ -16,9 +16,17 @@
 import { useState } from 'react'
 import type { NetworkTopology } from '@/lib/types'
 import TopologyGraph from '@/components/TopologyGraph'
+import TopologyMap from '@/components/TopologyMap'
+
+type ViewMode = 'graph' | 'map'
 
 export default function TopologyView({ topo }: { topo: NetworkTopology }) {
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
+  // Le GRAPHE reste la vue par défaut, délibérément : il est complet (tous les
+  // sites y figurent, même ceux sans position connue) et ne dépend d'aucun
+  // service externe. La carte est un complément — elle apporte la distance et
+  // la direction, que le graphe en couches ne peut pas montrer.
+  const [mode, setMode] = useState<ViewMode>('graph')
 
   return (
     <>
@@ -42,19 +50,48 @@ export default function TopologyView({ topo }: { topo: NetworkTopology }) {
       <div className="flex h-[calc(100vh-3rem)] flex-col gap-3">
         <div className="flex shrink-0 items-start justify-between gap-4">
           <h1 className="text-xl font-bold text-slate-900">Topologie du réseau</h1>
-          {selectedSite && (
-            <button onClick={() => setSelectedSite(null)}
-                    className="text-xs text-blue-700 hover:underline shrink-0">
-              Tout afficher
-            </button>
-          )}
+          <div className="flex shrink-0 items-center gap-3">
+            {selectedSite && (
+              <button onClick={() => setSelectedSite(null)}
+                      className="text-xs text-blue-700 hover:underline">
+                Tout afficher
+              </button>
+            )}
+            {/* Bascule Graphe / Carte. La sélection de site est PARTAGÉE par les
+                deux vues : filtrer sur un site puis basculer garde le filtre —
+                le perdre obligerait à refaire le geste à chaque aller-retour. */}
+            <div className="flex rounded-lg border border-slate-200 bg-white p-0.5">
+              {(['graph', 'map'] as ViewMode[]).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setMode(m)}
+                  className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                    mode === m
+                      ? 'bg-blue-600 text-white'
+                      : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  {m === 'graph' ? 'Graphe' : 'Carte'}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
 
         <section className="flex min-h-0 flex-1 flex-col rounded-xl border
                             border-slate-200 bg-white p-3 shadow-sm">
-          <div className="min-h-0 flex-1">
-            <TopologyGraph topo={topo} onSelectSite={setSelectedSite}
+          {/* Les deux vues sont MONTÉES/DÉMONTÉES, pas cachées en CSS : garder
+              la carte montée derrière le graphe laisserait tourner une instance
+              Google Maps invisible, et une carte dimensionnée à zéro se cadre
+              de travers au retour. */}
+          <div className="flex min-h-0 flex-1 flex-col">
+            {mode === 'graph' ? (
+              <TopologyGraph topo={topo} onSelectSite={setSelectedSite}
+                             selectedSite={selectedSite} />
+            ) : (
+              <TopologyMap topo={topo} onSelectSite={setSelectedSite}
                            selectedSite={selectedSite} />
+            )}
           </div>
 
           {/* Deux fraîcheurs, et il faut le dire : le câblage date du dernier

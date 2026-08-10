@@ -88,6 +88,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.models.device import Device
 from app.models.site_link import SiteLink
+from app.models.site_location import SiteLocation
 from app.services import uisp_service
 from app.services.uisp_sync_service import classify_device
 
@@ -783,6 +784,18 @@ async def get_site_topology(session: AsyncSession, root: str | None = None) -> d
         entry["port_a"] = _slowest_port([link_["device_a"] for link_ in entry["links"]])
         entry["port_b"] = _slowest_port([link_["device_b"] for link_ in entry["links"]])
 
+    # Position géographique du pylône, pour la vue CARTE de /topology. Jointure
+    # sur la chaîne EXACTE (`site_locations.site` = `devices.site`) — les noms
+    # portent des bizarreries voulues, dont le double espace de « A2  ARF1 » :
+    # les normaliser ici ferait silencieusement disparaître ce site de la carte.
+    # Un site sans ligne reste dans `sites[]` avec latitude/longitude à null :
+    # l'UI le nomme comme non plaçable au lieu de l'escamoter — une carte qui
+    # omet un site sans le dire se lit comme un réseau qui n'a pas ce site.
+    coords = {
+        row.site: row
+        for row in (await session.execute(select(SiteLocation))).scalars().all()
+    }
+
     sites = [
         {
             "site": name,
@@ -795,6 +808,11 @@ async def get_site_topology(session: AsyncSession, root: str | None = None) -> d
             "device_down_count": health.get(name, {}).get("down", 0),
             # Site ENTIÈREMENT tombé — le seul cas qui rougit ses liaisons.
             "is_down": health.get(name, {}).get("is_down", False),
+            "latitude": coords[name].latitude if name in coords else None,
+            "longitude": coords[name].longitude if name in coords else None,
+            # 'uisp' (semée depuis le contrôleur) ou 'manual' (corrigée à la
+            # main) — une position retouchée sur le terrain reste reconnaissable.
+            "position_source": coords[name].source if name in coords else None,
         }
         for name in sorted(infra_sites)
     ]

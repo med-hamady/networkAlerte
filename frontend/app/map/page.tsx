@@ -4,39 +4,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type { ClientMapPoint, ClientMapResponse, MapCluster, MapSite } from '@/lib/types'
-
-// La clé Google Maps est PUBLIQUE par nature (le script tourne dans le
-// navigateur) — d'où NEXT_PUBLIC_. Elle doit donc être restreinte par référent
-// HTTP côté Google Cloud, sinon n'importe qui peut la consommer sur notre
-// facture. Ce n'est pas un secret : c'est un quota nominatif.
-const MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? ''
-
-// Nouakchott — centre par défaut tant qu'aucun point n'est chargé.
-const DEFAULT_CENTER = { lat: 18.0858, lng: -15.9785 }
-
-// Chargement du script partagé par tous les montages du composant. Sans ce
-// verrou au niveau module, le double-rendu de React (StrictMode) injecterait
-// deux <script> et Google hurlerait "You have included the Google Maps
-// JavaScript API multiple times".
-let mapsPromise: Promise<void> | null = null
-
-function loadGoogleMaps(): Promise<void> {
-  if (typeof window === 'undefined') return Promise.resolve()
-  if ((window as any).google?.maps) return Promise.resolve()
-  if (mapsPromise) return mapsPromise
-  mapsPromise = new Promise<void>((resolve, reject) => {
-    const s = document.createElement('script')
-    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(MAPS_KEY)}&v=weekly`
-    s.async = true
-    s.onload = () => resolve()
-    s.onerror = () => {
-      mapsPromise = null // laisse une nouvelle tentative possible
-      reject(new Error('script Google Maps injoignable'))
-    }
-    document.head.appendChild(s)
-  })
-  return mapsPromise
-}
+// Chargeur partagé (lib/googleMaps) : le verrou anti-double-injection doit être
+// au niveau module et commun aux DEUX pages qui affichent une carte, sinon
+// chacune injecte son <script> et Google refuse le second.
+import { DEFAULT_CENTER, MAPS_KEY, loadGoogleMaps } from '@/lib/googleMaps'
 
 const STATUS_COLOR: Record<string, string> = {
   up: '#22c55e',

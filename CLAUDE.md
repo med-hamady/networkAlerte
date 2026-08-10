@@ -742,6 +742,81 @@ logique vit dans le **service** (l'API et le script appliquent la même règle �
 service ne peut pas importer depuis `scripts/`). **Par défaut il ne contacte pas
 le contrôleur** ; `--sync` force le rapatriement, comme `POST /network-topology/sync`.
 
+##### Vue CARTE de la topologie (Google Maps) — 2026-08-10
+
+Bascule **Graphe / Carte** dans l'en-tête de `/topology` (`TopologyView`). Le
+**graphe reste la vue par défaut** : il est complet (tous les sites y figurent,
+même sans position connue) et ne dépend d'aucun service externe.
+
+Ce que la carte apporte et que le graphe ne peut pas : la **distance** et la
+**direction**. Un backhaul de 400 m et un de 12 km sont deux traits identiques
+sur un graphe en couches.
+
+⚠️ **Aucune donnée nouvelle n'est demandée au terrain** : la carte est peinte
+depuis la **même réponse** `/network-topology` que le graphe — coordonnées
+comprises, jointes côté service depuis **`site_locations`** (les 17 pylônes,
+semés depuis UISP en médiane par site, cf. `models/site_location.py`). Les deux
+vues ne peuvent donc pas se contredire, et basculer ne coûte pas une requête.
+
+⚠️ **Le barème de couleurs est PARTAGÉ, pas recopié** : `lib/topologyColors.ts`
+(`edgeColor`, `downSiteSet`, `siteColor`) est importé par `TopologyGraph` **et**
+par `TopologyMap`. Une liaison a la même couleur dans les deux vues ; deux
+écrans du même réseau qui se contrediraient sur l'état d'une dorsale seraient
+pires que pas de carte. Même raison pour `lib/googleMaps.ts` : le verrou
+anti-double-injection du script doit être au niveau **module et commun aux deux
+pages** qui affichent une carte (`/map` et `/topology`), sinon chacune injecte
+son `<script>` et Google refuse le second (« included multiple times »).
+
+⚠️ **Un site sans position n'est PAS escamoté** : il est nommé sous la carte
+(« N sites sans position connue »), et ses liaisons ne sont pas tracées — une
+carte qui omet un site sans le dire se lit comme un réseau qui n'a pas ce site.
+Même principe que les `outliers` de la carte des clients. La jointure se fait
+sur la chaîne **exacte** (`site_locations.site` = `devices.site`) : ne jamais
+« nettoyer » les noms, le double espace de « A2  ARF1 » est voulu et le
+normaliser ferait disparaître ce site.
+
+Détails de rendu : liaisons **sous** les marqueurs, radio en **tirets** (via
+`icons` répétés — une polyline Google n'a pas de `dash`), filaire en trait
+plein, redondance en trait plus épais ; marqueur de site **vert / ambre / rouge**
+(`siteColor` : ambre = une partie en panne, rouge = site entièrement tombé — les
+confondre enverrait chercher une panne de site pour un seul secteur HS) ;
+`labelOrigin` décale le nom **sous** la pastille (sans lui, Google centre
+l'étiquette sur le point et le nom recouvre la couleur d'état) ; cadrage
+automatique **une seule fois** (le rejouer annulerait le zoom de l'opérateur).
+La sélection de site est **partagée** avec le graphe : basculer garde le filtre.
+
+#### Barre de recherche globale (bandeau de l'application) — 2026-08-10
+
+`AppShell` porte un **bandeau collant** (`sticky top-0`) présent sur toutes les
+pages du dashboard, avec la recherche d'équipement/client (`DeviceSearchBar`,
+raccourci **Ctrl/⌘+K**, navigation ↑ ↓ Entrée). Source : `/devices/search`
+(nom ou IP — le nom d'un LR porte le nom **et le téléphone** du client).
+
+Le composant est **le même** que celui de `/sites`, généralisé par props
+(`placeholder`, `className`, `shortcut`) plutôt que dupliqué ; le champ local de
+`/sites` a été retiré (doublon à 60 px du bandeau). Le raccourci est sous prop
+parce que **deux champs le réclamant se voleraient le focus** — il est réservé à
+l'instance globale.
+
+Choisir un résultat navigue vers **`/sites?device=<id>`**, le deep-link qui
+existait déjà (« Voir l'équipement → » de `/lr-health`) : la barre n'invente
+aucun chemin d'ouverture qui lui soit propre.
+
+⚠️ **Le paramètre `?device=` est CONSOMMÉ** (retiré de l'URL) une fois la fiche
+ouverte, sinon rechercher **deux fois** le même équipement ne rouvrirait pas sa
+fiche (URL inchangée ⇒ aucun changement de dépendance ⇒ aucun effet).
+
+⚠️ **Aucun garde « déjà traité » sur ce deep-link.** Il y en avait un
+(`lastHandledDevice`) : combiné au drapeau `cancelled`, il verrouillait la fiche
+sur un **chargement perpétuel** en **Strict Mode** (activé par défaut en dev sur
+l'App Router, donc invisible en build de prod) — la 1re passe posait le garde et
+lançait le fetch, son nettoyage l'annulait, la 2e ressortait sur le garde, et
+plus personne ne posait la fiche alors que la requête répondait 200.
+
+Le bandeau porte aussi le **bouton de retour du menu** quand celui-ci est replié
+(`/topology`) : il flottait auparavant en `absolute` par-dessus le contenu, avec
+un `pl-16` pour dégager la place — deux bricolages supprimés.
+
 #### Enrôlement UISP d'un CPE (pose de la clé par SSH) — 2026-07-28
 
 Un CPE ne remonte dans l'inventaire UISP que s'il porte la **clé du contrôleur**
@@ -1030,7 +1105,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | POST | `/api/v1/uisp/assign` | Oui | **Associe un équipement à un client CRM** — body `mac` + `crm_client_id`, plus `crm_service_id` **uniquement** si le client a plusieurs services. Équivalent du formulaire UISP (chercher la MAC en « unknown », choisir le client). Si l'équipement est absent du contrôleur, sa clé lui est posée d'abord et la réponse porte `pending_registration` (rejouer dans la minute — ce n'est pas une erreur). Rapport étape par étape. 400 MAC invalide · 404 client CRM introuvable **ou service n'appartenant pas à ce client** · **409 client à plusieurs services sans `crm_service_id`** (services renvoyés) · **409 équipement déjà rattaché à un AUTRE client** (id du détenteur renvoyé ; `reassign=true` pour passer outre) · 502 clé non posée (échec SSH — surtout pas un 404) · 403 token UISP sans droits d'écriture. Voir **Association client CRM** |
 | POST | `/api/v1/uisp/sync` | Oui | Import des équipements d'infra depuis le contrôleur UISP (`?dry_run=true` = prévisualisation sans écriture). Renvoie un résumé (créés/màj/ignorés + échantillon) |
 | GET | `/api/v1/network-capacity` | Oui | Capacité clients : par famille (LTU/airMAX) et par site, clients connectés (`peer_count`) vs max (seuil `rocket_client_overload`). Rockets sans largeur connue exclus des totaux (`unknown`). `network_capacity_service`. Inclut aussi la clé **`infra`** (`site_infra_service.get_site_infra_capacity`) : budget d'équipements infra par site (Rockets+AF60+PTP) vs `SITE_INFRA_MAX`, avec marge `remaining` signée |
-| GET | `/api/v1/network-topology` | Oui | **Graphe INTER-SITES** (le maillage des backhauls). **Servi depuis NOTRE base — zéro appel au contrôleur.** Le câblage vient de la table `site_links` (rapatrié 1×/jour par `site_topology_sync_job`) ; la **santé** de chaque liaison est relue **en direct** depuis `devices`/`device_metrics`. Renvoie `synced_at` (date du **câblage** — l'état, lui, est de maintenant), `sites[]` (`depth` = couche, `parent`, `degree`, `reachable`, **`device_count`/`device_down_count`** = le compteur « 14/1 », **`is_down`** = site ENTIÈREMENT tombé, le seul cas qui rougit ses liaisons), `edges[]` (une **liaison logique** par paire de sites, portant 1..n `links[]` physiques, `redundant`, `is_tree_edge`, `health`), `layout` (`components`, `orphan_sites`, `unreached_sites`, `extra_edges`) et `stats`. `?root=` sinon `TOPOLOGY_ROOT_SITE`. `available:false` tant que le câblage n'a jamais été synchronisé — carte **absente** plutôt que vide (une carte vide se lit comme un réseau sans liaisons). Voir **Topologie inter-sites** |
+| GET | `/api/v1/network-topology` | Oui | **Graphe INTER-SITES** (le maillage des backhauls). **Servi depuis NOTRE base — zéro appel au contrôleur.** Le câblage vient de la table `site_links` (rapatrié 1×/jour par `site_topology_sync_job`) ; la **santé** de chaque liaison est relue **en direct** depuis `devices`/`device_metrics`. Renvoie `synced_at` (date du **câblage** — l'état, lui, est de maintenant), `sites[]` (`depth` = couche, `parent`, `degree`, `reachable`, **`device_count`/`device_down_count`** = le compteur « 14/1 », **`is_down`** = site ENTIÈREMENT tombé, le seul cas qui rougit ses liaisons), **`latitude`/`longitude`/`position_source`** = position du pylône, jointe depuis `site_locations` sur la chaîne **exacte** du nom de site — `null` quand elle est inconnue, jamais devinée), `edges[]` (une **liaison logique** par paire de sites, portant 1..n `links[]` physiques, `redundant`, `is_tree_edge`, `health`), `layout` (`components`, `orphan_sites`, `unreached_sites`, `extra_edges`) et `stats`. `?root=` sinon `TOPOLOGY_ROOT_SITE`. `available:false` tant que le câblage n'a jamais été synchronisé — carte **absente** plutôt que vide (une carte vide se lit comme un réseau sans liaisons). Voir **Topologie inter-sites** |
 | POST | `/api/v1/network-topology/sync` | Oui | **Rapatrie le câblage maintenant** (le seul chemin de ce module qui parle à UISP), sans attendre le job quotidien — après une intervention terrain. **502** si le contrôleur est injoignable ; la table reste alors intacte |
 | GET | `/api/v1/traffic/top-destinations` | Oui | **Volume** Internet par opérateur/CDN (ASN) sur `?period=24h\|7d\|30d` : SUM(down/up) GROUP BY asn depuis `traffic_dest_stats`, trié par total + part %. `traffic_service.get_top_destinations` |
 | GET | `/api/v1/traffic/throughput` | Oui | **Débit** (Gb/s) par opérateur sur le dernier bucket : descendant/montant Mbps + part du download. Montre le partage de la bande passante WAN en direct. `traffic_service.get_throughput` |
@@ -1051,7 +1126,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | Accès clients | `/access` | Table des LR abonnés (source UISP). Filtres dont **« Hors supervision »** : LR sans IP **et** non vu par UISP depuis `OUT_OF_SUPERVISION_DAYS` — badge ambre, **exclu du compteur « Accès actif »** (la tuile indique combien sont exclus). Distinct de « Hors ligne > 1 mois » (`long_offline`, absence prolongée vue par UISP) : ici c'est une absence de **mesure**, pas une absence constatée |
 | Anomalies détectées | `/incidents` | Anomalies actuellement détectées (lecture seule, résolution automatique) |
 | Capacité du réseau | `/capacity` | 2 cercles (LTU/airMAX) consommé vs disponible sur tout le réseau + barres par site (LTU/airMAX séparés) ; clic site → table Rockets (connectés/max + largeur). Donut SVG custom (pas de lib de charts). Inclut la section **« Capacité infra par site »** (table Site/Équip. infra/Max/Marge, marge +N vert / -N rouge) alimentée par la clé `infra` de `/network-capacity` |
-| Topologie du réseau | `/topology` | **Graphe inter-sites** — sites rendus par l'icône de pylône (`public/devices/antenne.png` ; ⚠️ **dans `devices/`** car le middleware d'auth intercepte tout sauf ce dossier — ailleurs l'image serait redirigée vers `/login`). **Pas de `refreshInterval`**, contrairement aux autres pages : elle affiche du **câblage**, pas des métriques vivantes. Affiche la date du dernier rapatriement du câblage, distincte de l'état des équipements qui est de maintenant. **Écran dépouillé** : le graphe seul (ni tuiles, ni légende, ni liste des liaisons — le détail d'un lien est au survol). **Pleine largeur + menu replié à l'arrivée** (`FULL_WIDTH_ROUTES` dans `AppShell` : la colonne perd son `max-w-6xl` et la barre latérale se masque). Le repli se commande par un bouton dans l'en-tête du menu, et un bouton flottant le ramène quand il est masqué — **jamais un clic n'importe où** : le graphe est lui-même cliquable (sélection d'un site), un basculement au moindre clic ferait disparaître le menu par accident. L'effet est clé sur `pathname` seul, donc un repli/dépli manuel n'est pas écrasé tant qu'on reste sur la page. Sous chaque site, le compteur **« 14/1 »** (équipements d'infra / en panne, la part rouge). ⚠️ **Aucun bloc d'anomalies sous la carte** : sites sans liaison, composantes séparées et extrémités non supervisées restent **exacts dans la réponse d'API** (`layout.orphan_sites`, `layout.components`, `stats.unsupervised_ends`) et **visibles sur le dessin** (un site orphelin y est dessiné, simplement flottant) ; `scripts/dump_site_topology.py` continue de les nommer en clair. Rendu SVG **en couches** (jamais en arbre — le graphe porte de vraies boucles), nœuds cliquables pour filtrer les liaisons d'un site, liaisons colorées par **notre** mesure (vert au-dessus du plancher / ambre dégradée / rouge hors service / **gris non mesurée**), boucles de redondance en pointillé. Sous le graphe : la liste des liaisons avec leurs liens physiques et l'état de chaque bout, puis la section **« Ce que la carte ne montre pas »** (sites sans liaison, composantes séparées, liaisons sans mesure, extrémités non supervisées). Complète `SiteTopology` (intra-site, sur `/sites`). Source : `/network-topology` |
+| Topologie du réseau | `/topology` | **Graphe inter-sites** — sites rendus par l'icône de pylône (`public/devices/antenne.png` ; ⚠️ **dans `devices/`** car le middleware d'auth intercepte tout sauf ce dossier — ailleurs l'image serait redirigée vers `/login`). **Pas de `refreshInterval`**, contrairement aux autres pages : elle affiche du **câblage**, pas des métriques vivantes. Affiche la date du dernier rapatriement du câblage, distincte de l'état des équipements qui est de maintenant. **Écran dépouillé** : le graphe seul (ni tuiles, ni légende, ni liste des liaisons — le détail d'un lien est au survol). **Pleine largeur + menu replié à l'arrivée** (`FULL_WIDTH_ROUTES` dans `AppShell` : la colonne perd son `max-w-6xl` et la barre latérale se masque). Le repli se commande par un bouton dans l'en-tête du menu, et un bouton flottant le ramène quand il est masqué — **jamais un clic n'importe où** : le graphe est lui-même cliquable (sélection d'un site), un basculement au moindre clic ferait disparaître le menu par accident. L'effet est clé sur `pathname` seul, donc un repli/dépli manuel n'est pas écrasé tant qu'on reste sur la page. Sous chaque site, le compteur **« 14/1 »** (équipements d'infra / en panne, la part rouge). ⚠️ **Aucun bloc d'anomalies sous la carte** : sites sans liaison, composantes séparées et extrémités non supervisées restent **exacts dans la réponse d'API** (`layout.orphan_sites`, `layout.components`, `stats.unsupervised_ends`) et **visibles sur le dessin** (un site orphelin y est dessiné, simplement flottant) ; `scripts/dump_site_topology.py` continue de les nommer en clair. Rendu SVG **en couches** (jamais en arbre — le graphe porte de vraies boucles), nœuds cliquables pour filtrer les liaisons d'un site, liaisons colorées par **notre** mesure (vert au-dessus du plancher / ambre dégradée / rouge hors service / **gris non mesurée**), boucles de redondance en pointillé. Sous le graphe : la liste des liaisons avec leurs liens physiques et l'état de chaque bout, puis la section **« Ce que la carte ne montre pas »** (sites sans liaison, composantes séparées, liaisons sans mesure, extrémités non supervisées). Complète `SiteTopology` (intra-site, sur `/sites`). **Bascule Graphe / Carte** dans l'en-tête → voir **Vue carte de la topologie**. Source : `/network-topology` |
 | Destinations Internet | `/traffic` | 3 sections : **Débit en direct** (descendant/montant Gb/s + partage par opérateur, `/traffic/throughput`, refresh 30 s), **Débit descendant par opérateur** (graphe d'aires empilées SVG sur 1h/6h/24h, `/traffic/throughput-history`) et **Volume** (par opérateur sur 24h/7j/30j, down/up/total + part, `/traffic/top-destinations`). Repère les candidats à un serveur de cache. **Vide tant que `NETFLOW_COLLECTOR_ENABLED=false` ou que le routeur n'exporte pas vers le collecteur** |
 | Règles du routeur | `/router-rules` | Sous **FAI** dans la barre latérale (à côté du Journal des blocages). Les coupures d'abonnés **réellement posées sur le routeur de cœur**, lues en direct à l'ouverture. Complète les deux autres vues du blocage : le **journal** dit ce qui s'est passé, la **base** ce qu'on croit avoir posé, celle-ci ce que le routeur porte **maintenant** — la seule qui réponde à « ce client a payé, pourquoi est-il coupé ? ». Tuiles (règles, coupés à tort, MAC inconnues, coupures manquantes, posées par nous), bloc rouge des **coupures absentes du routeur**, table filtrable (client/MAC/site/état/origine/trafic jeté/commentaire). ⚠️ **Pas de `refreshInterval`** (comme `/topology`, et pour une raison plus forte) : chaque chargement ouvre une session API RouterOS — le clic dans le menu **est** la demande, et le bouton « Actualiser » rejoue la lecture. Une règle **désactivée** est listée mais marquée « ne coupe pas » (elle explique un client bloqué toujours en ligne). Source : `/router-rules` |
 | Diagnostics d'accès | `/access-diagnostics` | 2 sections d'anomalies de gestion du parc abonné (sidebar **Anomalies**) : **LR qui refusent le SSH** (mot de passe invalide / SSH désactivé / clé d'hôte incompatible — les **offline sont exclus**, ce n'est pas un refus) et **découverts par radio mais absents de UISP** (non provisionnés, potentiellement non facturés). Source : `/access-diagnostics`. La 1re remplace côté UI l'ancien diag SSH par grep de logs. La 2e porte l'**action d'enrôlement** : bouton par ligne + « Tout enrôler dans UISP », avec un interrupteur **Forcer** décoché par défaut (il écrase une clé existante — cf. **Enrôlement UISP**). Une ligne déjà enrôlée affiche la date au lieu du bouton : elle attend le sync quotidien |

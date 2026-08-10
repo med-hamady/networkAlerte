@@ -730,6 +730,12 @@ export interface TopologySite {
   // Site ENTIÈREMENT tombé (tous ses équipements down). C'est le seul cas qui
   // rougit ses liaisons — un équipement HS ne met pas un site à terre.
   is_down: boolean
+  // Position du pylône (table `site_locations`), pour la vue CARTE. `null` =
+  // position inconnue : le site n'est pas plaçable et la carte le NOMME au lieu
+  // de l'escamoter. 'uisp' = semée depuis le contrôleur, 'manual' = corrigée.
+  latitude: number | null
+  longitude: number | null
+  position_source: 'uisp' | 'manual' | null
 }
 
 export interface NetworkTopology {

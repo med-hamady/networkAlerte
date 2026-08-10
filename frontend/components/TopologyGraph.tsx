@@ -22,6 +22,9 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { NetworkTopology, TopologyEdge, TopologyPort } from '@/lib/types'
+// Barème de couleurs partagé avec la vue CARTE — une liaison doit être de la
+// même couleur dans les deux rendus (cf. lib/topologyColors).
+import { downSiteSet, edgeColor } from '@/lib/topologyColors'
 
 // Bornes de la rangée. Le minimum évite l'illisible sur un parc très profond
 // (mieux vaut défiler que rendre les libellés illisibles) ; le maximum évite un
@@ -61,35 +64,6 @@ type Geom = {
   offsetX: number  // centrage horizontal du graphe
   width: number
   height: number
-}
-
-/**
- * Couleur d'une liaison — cinq valeurs, dans cet ORDRE DE PRIORITÉ strict.
- *
- *  1. ROUGE  un des deux sites est ENTIÈREMENT tombé. En tête parce qu'une
- *            PANNE ne doit jamais être masquée par une couleur de support ou de
- *            rôle : une dorsale fibre coupée doit crier, pas rester bleue.
- *            ⚠️ Un équipement HS ne met pas un site à terre — peindre en rouge
- *            les liaisons d'un site qui fonctionne enverrait chercher une panne
- *            de backhaul là où il n'y en a pas. La panne isolée reste visible
- *            par le compteur « 14/1 » du nœud.
- *  2. GRIS   boucle de redondance : un chemin de secours, pas la dorsale.
- *  3. BLEU   fibre / cuivre.
- *  4. JAUNE  radio debout mais INERTE — un débit relevé, et proche de zéro.
- *  5. VERT   radio qui écoule du trafic.
- *
- * ⚠️ `traffic === 'unknown'` n'est JAMAIS jaune. Les liaisons fibre ont des
- * switches aux deux bouts et un switch n'expose aucun débit en SNMP : les
- * jaunir signalerait des pannes de trafic permanentes sur la dorsale du HQ, ce
- * qui est faux. Jaune veut dire « mesuré à zéro », jamais « pas mesuré ».
- * (Le point est désormais doublement couvert : ces liaisons sont bleues.)
- */
-function edgeColor(edge: TopologyEdge, downSites: Set<string>): string {
-  if (downSites.has(edge.site_a) || downSites.has(edge.site_b)) return '#dc2626'
-  if (!edge.is_tree_edge) return '#94a3b8'
-  if (edge.medium === 'wired') return '#2563eb'
-  if (edge.health.traffic === 'idle') return '#eab308'
-  return '#16a34a'
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
@@ -185,7 +159,7 @@ export default function TopologyGraph({
   const ordered = topo.edges
     .map((edge, index) => ({ edge, index }))
     .sort((a, b) => Number(b.edge.is_tree_edge) - Number(a.edge.is_tree_edge))
-  const downSites = new Set(topo.sites.filter(s => s.is_down).map(s => s.site))
+  const downSites = downSiteSet(topo.sites)
   const parentOf = new Map(topo.sites.map(s => [s.site, s.parent]))
 
   // Position de la carte de survol, relative au conteneur (et non à la page) :

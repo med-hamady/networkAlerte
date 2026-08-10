@@ -37,6 +37,15 @@ const STATE_STYLE: Record<RouterRuleRow['state'], { label: string; cls: string }
   expected:   { label: 'coupure voulue', cls: 'bg-slate-100 text-slate-700 border-slate-300'   },
 }
 
+/** Le balayage « hors supervision » coupe des clients PERDUS DE VUE, pas des
+ *  mauvais payeurs (cf. scripts/block_out_of_supervision.py). Sur le routeur sa
+ *  règle est indiscernable d'une coupure pour impayé ; seul le motif enregistré
+ *  en base les sépare, et la décision derrière n'est pas la même — d'où un
+ *  marqueur propre plutôt qu'une ligne de texte de plus à lire. */
+function isOutOfSupervision(reason: string | null): boolean {
+  return (reason ?? '').toLowerCase().includes('hors supervision')
+}
+
 function formatTs(ts: string): string {
   const d = new Date(ts)
   if (Number.isNaN(d.getTime())) return ts
@@ -79,6 +88,7 @@ export default function RouterRulesPage() {
       r.mac.toLowerCase().includes(needle)
       || (r.name ?? '').toLowerCase().includes(needle)
       || (r.site ?? '').toLowerCase().includes(needle)
+      || (r.blocked_reason ?? '').toLowerCase().includes(needle)
       || r.comment.toLowerCase().includes(needle)
     )
   })
@@ -93,7 +103,9 @@ export default function RouterRulesPage() {
             (<span className="font-mono text-xs">chain=forward · action=drop</span>), lues{' '}
             <strong>en direct</strong> à l'ouverture de cette page. Le journal dit ce qui s'est
             passé, la base ce qu'on croit avoir posé — ici c'est ce que le routeur porte
-            maintenant.
+            maintenant. Une règle n'est pas forcément un impayé : le balayage{' '}
+            <strong>hors supervision</strong> coupe aussi des abonnés qu'on a perdus de vue. Le
+            motif de chaque coupure est affiché.
           </p>
         </div>
         <button
@@ -163,7 +175,10 @@ export default function RouterRulesPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-white text-blue-900">
-                <tr><Th>Client</Th><Th>MAC</Th><Th>IP</Th><Th>Site</Th><Th>Coupé sur son LR</Th></tr>
+                <tr>
+                  <Th>Client</Th><Th>MAC</Th><Th>IP</Th><Th>Site</Th>
+                  <Th>Motif</Th><Th>Coupé sur son LR</Th>
+                </tr>
               </thead>
               <tbody className="divide-y divide-blue-50">
                 {missing.map((m) => (
@@ -172,6 +187,9 @@ export default function RouterRulesPage() {
                     <Td className="font-mono text-xs text-blue-500">{m.mac ?? '—'}</Td>
                     <Td>{m.ip_address ? <IpLink ip={m.ip_address} /> : '—'}</Td>
                     <Td className="text-blue-500">{m.site ?? '—'}</Td>
+                    <Td className="text-xs text-blue-400 max-w-xs break-words">
+                      {m.blocked_reason ?? '—'}
+                    </Td>
                     <Td>
                       {m.enforced_on_lr
                         ? <span className="text-xs font-semibold text-green-700">oui</span>
@@ -203,7 +221,7 @@ export default function RouterRulesPage() {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Filtrer par MAC, client, site ou commentaire…"
+          placeholder="Filtrer par MAC, client, site, motif ou commentaire…"
           className="ml-auto w-72 px-3 py-1.5 rounded-lg border border-blue-200 text-sm
                      focus:outline-none focus:ring-2 focus:ring-blue-300"
         />
@@ -245,6 +263,20 @@ export default function RouterRulesPage() {
                       <span className="ml-1.5 text-[10px] font-semibold text-amber-700">
                         désactivée — ne coupe pas
                       </span>
+                    )}
+                    {isOutOfSupervision(r.blocked_reason) && (
+                      <span className="ml-1.5 inline-block px-2 py-0.5 rounded-md border text-xs
+                                       font-semibold bg-blue-50 text-blue-700 border-blue-200">
+                        hors supervision
+                      </span>
+                    )}
+                    {/* Le motif tel qu'il a été enregistré : c'est lui qui dit si
+                        la coupure vient d'un impayé ou du balayage des clients
+                        perdus de vue — deux décisions qu'on ne traite pas pareil. */}
+                    {r.blocked_reason && (
+                      <p className="text-[11px] text-blue-400 mt-0.5 max-w-xs break-words">
+                        {r.blocked_reason}
+                      </p>
                     )}
                     {r.state === 'expected' && r.enforced_on_lr && (
                       <p className="text-[11px] text-blue-400 mt-0.5">

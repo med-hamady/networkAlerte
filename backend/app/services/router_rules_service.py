@@ -98,6 +98,13 @@ async def get_router_client_blocks(session: AsyncSession) -> dict:
             "site": lr.site if lr else None,
             "ip_address": lr.ip_address if lr else None,
             "client_blocked": lr.client_blocked if lr else None,
+            # POURQUOI ce client est coupé. Deux décisions opposées produisent des
+            # règles identiques sur le routeur : l'impayé (système de paiement) et
+            # le balayage « hors supervision » (scripts/block_out_of_supervision,
+            # qui coupe des abonnés qu'on a perdus de vue — pas des mauvais
+            # payeurs). Sans le motif, l'opérateur ne peut pas les distinguer et
+            # lirait tout le lot comme des impayés.
+            "blocked_reason": lr.client_blocked_reason if lr else None,
             # Le routeur devait-il porter cette règle selon NOUS ? Un `false` sur
             # une règle `expected` n'est pas une anomalie : la coupure a pu être
             # posée par le système historique, ou notre base restaurée depuis.
@@ -118,6 +125,7 @@ async def get_router_client_blocks(session: AsyncSession) -> dict:
             "site": lr.site,
             "ip_address": lr.ip_address,
             "enforced_on_lr": bool(lr.client_block_enforced_at),
+            "blocked_reason": lr.client_blocked_reason,
         }
         for mac, lr in by_mac.items()
         if lr.router_blocked and mac not in seen

@@ -51,6 +51,10 @@ class RouterRuleRow(BaseModel):
     site: str | None
     ip_address: str | None
     client_blocked: bool | None
+    # Le motif enregistré en base. Deux politiques opposées posent la MÊME règle
+    # sur le routeur — l'impayé et le balayage « hors supervision » (clients
+    # perdus de vue, pas mauvais payeurs) : seul ce champ les sépare.
+    blocked_reason: str | None
     router_blocked: bool | None
     enforced_on_lr: bool | None
 
@@ -64,6 +68,7 @@ class MissingRuleRow(BaseModel):
     site: str | None
     ip_address: str | None
     enforced_on_lr: bool
+    blocked_reason: str | None
 
 
 class RouterRulesStats(BaseModel):

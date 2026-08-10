@@ -1078,6 +1078,10 @@ export interface RouterRuleRow {
   site: string | null
   ip_address: string | null
   client_blocked: boolean | null
+  // Pourquoi ce client est coupé. Un impayé et un client « hors supervision »
+  // (perdu de vue, pas mauvais payeur) posent la MÊME règle sur le routeur :
+  // ce champ est la seule chose qui les distingue.
+  blocked_reason: string | null
   router_blocked: boolean | null
   enforced_on_lr: boolean | null
 }
@@ -1088,6 +1092,7 @@ export interface RouterMissingRule {
   site: string | null
   ip_address: string | null
   enforced_on_lr: boolean
+  blocked_reason: string | null
 }
 export interface RouterRulesResponse {
   // false = repli routeur non configuré : afficher l'explication, jamais une

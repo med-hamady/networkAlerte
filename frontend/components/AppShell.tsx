@@ -1,8 +1,9 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import Sidebar from '@/components/Sidebar'
+import DeviceSearchBar from '@/components/DeviceSearchBar'
 
 /**
  * Decides whether to render the dashboard chrome (Sidebar + main column) or
@@ -10,8 +11,11 @@ import Sidebar from '@/components/Sidebar'
  * client wrapper avoids having to move every existing page into a Next.js
  * route group just to swap the layout for one page.
  *
- * Porte aussi le **repli du menu**, qui n'a de sens qu'ici : c'est le seul
- * composant qui possède à la fois la barre et la colonne de contenu.
+ * Porte aussi le **repli du menu** et la **recherche globale**, qui n'ont de
+ * sens qu'ici : c'est le seul composant qui possède à la fois la barre et la
+ * colonne de contenu, et le seul qui survive aux changements de page (il est
+ * monté par le layout racine — le champ garde donc son focus et son contenu
+ * d'une page à l'autre).
  */
 
 // Pages qui réclament toute la largeur : le menu s'y replie À L'ARRIVÉE et la
@@ -21,6 +25,7 @@ const FULL_WIDTH_ROUTES = new Set(['/topology'])
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
+  const router = useRouter()
   // Paths that render full-screen, without the dashboard chrome.
   // (/topo-preview = aperçu temporaire sans auth ni sidebar)
   const isChromeless = pathname === '/login' || pathname === '/topo-preview'
@@ -42,33 +47,46 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const show = () => setMenuHidden(false)
   const hide = () => setMenuHidden(true)
 
+  // Destination d'un résultat de recherche : la fiche de l'équipement, ouverte
+  // dans le contexte de son site. `/sites?device=` est le deep-link qui existe
+  // déjà (utilisé par « Voir l'équipement → » de /lr-health) — la barre globale
+  // n'invente donc aucun chemin d'ouverture qui lui soit propre.
+  const openDevice = (deviceId: number) => {
+    router.push(`/sites?device=${deviceId}`)
+  }
+
   return (
     <div className="bg-white min-h-screen flex">
       {!menuHidden && <Sidebar onCollapse={hide} />}
-      <main className="flex-1 overflow-auto min-h-screen bg-slate-50 relative">
-        {/* Le bouton de retour ne flotte QUE menu replié. Menu visible, le
-            contrôle vit dans l'en-tête de la barre : un bouton flottant en haut
-            à gauche du contenu recouvrirait le titre de chacune des pages. */}
-        {menuHidden && (
-          <button
-            onClick={show}
-            title="Afficher le menu"
-            aria-label="Afficher le menu"
-            className="absolute top-4 left-4 z-20 flex items-center justify-center w-9 h-9
-                       rounded-lg border border-slate-200 bg-white/90 backdrop-blur
-                       text-slate-600 shadow-sm hover:bg-white hover:text-blue-700
-                       hover:border-blue-200 transition-colors"
-          >
-            <ExpandIcon />
-          </button>
-        )}
-        {/* `pl-16` dégage la place du bouton flottant — uniquement quand il est
-            là, pour ne décaler aucune page dans le cas courant. */}
-        <div
-          className={`px-6 py-6 ${fullWidth ? '' : 'max-w-6xl mx-auto'} ${
-            menuHidden ? 'pl-16' : ''
-          }`}
-        >
+      <main className="flex-1 overflow-auto min-h-screen bg-slate-50">
+        {/* Bandeau collant : présent sur TOUTES les pages du dashboard, il reste
+            visible au défilement (`sticky` sur le conteneur qui défile, c.-à-d.
+            ce <main>). Il porte aussi le bouton de retour du menu quand celui-ci
+            est replié — dans la barre plutôt qu'en flottant sur le contenu, où
+            il recouvrait le titre de la page. */}
+        <div className="sticky top-0 z-30 flex items-center gap-3 px-6 py-3
+                        bg-white/95 backdrop-blur border-b border-blue-100">
+          {menuHidden && (
+            <button
+              onClick={show}
+              title="Afficher le menu"
+              aria-label="Afficher le menu"
+              className="shrink-0 flex items-center justify-center w-9 h-9
+                         rounded-lg border border-slate-200 bg-white
+                         text-slate-600 shadow-sm hover:bg-blue-50 hover:text-blue-700
+                         hover:border-blue-200 transition-colors"
+            >
+              <ExpandIcon />
+            </button>
+          )}
+          <DeviceSearchBar
+            onSelect={openDevice}
+            shortcut
+            className="w-full max-w-xl"
+          />
+        </div>
+
+        <div className={`px-6 py-6 ${fullWidth ? '' : 'max-w-6xl mx-auto'}`}>
           {children}
         </div>
       </main>

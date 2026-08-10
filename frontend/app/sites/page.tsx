@@ -1,7 +1,7 @@
 'use client'
 
-import { Suspense, useEffect, useRef, useState } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { Suspense, useEffect, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import type { Device, SiteOverviewItem } from '@/lib/types'
@@ -9,7 +9,6 @@ import SiteOverviewCard from '@/components/SiteOverviewCard'
 import PanneDetailsModal from '@/components/PanneDetailsModal'
 import DeviceDetailModal from '@/components/DeviceDetailModal'
 import DeviceCard from '@/components/DeviceCard'
-import DeviceSearchBar from '@/components/DeviceSearchBar'
 import SiteTopology from '@/components/SiteTopology'
 
 const SITE_FALLBACK = 'Sans site'
@@ -19,6 +18,7 @@ const INFRA_TYPES = new Set(['rocket', 'uisp_switch', 'uisp_power', 'airfiber', 
 
 function SitesPage() {
   const searchParams = useSearchParams()
+  const router = useRouter()
   // Deep-link from the dashboard: /sites?site=AT2 opens that site's equipment.
   const [selectedSite, setSelectedSite] = useState<string | null>(() => searchParams.get('site'))
   const [drillFilter, setDrillFilter]   = useState<'all' | 'infra'>('all')
@@ -32,16 +32,6 @@ function SitesPage() {
   const openEquipment = (name: string, filter: 'all' | 'infra' = 'all') => {
     setDrillFilter(filter)
     setSelectedSite(name)
-  }
-
-  // Open a device's detail in its site context (shared by the ?device deep-link
-  // and the search bar). Fetch by id (never search a truncated list); setting
-  // the site then lazily loads that site's grid for the modal's linked LRs.
-  const openDeviceById = async (id: number, site: string | null) => {
-    setSelectedSite(site?.trim() || SITE_FALLBACK)
-    try {
-      setSelected(await fetcher(endpoints.device(id)))
-    } catch { /* device introuvable : on n'ouvre pas la fiche */ }
   }
 
   // Site cards (grouping, counts, down_since, down/power device lists) are built
@@ -62,14 +52,24 @@ function SitesPage() {
   )
   const siteDeviceList = siteDevices ?? []
 
-  // Deep-link from /lr-health "Voir l'équipement →": /sites?device=<id> opens
-  // that device's detail modal in its site context. The device is fetched by id
-  // (no full list to search); setting selectedSite then loads that site's grid.
+  // Deep-link /sites?device=<id> : ouvre la fiche de cet équipement dans le
+  // contexte de son site. Deux appelants — « Voir l'équipement → » de
+  // /lr-health, et la RECHERCHE GLOBALE du bandeau (AppShell), qui est le seul
+  // chemin depuis les autres pages. L'équipement est chargé par son id (aucune
+  // liste à parcourir) ; poser le site charge ensuite la grille du site.
+  //
+  // ⚠️ AUCUN garde « déjà traité » ici, et c'est délibéré. Il y en avait un
+  // (`lastHandledDevice`) : combiné au drapeau `cancelled`, il verrouillait la
+  // fiche sur un chargement perpétuel. En **Strict Mode** (activé par défaut en
+  // dev sur l'App Router) React invoque l'effet DEUX fois : la 1re passe posait
+  // le garde et lançait le fetch, son nettoyage la marquait annulée, et la 2e
+  // ressortait aussitôt sur le garde — donc plus personne pour poser la fiche
+  // ni retirer l'overlay, alors même que la requête répondait 200. Le garde est
+  // de toute façon devenu inutile depuis que le paramètre est CONSOMMÉ (retiré
+  // de l'URL) ci-dessous : il ne peut plus redéclencher l'effet tout seul.
   const deviceParam = searchParams.get('device')
-  const lastHandledDevice = useRef<string | null>(null)
   useEffect(() => {
-    if (!deviceParam || lastHandledDevice.current === deviceParam) return
-    lastHandledDevice.current = deviceParam
+    if (!deviceParam) return
     let cancelled = false
     setDeviceLoading(true)
     ;(async () => {
@@ -79,9 +79,23 @@ function SitesPage() {
         setSelected(dev)
         setSelectedSite(dev.site?.trim() || SITE_FALLBACK)
       } catch { /* device introuvable : on n'ouvre pas la fiche */ }
-      finally { if (!cancelled) setDeviceLoading(false) }
+      finally {
+        if (cancelled) return
+        setDeviceLoading(false)
+        // ⚠️ Le paramètre est CONSOMMÉ (retiré de l'URL) une fois la fiche
+        // ouverte. Sans ça, rechercher DEUX FOIS le même équipement depuis le
+        // bandeau ne rouvrirait pas sa fiche : la navigation viserait une URL
+        // inchangée, donc aucun changement de `deviceParam`, donc aucun effet.
+        const rest = new URLSearchParams(Array.from(searchParams.entries()))
+        rest.delete('device')
+        const qs = rest.toString()
+        router.replace(qs ? `/sites?${qs}` : '/sites', { scroll: false })
+      }
     })()
     return () => { cancelled = true }
+    // `searchParams`/`router` sont stables pour une même URL : la dépendance
+    // utile est le seul paramètre lu ici.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceParam])
 
   // "Sans site" (équipements sans site UISP) n'est pas un vrai site : on le
@@ -159,9 +173,10 @@ function SitesPage() {
           </button>
         </div>
 
-        {/* Recherche globale — IP (infra + LR) ou nom/téléphone (LR).
-            Masquée quand un site est ouvert (vue équipements). */}
-        {selectedSite == null && <DeviceSearchBar onSelect={openDeviceById} />}
+        {/* La recherche d'équipement vit maintenant dans le bandeau collant de
+            l'application (AppShell) : elle est disponible depuis toutes les
+            pages et arrive ici par le deep-link `?device=`. Un second champ
+            identique à 60 px du premier n'avait plus de sens. */}
 
         {/* Sites grid OR equipment grid */}
         {overviewLoading ? (

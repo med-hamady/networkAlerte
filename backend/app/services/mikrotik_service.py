@@ -46,6 +46,7 @@ import contextlib
 import datetime
 import logging
 import unicodedata
+from collections.abc import Iterable
 
 from app.core.config import get_settings
 
@@ -81,6 +82,13 @@ def _sanitize_comment(comment: str) -> str:
     return cleaned[:120]
 
 
+# Marque de NOS règles dans le commentaire. Constante partagée entre l'écriture
+# (`build_comment`) et la relecture (`is_supervisor_comment`) : recopiée des deux
+# côtés, elle divergerait à la première reformulation et la page de contrôle
+# classerait alors toutes nos règles en « historique ».
+_COMMENT_PREFIX = "supervisor"
+
+
 def build_comment(label: str) -> str:
     """Commentaire de règle horodaté, préfixé pour identifier NOS règles.
 
@@ -88,7 +96,18 @@ def build_comment(label: str) -> str:
     système historique quand on lit la liste sur le routeur.
     """
     ts = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
-    return _sanitize_comment(f"supervisor {label} {ts}")
+    return _sanitize_comment(f"{_COMMENT_PREFIX} {label} {ts}")
+
+
+def is_supervisor_comment(comment: str) -> bool:
+    """La règle porte-t-elle notre marque ?
+
+    Sert à séparer, sur une lecture du routeur, ce que le superviseur a posé de
+    ce qui vient du système historique (``add_rules.php``). ⚠️ C'est un indice
+    d'ORIGINE, pas une preuve : un commentaire s'édite à la main, et une règle
+    legacy coupe le client exactement comme la nôtre.
+    """
+    return (comment or "").strip().lower().startswith(_COMMENT_PREFIX)
 
 
 def is_enabled() -> bool:
@@ -126,6 +145,98 @@ def _session():
     finally:
         with contextlib.suppress(Exception):
             api.close()
+
+
+def _as_bool(value) -> bool:
+    """RouterOS rend `true`/`false` — librouteros les caste, mais pas toujours."""
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() == "true"
+
+
+def _as_int(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_rules(raw: Iterable[dict]) -> list[dict]:
+    """Règles brutes RouterOS → règles de **coupure client**, forme exploitable.
+
+    Fonction pure (aucune E/S) : c'est elle qui décide ce qui compte comme une
+    coupure client, et c'est donc elle qu'on teste.
+
+    Le filtrage est refait ici alors que la requête l'a déjà demandé au routeur.
+    Ce n'est pas de la redite défensive gratuite : la requête part sur le
+    protocole API (plusieurs mots ``?`` combinés), et une lecture qui se
+    tromperait afficherait des règles **sans rapport avec les clients** — du NAT,
+    du pare-feu d'infrastructure — dans une page qui promet des blocages
+    d'abonnés. Un contrôle en Python coûte zéro et rend l'affirmation vraie
+    quoi qu'il arrive.
+
+    Une règle sans ``src-mac-address`` est écartée : elle ne cible pas un abonné.
+    """
+    rules: list[dict] = []
+    for raw_rule in raw:
+        if raw_rule.get("chain") != "forward" or raw_rule.get("action") != "drop":
+            continue
+        mac = (raw_rule.get("src-mac-address") or "").strip()
+        if not mac:
+            continue
+        comment = (raw_rule.get("comment") or "").strip()
+        rules.append({
+            "id": raw_rule.get(".id"),
+            "mac": mac.upper(),
+            "comment": comment,
+            # Une règle DÉSACTIVÉE ne coupe personne. Elle reste listée (elle
+            # existe sur le routeur, et sa présence explique qu'un client
+            # « bloqué » soit en ligne) mais l'appelant doit pouvoir la
+            # distinguer d'une coupure effective.
+            "disabled": _as_bool(raw_rule.get("disabled")),
+            # Posée par un protocole (pas à la main ni par nous) : on ne la
+            # retirerait pas de la même façon.
+            "dynamic": _as_bool(raw_rule.get("dynamic")),
+            "packets": _as_int(raw_rule.get("packets")),
+            "bytes": _as_int(raw_rule.get("bytes")),
+        })
+    return rules
+
+
+def _list_sync() -> list[dict]:
+    with _session() as api:
+        raw = list(api.rawCmd(
+            "/ip/firewall/filter/print",
+            "?chain=forward",
+            "?action=drop",
+        ))
+    return parse_rules(raw)
+
+
+async def list_client_block_rules() -> tuple[list[dict], str | None]:
+    """Toutes les règles de coupure client posées sur le routeur.
+
+    Retourne ``(règles, erreur)`` — et **ne lève jamais** (contrat du module) :
+    une consultation ne doit pas casser la page qui l'affiche. ``erreur``
+    renseignée ⇒ la liste est vide et ne prouve **rien** (« aucune règle » et
+    « je n'ai pas pu demander » ne se confondent pas).
+
+    ⚠️ Portée : ``chain=forward`` uniquement, c.-à-d. le blocage d'abonnés tel
+    que nous et le système historique le posons. Une règle drop sur une autre
+    chaîne n'apparaît pas ici — le retrait (``unblock_by_mac``), lui, reste
+    volontairement plus large et nettoie la MAC quelle que soit sa chaîne.
+    """
+    if not is_enabled():
+        return [], "Repli routeur désactivé (MIKROTIK_ENABLED / mot de passe)."
+    try:
+        async with _API_CONCURRENCY:
+            return await asyncio.to_thread(_list_sync), None
+    except ImportError:
+        logger.error("mikrotik: librouteros n'est pas installé — lecture impossible.")
+        return [], "librouteros absent de l'image backend."
+    except Exception as exc:  # noqa: BLE001 — une lecture ne doit pas lever
+        logger.warning("mikrotik: list a échoué : %s: %s", type(exc).__name__, exc)
+        return [], f"Routeur injoignable ou refus ({type(exc).__name__}: {exc})"[:200]
 
 
 def _find_drop_rule_ids(api, mac: str) -> list[str]:

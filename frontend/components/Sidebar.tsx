@@ -34,6 +34,7 @@ const sections: NavSection[] = [
       { href: '/traffic',    label: 'Destinations Internet', icon: GlobeIcon  },
       { href: '/access',     label: 'FAI',                 icon: ShieldIcon   },
       { href: '/fai-journal', label: 'Journal blocages',   icon: JournalIcon, indent: true },
+      { href: '/router-rules', label: 'Règles du routeur', icon: RouterIcon, indent: true },
       { href: '/content-block', label: 'Filtre de contenu', icon: FilterIcon, indent: true },
     ],
   },
@@ -337,6 +338,16 @@ function JournalIcon({ className }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round"
         d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+    </svg>
+  )
+}
+
+function RouterIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <rect x="3" y="13" width="18" height="7" rx="2" />
+      <path strokeLinecap="round" strokeLinejoin="round"
+        d="M7 16.5h.01M10.5 16.5h.01M12 10V7m-4 3L6 5m10 5l2-5" />
     </svg>
   )
 }

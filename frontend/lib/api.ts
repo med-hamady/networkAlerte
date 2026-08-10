@@ -106,6 +106,11 @@ export const endpoints = {
     `${API_BASE}/fai-journal/evidence?timestamp=${encodeURIComponent(timestamp)}`
     + `&action=${encodeURIComponent(action)}`
     + (mac ? `&mac=${encodeURIComponent(mac)}` : ''),
+  // Règles de coupure client portées par le routeur de cœur, LUES EN DIRECT.
+  // ⚠️ Chaque appel ouvre une session API RouterOS : à déclencher sur un geste
+  // de l'opérateur, jamais sur un `refreshInterval` (un onglet oublié
+  // martèlerait le routeur).
+  routerRules:          `${API_BASE}/router-rules`,
   // Diagnostics d'accès : LR qui refusent le SSH + LR vus par radio hors UISP.
   accessDiagnostics:    `${API_BASE}/access-diagnostics`,
   // Enrôlement UISP : pose de la clé du contrôleur sur le CPE (unitaire / lot).

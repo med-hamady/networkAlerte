@@ -1053,6 +1053,62 @@ export interface FaiJournalResponse {
   attention: FaiAttentionRow[]
 }
 
+// ─── Règles du routeur (page /router-rules) ─────────────────────────────────
+// Ce que le routeur de cœur porte VRAIMENT, lu en direct à la demande — à
+// distinguer du journal (ce qui s'est passé) et de la base (ce qu'on croit
+// avoir posé).
+export interface RouterRuleRow {
+  rule_id: string | null
+  mac: string
+  comment: string
+  // Une règle désactivée existe sans couper : elle explique un client
+  // « bloqué » toujours en ligne.
+  disabled: boolean
+  dynamic: boolean
+  packets: number | null
+  bytes: number | null
+  // supervisor = posée par nous (marque dans le commentaire) ; legacy = le
+  // reste, dont le système historique. Indice d'origine, pas une preuve.
+  origin: 'supervisor' | 'legacy'
+  // unexpected = client coupé alors que la base ne le veut plus (il a payé) ;
+  // unknown = MAC hors inventaire ; expected = coupure voulue.
+  state: 'expected' | 'unexpected' | 'unknown'
+  lr_id: number | null
+  name: string | null
+  site: string | null
+  ip_address: string | null
+  client_blocked: boolean | null
+  router_blocked: boolean | null
+  enforced_on_lr: boolean | null
+}
+export interface RouterMissingRule {
+  lr_id: number
+  name: string
+  mac: string | null
+  site: string | null
+  ip_address: string | null
+  enforced_on_lr: boolean
+}
+export interface RouterRulesResponse {
+  // false = repli routeur non configuré : afficher l'explication, jamais une
+  // liste vide (qui se lirait « aucun client bloqué »).
+  available: boolean
+  error: string | null
+  fetched_at: string
+  host: string
+  rules: RouterRuleRow[]
+  missing: RouterMissingRule[]
+  stats: {
+    total: number
+    supervisor: number
+    legacy: number
+    unexpected: number
+    unknown: number
+    disabled: number
+    missing: number
+  }
+}
+
 // ─── Diagnostics d'accès (page /access-diagnostics) ─────────────────────────
 // Deux anomalies de gestion du parc abonné : LR qui refusent le SSH, et LR vus
 // par le radio mais absents du roster UISP (non provisionnés).

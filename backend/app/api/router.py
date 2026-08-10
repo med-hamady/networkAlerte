@@ -23,6 +23,7 @@ from app.api.endpoints import (
     network_capacity,
     network_topology,
     network_uptime,
+    router_rules,
     sites,
     system,
     traffic,
@@ -68,6 +69,12 @@ api_router.include_router(
 # paiement n'y a délibérément pas accès — elle ne sert qu'à bloquer/débloquer.
 api_router.include_router(
     fai_journal.router, prefix="/fai-journal", tags=["fai"], dependencies=_auth,
+)
+# Lecture EN DIRECT des règles de coupure du routeur de cœur. Même auth que le
+# journal, et pour la même raison : le système de paiement n'a pas à lire l'état
+# du réseau, seulement à demander des coupures.
+api_router.include_router(
+    router_rules.router, prefix="/router-rules", tags=["fai"], dependencies=_auth,
 )
 api_router.include_router(incidents.router, prefix="/incidents", tags=["incidents"], dependencies=_auth)
 api_router.include_router(lr_health.router, prefix="/lr-health", tags=["lr-health"], dependencies=_auth)

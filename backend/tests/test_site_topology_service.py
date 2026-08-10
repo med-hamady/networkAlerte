@@ -27,6 +27,7 @@ import types
 import pytest
 from sqlalchemy.sql.dml import Delete
 
+from app.core.config import get_settings
 from app.services import site_topology_service
 from app.services.site_topology_service import (
     build_edges,
@@ -272,39 +273,53 @@ def test_single_measured_end_is_used():
 
 
 def test_af60_below_floor_is_degraded():
-    """Cas réel AT2↔AT1 : 1350 Mb/s sous le plancher AF60 de 1,95 Gb/s.
+    """Une capacité AF60 sous son plancher est rendue dégradée.
 
-    Le verdict est calculé côté service contre les réglages réels, pour que la
-    carte colore en dégradé exactement ce que la section « Liaisons entre sites »
-    liste déjà. Recopier un barème dans le frontend les ferait diverger.
+    ⚠️ Le plancher est LU DANS LES RÉGLAGES, jamais écrit en dur ici. Ce test
+    figeait `1950.0` et a cassé le jour où l'opérateur a corrigé la capacité
+    AF60 (moyenne des deux sens d'un lien TDD, et non leur somme → plancher
+    ramené à 975). Ce qu'on vérifie est le CÂBLAGE — que la famille AF60 tire
+    bien son seuil de `af60_capacity_display_min_mbps` —, pas la valeur choisie,
+    qui doit rester réglable sans faire échouer la suite.
     """
+    floor = get_settings().af60_capacity_display_min_mbps
     health = edge_health(
         {"status": "up", "device_type": "airfiber",
-         "metrics": {"total_capacity_mbps": 1350, "link_potential_pct": 28}},
+         "metrics": {"total_capacity_mbps": floor - 1, "link_potential_pct": 28}},
         {"status": "up", "device_type": "airfiber", "metrics": {}},
     )
-    assert health["floor_mbps"] == 1950.0
+    assert health["floor_mbps"] == floor
     assert health["degraded"] is True
 
 
 def test_af60_above_floor_is_not_degraded():
+    floor = get_settings().af60_capacity_display_min_mbps
     health = edge_health(
         {"status": "up", "device_type": "airfiber",
-         "metrics": {"total_capacity_mbps": 3902, "link_potential_pct": 73}},
+         "metrics": {"total_capacity_mbps": floor + 1, "link_potential_pct": 73}},
         {"status": "up", "device_type": "airfiber",
-         "metrics": {"total_capacity_mbps": 3902, "link_potential_pct": 74}},
+         "metrics": {"total_capacity_mbps": floor + 1, "link_potential_pct": 74}},
     )
     assert health["degraded"] is False
 
 
 def test_ptp_litebeam_uses_its_own_floor():
-    """303 Mb/s serait « dégradé » au plancher AF60 et ne l'est pas au sien."""
+    """Un PTP LiteBeam tire son seuil de SON réglage, pas de celui de l'AF60.
+
+    Les deux planchers sont très différents (AF60 en Gb/s, PTP en centaines de
+    Mb/s) : les confondre rendrait tous les PTP « dégradés » en permanence.
+    """
+    settings = get_settings()
+    ptp_floor = settings.airmax_backhaul_capacity_min_mbps
+    assert ptp_floor != settings.af60_capacity_display_min_mbps, (
+        "test sans valeur si les deux planchers deviennent égaux"
+    )
     health = edge_health(
         {"status": "up", "device_type": "ptp_litebeam",
-         "metrics": {"total_capacity_mbps": 303}},
+         "metrics": {"total_capacity_mbps": ptp_floor + 1}},
         {"status": "up", "device_type": "ptp_litebeam", "metrics": {}},
     )
-    assert health["floor_mbps"] == 150.0
+    assert health["floor_mbps"] == ptp_floor
     assert health["degraded"] is False
 
 
@@ -528,30 +543,38 @@ def test_traffic_unknown_when_no_end_reports_a_rate():
     """LE piège à ne pas rouvrir. Les liaisons FIBRE ont des switches aux deux
     bouts, et un switch n'expose aucun débit en SNMP. Les compter comme inertes
     signalerait trois pannes de trafic permanentes sur la dorsale du HQ."""
-    state, mbps = edge_traffic(_end(dtype="uisp_switch"), _end(dtype="uisp_switch"))
-    assert state == "unknown"
-    assert mbps is None
+    tr = edge_traffic(_end(dtype="uisp_switch"), _end(dtype="uisp_switch"))
+    assert tr["state"] == "unknown"
+    assert tr["total_mbps"] is None
+    assert tr["a_to_b_mbps"] is None and tr["b_to_a_mbps"] is None
 
 
 def test_traffic_idle_only_on_a_measured_zero():
-    state, mbps = edge_traffic(_end(dl=0.0, ul=0.0), _end())
-    assert state == "idle"
-    assert mbps == 0.0
+    tr = edge_traffic(_end(dl=0.0, ul=0.0), _end())
+    assert tr["state"] == "idle"
+    assert tr["total_mbps"] == 0.0
 
 
 def test_traffic_active_above_the_floor():
-    state, mbps = edge_traffic(_end(dl=40.0, ul=2.5), _end())
-    assert state == "active"
-    assert mbps == 42.5
+    tr = edge_traffic(_end(dl=40.0, ul=2.5), _end())
+    assert tr["state"] == "active"
+    assert tr["total_mbps"] == 42.5
+    # dl de A = ce que A recoit = le flux B -> A ; ul de A = le flux A -> B.
+    assert tr["b_to_a_mbps"] == 40.0
+    assert tr["a_to_b_mbps"] == 2.5
 
 
 def test_traffic_keeps_the_busiest_end():
     """Les deux bouts décrivent le même lien, mais l'un peut n'avoir aucun
     relevé frais : prendre le maximum évite de déclarer inerte une liaison que
     l'autre extrémité voit passer du trafic."""
-    state, mbps = edge_traffic(_end(dl=0.0, ul=0.0), _end(dl=88.0, ul=4.0))
-    assert state == "active"
-    assert mbps == 92.0
+    tr = edge_traffic(_end(dl=0.0, ul=0.0), _end(dl=88.0, ul=4.0))
+    assert tr["state"] == "active"
+    # A -> B : ul de A (0) contre dl de B (88) -> on garde 88.
+    assert tr["a_to_b_mbps"] == 88.0
+    # B -> A : dl de A (0) contre ul de B (4) -> on garde 4.
+    assert tr["b_to_a_mbps"] == 4.0
+    assert tr["total_mbps"] == 92.0
 
 
 def test_health_carries_the_traffic_verdict():
@@ -567,3 +590,21 @@ def test_redundant_link_is_active_if_one_branch_carries():
     busy = edge_health(_end(dl=30.0, ul=1.0), _end(dl=30.0, ul=1.0))
     from app.services.site_topology_service import _worst
     assert _worst([idle, busy])["traffic"] == "active"
+
+
+def test_traffic_directions_are_named_by_site_not_by_up_down():
+    """Le meme flux est mesure deux fois sous deux noms opposes : `dl` d'un bout
+    est le `ul` de l'autre. Confondre les deux afficherait le trafic a l'envers
+    sur la moitie des liaisons — d'ou des directions nommees par les SITES."""
+    # A emet 120 vers B, B emet 8 vers A. Les deux bouts le voient, en miroir.
+    tr = edge_traffic(_end(dl=8.0, ul=120.0), _end(dl=120.0, ul=8.0))
+    assert tr["a_to_b_mbps"] == 120.0
+    assert tr["b_to_a_mbps"] == 8.0
+
+
+def test_traffic_direction_survives_a_single_measured_end():
+    """Un seul bout mesure : les deux directions restent connues, car il rend
+    son `dl` ET son `ul`."""
+    tr = edge_traffic(_end(dl=8.0, ul=120.0), _end())
+    assert tr["a_to_b_mbps"] == 120.0
+    assert tr["b_to_a_mbps"] == 8.0

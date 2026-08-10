@@ -480,36 +480,59 @@ def capacity_floor(end_a: dict | None, end_b: dict | None) -> float | None:
     return None
 
 
-def edge_traffic(end_a: dict | None, end_b: dict | None) -> tuple[str, float | None]:
-    """Trafic écoulé par la liaison → ``("active"|"idle"|"unknown", Mb/s)``.
+def edge_traffic(end_a: dict | None, end_b: dict | None) -> dict:
+    """Trafic écoulé par la liaison, **par direction**.
 
-    On additionne descendant + montant, et on retient l'extrémité qui annonce le
-    PLUS : les deux bouts décrivent le même lien, mais l'un peut n'avoir aucun
-    relevé frais. Prendre le maximum évite de déclarer inerte une liaison que
-    l'autre extrémité voit passer du trafic.
+    Renvoie ``{state, total_mbps, a_to_b_mbps, b_to_a_mbps}`` où ``a``/``b``
+    désignent les deux extrémités passées (donc site_a / site_b).
+
+    ⚠️ **Sens.** Pour l'AF60 comme pour l'airMAX, ``dl_throughput_mbps`` est ce
+    que l'équipement **interrogé REÇOIT** et ``ul`` ce qu'il **émet** (cf. les
+    sections « DÉBIT vs CAPACITÉ » de CLAUDE.md). Un même flux est donc mesuré
+    deux fois, sous deux noms opposés :
+
+        A → B   =  ul de A   =  dl de B
+        B → A   =  dl de A   =  ul de B
+
+    On expose ces deux directions **nommées par les sites**, et non un
+    « descendant/montant » global : ces mots n'ont de sens que vu d'un bout, et
+    les inverser afficherait le trafic à l'envers sur la moitié des liaisons.
+    C'est l'appelant, qui connaît la relation parent/enfant du graphe, qui peut
+    ensuite les traduire en descendant/montant.
+
+    Pour chaque direction on retient le relevé le **plus élevé** des deux bouts :
+    ils décrivent le même flux, mais l'un peut n'avoir aucune valeur fraîche.
 
     ⚠️ **« Pas mesuré » n'est pas « pas de trafic »** — c'est ``unknown``, et le
-    rendu doit alors s'abstenir (vert, pas jaune). Le cas est réel et il est
-    massif : les liaisons FIBRE ont des switches aux deux bouts, et un switch
-    n'expose aucun débit en SNMP. Les peindre en jaune reviendrait à signaler
-    trois pannes de trafic permanentes sur la dorsale du HQ, ce qui est faux.
-    C'est la même règle que partout ici : on n'affirme que sur constat.
+    rendu doit alors s'abstenir (vert, pas jaune). Le cas est massif : les
+    liaisons FIBRE ont des switches aux deux bouts, et un switch n'expose aucun
+    débit en SNMP. Les peindre en jaune signalerait des pannes de trafic
+    permanentes sur la dorsale du HQ, ce qui est faux.
     """
     settings = get_settings()
-    best: float | None = None
-    for end in (end_a, end_b):
-        if not end:
-            continue
-        metrics = end.get("metrics") or {}
-        dl, ul = metrics.get("dl_throughput_mbps"), metrics.get("ul_throughput_mbps")
-        if dl is None and ul is None:
-            continue
-        total = (dl or 0.0) + (ul or 0.0)
-        best = total if best is None else max(best, total)
-    if best is None:
-        return "unknown", None
+
+    def _m(end: dict | None, key: str) -> float | None:
+        return ((end or {}).get("metrics") or {}).get(key)
+
+    def _best(*values: float | None) -> float | None:
+        known = [v for v in values if v is not None]
+        return max(known) if known else None
+
+    a_to_b = _best(_m(end_a, "ul_throughput_mbps"), _m(end_b, "dl_throughput_mbps"))
+    b_to_a = _best(_m(end_a, "dl_throughput_mbps"), _m(end_b, "ul_throughput_mbps"))
+
+    if a_to_b is None and b_to_a is None:
+        return {"state": "unknown", "total_mbps": None,
+                "a_to_b_mbps": None, "b_to_a_mbps": None}
+
+    total = (a_to_b or 0.0) + (b_to_a or 0.0)
     floor = float(settings.topology_traffic_min_mbps)
-    return ("active" if best >= floor else "idle"), best
+    return {
+        "state": "active" if total >= floor else "idle",
+        "total_mbps": total,
+        "a_to_b_mbps": a_to_b,
+        "b_to_a_mbps": b_to_a,
+    }
 
 
 def edge_health(end_a: dict | None, end_b: dict | None) -> dict:
@@ -547,7 +570,7 @@ def edge_health(end_a: dict | None, end_b: dict | None) -> dict:
     # Un lien vaut son extrémité la plus dégradée.
     capacity = min(caps) if caps else None
     floor = capacity_floor(end_a, end_b)
-    traffic, traffic_mbps = edge_traffic(end_a, end_b)
+    tr = edge_traffic(end_a, end_b)
     return {
         "state": state,
         "capacity_mbps": capacity,
@@ -555,8 +578,12 @@ def edge_health(end_a: dict | None, end_b: dict | None) -> dict:
         "measured_ends": len(caps),
         "floor_mbps": floor,
         # "active" | "idle" | "unknown" — `unknown` ⇒ le rendu s'abstient.
-        "traffic": traffic,
-        "traffic_mbps": traffic_mbps,
+        "traffic": tr["state"],
+        "traffic_mbps": tr["total_mbps"],
+        # Par direction, nommées par les sites (a = site_a, b = site_b) : le
+        # « descendant/montant » n'a de sens que vu d'un bout.
+        "traffic_a_to_b_mbps": tr["a_to_b_mbps"],
+        "traffic_b_to_a_mbps": tr["b_to_a_mbps"],
         # Une capacité inconnue n'est PAS une capacité dégradée (même règle que
         # `ifSpeed = 0` sur les cages SFP) : sans mesure, on n'affirme rien.
         "degraded": bool(floor is not None and capacity is not None and capacity < floor),
@@ -901,7 +928,8 @@ def _worst(healths: list[dict]) -> dict:
     if not healths:
         return {"state": "unmeasured", "capacity_mbps": None, "link_potential_pct": None,
                 "measured_ends": 0, "floor_mbps": None, "degraded": False,
-                "traffic": "unknown", "traffic_mbps": None}
+                "traffic": "unknown", "traffic_mbps": None,
+                "traffic_a_to_b_mbps": None, "traffic_b_to_a_mbps": None}
     # Une branche saine l'emporte sur une branche dégradée : sans ce second
     # critère, `max` rendrait la première rencontrée et une liaison redondante
     # pourrait s'afficher dégradée alors qu'elle a une branche intacte. Même

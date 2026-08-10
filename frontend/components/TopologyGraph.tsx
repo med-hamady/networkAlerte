@@ -105,6 +105,7 @@ export default function TopologyGraph({
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const [viewport, setViewport] = useState({ w: 0, h: 0 })
+  const [hover, setHover] = useState<{ edge: TopologyEdge; x: number; y: number } | null>(null)
 
   // Mesure réelle du conteneur : seule façon de remplir la place dont on
   // dispose, qui change avec le repli du menu et la taille de la fenêtre.
@@ -185,13 +186,27 @@ export default function TopologyGraph({
     .map((edge, index) => ({ edge, index }))
     .sort((a, b) => Number(b.edge.is_tree_edge) - Number(a.edge.is_tree_edge))
   const downSites = new Set(topo.sites.filter(s => s.is_down).map(s => s.site))
+  const parentOf = new Map(topo.sites.map(s => [s.site, s.parent]))
+
+  // Position de la carte de survol, relative au conteneur (et non à la page) :
+  // le conteneur défile, une position absolue en coordonnées de page dériverait.
+  const track = (edge: TopologyEdge) => (e: React.MouseEvent) => {
+    const host = hostRef.current
+    if (!host) return
+    const box = host.getBoundingClientRect()
+    setHover({
+      edge,
+      x: e.clientX - box.left + host.scrollLeft,
+      y: e.clientY - box.top + host.scrollTop,
+    })
+  }
 
   if (!slots.size) {
     return <p className="text-sm text-slate-500">Aucun site à afficher.</p>
   }
 
   return (
-    <div ref={hostRef} className="h-full w-full overflow-auto">
+    <div ref={hostRef} className="relative h-full w-full overflow-auto">
       <svg width={g.width} height={g.height} role="img"
            aria-label="Graphe des liaisons entre sites">
         {ordered.map(({ edge, index }) => {
@@ -222,9 +237,26 @@ export default function TopologyGraph({
                 strokeDasharray={edge.medium === 'wireless' ? '7 5' : undefined}
                 strokeLinecap="round"
               />
+              {/* Doublure de DÉTECTION — invisible par construction
+                  (`stroke="transparent"`, aucun tiret) : elle ne change pas un
+                  pixel du dessin.
+                  ⚠️ Elle est indispensable, pas confortable. Le navigateur ne
+                  détecte le survol d'un trait pointillé que sur ses segments
+                  PEINTS, jamais dans les vides — et 15 des 18 liaisons sont en
+                  tirets, épaisses de 2 px. Sans elle, la cible réelle fait ~7 px
+                  sur 12, hauts de 2 : le survol paraît simplement mort.
+                  9 px et non 14 : assez pour viser, assez étroit pour ne pas
+                  capter la liaison voisine là où deux se croisent. */}
+              <path
+                d={curve(a, b, !edge.is_tree_edge, g, dyL, dyR)}
+                fill="none" stroke="transparent" strokeWidth={9}
+                className="cursor-pointer"
+                onMouseEnter={track(edge)}
+                onMouseMove={track(edge)}
+                onMouseLeave={() => setHover(null)}
+              />
               <PortDot at={ends.from} port={portFrom} g={g} />
               <PortDot at={ends.to} port={portTo} g={g} />
-              <title>{edgeTooltip(edge)}</title>
             </g>
           )
         })}
@@ -292,6 +324,67 @@ export default function TopologyGraph({
           )
         })}
       </svg>
+
+      {hover && (
+        <HoverCard
+          x={hover.x} y={hover.y}
+          edge={hover.edge}
+          parentOf={parentOf}
+          host={hostRef.current}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * Carte de survol d'une liaison — le détail que la carte épurée ne montre pas.
+ *
+ * `pointer-events-none` est essentiel : sans lui, la carte passe sous le
+ * curseur, déclenche le `mouseleave` du trait, disparaît, ce qui la remet sous
+ * le curseur… soit un clignotement perpétuel.
+ */
+function HoverCard({ x, y, edge, parentOf, host }: {
+  x: number
+  y: number
+  edge: TopologyEdge
+  parentOf: Map<string, string | null>
+  host: HTMLDivElement | null
+}) {
+  const rows = edgeDetails(edge, parentOf)
+  // Bascule à gauche / au-dessus quand on approche du bord, sinon la carte
+  // sort du cadre et devient illisible près des sites de la dernière colonne.
+  const flipX = host ? x - host.scrollLeft > host.clientWidth - 240 : false
+  const flipY = host ? y - host.scrollTop > host.clientHeight - 190 : false
+
+  return (
+    <div
+      className="pointer-events-none absolute z-30 w-56 rounded-lg border
+                 border-slate-200 bg-white/95 p-2.5 text-xs shadow-lg backdrop-blur"
+      style={{
+        left: flipX ? undefined : x + 14,
+        right: flipX && host ? host.scrollWidth - x + 14 : undefined,
+        top: flipY ? undefined : y + 14,
+        bottom: flipY && host ? host.scrollHeight - y + 14 : undefined,
+      }}
+    >
+      <div className="mb-1.5 font-semibold text-slate-900">
+        {edge.site_a} <span className="text-slate-400">↔</span> {edge.site_b}
+      </div>
+      <dl className="space-y-0.5">
+        {rows.map(row => (
+          <div key={row.label} className="flex justify-between gap-3">
+            <dt className="text-slate-500">{row.label}</dt>
+            <dd className={`text-right font-medium ${
+              row.tone === 'down' ? 'text-red-600'
+                : row.tone === 'muted' ? 'text-slate-400'
+                : 'text-slate-800'
+            }`}>
+              {row.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
     </div>
   )
 }
@@ -446,30 +539,72 @@ function spreadPorts(
   return out
 }
 
-// Le détail reste accessible au survol : la carte est épurée, elle n'est pas
-// muette. On y nomme les équipements DOWN — le trait dit qu'il y a une panne,
-// l'infobulle dit de quel côté.
-function edgeTooltip(edge: TopologyEdge): string {
-  const parts = [`${edge.site_a} ↔ ${edge.site_b}`]
-  const down = edge.links.flatMap(link =>
-    [link.device_a, link.device_b].filter(d => d.status === 'down').map(d => d.name),
-  )
-  if (down.length) parts.push(`hors ligne : ${[...new Set(down)].join(', ')}`)
-  parts.push(edge.medium === 'wireless' ? 'radio' : 'fibre/cuivre')
-  if (edge.health.traffic === 'active' && edge.health.traffic_mbps != null) {
-    parts.push(`trafic ${edge.health.traffic_mbps.toFixed(1)} Mb/s`)
-  } else if (edge.health.traffic === 'idle') {
-    parts.push('aucun trafic')
+function fmtRate(mbps: number): string {
+  return mbps >= 1000 ? `${(mbps / 1000).toFixed(2)} Gb/s` : `${mbps.toFixed(1)} Mb/s`
+}
+
+/**
+ * Contenu de la carte de survol d'une liaison.
+ *
+ * Le débit est donné **par direction**. ⚠️ « Descendant / montant » n'a de sens
+ * que par rapport à l'amont : on ne l'emploie donc que lorsque le graphe connaît
+ * la relation parent→enfant (arête d'arbre). Sur une boucle de redondance, il
+ * n'y a pas d'amont — les deux sens sont alors nommés par les sites, ce qui est
+ * toujours exact.
+ */
+function edgeDetails(edge: TopologyEdge, parentOf: Map<string, string | null>) {
+  const rows: { label: string; value: string; tone?: 'down' | 'muted' }[] = []
+
+  const aToB = edge.health.traffic_a_to_b_mbps
+  const bToA = edge.health.traffic_b_to_a_mbps
+  if (edge.health.traffic === 'unknown') {
+    rows.push({ label: 'Trafic', value: 'non mesuré', tone: 'muted' })
   } else {
-    parts.push('trafic non mesuré')
+    // Le parent est l'amont : ce qui en descend est le « descendant ».
+    const aIsParent = parentOf.get(edge.site_b) === edge.site_a
+    const bIsParent = parentOf.get(edge.site_a) === edge.site_b
+    const down = aIsParent ? aToB : bIsParent ? bToA : null
+    const up = aIsParent ? bToA : bIsParent ? aToB : null
+    if (down !== null || up !== null) {
+      rows.push({ label: '↓ Descendant', value: down == null ? '—' : fmtRate(down) })
+      rows.push({ label: '↑ Montant', value: up == null ? '—' : fmtRate(up) })
+    } else {
+      rows.push({
+        label: `→ ${edge.site_b}`,
+        value: aToB == null ? '—' : fmtRate(aToB),
+      })
+      rows.push({
+        label: `→ ${edge.site_a}`,
+        value: bToA == null ? '—' : fmtRate(bToA),
+      })
+    }
   }
+
   if (edge.health.capacity_mbps != null) {
-    parts.push(`capacité ${Math.round(edge.health.capacity_mbps)} Mb/s`)
+    rows.push({ label: 'Capacité', value: fmtRate(edge.health.capacity_mbps) })
   }
-  if (edge.redundant) parts.push(`${edge.links.length} liens physiques`)
-  // Les tirets ne distinguent plus les boucles : l'infobulle prend le relais.
-  if (!edge.is_tree_edge) parts.push('boucle de redondance')
-  return parts.join(' · ')
+  rows.push({
+    label: 'Support',
+    value: edge.medium === 'wireless' ? 'radio' : 'fibre / cuivre',
+  })
+  for (const side of ['port_a', 'port_b'] as const) {
+    const port = edge[side]
+    if (!port?.port) continue
+    const site = side === 'port_a' ? edge.site_a : edge.site_b
+    rows.push({
+      label: `Port ${site}`,
+      value: `n° ${port.port}${port.speed_mbps ? ` · ${fmtRate(port.speed_mbps)}` : ''}`,
+    })
+  }
+  const down = [...new Set(edge.links.flatMap(l =>
+    [l.device_a, l.device_b].filter(d => d.status === 'down').map(d => d.name)))]
+  if (down.length) rows.push({ label: 'Hors ligne', value: down.join(', '), tone: 'down' })
+  if (edge.redundant) {
+    rows.push({ label: 'Redondance', value: `${edge.links.length} liens physiques` })
+  }
+  // Les tirets ne distinguent plus les boucles : la carte prend le relais.
+  if (!edge.is_tree_edge) rows.push({ label: 'Rôle', value: 'boucle de redondance' })
+  return rows
 }
 
 /**

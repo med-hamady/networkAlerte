@@ -1045,8 +1045,9 @@ async def snmp_poll_job() -> None:
             #
             # ⚠️ Clés `fiber_*` dédiées, et non `dl/ul_throughput_mbps` : sur un
             # switch, « le débit de l'équipement » ne veut rien dire (il a 28
-            # ports), alors que « le débit de son port fibre » est précis. Ça
-            # évite aussi de l'inscrire dans les courbes de GRAPH_METRICS.
+            # ports), alors que « le débit de son port fibre » est précis.
+            # Elles SONT dans `GRAPH_METRICS` (depuis le 2026-08-11) : la fiche
+            # d'un switch fibre expose donc la courbe d'historique du backhaul.
             counter_specs: list[tuple[str, str, str, str]] = []
             if category in SWITCH_RULE_CATEGORIES and fiber_port_index and fiber_port_index > 0:
                 counter_specs.append((

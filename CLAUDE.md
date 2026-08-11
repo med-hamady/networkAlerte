@@ -695,6 +695,11 @@ descendant / 43 Mb/s montant**.
   sur le repli.
 - ⚠️ C'est une **moyenne sur l'intervalle de poll** (60 s), pas un instantané —
   comme pour le M5. Suffisant pour distinguer « ça passe » de « ça ne passe pas ».
+- Les deux clés sont dans **`GRAPH_METRICS`** : la fiche d'un switch fibre expose
+  donc la **courbe d'historique** du backhaul (24 h / 7 j / 30 j ou plage de
+  dates), au même titre qu'un LR ou un AF60. Le bouton « Plus d'infos » de
+  `DeviceDetailModal` est ouvert au type `uisp_switch` ; sur un switch **sans**
+  fibre il reste inoffensif, les onglets suivant `available_metrics`.
 - ⚠️ **Seuls les sites dont `fiber_port_index` est renseigné** (AT1 p9, CT1 p25,
   ARF1 p25) produisent ces clés. Ailleurs la liaison reste honnêtement « non
   mesuré » — et rendue **verte**, jamais jaune.
@@ -1151,7 +1156,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 ### Frontend Next.js
 | Page | Chemin | Contenu |
 |---|---|---|
-| Devices | `/devices` | Liste avec statut, dernière vue, métriques, modal détail. Sur un **LR** et sur un **AF60**, la fiche expose un bouton **« Plus d'infos — graphes d'historique »** (`MetricHistoryModal`) : courbes SVG sur 24h/7j/30j ou une plage de dates, avec **onglets** pilotés par `available_metrics` (latence Internet, capacité du lien, potentiel du lien, capacités DL/UL, débits DL/UL). Bande min/max (garde visible un pic court noyé par la moyenne du bucket), ligne de seuil (au-dessus ou en dessous selon `threshold_direction`), survol détaillé, chiffres clés, et la **cadence réelle** du relevé affichée (elle est dictée par la durée d'un tour de poll, pas par le graphe). **Les trous = périodes sans mesure**, pas des 0. Source : `/devices/{id}/metric-history` |
+| Devices | `/devices` | Liste avec statut, dernière vue, métriques, modal détail. Sur un **LR**, un **AF60** et un **switch** (courbe de son port fibre), la fiche expose un bouton **« Plus d'infos — graphes d'historique »** (`MetricHistoryModal`) : courbes SVG sur 24h/7j/30j ou une plage de dates, avec **onglets** pilotés par `available_metrics` (latence Internet, capacité du lien, potentiel du lien, capacités DL/UL, débits DL/UL). Bande min/max (garde visible un pic court noyé par la moyenne du bucket), ligne de seuil (au-dessus ou en dessous selon `threshold_direction`), survol détaillé, chiffres clés, et la **cadence réelle** du relevé affichée (elle est dictée par la durée d'un tour de poll, pas par le graphe). **Les trous = périodes sans mesure**, pas des 0. Source : `/devices/{id}/metric-history` |
 | Accès clients | `/access` | Table des LR abonnés (source UISP). Filtres dont **« Hors supervision »** : LR sans IP **et** non vu par UISP depuis `OUT_OF_SUPERVISION_DAYS` — badge ambre, **exclu du compteur « Accès actif »** (la tuile indique combien sont exclus). Distinct de « Hors ligne > 1 mois » (`long_offline`, absence prolongée vue par UISP) : ici c'est une absence de **mesure**, pas une absence constatée |
 | Anomalies détectées | `/incidents` | Anomalies actuellement détectées (lecture seule, résolution automatique) |
 | Capacité du réseau | `/capacity` | 2 cercles (LTU/airMAX) consommé vs disponible sur tout le réseau + barres par site (LTU/airMAX séparés) ; clic site → table Rockets (connectés/max + largeur). Donut SVG custom (pas de lib de charts). Inclut la section **« Capacité infra par site »** (table Site/Équip. infra/Max/Marge, marge +N vert / -N rouge) alimentée par la clé `infra` de `/network-capacity` |

@@ -625,6 +625,55 @@ async def _reconcile_single_peer(
 # Public entry point
 # ---------------------------------------------------------------------------
 
+async def _peers_in_lock_order(
+    session: AsyncSession,
+    peers: list[PeerInfo],
+) -> list[tuple[int, PeerInfo]]:
+    """Les peers à traiter, par `devices.id` croissant — et leur index D'ORIGINE.
+
+    Pourquoi cet ordre (discipline de verrouillage, pas cosmétique)
+    ---------------------------------------------------------------
+    Chaque peer traité écrit `last_discovered_at` sur sa ligne `devices`, donc la
+    verrouille jusqu'au commit du Rocket entier. En face, le sweep de ping écrit
+    `last_seen` sur les mêmes lignes, ~200 par transaction.
+
+    Or l'ordre des peers est celui où la RADIO les a rapportés : il change d'un
+    tour à l'autre. Les deux transactions prenaient donc leurs verrous en sens
+    opposés, ce que Postgres a tranché 87 fois en 24 h le 2026-08-11 :
+
+        Process A: UPDATE devices SET last_seen=…          WHERE devices.id = $3
+        Process B: UPDATE devices SET last_discovered_at=… WHERE devices.id = $3
+
+    Les deux côtés parcourent maintenant par `id` croissant, donc aucun cycle ne
+    peut se former. Voir aussi `jobs._ping_sweep` et les phases 2 des polls.
+
+    ⚠️ L'index d'origine est CONSERVÉ (`fallback_index`) : il nomme les peers
+    dépourvus de MAC. Le renuméroter selon le nouvel ordre renommerait des CPE à
+    chaque cycle, au gré de l'ordre d'annonce de la radio.
+
+    ⚠️ La résolution est un simple `SELECT` — elle ne verrouille rien, et une MAC
+    inconnue (peer à CRÉER) part en FIN de liste : sa ligne n'existe pas encore,
+    donc elle ne peut entrer en conflit avec personne.
+    """
+    indexed = list(enumerate(peers, start=1))
+    macs = {mac for _, peer in indexed if (mac := _normalised_mac(peer))}
+    if not macs:
+        return indexed
+
+    rows = await session.execute(
+        select(Device.id, Device.mac_address).where(Device.mac_address.in_(macs))
+    )
+    id_by_mac = {mac: dev_id for dev_id, mac in rows.all()}
+
+    def sort_key(item: tuple[int, PeerInfo]) -> tuple[int, int]:
+        mac = _normalised_mac(item[1])
+        dev_id = id_by_mac.get(mac) if mac else None
+        # (0, id) = ligne existante, par id ; (1, index) = création, à la fin.
+        return (0, dev_id) if dev_id is not None else (1, item[0])
+
+    return sorted(indexed, key=sort_key)
+
+
 async def reconcile_peers(
     session: AsyncSession,
     parent: Rocket,
@@ -650,7 +699,7 @@ async def reconcile_peers(
     result = ReconcileResult()
     if not peers:
         return result
-    for index, peer in enumerate(peers, start=1):
+    for index, peer in await _peers_in_lock_order(session, peers):
         try:
             await _reconcile_single_peer(session, parent, peer, index, result)
         except Exception:

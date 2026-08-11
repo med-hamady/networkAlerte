@@ -290,12 +290,31 @@ Or aucun des deux côtés n'avait d'ordre stable : le `select(Device)` du sweep
 n'avait **aucun `order_by`**, et les phases 2 des polls itéraient `fetched`, dont
 l'ordre suit l'**achèvement des requêtes réseau** — donc change à chaque tour.
 
+**Les logs Postgres nomment TOUJOURS la même paire**, dans les deux sens :
+
+```
+Process A: UPDATE devices SET last_seen=…          WHERE devices.id = $3
+Process B: UPDATE devices SET last_discovered_at=… WHERE devices.id = $3
+```
+
+`last_seen` = le sweep de ping. `last_discovered_at` = la **découverte**
+(`reconcile_peers`), qui parcourait ses peers dans l'ordre où la **radio** les a
+annoncés — donc un ordre différent à chaque tour. ⚠️ **Ordonner un seul des deux
+côtés ne sert à rien** : c'est tout le monde ou personne.
+
 **Règle à tenir : toute boucle SÉQUENTIELLE qui écrit des lignes `devices` les
 parcourt par `id` croissant.** C'est la discipline classique d'ordre de
 verrouillage : si tout le monde prend dans le même sens, aucun cycle ne peut se
 former. Appliqué au sweep de ping (`order_by(Device.id)`) et aux 5 phases 2
 (`sorted(...)`), verrouillé par
 `tests/test_snmp_poll_device_isolation.py::test_every_write_loop_takes_its_locks_in_the_same_order`.
+
+Côté découverte, `discovery_service._peers_in_lock_order` pré-résout les MAC en
+**un `SELECT`** (aucun verrou) pour trier par `devices.id`. ⚠️ L'**index d'origine
+est conservé** : il nomme les peers sans MAC, le renuméroter renommerait des CPE
+à chaque cycle. Une MAC inconnue (= création) part **en fin** de liste : sa ligne
+n'existe pas encore, elle ne peut entrer en conflit avec personne. Verrouillé par
+`tests/test_discovery_lock_order.py`.
 
 ⚠️ **Exception : un persist CONCURRENT** (`asyncio.gather` du job airOS) n'est pas
 concerné — trier un générateur ne sérialise rien. Sa protection est structurelle :

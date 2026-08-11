@@ -667,45 +667,11 @@ sont — une liaison mixte compte comme filaire, le chemin cuivre étant le plus
 capable). Les tirets ne distinguent plus les boucles (toutes radio) : c'est leur
 **couleur grise** qui s'en charge.
 
-⚠️ **`traffic="unknown"` est rendu VERT, jamais jaune.** **Jaune = « mesuré à
-zéro », jamais « pas mesuré »** — la même règle que partout ici.
-
-##### Débit d'une liaison FIBRE — dérivé des compteurs du port SFP (2026-08-11)
-
-Un switch **n'expose aucun débit instantané** en SNMP, seulement des compteurs
-cumulés (`ifHCInOctets`/`ifHCOutOctets`) — que `collect_switch_port_metrics`
-relevait déjà en `port_N_rx/tx_bytes`. Les liaisons fibre, dont les **deux bouts
-sont des switches**, restaient donc « non mesuré » alors qu'elles portent la
-dorsale.
-
-`snmp_poll_job` dérive maintenant le débit du port `fiber_port_index` par delta
-de compteurs, via le **même** `_derive_throughput_from_counters` que le LiteBeam
-M5 (qui n'a pas davantage de débit instantané). Vérifié sur `ARF1-UISP-S-Pro 409`
-(10.135.2.209, port 25) le 2026-08-11 : deux cycles à 17 s donnent **445 Mb/s
-descendant / 43 Mb/s montant**.
-
-- ⚠️ **Clés `fiber_dl/ul_throughput_mbps` dédiées**, jamais `dl/ul_throughput_mbps` :
-  sur un switch « le débit de l'équipement » ne veut rien dire (28 ports), alors
-  que « le débit de son port fibre » est précis. Ça évite aussi de l'inscrire
-  dans les courbes de `GRAPH_METRICS`.
-- ⚠️ **Le SENS tombe juste sans effort** : sur un switch, `rx` est ce qu'il
-  REÇOIT — exactement la convention des radios (`dl` = ce que l'équipement
-  reçoit). `edge_traffic` ne fait qu'un **repli** `key` → `fiber_{key}`, et toute
-  la lecture inter-sites reste inchangée. Une mesure directe l'emporte toujours
-  sur le repli.
-- ⚠️ C'est une **moyenne sur l'intervalle de poll** (60 s), pas un instantané —
-  comme pour le M5. Suffisant pour distinguer « ça passe » de « ça ne passe pas ».
-- Les deux clés sont dans **`GRAPH_METRICS`** : la fiche d'un switch fibre expose
-  donc la **courbe d'historique** du backhaul (24 h / 7 j / 30 j ou plage de
-  dates), au même titre qu'un LR ou un AF60. Le bouton « Plus d'infos » de
-  `DeviceDetailModal` est ouvert au type `uisp_switch` ; sur un switch **sans**
-  fibre il reste inoffensif, les onglets suivant `available_metrics`.
-- ⚠️ **Seuls les sites dont `fiber_port_index` est renseigné** (AT1 p9, CT1 p25,
-  ARF1 p25) produisent ces clés. Ailleurs la liaison reste honnêtement « non
-  mesuré » — et rendue **verte**, jamais jaune.
-- ⚠️ **`ifSpeed = 0` sur une cage SFP reste vrai** : ces extrémités n'ont
-  toujours **aucune pastille** de port. C'est le **débit** qu'on gagne, pas la
-  vitesse négociée.
+⚠️ **`traffic="unknown"` est rendu VERT, jamais jaune.** Le cas est massif : les
+liaisons **fibre** ont des **switches** aux deux bouts, et un switch **n'expose
+aucun débit en SNMP**. Les jaunir signalerait trois pannes de trafic permanentes
+sur la dorsale du HQ, ce qui est faux. **Jaune = « mesuré à zéro », jamais « pas
+mesuré »** — la même règle que partout ici.
 
 Le débit retenu est le **maximum** des deux extrémités (`dl+ul`) : les deux bouts
 décrivent le même lien, mais l'un peut n'avoir aucun relevé frais ; prendre le
@@ -1156,7 +1122,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 ### Frontend Next.js
 | Page | Chemin | Contenu |
 |---|---|---|
-| Devices | `/devices` | Liste avec statut, dernière vue, métriques, modal détail. Sur un **LR**, un **AF60** et un **switch** (courbe de son port fibre), la fiche expose un bouton **« Plus d'infos — graphes d'historique »** (`MetricHistoryModal`) : courbes SVG sur 24h/7j/30j ou une plage de dates, avec **onglets** pilotés par `available_metrics` (latence Internet, capacité du lien, potentiel du lien, capacités DL/UL, débits DL/UL). Bande min/max (garde visible un pic court noyé par la moyenne du bucket), ligne de seuil (au-dessus ou en dessous selon `threshold_direction`), survol détaillé, chiffres clés, et la **cadence réelle** du relevé affichée (elle est dictée par la durée d'un tour de poll, pas par le graphe). **Les trous = périodes sans mesure**, pas des 0. Source : `/devices/{id}/metric-history` |
+| Devices | `/devices` | Liste avec statut, dernière vue, métriques, modal détail. Sur un **LR** et sur un **AF60**, la fiche expose un bouton **« Plus d'infos — graphes d'historique »** (`MetricHistoryModal`) : courbes SVG sur 24h/7j/30j ou une plage de dates, avec **onglets** pilotés par `available_metrics` (latence Internet, capacité du lien, potentiel du lien, capacités DL/UL, débits DL/UL). Bande min/max (garde visible un pic court noyé par la moyenne du bucket), ligne de seuil (au-dessus ou en dessous selon `threshold_direction`), survol détaillé, chiffres clés, et la **cadence réelle** du relevé affichée (elle est dictée par la durée d'un tour de poll, pas par le graphe). **Les trous = périodes sans mesure**, pas des 0. Source : `/devices/{id}/metric-history` |
 | Accès clients | `/access` | Table des LR abonnés (source UISP). Filtres dont **« Hors supervision »** : LR sans IP **et** non vu par UISP depuis `OUT_OF_SUPERVISION_DAYS` — badge ambre, **exclu du compteur « Accès actif »** (la tuile indique combien sont exclus). Distinct de « Hors ligne > 1 mois » (`long_offline`, absence prolongée vue par UISP) : ici c'est une absence de **mesure**, pas une absence constatée |
 | Anomalies détectées | `/incidents` | Anomalies actuellement détectées (lecture seule, résolution automatique) |
 | Capacité du réseau | `/capacity` | 2 cercles (LTU/airMAX) consommé vs disponible sur tout le réseau + barres par site (LTU/airMAX séparés) ; clic site → table Rockets (connectés/max + largeur). Donut SVG custom (pas de lib de charts). Inclut la section **« Capacité infra par site »** (table Site/Équip. infra/Max/Marge, marge +N vert / -N rouge) alimentée par la clé `infra` de `/network-capacity` |

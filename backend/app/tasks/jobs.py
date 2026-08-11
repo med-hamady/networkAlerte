@@ -18,7 +18,6 @@ import functools
 import logging
 import random
 import time
-from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -188,10 +187,8 @@ async def _derive_throughput_from_counters(
     now: datetime.datetime,
     dl_counter: str,
     ul_counter: str,
-    dl_target: str = "dl_throughput_mbps",
-    ul_target: str = "ul_throughput_mbps",
 ) -> None:
-    """Derive a throughput from cumulative byte counters, in place.
+    """Derive dl/ul_throughput_mbps from cumulative byte counters, in place.
 
     For radios that expose **no instantaneous throughput at all** — the
     LiteBeam M5 (airOS 6) is the case that forced this. Its own web UI does
@@ -209,17 +206,12 @@ async def _derive_throughput_from_counters(
     the radio's rx is the customer's DOWNLINK, on an AP it is the uplink. Hence
     the explicit ``dl_counter`` / ``ul_counter`` arguments.
 
-    ``dl_target`` / ``ul_target`` name the metrics written. They exist because a
-    SWITCH also has no instantaneous throughput, and its fibre uplink is derived
-    the same way — but under ``fiber_*`` keys, so that "the switch's fibre port
-    throughput" is never confused with "the device's own radio throughput".
-
     Skipped silently when there is no previous sample, when the counter went
     backwards (device reboot — airOS resets these to 0) or when no time has
     elapsed. A skip leaves the key absent, so the graph shows a gap rather than
     a fake 0.
     """
-    wanted = {dl_counter: dl_target, ul_counter: ul_target}
+    wanted = {dl_counter: "dl_throughput_mbps", ul_counter: "ul_throughput_mbps"}
     pending = {
         counter: target
         for counter, target in wanted.items()
@@ -266,7 +258,7 @@ async def persist_device_metrics(
     unit_map: dict[str, str] | None = None,
     *,
     now: datetime.datetime | None = None,
-    throughput_from_counters: Sequence[Sequence[str]] | None = None,
+    throughput_from_counters: tuple[str, str] | None = None,
 ) -> None:
     """Persist one poll cycle of metrics, honouring the history/latest policy.
 
@@ -316,21 +308,13 @@ async def persist_device_metrics(
         text("SELECT pg_advisory_xact_lock(:k)"), {"k": int(device_id)},
     )
 
-    # Débit dérivé des compteurs, pour les équipements qui n'en publient aucun :
-    # les radios M5, et les SWITCHES sur leur port fibre (plusieurs dérivations
-    # possibles par équipement, d'où une LISTE de specs).
+    # Débit dérivé des compteurs, pour les radios qui n'en publient aucun (M5).
     # Doit tourner AVANT le collapse ci-dessous : il lit le relevé PRÉCÉDENT,
     # que l'INSERT de ce cycle remplacerait.
-    #
-    # ⚠️ Une spec unique passée à plat — `("radio_rx_bytes", "radio_tx_bytes")` —
-    # est acceptée et normalisée. Sans ce garde-fou, la boucle dépilerait le
-    # tuple CARACTÈRE PAR CARACTÈRE : un appelant historique se casserait en
-    # silence, sans que la forme fautive saute aux yeux.
-    specs = throughput_from_counters or ()
-    if specs and isinstance(specs[0], str):
-        specs = (specs,)
-    for spec in specs:
-        await _derive_throughput_from_counters(session, device_id, metrics, now, *spec)
+    if throughput_from_counters is not None:
+        await _derive_throughput_from_counters(
+            session, device_id, metrics, now, *throughput_from_counters,
+        )
 
     collapse_names = [
         name for name, value in metrics.items()
@@ -1028,44 +1012,10 @@ async def snmp_poll_job() -> None:
                         unit_map[key] = "Mbps"
                     else:
                         unit_map[key] = ""
-            # Débit de la LIAISON FIBRE, dérivé des compteurs du port SFP.
-            #
-            # Un switch n'expose aucun débit instantané en SNMP — seulement des
-            # compteurs cumulés (ifHCInOctets/ifHCOutOctets, déjà relevés
-            # ci-dessus en `port_N_rx/tx_bytes`). Sans cette dérivation, les
-            # liaisons fibre inter-sites restent « non mesuré » sur /topology,
-            # alors qu'elles portent la dorsale : vérifié sur ARF1 (10.135.2.209,
-            # port 25) le 2026-08-11, deux relevés à 14 s donnent 384 Mb/s
-            # descendant et 76 Mb/s montant.
-            #
-            # ⚠️ SENS : sur un switch, `rx` est ce qu'il REÇOIT — donc le
-            # descendant de son site. C'est exactement la convention des radios
-            # (`dl` = ce que l'équipement reçoit), ce qui laisse la lecture
-            # inter-sites inchangée.
-            #
-            # ⚠️ Clés `fiber_*` dédiées, et non `dl/ul_throughput_mbps` : sur un
-            # switch, « le débit de l'équipement » ne veut rien dire (il a 28
-            # ports), alors que « le débit de son port fibre » est précis.
-            # Elles SONT dans `GRAPH_METRICS` (depuis le 2026-08-11) : la fiche
-            # d'un switch fibre expose donc la courbe d'historique du backhaul.
-            counter_specs: list[tuple[str, str, str, str]] = []
-            if category in SWITCH_RULE_CATEGORIES and fiber_port_index and fiber_port_index > 0:
-                counter_specs.append((
-                    f"port_{fiber_port_index}_rx_bytes",
-                    f"port_{fiber_port_index}_tx_bytes",
-                    "fiber_dl_throughput_mbps",
-                    "fiber_ul_throughput_mbps",
-                ))
-                unit_map["fiber_dl_throughput_mbps"] = "Mbps"
-                unit_map["fiber_ul_throughput_mbps"] = "Mbps"
-
             # History metrics (radio_rx/tx_bytes, signal_dbm…) are appended;
             # everything else (all switch port metrics, noise, rates…) collapses
             # to a single latest row. See persist_device_metrics / HISTORY_METRICS.
-            await persist_device_metrics(
-                session, dev.id, metrics, unit_map,
-                throughput_from_counters=counter_specs,
-            )
+            await persist_device_metrics(session, dev.id, metrics, unit_map)
 
             # Delegate anomaly detection to alert engine
             await alert_engine.evaluate_device_metrics(session, dev, metrics, settings)
@@ -2016,7 +1966,7 @@ async def _collect_airmax_stations_via_aps(
                 # download), d'où l'ordre standard ici.
                 await persist_device_metrics(
                     session, lr.id, metrics, unit_map,
-                    throughput_from_counters=[("radio_rx_bytes", "radio_tx_bytes")],
+                    throughput_from_counters=("radio_rx_bytes", "radio_tx_bytes"),
                 )
                 await alert_engine.evaluate_device_metrics(
                     session, lr, dict(metrics), settings,
@@ -2758,7 +2708,7 @@ async def lr_internet_probe_job() -> None:
             if radio and any(v is not None for v in radio.values()):
                 await persist_device_metrics(
                     session, dev.id, radio, _M5_RADIO_UNITS,
-                    throughput_from_counters=[("radio_rx_bytes", "radio_tx_bytes")],
+                    throughput_from_counters=("radio_rx_bytes", "radio_tx_bytes"),
                 )
                 await alert_engine.evaluate_device_metrics(
                     session, dev, dict(radio), settings

@@ -100,10 +100,6 @@ logger = logging.getLogger(__name__)
 EDGE_METRICS: tuple[str, ...] = (
     "total_capacity_mbps", "link_potential_pct", "signal_dbm",
     "dl_throughput_mbps", "ul_throughput_mbps",
-    # Débit du port fibre d'un SWITCH, dérivé de ses compteurs SNMP par
-    # `snmp_poll_job` : c'est la seule mesure de trafic possible sur une liaison
-    # inter-sites en fibre, dont les deux bouts sont des switches.
-    "fiber_dl_throughput_mbps", "fiber_ul_throughput_mbps",
 )
 
 # Types d'équipement qui font d'un site un site d'INFRA dans notre inventaire.
@@ -517,12 +513,7 @@ def edge_traffic(end_a: dict | None, end_b: dict | None) -> dict:
     settings = get_settings()
 
     def _m(end: dict | None, key: str) -> float | None:
-        metrics = (end or {}).get("metrics") or {}
-        # Un SWITCH n'a pas de débit propre : c'est celui de son port fibre qui
-        # décrit la liaison. Même convention de sens (`dl` = ce qu'il reçoit),
-        # donc un simple repli suffit — rien d'autre ne change en aval.
-        value = metrics.get(key)
-        return value if value is not None else metrics.get(f"fiber_{key}")
+        return ((end or {}).get("metrics") or {}).get(key)
 
     def _best(*values: float | None) -> float | None:
         known = [v for v in values if v is not None]

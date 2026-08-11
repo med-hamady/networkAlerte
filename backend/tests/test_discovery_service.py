@@ -13,6 +13,7 @@ collide with production rows. notification_service is patched (no email/HTTP).
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from sqlalchemy import select
 
 from app.models.device import Lr, Rocket
 from app.services import discovery_service
@@ -167,3 +168,54 @@ async def test_no_mac_foreign_ip_creates_not_steals(db, patch_notif):
     refreshed = await db.get(Lr, foreign.id)
     assert refreshed.rocket_id == other.id
     assert refreshed.ip_address is None
+
+
+# ---------------------------------------------------------------------------
+# MAC déjà détenue par un équipement NON-LR
+# ---------------------------------------------------------------------------
+#
+# `uq_devices_mac_address` porte sur `devices`, donc sur TOUS les types, alors
+# que le lookup de la découverte ne regardait que les LR. Une MAC appartenant à
+# un Rocket / AF60 / switch échappait donc au contrôle et l'INSERT violait la
+# contrainte. Le coût n'était pas l'échec mais la SESSION EMPOISONNÉE : aucune
+# gestion d'IntegrityError n'existait, donc tout ce qui suivait dans le même
+# cycle mourait en `PendingRollbackError` (mesuré en prod le 2026-08-11 :
+# 5 violations, 9 cascades).
+
+
+async def test_mac_owned_by_a_rocket_does_not_create_an_lr(db, patch_notif):
+    """Un AP peut se voir lui-même dans sa liste de peers. Sa MAC appartient
+    déjà à un Rocket : on refuse la création au lieu de heurter la contrainte."""
+    parent = await _rocket(db, "PK1-OUEST", "10.99.0.1")
+    intruder_mac = "02:00:00:00:0a:01"
+    other_rocket = await _rocket(db, "PK1-EST", "10.99.0.7")
+    other_rocket.mac_address = intruder_mac
+    await db.flush()
+
+    res = await discovery_service.reconcile_peers(db, parent, [
+        {"mac": intruder_mac, "mgmt_ip": "10.99.1.77", "hostname": "Faux client"},
+    ])
+
+    assert res.created == []
+    # ET la session reste UTILISABLE : c'est tout l'enjeu.
+    assert (await db.execute(select(Lr).where(Lr.mac_address == intruder_mac))
+            ).scalar_one_or_none() is None
+
+
+async def test_the_session_survives_and_later_peers_are_still_created(db, patch_notif):
+    """LE test de la panne : un peer fautif ne doit plus faire perdre les
+    suivants. Avant, la violation d'unicité empoisonnait la session et tout le
+    reste du cycle mourait en cascade."""
+    parent = await _rocket(db, "PK1-OUEST", "10.99.0.1")
+    conflicting = await _rocket(db, "PK1-SUD", "10.99.0.8")
+    conflicting.mac_address = "02:00:00:00:0b:01"
+    await db.flush()
+
+    res = await discovery_service.reconcile_peers(db, parent, [
+        {"mac": "02:00:00:00:0b:01", "mgmt_ip": "10.99.1.80", "hostname": "Fautif"},
+        {"mac": "02:00:00:00:0b:02", "mgmt_ip": "10.99.1.81", "hostname": "Sain 1"},
+        {"mac": "02:00:00:00:0b:03", "mgmt_ip": "10.99.1.82", "hostname": "Sain 2"},
+    ])
+
+    created = {lr.mac_address for lr in res.created}
+    assert created == {"02:00:00:00:0b:02", "02:00:00:00:0b:03"}

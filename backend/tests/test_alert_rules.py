@@ -314,24 +314,55 @@ class TestHighRxTxErrorsRule:
 # ---------------------------------------------------------------------------
 
 class TestRuleRegistry:
-    def test_rocket_has_all_rules(self):
-        rules = get_rules_for_device("ltu_rocket")
-        rule_types = {type(r).__name__ for r in rules}
+    def test_ltu_rocket_watches_interfaces_not_per_link_quality(self):
+        """La qualité radio d'un Rocket **LTU** n'est pas jugée sur l'AP.
+
+        ⚠️ La distinction n'est pas « Rocket vs LR » mais **LTU vs airMAX**, et
+        elle tient au MIB : un airMAX expose signal/CCQ/rate pour l'AP lui-même
+        (cf. `test_airmax_rocket_does_watch_radio_quality`), un LTU n'expose que
+        l'IF-MIB. Sa qualité radio est donc celle de CHAQUE liaison client, et
+        elle est évaluée par LR — sinon tout l'AP serait jugé sur `peer[0]`, et
+        un lien dégradé se cacherait derrière un pair sain.
+
+        Ce test exigeait auparavant `SignalLowRule` & co. sur le Rocket LTU et
+        échouait depuis ce découpage.
+        """
+        rule_types = {type(r).__name__ for r in get_rules_for_device("ltu_rocket")}
         assert "RadioInterfaceDownRule" in rule_types
         assert "Eth0DownRule" in rule_types
         assert "CPEDisconnectedRule" in rule_types
-        assert "SignalLowRule" in rule_types
-        assert "CINRLowRule" in rule_types
-        assert "CCQLowRule" in rule_types
-        assert "RadioLinkDegradedRule" in rule_types
         assert "HighRxTxErrorsRule" in rule_types
+        assert "RocketClientOverloadRule" in rule_types
+        # Et surtout PAS la qualité par liaison : elle appartient au LR.
+        assert not rule_types & {
+            "SignalLowRule", "CINRLowRule", "CCQLowRule", "RadioLinkDegradedRule",
+        }
 
-    def test_lr_has_subset(self):
-        rules = get_rules_for_device("lr")
-        rule_types = {type(r).__name__ for r in rules}
-        assert "RadioInterfaceDownRule" in rule_types
-        assert "SignalLowRule" in rule_types
+    def test_lr_carries_the_per_link_quality_rules(self):
+        """Un LR porte la qualité de SA liaison, et rien de ce qui relève de l'AP.
+
+        Pas de `RadioInterfaceDownRule` : un LR n'est plus interrogé en SNMP
+        IF-MIB — ses métriques viennent du fan-out de son Rocket parent ou de
+        l'API airOS. Pas de `CPEDisconnectedRule` non plus : un abonné n'a pas
+        de CPE derrière lui.
+        """
+        rule_types = {type(r).__name__ for r in get_rules_for_device("lr")}
+        assert {"SignalLowRule", "CINRLowRule", "CCQLowRule",
+                "CINRLowULRule", "CCQLowULRule",
+                "RadioLinkDegradedRule", "LrLinkSubstandardRule"} <= rule_types
         assert "CPEDisconnectedRule" not in rule_types
+        assert "RadioInterfaceDownRule" not in rule_types
+
+    def test_airmax_rocket_does_watch_radio_quality(self):
+        """Le pendant du test LTU : sur un airMAX, la qualité EST jugée sur l'AP.
+
+        Sans ce test, l'assertion « pas de qualité radio » côté LTU se lirait
+        comme une règle générale aux Rockets, et quelqu'un la « corrigerait » un
+        jour en retirant ces règles de l'airMAX — où elles sont légitimes.
+        """
+        rule_types = {type(r).__name__ for r in get_rules_for_device("airmax_rocket")}
+        assert {"SignalLowRule", "CINRLowRule", "CCQLowRule",
+                "RadioLinkDegradedRule"} <= rule_types
 
     def test_power_no_rules(self):
         rules = get_rules_for_device("uisp_power")

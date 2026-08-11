@@ -22,6 +22,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.core.alert_constants import (
+    AT_AF60_LINK_DOWN,
+    AT_AF60_LINK_SUBSTANDARD,
+    AT_AF60_SIGNAL_LOW,
+    AT_AF60_SNR_LOW,
     AT_AIRMAX_DOWN,
     AT_BATTERY_EXTERNAL_LOW,
     AT_BATTERY_INTERNAL_LOW,
@@ -45,6 +49,7 @@ from app.core.alert_constants import (
     AT_LR_NO_TRANSIT,
     AT_LR_REASSIGNED,
     AT_MAINS_POWER_LOST,
+    AT_P2P_LINK_SUBSTANDARD,
     AT_RADIO_INTERFACE_DOWN,
     AT_RADIO_LINK_DEGRADED,
     AT_ROCKET_CLIENT_OVERLOAD,
@@ -185,6 +190,55 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,
         groupable=False,
+    ),
+    # ── Liaisons point-à-point inter-sites (AF60 60 GHz, PTP LiteBeam) ──────
+    # Les trois premières sont dans WHATSAPP_ALERT_TYPES (condition 5 de
+    # l'opérateur : « liaison P2P dégradée ») → critiques et NON groupables,
+    # comme lr_link_substandard : un backhaul porte tout un site, il ne doit pas
+    # attendre le digest de 15 min.
+    #
+    # ⚠️ Ces cinq types existaient SANS politique et tombaient sur
+    # `_FALLBACK_POLICY`. Le repli étant `groupable=False`, l'envoi restait
+    # immédiat — donc aucun défaut de comportement — mais la sévérité annoncée
+    # par l'API (`warning`) contredisait celle de l'incident réel, et rien ne
+    # documentait l'intention. Un type sans politique est une décision non prise.
+    AT_AF60_LINK_DOWN: AlertPolicy(
+        alert_type=AT_AF60_LINK_DOWN,
+        severity=Severity.CRITICAL,
+        notify_immediately=True,
+        channels=_CHANNELS_CRITICAL,
+        groupable=False,
+    ),
+    AT_AF60_LINK_SUBSTANDARD: AlertPolicy(
+        alert_type=AT_AF60_LINK_SUBSTANDARD,
+        severity=Severity.CRITICAL,
+        notify_immediately=True,
+        channels=_CHANNELS_CRITICAL,
+        groupable=False,
+    ),
+    AT_P2P_LINK_SUBSTANDARD: AlertPolicy(
+        alert_type=AT_P2P_LINK_SUBSTANDARD,
+        severity=Severity.CRITICAL,
+        notify_immediately=True,
+        channels=_CHANNELS_CRITICAL,
+        groupable=False,
+    ),
+    # Ces deux-là ne sont PAS dans WHATSAPP_ALERT_TYPES : elles ouvrent leur
+    # incident en base mais ne sont notifiées nulle part. Politique de qualité
+    # radio ordinaire (warning, groupable), comme signal_low / cinr_low.
+    AT_AF60_SIGNAL_LOW: AlertPolicy(
+        alert_type=AT_AF60_SIGNAL_LOW,
+        severity=Severity.WARNING,
+        notify_immediately=False,
+        channels=_CHANNELS_WARNING,
+        groupable=True,
+    ),
+    AT_AF60_SNR_LOW: AlertPolicy(
+        alert_type=AT_AF60_SNR_LOW,
+        severity=Severity.WARNING,
+        notify_immediately=False,
+        channels=_CHANNELS_WARNING,
+        groupable=True,
     ),
     AT_ROCKET_CLIENT_OVERLOAD: AlertPolicy(
         alert_type=AT_ROCKET_CLIENT_OVERLOAD,

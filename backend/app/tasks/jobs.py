@@ -853,13 +853,27 @@ async def client_ping_job() -> None:
     await _ping_sweep(infra=False)
 
 
-@_timed_job
-async def snmp_poll_job() -> None:
-    """
-    Collect SNMP metrics from Ubiquiti radio and switch devices.
-    Stores metrics in device_metrics, then delegates anomaly detection
-    to the alert engine (radio_interface_down, eth0_down, high_rx_tx_errors).
-    Only polls devices with status 'up' and a configured snmp_community.
+async def _run_snmp_poll(device_types: tuple[str, ...], label: str) -> None:
+    """Un tour de collecte SNMP, restreint aux `device_types` demandés.
+
+    Corps PARTAGÉ par les deux jobs qui l'appellent — `snmp_poll_job` (radios) et
+    `switch_snmp_poll_job` (switches). Rien d'autre ne les distingue que cette
+    sélection : les branches spécifiques aux switches en phase 2 sont déjà
+    gardées sur `category in SWITCH_RULE_CATEGORIES` et restent inertes côté
+    radios.
+
+    ⚠️ POURQUOI DEUX JOBS. Un seul tour traitait ~100 équipements en série, et les
+    SWITCHES arrivaient EN DERNIER (leur collecte est la plus lente : 28 ports
+    contre quelques OID pour une radio). Tout incident en amont les privait donc
+    de leur écriture — constaté en prod le 2026-08-11, 14 h sans une seule
+    métrique de switch, donc `switch_port_down` / `switch_port_speed_low` /
+    `fiber_link_down` aveugles, pendant que le job « tournait » pour les radios.
+
+    Les séparer donne aux switches leur propre cycle (17 équipements, quelques
+    secondes), leur propre domaine de panne et, en production, leur propre
+    process — le parc en compte peu et ce sont eux qui portent les alertes de
+    port. C'est le même raisonnement que la séparation des polls HTTP par famille
+    radio (cf. `_JOBS_BY_GROUP`).
     """
     base_settings = get_settings()
     async with async_session_factory() as _ts_session:
@@ -873,7 +887,7 @@ async def snmp_poll_job() -> None:
             select(Device).where(
                 Device.status == "up",
                 Device.snmp_community.is_not(None),
-                Device.device_type.in_(("rocket", "uisp_switch")),
+                Device.device_type.in_(device_types),
             )
         )
         devices = list(result.scalars().all())
@@ -884,10 +898,10 @@ async def snmp_poll_job() -> None:
     # SNMP MIB can't. The airMAX Rocket SNMP poll below still discovers them.
 
     if not devices:
-        logger.debug("No SNMP-eligible devices — skipping SNMP poll")
+        logger.debug("SNMP %s — aucun équipement éligible, tour ignoré", label)
         return
 
-    logger.info("SNMP poll — checking %d device(s)", len(devices))
+    logger.info("SNMP %s — %d équipement(s)", label, len(devices))
 
     # Snapshot the fields both phases need (read from the already-loaded
     # instances). Switch-only columns (max_ports / rocket_port_index /
@@ -973,7 +987,20 @@ async def snmp_poll_job() -> None:
 
     # ── Phase 2 : persist + alert engine + découverte + ports switch (série DB) ──
     snap_by_id = {s[0]: s for s in targets}
-    for dev_id, (metrics, airmax_peers, channel_width_mhz) in fetched.items():
+    # ORDRE DÉTERMINISTE (par id), et non l'ordre d'arrivée du `gather`.
+    #
+    # Insérer une métrique pose un `KEY SHARE` sur la ligne `devices` parente
+    # (clé étrangère `device_metrics.device_id`), qui entre en conflit avec les
+    # `UPDATE devices` des sweeps de ping. Deux transactions qui prennent ces
+    # verrous dans un ORDRE DIFFÉRENT s'interbloquent — et l'ordre de `fetched`
+    # varie d'un cycle à l'autre, puisqu'il suit l'ordre d'ACHÈVEMENT des
+    # requêtes SNMP. Trier donne à chaque tour la même séquence, ce qui supprime
+    # cette source d'inversion.
+    #
+    # ⚠️ Ça RÉDUIT les interblocages, ça ne les élimine pas : les autres jobs
+    # doivent adopter le même ordre pour que la garantie soit complète. Le
+    # garde-fou par équipement ci-dessous reste donc indispensable.
+    for dev_id, (metrics, airmax_peers, channel_width_mhz) in sorted(fetched.items()):
         (_id, _name, _ip, _community, category, _mp, rocket_port_index,
          port_min_speed, fiber_port_index, _airos_user, _airos_pwd) = snap_by_id[dev_id]
         # ⚠️ ISOLATION PAR ÉQUIPEMENT — ne jamais retirer.
@@ -1157,6 +1184,29 @@ async def snmp_poll_job() -> None:
                 _name, dev_id, exc,
             )
             continue
+
+
+@_timed_job
+async def snmp_poll_job() -> None:
+    """Collecte SNMP des RADIOS (Rockets LTU / airMAX).
+
+    Les switches ont leur propre job (`switch_snmp_poll_job`) : voir
+    `_run_snmp_poll` pour la raison — ils étaient servis en dernier et perdaient
+    leur écriture au moindre incident amont.
+    """
+    await _run_snmp_poll(("rocket",), "radios")
+
+
+@_timed_job
+async def switch_snmp_poll_job() -> None:
+    """Collecte SNMP des SWITCHES — état et vitesse des ports, lien fibre.
+
+    Séparé des radios parce que c'est lui qui porte les alertes de port
+    (`switch_port_down`, `switch_port_speed_low`, `fiber_link_down`) et que le
+    parc ne compte qu'une quinzaine de switches : un tour dure quelques secondes,
+    au lieu d'attendre la centaine de radios. Voir `_run_snmp_poll`.
+    """
+    await _run_snmp_poll(("uisp_switch",), "switches")
 
 
 async def switch_port_mapping_job() -> None:
@@ -3559,6 +3609,10 @@ _PING_LR_JOB_IDS = {"client_ping"}
 # par minute. Un process par job = aucune famine croisée. AF60 seul tombe à
 # quelques secondes/tour ; ltu/airos restent lents par leur propre phase 2 (à
 # optimiser séparément) mais ne ralentissent plus personne.
+# Les SWITCHES dans leur propre process : ils portent les alertes de port et ne
+# doivent dépendre ni du rythme ni des incidents des ~100 radios (14 h de cécité
+# constatées le 2026-08-11 pour cette raison).
+_POLL_SWITCH_JOB_IDS = {"switch_snmp_poll"}
 _POLL_AF60_JOB_IDS = {"af60_api_poll"}
 _POLL_LTU_JOB_IDS = {"ltu_api_poll"}
 _POLL_AIROS_JOB_IDS = {"airos_api_poll"}
@@ -3568,6 +3622,7 @@ _JOBS_BY_GROUP = {
     "fast": _FAST_JOB_IDS,
     "heavy": _HEAVY_JOB_IDS,
     "ping-lr": _PING_LR_JOB_IDS,
+    "poll-switch": _POLL_SWITCH_JOB_IDS,
     "poll-af60": _POLL_AF60_JOB_IDS,
     "poll-ltu": _POLL_LTU_JOB_IDS,
     "poll-airos": _POLL_AIROS_JOB_IDS,
@@ -3614,7 +3669,14 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
     scheduler.add_job(
         snmp_poll_job,
         trigger="interval", seconds=settings.snmp_interval_seconds,
-        id="snmp_poll", name="SNMP metrics poll",
+        id="snmp_poll", name="SNMP metrics poll (radios)",
+        replace_existing=True,
+        **safety,
+    )
+    scheduler.add_job(
+        switch_snmp_poll_job,
+        trigger="interval", seconds=settings.switch_snmp_interval_seconds,
+        id="switch_snmp_poll", name="SNMP metrics poll (switches)",
         replace_existing=True,
         **safety,
     )

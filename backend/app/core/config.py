@@ -137,6 +137,12 @@ class Settings(BaseSettings):
     # le sonder aussi souvent — ça allège fping et le médium radio.
     client_ping_interval_seconds: int = 60
     snmp_interval_seconds: int = 60
+    # Intervalle du poll SNMP des SWITCHES, séparé de celui des radios.
+    # Le parc n'en compte qu'une quinzaine et leur collecte tient en quelques
+    # secondes, alors qu'ils portent les alertes de port (switch_port_down,
+    # switch_port_speed_low, fiber_link_down). Les servir à leur propre rythme
+    # évite qu'ils attendent — ou perdent — le tour des ~100 radios.
+    switch_snmp_interval_seconds: int = 60
     power_interval_seconds: int = 30
 
     # Warning digest — interval (minutes) between batched warning notifications

@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import TypedDict
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.alert_constants import (
@@ -221,6 +222,29 @@ async def _find_lr_by_mac(session: AsyncSession, mac: str) -> Lr | None:
     return res.scalar_one_or_none()
 
 
+async def _mac_held_by_non_lr(session: AsyncSession, mac: str) -> Device | None:
+    """L'équipement NON-LR qui détient déjà cette MAC, s'il existe.
+
+    ⚠️ `uq_devices_mac_address` porte sur **`devices`**, donc sur TOUS les types —
+    alors que `_find_lr_by_mac` ne regarde que les LR. Une MAC appartenant à un
+    Rocket, un AF60, un PTP LiteBeam ou un switch échappait donc au lookup, et la
+    création partait quand même : `INSERT` → `UniqueViolationError`.
+
+    Le coût n'était pas l'échec lui-même mais la SESSION EMPOISONNÉE. Aucune
+    gestion d'`IntegrityError` n'existait, donc tout ce qui suivait dans la même
+    session mourait en `PendingRollbackError` — mesuré en prod le 2026-08-11 :
+    5 violations, 9 cascades.
+
+    Le cas se produit vraiment : un AP peut se voir lui-même dans sa liste de
+    peers, et un équipement reclassé (rocket → ptp_litebeam) garde sa MAC pendant
+    qu'un poll la « redécouvre » comme station.
+    """
+    res = await session.execute(
+        select(Device).where(Device.mac_address == mac, Device.device_type != "lr")
+    )
+    return res.scalars().first()
+
+
 async def _find_lr_by_ip(session: AsyncSession, ip: str, rocket_id: int | None) -> Lr | None:
     """Lookup an LR by IP, scoped to a single Rocket.
 
@@ -397,6 +421,20 @@ async def _reconcile_single_peer(
             )
             return None
 
+        # La MAC appartient-elle déjà à un équipement NON-LR ? Le lookup ci-dessus
+        # ne regarde que les LR, mais la contrainte d'unicité porte sur TOUS les
+        # équipements : créer ici lèverait une UniqueViolationError et
+        # empoisonnerait la session pour tout le reste du cycle.
+        if mac:
+            holder = await _mac_held_by_non_lr(session, mac)
+            if holder is not None:
+                logger.warning(
+                    "Discovery: MAC %s déjà détenue par %s '%s' (%s) — création du "
+                    "LR abandonnée (un équipement d'infra n'est pas un abonné)",
+                    mac, holder.device_type, holder.name, holder.ip_address,
+                )
+                return None
+
         # The IP may still be bound to a stale LR row (previous DHCP lease).
         # Free it from that stale holder so we can take it; refuse only if it
         # belongs to an operator device (Rocket/Switch/Power), never an LR.
@@ -435,8 +473,23 @@ async def _reconcile_single_peer(
             # right default at creation means the feature works out of the box.
             lan_interface=client_block_service.default_lan_interface(model_variant),
         )
-        session.add(device)
-        await session.flush()  # populate device.id for the lifecycle incident
+        # POINT DE REPRISE autour de l'insertion : deux jobs de polling peuvent
+        # découvrir la même station dans le même instant, et le contrôle de MAC
+        # ci-dessus ne ferme pas cette course. Sans savepoint, la violation
+        # d'unicité rendrait la session inutilisable pour TOUT le reste du cycle
+        # (`PendingRollbackError` en cascade) ; avec, seul ce `INSERT` est annulé
+        # et l'appelant poursuit ses autres équipements.
+        try:
+            async with session.begin_nested():
+                session.add(device)
+                await session.flush()  # populate device.id for the lifecycle incident
+        except IntegrityError as exc:
+            logger.warning(
+                "Discovery: création du LR (mac=%s ip=%s) refusée par la base — "
+                "l'équipement existe déjà (course entre deux polls) : %s",
+                mac or "?", ip, exc.orig,
+            )
+            return None
 
         result.created.append(device)
         logger.info(

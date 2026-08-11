@@ -85,34 +85,33 @@ async def _block_one(
     results: dict[str, list],
 ) -> None:
     """Resolve one MAC to its LR and block it (own session, safe under gather)."""
-    async with sem:
-        async with async_session_factory() as session:
-            lr = await client_block_service.find_lr_by_mac(session, mac)
-            if lr is None:
-                results["not_found"].append((mac, label))
-                return
-            if dry_run:
-                results["would_block"].append((mac, label, lr.name))
-                return
-            try:
-                ok, msg, evidence = await client_block_service.block_client(
-                    session, lr, reason=reason, mode=mode
-                )
-            except Exception as exc:  # never let one LR abort the batch
-                await session.rollback()
-                results["pending"].append((mac, label, lr.name, f"exception: {exc}"))
-                return
-            # Même journal que les ordres du système de paiement — la migration de
-            # masse est justement ce qu'on voudra pouvoir relire client par client.
-            fai_audit.log_action(
-                "BLOCK", ok=ok, mac=lr.mac_address, name=lr.name,
-                mode=lr.block_mode, source="script", message=msg,
-                evidence=evidence,
+    async with sem, async_session_factory() as session:
+        lr = await client_block_service.find_lr_by_mac(session, mac)
+        if lr is None:
+            results["not_found"].append((mac, label))
+            return
+        if dry_run:
+            results["would_block"].append((mac, label, lr.name))
+            return
+        try:
+            ok, msg, evidence = await client_block_service.block_client(
+                session, lr, reason=reason, mode=mode
             )
-            if ok:
-                results["enforced"].append((mac, label, lr.name))
-            else:
-                results["pending"].append((mac, label, lr.name, msg))
+        except Exception as exc:  # never let one LR abort the batch
+            await session.rollback()
+            results["pending"].append((mac, label, lr.name, f"exception: {exc}"))
+            return
+        # Même journal que les ordres du système de paiement — la migration de
+        # masse est justement ce qu'on voudra pouvoir relire client par client.
+        fai_audit.log_action(
+            "BLOCK", ok=ok, mac=lr.mac_address, name=lr.name,
+            mode=lr.block_mode, source="script", message=msg,
+            evidence=evidence,
+        )
+        if ok:
+            results["enforced"].append((mac, label, lr.name))
+        else:
+            results["pending"].append((mac, label, lr.name, msg))
 
 
 def _print_report(results: dict[str, list], invalid: list, dry_run: bool) -> None:

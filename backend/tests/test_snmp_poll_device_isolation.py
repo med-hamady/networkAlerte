@@ -84,3 +84,48 @@ def test_a_failing_switch_does_not_hide_the_other_switch():
 
 def test_nothing_is_lost_when_no_device_fails():
     assert _run_serial_persist(_ALL, failing_id=None, guard=True) == _ALL
+
+
+# ---------------------------------------------------------------------------
+# Séparation radios / switches en deux jobs, et donc deux process
+# ---------------------------------------------------------------------------
+
+
+def test_switch_poll_is_a_job_of_its_own():
+    """Les switches ne partagent plus le tour des ~100 radios.
+
+    Ils étaient traités EN DERNIER (collecte la plus lente : 28 ports), donc tout
+    incident amont les privait de leur écriture. Les deux jobs appellent le MÊME
+    corps, seule la sélection change.
+    """
+    from app.tasks import jobs
+
+    assert hasattr(jobs, "switch_snmp_poll_job")
+    assert hasattr(jobs, "snmp_poll_job")
+    assert hasattr(jobs, "_run_snmp_poll")
+
+
+def test_each_poll_runs_in_its_own_process_group():
+    """`switch_snmp_poll` a son propre groupe : un conteneur dédié en prod, donc
+    aucune famine croisée avec les radios."""
+    from app.tasks import jobs
+
+    assert jobs._JOBS_BY_GROUP["poll-switch"] == {"switch_snmp_poll"}
+    # Et il n'est PAS resté dans "heavy" — sinon les deux tourneraient ensemble.
+    assert "switch_snmp_poll" not in jobs._JOBS_BY_GROUP["heavy"]
+    assert "snmp_poll" in jobs._JOBS_BY_GROUP["heavy"]
+
+
+def test_phase_two_iterates_devices_in_a_stable_order():
+    """L'ordre d'arrivée du `gather` varie d'un cycle à l'autre ; insérer une
+    métrique pose un KEY SHARE sur la ligne `devices` parente, qui entre en
+    conflit avec les UPDATE des sweeps de ping. Un ordre variable = inversion de
+    verrous = interblocage. Le tri supprime cette source."""
+    import inspect
+
+    from app.tasks import jobs
+
+    src = inspect.getsource(jobs._run_snmp_poll)
+    assert "sorted(fetched.items())" in src, (
+        "la phase 2 doit parcourir les équipements dans un ordre déterministe"
+    )

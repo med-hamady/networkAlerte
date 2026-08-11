@@ -53,53 +53,52 @@ def _load_macs(path: str) -> list[str]:
 async def _unblock_one(
     sem: asyncio.Semaphore, mac: str, dry_run: bool, results: dict[str, list]
 ) -> None:
-    async with sem:
-        async with async_session_factory() as session:
-            lr = await client_block_service.find_lr_by_mac(session, mac)
-            if lr is None:
-                results["not_found"].append(mac)
-                return
-            if not lr.client_blocked:
-                results["not_blocked"].append((mac, lr.name))
-                return
+    async with sem, async_session_factory() as session:
+        lr = await client_block_service.find_lr_by_mac(session, mac)
+        if lr is None:
+            results["not_found"].append(mac)
+            return
+        if not lr.client_blocked:
+            results["not_blocked"].append((mac, lr.name))
+            return
 
-            # Jamais appliqué sur le LR → rien à défaire sur l'équipement.
-            if lr.client_block_enforced_at is None:
-                if dry_run:
-                    results["would_clear"].append((mac, lr.name))
-                    return
-                lr.client_blocked = False
-                lr.client_blocked_at = None
-                lr.client_blocked_reason = None
-                lr.unblock_pending = False
-                lr.block_unenforceable_reason = None
-                await session.commit()
-                fai_audit.log_action(
-                    "UNBLOCK", ok=True, mac=lr.mac_address, name=lr.name,
-                    mode=lr.block_mode, source="script",
-                    message="Rollback : blocage jamais appliqué sur le LR, intention effacée.",
-                )
-                results["cleared"].append((mac, lr.name))
-                return
-
-            # Réellement coupé → rétablissement SSH.
+        # Jamais appliqué sur le LR → rien à défaire sur l'équipement.
+        if lr.client_block_enforced_at is None:
             if dry_run:
-                results["would_restore"].append((mac, lr.name))
+                results["would_clear"].append((mac, lr.name))
                 return
-            try:
-                ok, msg, evidence = await client_block_service.unblock_client(session, lr)
-            except Exception as exc:  # une erreur ne doit pas arrêter le lot
-                await session.rollback()
-                results["pending"].append((mac, lr.name, f"exception: {exc}"))
-                return
+            lr.client_blocked = False
+            lr.client_blocked_at = None
+            lr.client_blocked_reason = None
+            lr.unblock_pending = False
+            lr.block_unenforceable_reason = None
+            await session.commit()
             fai_audit.log_action(
-                "UNBLOCK", ok=ok, mac=lr.mac_address, name=lr.name,
-                mode=lr.block_mode, source="script", message=msg,
-                evidence=evidence,
+                "UNBLOCK", ok=True, mac=lr.mac_address, name=lr.name,
+                mode=lr.block_mode, source="script",
+                message="Rollback : blocage jamais appliqué sur le LR, intention effacée.",
             )
-            (results["restored"] if ok else results["pending"]).append(
-                (mac, lr.name) if ok else (mac, lr.name, msg)
-            )
+            results["cleared"].append((mac, lr.name))
+            return
+
+        # Réellement coupé → rétablissement SSH.
+        if dry_run:
+            results["would_restore"].append((mac, lr.name))
+            return
+        try:
+            ok, msg, evidence = await client_block_service.unblock_client(session, lr)
+        except Exception as exc:  # une erreur ne doit pas arrêter le lot
+            await session.rollback()
+            results["pending"].append((mac, lr.name, f"exception: {exc}"))
+            return
+        fai_audit.log_action(
+            "UNBLOCK", ok=ok, mac=lr.mac_address, name=lr.name,
+            mode=lr.block_mode, source="script", message=msg,
+            evidence=evidence,
+        )
+        (results["restored"] if ok else results["pending"]).append(
+            (mac, lr.name) if ok else (mac, lr.name, msg)
+        )
 
 
 def _report(results: dict[str, list], dry_run: bool) -> None:

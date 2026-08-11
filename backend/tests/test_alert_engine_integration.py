@@ -30,12 +30,25 @@ def patch_notif():
         yield mock
 
 
-async def _make_rocket(db) -> Device:
-    """Insert a minimal LTU Rocket device and return it."""
+async def _make_rocket(db, radio_tech="airmax") -> Device:
+    """Insère un Rocket de base station et le renvoie.
+
+    ⚠️ airMAX PAR DÉFAUT, et ce n'est pas anodin. Les règles de qualité radio
+    (`signal_low`, `ccq_low`, `cinr_low`, `radio_link_degraded`) ne s'appliquent
+    à un AP que sur la famille **airMAX** : son MIB Enterprise expose le signal,
+    le CCQ et le rate de l'AP lui-même. Un Rocket **LTU** n'expose que l'IF-MIB —
+    sa qualité radio est celle de CHAQUE liaison client, donc évaluée par LR
+    (cf. `_ROCKET_RULES` vs `_AIRMAX_ROCKET_RULES` dans `alert_rules`).
+
+    Ces tests étaient écrits sur un Rocket LTU et attendaient des incidents
+    `signal_low` / `ccq_low` / `cinr_low` : ils n'observaient plus rien depuis que
+    la distinction existe. Le `radio_tech` reste paramétrable pour les tests qui
+    portent sur les règles d'interface, communes aux deux familles.
+    """
     device = Rocket(
         name="Test Rocket",
         ip_address="10.99.0.1",
-        radio_tech="ltu",
+        radio_tech=radio_tech,
         status="up",
     )
     db.add(device)

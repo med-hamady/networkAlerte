@@ -6,11 +6,11 @@ bad cycles required before an alert is opened, and immediate resolution
 when the condition clears.
 """
 
-import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.core.config import Settings
 from app.services.alert_engine import evaluate_device_metrics
 
 # ---------------------------------------------------------------------------
@@ -18,7 +18,22 @@ from app.services.alert_engine import evaluate_device_metrics
 # ---------------------------------------------------------------------------
 
 def make_settings(**overrides):
-    defaults = dict(
+    """Réglages du moteur : les VRAIS défauts, puis les valeurs voulues par le test.
+
+    ⚠️ Cette fabrique était un `SimpleNamespace` d'une quinzaine de clés écrites à
+    la main. Elle dérivait donc à chaque nouveau seuil lu par une règle : la
+    dernière en date (`lr_link_potential_min_pct_ltu`, de `LrLinkSubstandardRule`)
+    faisait échouer les tests avec un `AttributeError` qui ne disait rien du vrai
+    sujet. Partir de `Settings()` la rend complète par construction — un seuil
+    ajouté demain ne cassera plus ces tests.
+
+    Les valeurs ci-dessous restent posées explicitement : elles ne reprennent pas
+    les défauts de production, elles fixent le terrain des assertions (seuils de
+    déclenchement à 2 cycles, bandes signal/CCQ/CINR connues). Un test qui suivrait
+    les réglages de prod changerait de sens au premier ajustement d'un opérateur.
+    """
+    settings = Settings()
+    fixed = dict(
         signal_warning_dbm=-75,
         signal_critical_dbm=-80,
         signal_tolerance_dbm=0.0,
@@ -31,12 +46,17 @@ def make_settings(**overrides):
         signal_failure_threshold=2,
         cinr_failure_threshold=2,
         ccq_failure_threshold=2,
-        capacity_failure_threshold=3,
         error_failure_threshold=2,
         radio_degraded_failure_threshold=2,
     )
-    defaults.update(overrides)
-    return types.SimpleNamespace(**defaults)
+    fixed.update(overrides)
+    for key, value in fixed.items():
+        # `Settings` rejette un champ inconnu : un réglage supprimé du produit
+        # (ce fut le cas de `capacity_failure_threshold`, retiré avec les règles
+        # de capacité) échoue donc BRUYAMMENT ici, au lieu de rester une clé
+        # morte que personne ne remarque dans un SimpleNamespace.
+        setattr(settings, key, value)
+    return settings
 
 
 def make_device(rule_category="ltu_rocket"):
@@ -66,18 +86,29 @@ def make_alert_state(failure_count=0, last_metric_value=None):
 # Helper: create a mock DB that returns a controllable AlertState
 # ---------------------------------------------------------------------------
 
-def make_mock_db(failure_count=0, last_metric_value=None):
-    """Return an AsyncMock db that yields a given AlertState on _get_or_create_state."""
-    db = AsyncMock()
-    state = make_alert_state(failure_count=failure_count, last_metric_value=last_metric_value)
+def _make_execute(state=None):
+    """Mock d'`execute` couvrant les DEUX requêtes du moteur.
 
+    ⚠️ Un `AsyncMock()` nu ne suffit pas : `evaluate_device_metrics` lit aussi
+    les incidents OUVERTS (bande d'hystérésis), et `.scalars()` sur un AsyncMock
+    rend une COROUTINE — d'où `'coroutine' object has no attribute 'all'`. Le
+    harnais doit donc rendre un résultat synchrone, comme le vrai `Result`.
+    """
     async def mock_execute(query):
         result = MagicMock()
         result.scalar_one_or_none.return_value = state
         result.scalars.return_value.all.return_value = []
         return result
 
-    db.execute = mock_execute
+    return mock_execute
+
+
+def make_mock_db(failure_count=0, last_metric_value=None):
+    """Return an AsyncMock db that yields a given AlertState on _get_or_create_state."""
+    db = AsyncMock()
+    state = make_alert_state(failure_count=failure_count, last_metric_value=last_metric_value)
+
+    db.execute = _make_execute(state)
     db.flush = AsyncMock()
     db.add = MagicMock()
     return db, state
@@ -140,6 +171,7 @@ async def test_signal_bad_third_cycle_opens_incident():
     interference where earlier rules reset the shared mock state to 0.
     """
     db = AsyncMock()
+    db.execute = _make_execute()
     db.flush = AsyncMock()
     db.add = MagicMock()
 
@@ -149,7 +181,11 @@ async def test_signal_bad_third_cycle_opens_incident():
     async def mock_get_or_create(db, device_id, alert_type):
         return signal_state if alert_type == "signal_low" else other_state
 
-    device = make_device()
+    # ⚠️ `rule_category="lr"` et non le Rocket par défaut : la qualité radio
+    # (signal / CCQ / CINR) est évaluée PAR LIAISON depuis 2026, donc sur le LR.
+    # Sur un Rocket, `SignalLowRule` n'est plus dans le jeu de règles et le test
+    # n'observait plus rien — il échouait sur `'signal_low' in []`.
+    device = make_device("lr")
     settings = make_settings()
     opened_incident = MagicMock()
     opened_incident.id = 42
@@ -176,7 +212,11 @@ async def test_signal_bad_third_cycle_opens_incident():
 async def test_signal_recovers_resolves_incident():
     """Good signal after bad cycles → resolve called, counter reset."""
     db, state = make_mock_db(failure_count=3)  # was in alert state
-    device = make_device()
+    # ⚠️ `rule_category="lr"` et non le Rocket par défaut : la qualité radio
+    # (signal / CCQ / CINR) est évaluée PAR LIAISON depuis 2026, donc sur le LR.
+    # Sur un Rocket, `SignalLowRule` n'est plus dans le jeu de règles et le test
+    # n'observait plus rien — il échouait sur `'signal_low' in []`.
+    device = make_device("lr")
     settings = make_settings()
 
     resolved_incident = MagicMock()

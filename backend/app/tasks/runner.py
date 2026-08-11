@@ -11,6 +11,7 @@ In dev the single backend container keeps running the scheduler in-process
 (SCHEDULER_ENABLED=true by default) — no change.
 """
 import asyncio
+import contextlib
 import logging
 import signal
 
@@ -29,13 +30,11 @@ async def _run() -> None:
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
+        # add_signal_handler unsupported on Windows; this runner only ships in
+        # the Linux production image so the fallback is just belt-and-braces for
+        # local sanity testing.
+        with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, stop_event.set)
-        except NotImplementedError:
-            # add_signal_handler unsupported on Windows; this runner only
-            # ships in the Linux production image so the fallback is just
-            # belt-and-braces for local sanity testing.
-            pass
 
     await stop_event.wait()
     logger.info("Scheduler runner received shutdown signal")

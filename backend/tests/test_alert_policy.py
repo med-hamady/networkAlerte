@@ -20,6 +20,7 @@ from app.core.alert_constants import (
     CHANNEL_VALUES,
     KNOWN_ALERT_TYPES,
     SEVERITY_VALUES,
+    WHATSAPP_ALERT_TYPES,
     NotificationEvent,
     Severity,
 )
@@ -65,12 +66,26 @@ def test_critical_severity_implies_notify_immediately():
                 f"{at} is critical but does not notify immediately"
 
 
-def test_warning_default_is_not_immediate():
-    """Warnings should not page on their own — they ride deferred channels."""
+def test_a_warning_that_can_be_pushed_is_never_immediate():
+    """Un warning RÉELLEMENT poussé ne doit pas alerter seul — il passe par le
+    digest.
+
+    ⚠️ Portée restreinte à `WHATSAPP_ALERT_TYPES`, et c'est délibéré. La version
+    précédente exigeait `notify_immediately is False` pour TOUT warning, et
+    échouait sur trois types — `battery_low_warning`, `mains_power_lost`,
+    `lr_reassigned` — dont AUCUN n'est dans la liste blanche : ils ouvrent leur
+    incident en base et ne sont notifiés nulle part. Leur `notify_immediately`
+    est donc sans effet, et il est délibéré (cf. les commentaires d'intention
+    dans `alert_policy`). Le test interdisait une chose qui n'arrive pas, et
+    masquait celle qui compte.
+
+    Reste verrouillé le vrai risque : ajouter un warning à la liste blanche en
+    le laissant immédiat, ce qui le ferait sonner hors digest.
+    """
     for at, policy in ALERT_POLICIES.items():
-        if policy.severity == Severity.WARNING:
+        if policy.severity == Severity.WARNING and at in WHATSAPP_ALERT_TYPES:
             assert policy.notify_immediately is False, \
-                f"{at} is warning but flagged immediate (review intent)"
+                f"{at} est un warning POUSSÉ sur WhatsApp mais marqué immédiat"
 
 
 def test_known_alert_types_are_alphabetically_unique():

@@ -148,6 +148,45 @@ services:
   # que ses ~30 fetches HTTP async y étaient affamés par les threads SSH (GIL) et
   # par les tours ltu/airos de plusieurs minutes. Seul, son tour tombe à quelques
   # secondes → la courbe débit/capacité de la fiche a un point par minute.
+  # Scheduler "poll-switch" : le poll SNMP des SWITCHES, SEUL.
+  #
+  # ⚠️ Isolé pour une raison vécue, pas par symétrie. Les switches partageaient le
+  # tour des ~100 radios et, leur collecte étant la plus lente (28 ports), ils
+  # étaient traités EN DERNIER : tout incident amont les privait de leur écriture.
+  # Constaté le 2026-08-11 — 14 h sans une seule métrique de switch, donc
+  # switch_port_down / switch_port_speed_low / fiber_link_down aveugles, pendant
+  # que le job « tournait » normalement pour les radios.
+  #
+  # Le parc n'en compte qu'une quinzaine : un tour dure quelques secondes.
+  scheduler-poll-switch:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./backend:/app
+    environment:
+      SCHEDULER_ENABLED: "true"
+      RUN_MODE: "scheduler"
+      SCHEDULER_GROUP: "poll-switch"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          # ~17 switches, SNMP async, phase 2 courte.
+          memory: 384m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
   scheduler-poll-af60:
     build:
       context: ./backend

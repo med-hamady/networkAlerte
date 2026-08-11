@@ -65,6 +65,22 @@ class Settings(BaseSettings):
     # (clé paiement, master api_key ou session).
     lr_verify_api_key: str = ""
 
+    # Clé dédiée à la SEULE route POST /uisp/assign (association équipement ↔
+    # client CRM), tenue par le système de paiement qui adopte les équipements
+    # nouvellement installés. Scellée à cette route : elle n'ouvre ni /uisp/sync
+    # (qui réécrit l'inventaire), ni block/unblock, ni le reste de l'API.
+    #
+    # ⚠️ Elle existe parce que `/uisp/assign` est atteignable sur la VIP publique
+    # .229, laquelle sert l'API ENTIÈRE (contrairement au listener .233 qui ne
+    # sert que /fai). Sans clé cloisonnée, faire consommer cette route par un
+    # tiers oblige à lui confier `api_key` — c.-à-d. `DELETE /devices/{id}` et
+    # `/uisp/sync` par la même occasion. C'est la situation constatée le
+    # 2026-08-11, à l'origine de cette clé.
+    #
+    # Vide = pas de clé dédiée ; /uisp/assign retombe alors sur l'auth normale
+    # (master api_key ou session), donc sur exactement ce qu'on veut éviter.
+    uisp_assign_api_key: str = ""
+
     # Journal d'audit des blocages / déblocages (une ligne par action). Fichier
     # texte, dans un volume bind-monté → survit aux redéploiements.
     fai_log_path: str = "/app/logs/fai_actions.log"
@@ -974,6 +990,30 @@ class Settings(BaseSettings):
             errors.append("API_KEY must be set (and non-empty) when APP_ENV=production")
         if self.postgres_password in ("", "supervisor_dev_password"):
             errors.append("POSTGRES_PASSWORD must be set to a strong value in production")
+
+        # Chaque clé cloisonnée doit être une valeur PROPRE. Deux variables
+        # portant la même chaîne annulent le cloisonnement sans rien casser de
+        # visible : le tiers qui détient l'une détient l'autre, et les tests
+        # d'isolation passent toujours (ils comparent des comparateurs, pas des
+        # valeurs de déploiement). Le seul endroit où l'erreur peut être
+        # attrapée est donc ici, au démarrage.
+        scoped = {
+            "API_KEY": self.api_key,
+            "FAI_API_KEY": self.fai_api_key,
+            "LR_VERIFY_API_KEY": self.lr_verify_api_key,
+            "UISP_ASSIGN_API_KEY": self.uisp_assign_api_key,
+        }
+        seen: dict[str, str] = {}
+        for name, value in scoped.items():
+            if not value:
+                continue  # clé non distribuée — absente, pas dupliquée
+            if value in seen:
+                errors.append(
+                    f"{name} must differ from {seen[value]} — sharing one value between "
+                    "two keys defeats the scoping: whoever holds one holds both",
+                )
+            else:
+                seen[value] = name
 
         if errors:
             raise ValueError(

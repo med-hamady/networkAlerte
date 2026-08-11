@@ -74,6 +74,14 @@ def _lr_verify_api_key_matches(x_api_key: str | None) -> bool:
     return hmac.compare_digest(x_api_key or "", settings.lr_verify_api_key)
 
 
+def _uisp_assign_api_key_matches(x_api_key: str | None) -> bool:
+    """True if the header equals the dedicated /uisp/assign key (timing-safe)."""
+    settings = get_settings()
+    if not settings.uisp_assign_api_key:
+        return False  # no dedicated key — /uisp/assign falls back to normal auth
+    return hmac.compare_digest(x_api_key or "", settings.uisp_assign_api_key)
+
+
 async def require_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -147,3 +155,28 @@ async def require_verify_client(
     if _lr_verify_api_key_matches(x_api_key):
         return None
     return await require_fai_client(request, x_api_key, db)
+
+
+async def require_uisp_assign_client(
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """Auth for POST /uisp/assign: its own dedicated key, or the normal auth.
+
+    The payment system adopts newly installed CPEs by MAC; it holds
+    `uisp_assign_api_key`, which unlocks ONLY this route. It deliberately does
+    NOT fall back to `require_fai_client`: the block/unblock key answers a
+    different question (couper un abonné) and must not become a way to write to
+    the UISP controller. Falling back to `require_user_or_api_key` keeps the
+    master key and operator sessions working — the dedicated key ADDS a scoped
+    path, it never removes an existing one.
+
+    ⚠️ Why this key exists at all: `/uisp/assign` is served on the .229 VIP,
+    which fronts the WHOLE API (unlike the .233 listener, restricted to /fai).
+    Letting a third party consume this route without a scoped key means handing
+    over `api_key` — and with it `DELETE /devices/{id}` and `/uisp/sync`.
+    """
+    if _uisp_assign_api_key_matches(x_api_key):
+        return None
+    return await require_user_or_api_key(request, x_api_key, db)

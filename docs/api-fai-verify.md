@@ -19,12 +19,18 @@ Destinée à un système tiers qui transmet une MAC et lit le résultat.
 | | |
 |---|---|
 | **Méthode** | `GET` |
-| **URL (accès externe)** | `http://102.215.95.229/api/v1/fai/verify` |
+| **URL (accès externe)** | `https://102.215.95.229/api/v1/fai/verify` |
 | **URL (accès LAN interne)** | `https://10.135.3.25/api/v1/fai/verify` |
 
-> L'appel HTTP est redirigé (302) vers HTTPS. Le certificat est auto-signé : un
-> client qui vérifie le certificat doit désactiver la vérification SSL. Un
-> navigateur / Postman / `curl -k` suit la redirection sans souci.
+> **Appeler en `https://`.** Le port 80 répond par une redirection vers HTTPS ;
+> sur ce `GET` elle est inoffensive (un GET redirigé est rejoué à l'identique),
+> mais **ne prenez pas cette tolérance pour une règle générale** : sur un `POST`
+> — par exemple `/api/v1/uisp/assign` — la même redirection convertit la requête
+> en GET et **détruit le corps JSON**. Une version antérieure de ce document
+> donnait l'URL en `http://` ; c'est corrigé.
+>
+> Le certificat est auto-signé : épinglez notre `fullchain.pem` (`--cacert`) ou,
+> à défaut, désactivez la vérification (`curl -k`, Postman).
 >
 > L'accès sur l'IP publique passe par l'allowlist du FortiGate : l'IP source de
 > l'appelant doit être autorisée (même règle que les routes /fai block/unblock).
@@ -53,7 +59,7 @@ X-API-Key: <CLE_API_TRANSMISE_SEPAREMENT>
 Exemple d'URL complète :
 
 ```
-http://102.215.95.229/api/v1/fai/verify?mac=78:45:58:0B:BC:76
+https://102.215.95.229/api/v1/fai/verify?mac=78:45:58:0B:BC:76
 ```
 
 ## Ce que l'API vérifie
@@ -120,7 +126,7 @@ Toujours du JSON. Structure :
 
 ```bash
 curl -k -H "X-API-Key: <CLE_API>" \
-  "http://102.215.95.229/api/v1/fai/verify?mac=78:45:58:0B:BC:76"
+  "https://102.215.95.229/api/v1/fai/verify?mac=78:45:58:0B:BC:76"
 ```
 ```json
 { "ok": true, "status": "OK", "name": "49467712-Fatmehamadi", "reason": null, ... }

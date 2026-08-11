@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 
 from app.api.deps import (
     require_fai_client,
+    require_uisp_assign_client,
     require_user_or_api_key,
     require_verify_client,
 )
@@ -28,6 +29,7 @@ from app.api.endpoints import (
     system,
     traffic,
     uisp,
+    uisp_assign,
 )
 
 api_router = APIRouter(prefix="/api/v1")
@@ -86,3 +88,12 @@ api_router.include_router(network_topology.router, prefix="/network-topology", t
 api_router.include_router(traffic.router, prefix="/traffic", tags=["traffic"], dependencies=_auth)
 api_router.include_router(system.router, prefix="/system", tags=["system"], dependencies=_auth)
 api_router.include_router(uisp.router, prefix="/uisp", tags=["uisp"], dependencies=_auth)
+# POST /uisp/assign — même préfixe /uisp mais AUTH PROPRE : sa clé dédiée
+# UISP_ASSIGN_API_KEY (require_uisp_assign_client), tenue par le système de
+# paiement qui adopte les équipements installés. Router séparé car une dépendance
+# de router ne se surcharge pas par route : c'est ce qui garantit que cette clé
+# n'ouvre PAS /uisp/sync, qui réécrit l'inventaire.
+api_router.include_router(
+    uisp_assign.router, prefix="/uisp", tags=["uisp"],
+    dependencies=[Depends(require_uisp_assign_client)],
+)

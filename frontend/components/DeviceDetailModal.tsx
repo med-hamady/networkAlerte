@@ -284,7 +284,13 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
           {/* LR : latence + qualité du lien. AF60 : débits et capacités du
               backhaul (le RTT n'y est pas sondé, mais les onglets suivent
               `available_metrics`, donc seule la latence manque à l'appel). */}
-          {(isLr || device.device_type === 'airfiber') && (
+          {/* Les SWITCHES sont inclus depuis 2026-08-11 : ceux qui portent une
+              liaison fibre inter-sites ont une courbe de débit (dérivée des
+              compteurs de leur port SFP). Le bouton reste inoffensif sur un
+              switch sans fibre — les onglets suivent `available_metrics`, donc
+              la modale annonce simplement qu'il n'y a pas d'historique. */}
+          {(isLr || device.device_type === 'airfiber'
+            || device.device_type === 'uisp_switch') && (
             <button
               onClick={() => setShowHistory(true)}
               className="w-full flex items-center justify-center gap-2 mt-1 px-3 py-2 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 text-xs font-semibold transition-colors"

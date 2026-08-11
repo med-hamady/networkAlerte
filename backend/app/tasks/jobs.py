@@ -18,6 +18,7 @@ import functools
 import logging
 import random
 import time
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -187,8 +188,15 @@ async def _derive_throughput_from_counters(
     now: datetime.datetime,
     dl_counter: str,
     ul_counter: str,
+    dl_target: str = "dl_throughput_mbps",
+    ul_target: str = "ul_throughput_mbps",
 ) -> None:
-    """Derive dl/ul_throughput_mbps from cumulative byte counters, in place.
+    """Derive a throughput from cumulative byte counters, in place.
+
+    ``dl_target`` / ``ul_target`` name the metrics written. They exist because a
+    SWITCH also has no instantaneous throughput, and its fibre uplink is derived
+    the same way — but under ``fiber_*`` keys, so that "the switch's fibre port
+    throughput" is never confused with "the device's own radio throughput".
 
     For radios that expose **no instantaneous throughput at all** — the
     LiteBeam M5 (airOS 6) is the case that forced this. Its own web UI does
@@ -211,7 +219,7 @@ async def _derive_throughput_from_counters(
     elapsed. A skip leaves the key absent, so the graph shows a gap rather than
     a fake 0.
     """
-    wanted = {dl_counter: "dl_throughput_mbps", ul_counter: "ul_throughput_mbps"}
+    wanted = {dl_counter: dl_target, ul_counter: ul_target}
     pending = {
         counter: target
         for counter, target in wanted.items()
@@ -258,7 +266,7 @@ async def persist_device_metrics(
     unit_map: dict[str, str] | None = None,
     *,
     now: datetime.datetime | None = None,
-    throughput_from_counters: tuple[str, str] | None = None,
+    throughput_from_counters: Sequence[Sequence[str]] | None = None,
 ) -> None:
     """Persist one poll cycle of metrics, honouring the history/latest policy.
 
@@ -311,10 +319,15 @@ async def persist_device_metrics(
     # Débit dérivé des compteurs, pour les radios qui n'en publient aucun (M5).
     # Doit tourner AVANT le collapse ci-dessous : il lit le relevé PRÉCÉDENT,
     # que l'INSERT de ce cycle remplacerait.
-    if throughput_from_counters is not None:
-        await _derive_throughput_from_counters(
-            session, device_id, metrics, now, *throughput_from_counters,
-        )
+    # ⚠️ Une spec unique passée à plat — `("radio_rx_bytes", "radio_tx_bytes")` —
+    # est acceptée et normalisée. Sans ce garde-fou, la boucle dépilerait le
+    # tuple CARACTÈRE PAR CARACTÈRE : un appelant historique se casserait en
+    # silence, sans que la forme fautive saute aux yeux.
+    specs = throughput_from_counters or ()
+    if specs and isinstance(specs[0], str):
+        specs = (specs,)
+    for spec in specs:
+        await _derive_throughput_from_counters(session, device_id, metrics, now, *spec)
 
     collapse_names = [
         name for name, value in metrics.items()
@@ -728,8 +741,21 @@ async def _ping_sweep(*, infra: bool) -> None:
     # SELECT bulk au total ; les requêtes restantes ne tombent qu'aux TRANSITIONS
     # (recovery d'un device qui avait un incident, ou passage down au seuil) — rares.
     async with async_session_factory() as session:
+        # ORDRE DÉTERMINISTE (par id) — discipline de verrouillage, pas cosmétique.
+        #
+        # Ce sweep mute `status`/`last_seen` de ~200 équipements par transaction
+        # (commit par paquets plus bas), donc il tient simultanément les verrous
+        # de ligne de tout un paquet. En face, les jobs de poll écrivent les
+        # mêmes lignes `devices`. Sans `order_by`, Postgres rend ces lignes dans
+        # un ordre qui peut CHANGER d'un cycle à l'autre : deux transactions
+        # prennent alors leurs verrous en sens opposés et s'interbloquent —
+        # 103 `deadlock detected` en 24 h relevés le 2026-08-11.
+        #
+        # Ordonner les deux côtés par id (ici, et dans les phases 2 des polls)
+        # supprime la possibilité d'un cycle : c'est la discipline classique
+        # d'ordre de verrouillage.
         devices = (await session.execute(
-            select(Device).where(Device.id.in_(ids))
+            select(Device).where(Device.id.in_(ids)).order_by(Device.id)
         )).scalars().all()
         # Compteurs d'échecs ping de TOUS les devices en une requête.
         states = (await session.execute(
@@ -1060,10 +1086,45 @@ async def _run_snmp_poll(device_types: tuple[str, ...], label: str) -> None:
                             unit_map[key] = "Mbps"
                         else:
                             unit_map[key] = ""
+                # Débit de la LIAISON FIBRE, dérivé des compteurs du port SFP.
+                #
+                # Un switch n'expose aucun débit instantané en SNMP — seulement
+                # des compteurs cumulés (ifHCInOctets/ifHCOutOctets, déjà relevés
+                # ci-dessus en `port_N_rx/tx_bytes`). Sans cette dérivation, les
+                # liaisons fibre inter-sites restent « non mesuré » sur /topology
+                # alors qu'elles portent la dorsale : vérifié sur ARF1
+                # (10.135.2.209, port 25) le 2026-08-11, deux relevés à 14 s
+                # donnent 384 Mb/s descendant et 76 Mb/s montant.
+                #
+                # ⚠️ SENS : sur un switch, `rx` est ce qu'il REÇOIT — donc le
+                # descendant de son site. C'est exactement la convention des
+                # radios (`dl` = ce que l'équipement reçoit), ce qui laisse la
+                # lecture inter-sites inchangée.
+                #
+                # ⚠️ Clés `fiber_*` dédiées, et non `dl/ul_throughput_mbps` : sur
+                # un switch, « le débit de l'équipement » ne veut rien dire (28
+                # ports), alors que « le débit de son port fibre » est précis.
+                # Elles SONT dans `GRAPH_METRICS` : la fiche d'un switch fibre
+                # expose donc la courbe d'historique du backhaul.
+                counter_specs: list[tuple[str, str, str, str]] = []
+                if (category in SWITCH_RULE_CATEGORIES
+                        and fiber_port_index and fiber_port_index > 0):
+                    counter_specs.append((
+                        f"port_{fiber_port_index}_rx_bytes",
+                        f"port_{fiber_port_index}_tx_bytes",
+                        "fiber_dl_throughput_mbps",
+                        "fiber_ul_throughput_mbps",
+                    ))
+                    unit_map["fiber_dl_throughput_mbps"] = "Mbps"
+                    unit_map["fiber_ul_throughput_mbps"] = "Mbps"
+
                 # History metrics (radio_rx/tx_bytes, signal_dbm…) are appended;
                 # everything else (all switch port metrics, noise, rates…) collapses
                 # to a single latest row. See persist_device_metrics / HISTORY_METRICS.
-                await persist_device_metrics(session, dev.id, metrics, unit_map)
+                await persist_device_metrics(
+                    session, dev.id, metrics, unit_map,
+                    throughput_from_counters=counter_specs,
+                )
 
                 # Delegate anomaly detection to alert engine
                 await alert_engine.evaluate_device_metrics(session, dev, metrics, settings)
@@ -1751,7 +1812,11 @@ async def ltu_api_poll_job() -> None:
     # travail par LR (nombreux, ~14 allers-retours DB chacun) pour la phase 2b
     # concurrente. (lr_id, peer_metrics, net_mode) — jamais l'ORM détaché.
     lr_work: list[tuple[int, dict, str | None]] = []
-    for dev_id, (rocket_ap_metrics, all_peers, per_peer_metrics) in fetched.items():
+    # Ordre DÉTERMINISTE (par id) : discipline de verrouillage partagée avec
+    # le sweep de ping et les autres polls — cf. `_ping_sweep`. L'ordre de
+    # `fetched` suit l'ACHÈVEMENT des requêtes réseau, donc varie à chaque
+    # tour ; deux transactions prendraient les verrous en sens opposés.
+    for dev_id, (rocket_ap_metrics, all_peers, per_peer_metrics) in sorted(fetched.items()):
         async with async_session_factory() as session:
             dev = await session.get(Device, dev_id)
             if dev is None:
@@ -1960,7 +2025,11 @@ async def _collect_airmax_stations_via_aps(
     }
     served: set[int] = set()
 
-    for ap_id, stations in fetched.items():
+    # Ordre DÉTERMINISTE (par id) : discipline de verrouillage partagée avec
+    # le sweep de ping et les autres polls — cf. `_ping_sweep`. L'ordre de
+    # `fetched` suit l'ACHÈVEMENT des requêtes réseau, donc varie à chaque
+    # tour ; deux transactions prendraient les verrous en sens opposés.
+    for ap_id, stations in sorted(fetched.items()):
         async with async_session_factory() as session:
             # Verrou sur l'AP : ses LR sont écrits ici comme le fan-out LTU le
             # fait depuis son Rocket. Pris avant la 1re écriture.
@@ -2393,7 +2462,11 @@ async def af60_api_poll_job() -> None:
         )
 
     # ── Phase 2 : persist + alert engine en série DB ──
-    for dev_id, (metrics, working_pw) in fetched.items():
+    # Ordre DÉTERMINISTE (par id) : discipline de verrouillage partagée avec
+    # le sweep de ping et les autres polls — cf. `_ping_sweep`. L'ordre de
+    # `fetched` suit l'ACHÈVEMENT des requêtes réseau, donc varie à chaque
+    # tour ; deux transactions prendraient les verrous en sens opposés.
+    for dev_id, (metrics, working_pw) in sorted(fetched.items()):
         async with async_session_factory() as session:
             dev = await session.get(AirFiber, dev_id)
             if dev is None:
@@ -2689,7 +2762,8 @@ async def lr_internet_probe_job() -> None:
     # dans core/logging.py).
     ssh_failures: list[tuple[str, str, str]] = []
     async with async_session_factory() as session:
-        for dev_id, (ssh_ok, ping_ok, avg_rtt, msg, observed_fp, used_pw, board_model, radio) in results.items():
+        # Ordre déterministe (par id) — cf. `_ping_sweep` : discipline de verrouillage.
+        for dev_id, (ssh_ok, ping_ok, avg_rtt, msg, observed_fp, used_pw, board_model, radio) in sorted(results.items()):
             dev = await session.get(Lr, dev_id)
             if dev is None:
                 continue

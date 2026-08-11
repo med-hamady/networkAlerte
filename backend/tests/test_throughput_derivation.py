@@ -16,7 +16,7 @@ import datetime
 
 from sqlalchemy import select
 
-from app.models.device import Device, Lr
+from app.models.device import Device, Lr, UispSwitch
 from app.models.device_metric import DeviceMetric
 from app.tasks.jobs import persist_device_metrics
 
@@ -139,3 +139,76 @@ async def test_counter_rows_are_still_persisted(db):
     )
     # Compteur cumulé = HISTORY_METRICS → les deux relevés sont conservés.
     assert [r[0] for r in rows] == [100.0, 200.0]
+
+
+# ---------------------------------------------------------------------------
+# Port FIBRE d'un switch : plusieurs dérivations sur un même équipement
+# ---------------------------------------------------------------------------
+
+
+async def test_switch_fiber_port_derives_under_dedicated_keys(db):
+    """Le débit du port fibre d'un switch, dérivé de ses compteurs SNMP.
+
+    Un switch n'expose aucun débit instantané — d'où la même dérivation que le
+    M5, mais écrite sous des clés `fiber_*` : sur un équipement à 28 ports,
+    « le débit de l'équipement » ne veut rien dire, « celui de son port fibre »
+    si. Valeurs proches du relevé réel sur ARF1 (10.135.2.209, port 25).
+    """
+    switch = UispSwitch(
+        name="Test switch", ip_address="10.99.0.209", status="up",
+    )
+    db.add(switch)
+    await db.flush()
+
+    spec = [(
+        "port_25_rx_bytes", "port_25_tx_bytes",
+        "fiber_dl_throughput_mbps", "fiber_ul_throughput_mbps",
+    )]
+    t0 = datetime.datetime.now(datetime.UTC)
+    units = {"port_25_rx_bytes": "B", "port_25_tx_bytes": "B"}
+
+    first = {"port_25_rx_bytes": 1_000_000_000.0, "port_25_tx_bytes": 500_000_000.0}
+    await persist_device_metrics(db, switch.id, first, units, now=t0,
+                                 throughput_from_counters=spec)
+    await db.flush()
+    # Aucun relevé précédent → aucune clé : un trou, jamais un faux 0.
+    assert "fiber_dl_throughput_mbps" not in first
+
+    # +125 Mo en 10 s = 100 Mb/s ; +12,5 Mo = 10 Mb/s.
+    second = {
+        "port_25_rx_bytes": 1_125_000_000.0,
+        "port_25_tx_bytes": 512_500_000.0,
+    }
+    await persist_device_metrics(
+        db, switch.id, second, units,
+        now=t0 + datetime.timedelta(seconds=10), throughput_from_counters=spec,
+    )
+    await db.flush()
+
+    assert second["fiber_dl_throughput_mbps"] == 100.0
+    assert second["fiber_ul_throughput_mbps"] == 10.0
+    # Et les clés génériques restent INTOUCHÉES : un switch n'a pas de débit
+    # « propre », seulement celui d'un port nommé.
+    assert "dl_throughput_mbps" not in second
+
+
+async def test_a_flat_single_spec_is_still_accepted(db):
+    """Garde-fou : une spec unique passée à plat doit rester valable.
+
+    Sans normalisation, la boucle dépilerait le tuple CARACTÈRE PAR CARACTÈRE et
+    l'appelant historique se casserait en silence.
+    """
+    dev = await _make_m5(db)
+    t0 = datetime.datetime.now(datetime.UTC)
+    metrics1 = {"radio_rx_bytes": 1_000_000.0, "radio_tx_bytes": 1_000_000.0}
+    await persist_device_metrics(db, dev.id, metrics1, _UNITS, now=t0,
+                                 throughput_from_counters=_COUNTERS)
+    await db.flush()
+
+    metrics2 = {"radio_rx_bytes": 2_250_000.0, "radio_tx_bytes": 1_000_000.0}
+    await persist_device_metrics(
+        db, dev.id, metrics2, _UNITS,
+        now=t0 + datetime.timedelta(seconds=10), throughput_from_counters=_COUNTERS,
+    )
+    await db.flush()
+    assert metrics2["dl_throughput_mbps"] == 1.0    # +1,25 Mo en 10 s

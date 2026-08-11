@@ -93,6 +93,30 @@ GRAPH_METRICS: dict[str, dict] = {
         "threshold_setting": None,
         "threshold_direction": None,
     },
+    # DÉBIT DU PORT FIBRE d'un switch — la seule mesure de trafic possible sur
+    # une liaison inter-sites en fibre, dont les deux bouts sont des switches.
+    # Dérivé des compteurs SNMP par `snmp_poll_job` (un switch n'expose aucun
+    # débit instantané), donc c'est une MOYENNE sur l'intervalle de poll — dit
+    # dans le libellé, pour qu'on ne cherche pas un pic de quelques secondes.
+    #
+    # Clés distinctes de `dl/ul_throughput_mbps` : sur un équipement à 28 ports,
+    # « le débit de l'équipement » ne veut rien dire. Seuls les switches dont
+    # `fiber_port_index` est renseigné produisent ces échantillons, donc
+    # `available_metrics` n'ouvre l'onglet que là où il a du contenu.
+    "fiber_dl_throughput_mbps": {
+        "label": "Débit fibre descendant",
+        "unit": "Mb/s",
+        "zero_based": True,
+        "threshold_setting": None,
+        "threshold_direction": None,
+    },
+    "fiber_ul_throughput_mbps": {
+        "label": "Débit fibre montant",
+        "unit": "Mb/s",
+        "zero_based": True,
+        "threshold_setting": None,
+        "threshold_direction": None,
+    },
 }
 
 

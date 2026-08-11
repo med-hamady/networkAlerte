@@ -278,6 +278,35 @@ backend/app/
 | `infra_ping_job` | `ping_interval_seconds` (30s) | Ping ICMP de l'**INFRA** (Rockets base / switches / UISP Power / AF60) — groupe scheduler **fast**. Le SEUL des deux à ouvrir/résoudre les incidents `*_down`. Params fping fiables (`ping_infra_retries`=2, `ping_infra_timeout_ms`=1200) sur un petit lot. Voir **Fiabilité du ping** ci-dessous. |
 | `client_ping_job` | `client_ping_interval_seconds` (60s) | Ping ICMP des **LR clients** — **container dédié `scheduler-ping-lr`** (groupe `ping-lr`), isolé de `fast`. Un LR down = panne côté abonné → **aucun incident infra**, seul le statut bascule (+ purge de ses incidents ouverts, devenus du bruit). Sondé moins souvent que l'infra. |
 
+#### ⚠️ Interblocages `device_metrics` — ordre de verrouillage (2026-08-11)
+
+**103 `deadlock detected` en 24 h** relevés en prod. Le mécanisme : le sweep de
+ping mute `status`/`last_seen` de ~200 équipements **par transaction** (commit par
+paquets), pendant que les jobs de poll écrivent les mêmes lignes `devices`. Deux
+transactions qui prennent ces verrous dans un **ordre différent** forment un
+cycle, et Postgres en tue une.
+
+Or aucun des deux côtés n'avait d'ordre stable : le `select(Device)` du sweep
+n'avait **aucun `order_by`**, et les phases 2 des polls itéraient `fetched`, dont
+l'ordre suit l'**achèvement des requêtes réseau** — donc change à chaque tour.
+
+**Règle à tenir : toute boucle SÉQUENTIELLE qui écrit des lignes `devices` les
+parcourt par `id` croissant.** C'est la discipline classique d'ordre de
+verrouillage : si tout le monde prend dans le même sens, aucun cycle ne peut se
+former. Appliqué au sweep de ping (`order_by(Device.id)`) et aux 5 phases 2
+(`sorted(...)`), verrouillé par
+`tests/test_snmp_poll_device_isolation.py::test_every_write_loop_takes_its_locks_in_the_same_order`.
+
+⚠️ **Exception : un persist CONCURRENT** (`asyncio.gather` du job airOS) n'est pas
+concerné — trier un générateur ne sérialise rien. Sa protection est structurelle :
+UNE session par équipement, donc une transaction qui ne tient jamais qu'une ligne
+et ne peut pas former de cycle seule.
+
+⚠️ Ça **réduit** sans éliminer : un interblocage reste possible (une transaction
+de poll couvre un Rocket ET ses LR, dont les id ne sont pas contigus). L'isolation
+par équipement de la phase 2 reste donc indispensable — elle transforme un
+conflit en une ligne de log au lieu d'une perte de cycle.
+
 #### Fiabilité du ping (les deux sweeps) — `_ping_sweep` dans `jobs.py`
 Le sweep se fait en **un seul process `fping`** (`poller.ping_hosts_bulk` → `{ip: reachable}`) plutôt qu'un sous-process `ping` par device : à 600+ devices, le `gather` de N `ping` spawnait des centaines de process qui se starvaient → faux « down » de masse + cycle qui débordait. Coût **plat** quelle que soit la taille du parc. Requiert `fping` dans l'image (Dockerfile) ; fallback `ping` par hôte borné s'il manque.
 
@@ -669,11 +698,45 @@ sont — une liaison mixte compte comme filaire, le chemin cuivre étant le plus
 capable). Les tirets ne distinguent plus les boucles (toutes radio) : c'est leur
 **couleur grise** qui s'en charge.
 
-⚠️ **`traffic="unknown"` est rendu VERT, jamais jaune.** Le cas est massif : les
-liaisons **fibre** ont des **switches** aux deux bouts, et un switch **n'expose
-aucun débit en SNMP**. Les jaunir signalerait trois pannes de trafic permanentes
-sur la dorsale du HQ, ce qui est faux. **Jaune = « mesuré à zéro », jamais « pas
-mesuré »** — la même règle que partout ici.
+⚠️ **`traffic="unknown"` est rendu VERT, jamais jaune.** **Jaune = « mesuré à
+zéro », jamais « pas mesuré »** — la même règle que partout ici.
+
+##### Débit d'une liaison FIBRE — dérivé des compteurs du port SFP (2026-08-11)
+
+Un switch **n'expose aucun débit instantané** en SNMP, seulement des compteurs
+cumulés (`ifHCInOctets`/`ifHCOutOctets`) — que `collect_switch_port_metrics`
+relevait déjà en `port_N_rx/tx_bytes`. Les liaisons fibre, dont les **deux bouts
+sont des switches**, restaient donc « non mesuré » alors qu'elles portent la
+dorsale.
+
+`snmp_poll_job` dérive maintenant le débit du port `fiber_port_index` par delta
+de compteurs, via le **même** `_derive_throughput_from_counters` que le LiteBeam
+M5 (qui n'a pas davantage de débit instantané). Vérifié sur `ARF1-UISP-S-Pro 409`
+(10.135.2.209, port 25) le 2026-08-11 : deux cycles à 17 s donnent **445 Mb/s
+descendant / 43 Mb/s montant**.
+
+- ⚠️ **Clés `fiber_dl/ul_throughput_mbps` dédiées**, jamais `dl/ul_throughput_mbps` :
+  sur un switch « le débit de l'équipement » ne veut rien dire (28 ports), alors
+  que « le débit de son port fibre » est précis. Ça évite aussi de l'inscrire
+  dans les courbes de `GRAPH_METRICS`.
+- ⚠️ **Le SENS tombe juste sans effort** : sur un switch, `rx` est ce qu'il
+  REÇOIT — exactement la convention des radios (`dl` = ce que l'équipement
+  reçoit). `edge_traffic` ne fait qu'un **repli** `key` → `fiber_{key}`, et toute
+  la lecture inter-sites reste inchangée. Une mesure directe l'emporte toujours
+  sur le repli.
+- ⚠️ C'est une **moyenne sur l'intervalle de poll** (60 s), pas un instantané —
+  comme pour le M5. Suffisant pour distinguer « ça passe » de « ça ne passe pas ».
+- Les deux clés sont dans **`GRAPH_METRICS`** : la fiche d'un switch fibre expose
+  donc la **courbe d'historique** du backhaul (24 h / 7 j / 30 j ou plage de
+  dates), au même titre qu'un LR ou un AF60. Le bouton « Plus d'infos » de
+  `DeviceDetailModal` est ouvert au type `uisp_switch` ; sur un switch **sans**
+  fibre il reste inoffensif, les onglets suivant `available_metrics`.
+- ⚠️ **Seuls les sites dont `fiber_port_index` est renseigné** (AT1 p9, CT1 p25,
+  ARF1 p25) produisent ces clés. Ailleurs la liaison reste honnêtement « non
+  mesuré » — et rendue **verte**, jamais jaune.
+- ⚠️ **`ifSpeed = 0` sur une cage SFP reste vrai** : ces extrémités n'ont
+  toujours **aucune pastille** de port. C'est le **débit** qu'on gagne, pas la
+  vitesse négociée.
 
 Le débit retenu est le **maximum** des deux extrémités (`dl+ul`) : les deux bouts
 décrivent le même lien, mais l'un peut n'avoir aucun relevé frais ; prendre le
@@ -1124,7 +1187,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 ### Frontend Next.js
 | Page | Chemin | Contenu |
 |---|---|---|
-| Devices | `/devices` | Liste avec statut, dernière vue, métriques, modal détail. Sur un **LR** et sur un **AF60**, la fiche expose un bouton **« Plus d'infos — graphes d'historique »** (`MetricHistoryModal`) : courbes SVG sur 24h/7j/30j ou une plage de dates, avec **onglets** pilotés par `available_metrics` (latence Internet, capacité du lien, potentiel du lien, capacités DL/UL, débits DL/UL). Bande min/max (garde visible un pic court noyé par la moyenne du bucket), ligne de seuil (au-dessus ou en dessous selon `threshold_direction`), survol détaillé, chiffres clés, et la **cadence réelle** du relevé affichée (elle est dictée par la durée d'un tour de poll, pas par le graphe). **Les trous = périodes sans mesure**, pas des 0. Source : `/devices/{id}/metric-history` |
+| Devices | `/devices` | Liste avec statut, dernière vue, métriques, modal détail. Sur un **LR**, un **AF60** et un **switch** (courbe de son port fibre), la fiche expose un bouton **« Plus d'infos — graphes d'historique »** (`MetricHistoryModal`) : courbes SVG sur 24h/7j/30j ou une plage de dates, avec **onglets** pilotés par `available_metrics` (latence Internet, capacité du lien, potentiel du lien, capacités DL/UL, débits DL/UL). Bande min/max (garde visible un pic court noyé par la moyenne du bucket), ligne de seuil (au-dessus ou en dessous selon `threshold_direction`), survol détaillé, chiffres clés, et la **cadence réelle** du relevé affichée (elle est dictée par la durée d'un tour de poll, pas par le graphe). **Les trous = périodes sans mesure**, pas des 0. Source : `/devices/{id}/metric-history` |
 | Accès clients | `/access` | Table des LR abonnés (source UISP). Filtres dont **« Hors supervision »** : LR sans IP **et** non vu par UISP depuis `OUT_OF_SUPERVISION_DAYS` — badge ambre, **exclu du compteur « Accès actif »** (la tuile indique combien sont exclus). Distinct de « Hors ligne > 1 mois » (`long_offline`, absence prolongée vue par UISP) : ici c'est une absence de **mesure**, pas une absence constatée |
 | Anomalies détectées | `/incidents` | Anomalies actuellement détectées (lecture seule, résolution automatique) |
 | Capacité du réseau | `/capacity` | 2 cercles (LTU/airMAX) consommé vs disponible sur tout le réseau + barres par site (LTU/airMAX séparés) ; clic site → table Rockets (connectés/max + largeur). Donut SVG custom (pas de lib de charts). Inclut la section **« Capacité infra par site »** (table Site/Équip. infra/Max/Marge, marge +N vert / -N rouge) alimentée par la clé `infra` de `/network-capacity` |

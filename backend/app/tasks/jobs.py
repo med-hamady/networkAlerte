@@ -976,155 +976,187 @@ async def snmp_poll_job() -> None:
     for dev_id, (metrics, airmax_peers, channel_width_mhz) in fetched.items():
         (_id, _name, _ip, _community, category, _mp, rocket_port_index,
          port_min_speed, fiber_port_index, _airos_user, _airos_pwd) = snap_by_id[dev_id]
-        async with async_session_factory() as session:
-            dev = await session.get(Device, dev_id)
-            if dev is None:
-                continue
+        # ⚠️ ISOLATION PAR ÉQUIPEMENT — ne jamais retirer.
+        #
+        # Cette boucle persiste ~100 équipements en série. Sans ce try, une
+        # seule exception (typiquement `deadlock detected` sur `device_metrics`,
+        # que deux jobs de polling provoquent en écrivant les mêmes lignes)
+        # avortait TOUT le cycle — et les équipements suivants n'étaient jamais
+        # écrits.
+        #
+        # Le rejeu du décorateur `_timed_job` ne suffit PAS ici : il rejoue le
+        # JOB ENTIER, donc refait les 3 minutes de collecte SNMP, et comme le
+        # conflit se reproduit au même endroit ses 3 tentatives échouent à
+        # l'identique. Les SWITCHES, dont la collecte est la plus lente (28
+        # ports), sont traités en DERNIER : ils étaient donc systématiquement
+        # les sacrifiés. Constaté en prod le 2026-08-11 — 103 interblocages en
+        # 24 h et plus aucune métrique de switch écrite depuis 14 h, donc
+        # `switch_port_down` / `fiber_link_down` aveugles.
+        #
+        # Un conflit est NORMAL sur une base concurrente : Postgres tue une des
+        # deux transactions, c'est son rôle. Ce qui ne doit pas l'être, c'est
+        # qu'il coûte autre chose que l'équipement concerné, pour un cycle.
+        try:
+            async with async_session_factory() as session:
+                dev = await session.get(Device, dev_id)
+                if dev is None:
+                    continue
 
-            # Persist each metric as a DeviceMetric row
-            unit_map = {
-                "uptime_seconds":   "s",
-                "radio_rx_bytes":   "B",
-                "radio_tx_bytes":   "B",
-                "radio_in_errors":  "",
-                "radio_out_errors": "",
-                "radio_if_up":      "",
-                "eth_if_up":        "",
-            }
-            # airMAX Rocket : alimente la règle rocket_client_overload ET la page
-            # Capacité réseau — nombre de clients = stations découvertes par le
-            # walk SNMP (Phase 1), largeur de canal = chanbw lu via airOS
-            # status.cgi (Phase 1). Une largeur < 10 MHz n'a pas de seuil → la
-            # règle ne déclenche pas. On les ajoute AVANT la persistance pour que
-            # peer_count / channel_width_mhz soient interrogeables au query-time
-            # (latest-only collapse — pas dans HISTORY_METRICS).
-            if category in AIRMAX_RULE_CATEGORIES and airmax_peers is not None:
-                metrics = dict(metrics)
-                metrics["peer_count"] = len(airmax_peers)
-                if channel_width_mhz is not None:
-                    metrics["channel_width_mhz"] = channel_width_mhz
+                # Persist each metric as a DeviceMetric row
+                unit_map = {
+                    "uptime_seconds":   "s",
+                    "radio_rx_bytes":   "B",
+                    "radio_tx_bytes":   "B",
+                    "radio_in_errors":  "",
+                    "radio_out_errors": "",
+                    "radio_if_up":      "",
+                    "eth_if_up":        "",
+                }
+                # airMAX Rocket : alimente la règle rocket_client_overload ET la page
+                # Capacité réseau — nombre de clients = stations découvertes par le
+                # walk SNMP (Phase 1), largeur de canal = chanbw lu via airOS
+                # status.cgi (Phase 1). Une largeur < 10 MHz n'a pas de seuil → la
+                # règle ne déclenche pas. On les ajoute AVANT la persistance pour que
+                # peer_count / channel_width_mhz soient interrogeables au query-time
+                # (latest-only collapse — pas dans HISTORY_METRICS).
+                if category in AIRMAX_RULE_CATEGORIES and airmax_peers is not None:
+                    metrics = dict(metrics)
+                    metrics["peer_count"] = len(airmax_peers)
+                    if channel_width_mhz is not None:
+                        metrics["channel_width_mhz"] = channel_width_mhz
 
-            for key in metrics:
-                if key not in unit_map:
-                    if "_rx_bytes" in key or "_tx_bytes" in key:
-                        unit_map[key] = "B"
-                    elif "_speed_mbps" in key:
-                        unit_map[key] = "Mbps"
-                    else:
-                        unit_map[key] = ""
-            # History metrics (radio_rx/tx_bytes, signal_dbm…) are appended;
-            # everything else (all switch port metrics, noise, rates…) collapses
-            # to a single latest row. See persist_device_metrics / HISTORY_METRICS.
-            await persist_device_metrics(session, dev.id, metrics, unit_map)
-
-            # Delegate anomaly detection to alert engine
-            await alert_engine.evaluate_device_metrics(session, dev, metrics, settings)
-
-            # Auto-discovery for airMAX Rockets — station table walked in Phase 1
-            # (airmax_peers), fed to the same reconcile_peers() pipeline as LTU API.
-            # Peers are persisted as Lr rows with model_variant="litebeam_5ac"
-            # by default; the operator can override via PUT after creation.
-            if category in AIRMAX_RULE_CATEGORIES and airmax_peers:
-                recon = await discovery_service.reconcile_peers(
-                    session, dev, airmax_peers,
-                )
-                if recon.created or recon.ip_changed or recon.reassigned:
-                    logger.info(
-                        "Discovery — airMAX '%s' : %d nouveau(x), %d IP changée(s), %d rebascule(s)",
-                        dev.name, len(recon.created),
-                        len(recon.ip_changed), len(recon.reassigned),
-                    )
-
-            # Switch port monitoring (not handled by alert engine — device-level rule).
-            # Per-switch settings come from the UispSwitch row (min speed).
-            #
-            # WHICH ports are watched: every port switch_port_mapping_job proved
-            # carries a supervised device (devices.uplink_switch_port), plus the
-            # operator's manual `rocket_port_index` if one is set. Ports with
-            # nothing known behind them are ignored — that is what keeps unused
-            # and third-party ports from alerting.
-            #
-            # Historically this block only ever looked at `rocket_port_index`,
-            # which no code filled: it is NULL on every switch, so neither the
-            # DOWN check nor the sub-gigabit check ever ran anywhere.
-            if category in SWITCH_RULE_CATEGORIES:
-                min_speed = port_min_speed
-                watched = await switch_port_service.watched_ports(session, dev_id)
-                if rocket_port_index and rocket_port_index > 0:
-                    watched.setdefault(rocket_port_index, "port désigné manuellement")
-
-                down_ports: list[tuple[int, str]] = []
-                slow_ports: list[tuple[int, str, float]] = []
-                for port_idx, label in sorted(watched.items()):
-                    port_status = metrics.get(f"port_{port_idx}_up")
-                    if port_status is None:
-                        # Port outside the SNMP scan range or not answering —
-                        # nothing observed, so nothing asserted.
-                        continue
-                    if port_status == 0.0:
-                        down_ports.append((port_idx, label))
-                        continue
-                    speed = metrics.get(f"port_{port_idx}_speed_mbps")
-                    # ifSpeed 0 = the switch reports no rate for that port (SFP
-                    # cages do this) — an unknown rate is not a degraded one.
-                    if speed is not None and 0 < speed < min_speed:
-                        slow_ports.append((port_idx, label, speed))
-
-                # One incident per switch per alert_type (dedup is on
-                # device_id + alert_type), listing every offending port.
-                if down_ports:
-                    detail = " ; ".join(f"port {p} ({lbl})" for p, lbl in down_ports)
-                    await _open_and_notify(
-                        session, dev, INC_SWITCH_PORT, "critical",
-                        f"{len(down_ports)} port(s) DOWN sur {dev.name} — {detail}. "
-                        f"Vérifiez le câble et l'équipement au bout du port.",
-                        alert_type=AT_SWITCH_PORT,
-                    )
-                else:
-                    await _resolve_and_notify(
-                        session, dev, INC_SWITCH_PORT, alert_type=AT_SWITCH_PORT
-                    )
-
-                if slow_ports:
-                    detail = " ; ".join(
-                        f"port {p} ({lbl}) à {spd:.0f} Mbps" for p, lbl, spd in slow_ports
-                    )
-                    await _open_and_notify(
-                        session, dev, INC_SWITCH_PORT_SPEED, "critical",
-                        f"{len(slow_ports)} port(s) UP mais en débit dégradé sur "
-                        f"{dev.name} — {detail} (seuil minimum : {min_speed:.0f} Mbps). "
-                        f"Vérifiez la qualité du câble et l'auto-négociation.",
-                        alert_type=AT_SWITCH_PORT_SPEED,
-                    )
-                else:
-                    await _resolve_and_notify(
-                        session, dev, INC_SWITCH_PORT_SPEED, alert_type=AT_SWITCH_PORT_SPEED
-                    )
-
-                # Fibre uplink monitoring — the site's fibre lands on an SFP port;
-                # when the cable breaks the SFP loses light and the port goes DOWN
-                # (unlike the RJ45 Rocket port, which can stay UP behind a media
-                # converter). Same `port_N_up` SNMP metric already collected — we
-                # just evaluate the operator-designated fibre port. Dedicated
-                # critical alert (immediate WhatsApp), distinct from the Rocket
-                # port. Down-only: a fibre uplink either passes light or it doesn't.
-                if fiber_port_index and fiber_port_index > 0:
-                    fiber_status = metrics.get(f"port_{fiber_port_index}_up")
-                    if fiber_status is not None:
-                        if fiber_status == 0.0:
-                            await _open_and_notify(
-                                session, dev, INC_FIBER_LINK, "critical",
-                                f"Lien FIBRE du {dev.name} coupé — "
-                                f"GigabitEthernet{fiber_port_index} (SFP fibre) est DOWN. "
-                                f"Vérifiez le lien fibre / le module SFP.",
-                                alert_type=AT_FIBER_LINK_DOWN,
-                            )
+                for key in metrics:
+                    if key not in unit_map:
+                        if "_rx_bytes" in key or "_tx_bytes" in key:
+                            unit_map[key] = "B"
+                        elif "_speed_mbps" in key:
+                            unit_map[key] = "Mbps"
                         else:
-                            await _resolve_and_notify(
-                                session, dev, INC_FIBER_LINK, alert_type=AT_FIBER_LINK_DOWN
-                            )
+                            unit_map[key] = ""
+                # History metrics (radio_rx/tx_bytes, signal_dbm…) are appended;
+                # everything else (all switch port metrics, noise, rates…) collapses
+                # to a single latest row. See persist_device_metrics / HISTORY_METRICS.
+                await persist_device_metrics(session, dev.id, metrics, unit_map)
 
-            await session.commit()
+                # Delegate anomaly detection to alert engine
+                await alert_engine.evaluate_device_metrics(session, dev, metrics, settings)
+
+                # Auto-discovery for airMAX Rockets — station table walked in Phase 1
+                # (airmax_peers), fed to the same reconcile_peers() pipeline as LTU API.
+                # Peers are persisted as Lr rows with model_variant="litebeam_5ac"
+                # by default; the operator can override via PUT after creation.
+                if category in AIRMAX_RULE_CATEGORIES and airmax_peers:
+                    recon = await discovery_service.reconcile_peers(
+                        session, dev, airmax_peers,
+                    )
+                    if recon.created or recon.ip_changed or recon.reassigned:
+                        logger.info(
+                            "Discovery — airMAX '%s' : %d nouveau(x), %d IP changée(s), %d rebascule(s)",
+                            dev.name, len(recon.created),
+                            len(recon.ip_changed), len(recon.reassigned),
+                        )
+
+                # Switch port monitoring (not handled by alert engine — device-level rule).
+                # Per-switch settings come from the UispSwitch row (min speed).
+                #
+                # WHICH ports are watched: every port switch_port_mapping_job proved
+                # carries a supervised device (devices.uplink_switch_port), plus the
+                # operator's manual `rocket_port_index` if one is set. Ports with
+                # nothing known behind them are ignored — that is what keeps unused
+                # and third-party ports from alerting.
+                #
+                # Historically this block only ever looked at `rocket_port_index`,
+                # which no code filled: it is NULL on every switch, so neither the
+                # DOWN check nor the sub-gigabit check ever ran anywhere.
+                if category in SWITCH_RULE_CATEGORIES:
+                    min_speed = port_min_speed
+                    watched = await switch_port_service.watched_ports(session, dev_id)
+                    if rocket_port_index and rocket_port_index > 0:
+                        watched.setdefault(rocket_port_index, "port désigné manuellement")
+
+                    down_ports: list[tuple[int, str]] = []
+                    slow_ports: list[tuple[int, str, float]] = []
+                    for port_idx, label in sorted(watched.items()):
+                        port_status = metrics.get(f"port_{port_idx}_up")
+                        if port_status is None:
+                            # Port outside the SNMP scan range or not answering —
+                            # nothing observed, so nothing asserted.
+                            continue
+                        if port_status == 0.0:
+                            down_ports.append((port_idx, label))
+                            continue
+                        speed = metrics.get(f"port_{port_idx}_speed_mbps")
+                        # ifSpeed 0 = the switch reports no rate for that port (SFP
+                        # cages do this) — an unknown rate is not a degraded one.
+                        if speed is not None and 0 < speed < min_speed:
+                            slow_ports.append((port_idx, label, speed))
+
+                    # One incident per switch per alert_type (dedup is on
+                    # device_id + alert_type), listing every offending port.
+                    if down_ports:
+                        detail = " ; ".join(f"port {p} ({lbl})" for p, lbl in down_ports)
+                        await _open_and_notify(
+                            session, dev, INC_SWITCH_PORT, "critical",
+                            f"{len(down_ports)} port(s) DOWN sur {dev.name} — {detail}. "
+                            f"Vérifiez le câble et l'équipement au bout du port.",
+                            alert_type=AT_SWITCH_PORT,
+                        )
+                    else:
+                        await _resolve_and_notify(
+                            session, dev, INC_SWITCH_PORT, alert_type=AT_SWITCH_PORT
+                        )
+
+                    if slow_ports:
+                        detail = " ; ".join(
+                            f"port {p} ({lbl}) à {spd:.0f} Mbps" for p, lbl, spd in slow_ports
+                        )
+                        await _open_and_notify(
+                            session, dev, INC_SWITCH_PORT_SPEED, "critical",
+                            f"{len(slow_ports)} port(s) UP mais en débit dégradé sur "
+                            f"{dev.name} — {detail} (seuil minimum : {min_speed:.0f} Mbps). "
+                            f"Vérifiez la qualité du câble et l'auto-négociation.",
+                            alert_type=AT_SWITCH_PORT_SPEED,
+                        )
+                    else:
+                        await _resolve_and_notify(
+                            session, dev, INC_SWITCH_PORT_SPEED, alert_type=AT_SWITCH_PORT_SPEED
+                        )
+
+                    # Fibre uplink monitoring — the site's fibre lands on an SFP port;
+                    # when the cable breaks the SFP loses light and the port goes DOWN
+                    # (unlike the RJ45 Rocket port, which can stay UP behind a media
+                    # converter). Same `port_N_up` SNMP metric already collected — we
+                    # just evaluate the operator-designated fibre port. Dedicated
+                    # critical alert (immediate WhatsApp), distinct from the Rocket
+                    # port. Down-only: a fibre uplink either passes light or it doesn't.
+                    if fiber_port_index and fiber_port_index > 0:
+                        fiber_status = metrics.get(f"port_{fiber_port_index}_up")
+                        if fiber_status is not None:
+                            if fiber_status == 0.0:
+                                await _open_and_notify(
+                                    session, dev, INC_FIBER_LINK, "critical",
+                                    f"Lien FIBRE du {dev.name} coupé — "
+                                    f"GigabitEthernet{fiber_port_index} (SFP fibre) est DOWN. "
+                                    f"Vérifiez le lien fibre / le module SFP.",
+                                    alert_type=AT_FIBER_LINK_DOWN,
+                                )
+                            else:
+                                await _resolve_and_notify(
+                                    session, dev, INC_FIBER_LINK, alert_type=AT_FIBER_LINK_DOWN
+                                )
+
+                await session.commit()
+        except Exception as exc:
+            # On continue : la session de CET équipement est déjà rollbackée
+            # par son gestionnaire de contexte, les suivants repartent propres.
+            # Le cycle suivant (3 min) réécrira l'équipement perdu — les polls
+            # sont idempotents (dernière valeur gagne), donc rien n'est perdu
+            # durablement.
+            logger.error(
+                "SNMP poll — %s (id=%s) ignoré ce cycle : %s",
+                _name, dev_id, exc,
+            )
+            continue
 
 
 async def switch_port_mapping_job() -> None:

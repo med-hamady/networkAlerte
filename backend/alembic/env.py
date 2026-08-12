@@ -14,6 +14,7 @@ from app.models.alert_state import AlertState  # noqa: F401
 from app.models.device import Device  # noqa: F401
 from app.models.device_metric import DeviceMetric  # noqa: F401
 from app.models.incident import Incident  # noqa: F401
+from app.models.manual_alert import ManualAlert  # noqa: F401
 from app.models.power_status_log import PowerStatusLog  # noqa: F401
 from app.models.site_location import SiteLocation  # noqa: F401
 from app.models.system_setting import SystemSetting  # noqa: F401

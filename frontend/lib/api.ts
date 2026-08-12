@@ -8,6 +8,7 @@ import type {
   DowntimeLogResponse,
   HealthResponse,
   Incident,
+  ManualAlert,
   SystemInfo,
   Threshold,
   UispEnrollBulkResult,
@@ -46,6 +47,11 @@ export const endpoints = {
   device:               (id: number) => `${API_BASE}/devices/${id}`,
   incidents:            `${API_BASE}/incidents`,
   incident:             (id: number) => `${API_BASE}/incidents/${id}`,
+  // Bandeau d'anomalies à acquitter à la main (F60 dégradée / vitesse de port /
+  // équipement instable). ⚠️ Canal PARALLÈLE à /incidents : acquitter ici ne
+  // résout aucun incident, et un incident qui se résout n'efface pas la ligne.
+  manualAlerts:         `${API_BASE}/manual-alerts`,
+  acknowledgeManualAlert: (id: number) => `${API_BASE}/manual-alerts/${id}/acknowledge`,
   deviceMetrics:        (id: number) => `${API_BASE}/devices/${id}/metrics/latest`,
   // Historique d'une courbe de la fiche (latence, capacité, débits) : soit une
   // fenêtre relative, soit une plage de dates (YYYY-MM-DD UTC, fin incluse —
@@ -291,6 +297,21 @@ export async function setContentBlock(
   return res.json() as Promise<ContentBlockResult>
 }
 
+// ---------------------------------------------------------------------------
+// Bandeau d'anomalies — acquittement manuel
+// ---------------------------------------------------------------------------
+// Retire l'anomalie du bandeau POUR TOUTE L'ÉQUIPE (l'acquittement est partagé,
+// pas personnel). N'agit pas sur l'incident correspondant, qui suit son propre
+// cycle de vie automatique.
+export async function acknowledgeManualAlert(id: number): Promise<ManualAlert> {
+  const res = await fetch(endpoints.acknowledgeManualAlert(id), { method: 'POST' })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
+  }
+  return res.json() as Promise<ManualAlert>
+}
+
 async function jsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
@@ -405,5 +426,6 @@ export type {
   DowntimeLogResponse,
   HealthResponse,
   Incident,
+  ManualAlert,
   SystemInfo,
 }

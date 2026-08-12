@@ -21,6 +21,7 @@ from app.api.endpoints import (
     health,
     incidents,
     lr_health,
+    manual_alerts,
     network_capacity,
     network_topology,
     network_uptime,
@@ -79,6 +80,11 @@ api_router.include_router(
     router_rules.router, prefix="/router-rules", tags=["fai"], dependencies=_auth,
 )
 api_router.include_router(incidents.router, prefix="/incidents", tags=["incidents"], dependencies=_auth)
+# Bandeau d'anomalies à acquitter à la main — canal PARALLÈLE à /incidents, qui
+# reste inchangé (ouverture et résolution automatiques).
+api_router.include_router(
+    manual_alerts.router, prefix="/manual-alerts", tags=["incidents"], dependencies=_auth,
+)
 api_router.include_router(lr_health.router, prefix="/lr-health", tags=["lr-health"], dependencies=_auth)
 api_router.include_router(client_signal.router, prefix="/client-signal", tags=["client-signal"], dependencies=_auth)
 api_router.include_router(clients.router, prefix="/clients", tags=["clients"], dependencies=_auth)

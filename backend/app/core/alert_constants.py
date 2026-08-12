@@ -295,6 +295,48 @@ INFRA_DEVICE_SUPPRESSED_ALERT_TYPES: frozenset[str] = frozenset({
 
 
 # ---------------------------------------------------------------------------
+# Acquittement MANUEL — la barre de notification du dashboard (2026-08-12)
+# ---------------------------------------------------------------------------
+# Ces trois anomalies sont RÉPÉTÉES dans un bandeau en haut du dashboard, où
+# elles ne disparaissent QUE sur un clic « Résoudre » de l'opérateur. Ce sont
+# celles qu'on ne veut pas rater : elles peuvent se rétablir toutes seules en
+# quelques minutes (un port qui renégocie, un équipement qui cesse de flapper,
+# un lien 60 GHz qui remonte après une averse) et l'opérateur doit quand même
+# savoir que c'est arrivé, puis en prendre acte.
+#
+# ⚠️ Ceci n'AJOUTE rien au cycle de vie de l'incident et n'en retire rien : le
+# type continue de s'ouvrir, de se résoudre tout seul au retour à la normale,
+# d'être purgé et d'être notifié exactement comme avant. Le bandeau est un
+# canal PARALLÈLE, dans sa propre table (`manual_alerts`).
+#
+# ⚠️ Pourquoi une table dédiée et pas une lecture de `incidents` : un incident
+# non-disponibilité est HARD-DELETE à sa résolution (incident_service.
+# resolve_incidents — il n'y a pas de vue /archive). Un bandeau qui lirait
+# `incidents` verrait donc la ligne s'évaporer dès que le port revient à
+# 1 Gb/s, c.-à-d. sans que personne ait cliqué — soit l'exact contraire de ce
+# qu'on demande ici. La ligne du bandeau doit SURVIVRE à la résolution
+# automatique de l'incident qui l'a fait naître.
+#
+# ⚠️ Une ligne est créée exactement quand un incident NOUVEAU s'ouvre
+# (`open_incident` → is_new=True), jamais sur un ré-déclenchement du même
+# incident encore ouvert. Cette équivalence n'est pas une commodité, c'est la
+# règle voulue : tant que l'anomalie dure, elle ne se resignale pas (une seule
+# ligne à acquitter) ; si elle se résout puis revient, un nouvel incident naît
+# donc une nouvelle ligne apparaît — une récidive est une information, et
+# l'avoir acquittée hier ne doit pas la masquer aujourd'hui.
+#
+# ⚠️ Volontairement les 3 types « DÉGRADÉ », pas leurs variantes « hors
+# service » (switch_port_down, af60_link_down) : celles-là crient déjà sur
+# WhatsApp et dans /incidents, et un équipement franchement mort se voit. Ce
+# bandeau existe pour la dégradation silencieuse, celle qui passe et repasse.
+MANUAL_ACK_ALERT_TYPES: frozenset[str] = frozenset({
+    AT_AF60_LINK_SUBSTANDARD,   # dégradation d'un backhaul F60
+    AT_SWITCH_PORT_SPEED_LOW,   # vitesse d'un port de switch dégradée
+    AT_DEVICE_FLAPPING,         # équipement d'infra instable
+})
+
+
+# ---------------------------------------------------------------------------
 # Notification events
 # ---------------------------------------------------------------------------
 

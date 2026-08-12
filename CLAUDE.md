@@ -56,6 +56,7 @@ backend/app/
 │   ├── incident.py          # Incidents (open/acknowledged/resolved)
 │   ├── alert_state.py       # Compteurs d'anti-flapping persistés en DB (survit aux redémarrages)
 │   ├── lr_metric_sample.py # Historique des COURBES de la fiche équipement en buckets (largeur `LR_METRIC_HISTORY_BUCKET_SECONDS`, défaut 60 s ; 1 ligne/(device_id, **metric_name**, bucket_start), avg/min/max/sample_count). Une courbe par métrique (latence, capacité du lien, capacités DL/UL, débits DL/UL). Table DÉDIÉE et pas `device_metrics` : empiler les polls ferait ~1M lignes/jour (cf. l'épisode de bloat) — le bucket ramène à 1440 lignes/jour/(device, métrique) à 60 s. **Le coût est ∝ au nombre de métriques de `GRAPH_METRICS`**
+│   ├── manual_alert.py      # **Bandeau d'anomalies à ACQUITTER À LA MAIN** (haut du dashboard). 1 ligne = une détection d'un des 3 `MANUAL_ACK_ALERT_TYPES`, posée à l'ouverture de l'incident, qui ne part QUE sur clic « Résoudre ». ⚠️ Table DÉDIÉE et pas une lecture de `incidents` : un incident non-disponibilité est **hard-delete** à sa résolution automatique — un bandeau bâti dessus verrait la ligne s'évaporer dès le retour à la normale, sans que personne ait cliqué. Aucune FK vers `incidents` (la ligne visée n'existe généralement plus) ; titre/description **copiés**. Lignes acquittées **conservées** (qui a pris acte de quoi). Voir **Bandeau d'anomalies à acquitter**
 │   ├── power_status_log.py  # Relevés UISP Power (voltage, current, power)
 │   └── site_link.py         # **Câblage INTER-SITES** (backhauls), rapatrié 1×/jour depuis les data-links UISP. 1 ligne = 1 **lien physique** (2 radios entre les mêmes sites = 2 lignes ; le regroupement par paire est fait à la lecture). Porte les **MAC** des deux bouts (c'est par elles que la lecture rejoint notre inventaire) + les noms UISP (une extrémité peut ne pas être supervisée : le switch UniFi du HQ porte les 3 liaisons fibre de la racine). ⚠️ **La SANTÉ n'y est PAS** : statut/capacité/potentiel sont relus en direct à l'affichage — les figer ici afficherait l'état d'hier
 ├── schemas/                 # Pydantic — validation I/O API
@@ -79,6 +80,7 @@ backend/app/
 │   ├── alert_rules.py              # Règles d'alerte pure Python (sans DB) — 10+ règles
 │   ├── alert_formatter.py          # Formatage messages WhatsApp/log par type d'alerte. `_DESCRIPTION_ALERT_TYPES` = les types dont la **description** est rendue en ligne supplémentaire, parce qu'elle porte le seul contenu actionnable : batteries UISP Power (charge % + autonomie) et **ports de switch** (quels ports, et quel équipement au bout — les champs structurés ne nomment que le switch, inutile sur une unité 24 ports)
 │   ├── alert_policy.py             # Registre interne : politique (canal/groupable/recovery/immédiat) par alert_type — plus exposé en API
+│   ├── manual_alert_service.py     # **Bandeau à acquitter à la main** : `record_detection` (appelé par `incident_service.open_incident`, uniquement sous `is_new=True`), `list_pending`, `acknowledge`. Ne touche à AUCUN incident — acquitter n'en résout aucun, et une résolution n'efface aucune ligne. Voir **Bandeau d'anomalies à acquitter**
 │   ├── digest_service.py           # Regroupement des warnings en digest 15 min
 │   ├── lr_metric_history_service.py # Historique des courbes de la fiche (table `lr_metric_samples`). **`GRAPH_METRICS`** = l'allowlist des métriques traçables (latence, `total_capacity_mbps`, `link_potential_pct`, `dl_capacity_mbps`, `ul_capacity_mbps`, `dl_throughput_mbps`, `ul_throughput_mbps`, `link_occupancy_pct` = l'**occupation** d'un backhaul AF60) avec label/unité/seuil — **ajouter une clé ici suffit à rendre une métrique traçable** (pas de migration, pas de table). Le seuil peut être une chaîne (seuil unique) ou un **dict par famille radio** (`link_potential_pct` : 50 % LTU / 40 % airMAX) résolu par `threshold_setting_for(spec, device)`, qui réutilise `alert_rules._AIRMAX_LR_VARIANTS` — **importé, jamais recopié** : la ligne tracée doit être celle qui déclenche l'alerte. **ÉCRITURE** : `record_sample` est appelé depuis `persist_device_metrics` (le chokepoint de TOUS les polls → couvre sonde SSH, airOS, fan-out LTU, wstalist M5 d'un coup) et replie la valeur dans un **bucket** (60 s par défaut) par upsert (moyenne glissante recalculée EN SQL + `least`/`greatest` sur min/max). **LECTURE** : `get_history` sert 24h à la résolution native et re-binne les fenêtres larges via `date_bin` (moyenne **pondérée par `sample_count`**). `available_metrics` = les courbes que CE device possède (onglets de la modale). **Trous NON comblés** : un bucket sans relevé est absent, jamais ramené à 0
 │   ├── uisp_service.py             # Client REST contrôleur UISP/UNMS (login → token, GET /devices) — read-only
@@ -1356,6 +1358,81 @@ La page `/incidents` ne montre que les incidents **d'infrastructure**. Les incid
 
 Conséquence : plus aucune notification ni ligne `alerts` pour les alertes client (signal/ccq/cinr/capacity sur LR, `lr_link_substandard`, `lr_no_transit`, `lr_latency_high`, `lr_discovered`/`lr_ip_changed`/`lr_reassigned`, `cpe_disconnected`). Les jobs continuent de sonder les LR (latence/transit/SSH) et d'incrémenter leurs `AlertState` ; seul l'incident final est court-circuité.
 
+### Bandeau d'anomalies à acquitter à la main (2026-08-12)
+
+Trois anomalies sont **répétées** dans un bandeau collant en haut du dashboard
+(`AlertBanner`, porté par `AppShell` donc présent sur toutes les pages), d'où
+elles ne partent **que sur un clic « Résoudre »** de l'opérateur :
+
+| `alert_type` | Ce que ça dit |
+|---|---|
+| `af60_link_substandard` | Liaison F60 dégradée (capacité/potentiel sous plancher) |
+| `switch_port_speed_low` | Vitesse d'un port de switch dégradée |
+| `device_flapping` | Équipement d'infra instable (coupures répétées) |
+
+`MANUAL_ACK_ALERT_TYPES` (`alert_constants`) est la liste, et elle est fermée.
+
+⚠️ **Le cycle de vie des incidents n'est PAS touché — c'est la contrainte
+posée.** Ces trois types continuent de s'ouvrir tout seuls, de se résoudre tout
+seuls au retour à la normale, d'être purgés et de partir sur WhatsApp
+exactement comme avant. Le bandeau est un canal **PARALLÈLE** : acquitter une
+ligne ne résout aucun incident, et résoudre un incident n'efface aucune ligne.
+
+##### Pourquoi une table dédiée et pas une lecture de `incidents`
+
+Un incident non-disponibilité est **hard-delete** à sa résolution
+(`resolve_incidents` — il n'y a pas de vue `/archive`). Un bandeau bâti sur
+`incidents` verrait donc sa ligne **s'évaporer dès que le port renégocie à
+1 Gb/s**, c.-à-d. sans que personne ait cliqué — l'exact contraire de ce qui est
+demandé. La ligne doit **survivre à la résolution automatique de l'incident qui
+l'a fait naître**, donc vivre ailleurs (`manual_alerts`).
+
+**Corollaire à ne pas « corriger »** : une ligne du bandeau peut désigner une
+anomalie **déjà rétablie**. C'est le but — elle atteste que c'est **arrivé**,
+pas que ça dure. `/incidents` reste la vue de ce qui se passe **maintenant**.
+
+##### La règle de récidive tient au POINT D'ACCROCHE
+
+`record_detection` est appelé depuis `incident_service.open_incident`, **après**
+son `return existing, False` — donc uniquement quand un incident **nouveau** est
+créé. Cette équivalence n'est pas une commodité, c'est la règle voulue :
+
+- anomalie qui **dure** → `open_incident` dédoublonne → **aucune** nouvelle
+  ligne (sinon ~1 ligne/minute de poll à acquitter, intenable) ;
+- anomalie qui **revient après rétablissement** → nouvel incident → **nouvelle**
+  ligne, même si la précédente avait été acquittée. Une récidive est une
+  information, et l'avoir écartée hier ne doit pas la masquer aujourd'hui.
+
+⚠️ Remonter l'appel de deux lignes casserait tout ça sans qu'aucun autre test ne
+bronche — d'où le test qui vérifie l'**ordre dans le source**
+(`tests/test_manual_alert_banner.py`).
+
+⚠️ `record_detection` ne fait **ni flush ni commit** : la ligne partage la
+transaction de l'incident. Un rollback qui annule l'incident doit annuler la
+ligne, sinon le bandeau signale une anomalie dont plus aucune trace n'existe.
+
+##### Choix délibérés
+
+- **Les 3 types « dégradés », pas leurs variantes « hors service »**
+  (`switch_port_down`, `af60_link_down`) : un équipement franchement mort crie
+  déjà sur WhatsApp et se voit. Ce bandeau existe pour la **dégradation
+  silencieuse**, celle qui passe et repasse sans laisser de trace.
+- **Acquittement PARTAGÉ** : un clic retire la ligne pour toute l'équipe.
+  `acknowledged_by` n'est donc pas un filtre, seulement la trace de qui a
+  cliqué (NULL sur un appel par clé API, qui ne porte aucune identité).
+- **Lignes acquittées conservées** (aucun job de rétention) : c'est la piste de
+  qui a pris acte de quoi, et le volume est de quelques lignes par jour.
+- **Hauteur bornée** : 3 lignes affichées, le reste sous « Voir N autres », et
+  `max-h-[45vh]` une fois déplié — le bandeau vit dans l'en-tête collant et ne
+  doit jamais recouvrir la page.
+- **Rien ne s'affiche quand il n'y a rien** : pas de bandeau vide, pas de place
+  réservée.
+
+⚠️ **Au déploiement, les anomalies DÉJÀ ouvertes n'entrent pas dans le bandeau**
+(leur incident existe déjà, donc `open_incident` ne les rouvrira pas) : elles
+apparaîtront à leur prochaine récidive. Rien à rattraper — elles restent
+visibles sur `/incidents`.
+
 ### 24 Alert types
 | Catégorie | alert_type | Déclencheur |
 |---|---|---|
@@ -1404,6 +1481,8 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | POST | `/api/v1/devices/{id}/unblock-client` | Oui | Rétablit l'accès internet complet du client (port LAN remonté + filtre WhatsApp retiré) |
 | GET | `/api/v1/incidents` | Oui | Liste incidents (filtres: status, severity, device_id, alert_type) — lecture seule |
 | GET | `/api/v1/incidents/{id}` | Oui | Détail incident — lecture seule |
+| GET | `/api/v1/manual-alerts` | Oui | **Anomalies en attente d'acquittement** — le contenu du bandeau du dashboard, la plus récente d'abord (`alerts[]` + `count`). Liste **vide** = pas de bandeau du tout. Voir **Bandeau d'anomalies à acquitter** |
+| POST | `/api/v1/manual-alerts/{id}/acknowledge` | Oui | **Retire une anomalie du bandeau, pour TOUTE l'équipe** (l'acquittement est partagé, pas personnel). Idempotent : le premier clic est celui qui compte, deux onglets ne se disputent pas la paternité. ⚠️ **Ne résout AUCUN incident** — le cycle de vie de l'incident correspondant est inchangé (ouverture, résolution automatique au retour à la normale, purge, notification WhatsApp). 404 si l'id n'existe pas |
 | GET | `/api/v1/system` | Oui | Infos système (version, uptime scheduler) |
 | POST | `/api/v1/system/test-whatsapp` | Oui | Diagnostic WhatsApp (Ultramsg) — envoie un message de test au groupe `WHATSAPP_GROUP_ID` |
 | POST | `/api/v1/uisp/assign` | **Assign** | Clé **dédiée `UISP_ASSIGN_API_KEY`** (router `uisp_assign.py` séparé, `require_uisp_assign_client`) : scellée à cette seule route — n'ouvre **pas** `/uisp/sync`, ni block/unblock ; repli accepté sur l'auth normale (master `API_KEY` / session). ⚠️ **Consommée en HTTPS** : le port 80 renvoie un `301`, et une redirection **convertit un POST en GET et détruit le corps JSON** → `405` (prouvé en journal le 2026-08-11 : `POST … 301` puis `GET … 405`, même seconde, même client). C'est pourquoi `/fai/verify` (un GET) tolère `http://` et pas cette route. `location ^~ /api/v1/uisp/assign` dédiée dans nginx : `proxy_read_timeout` **120 s** (la pose de la clé UISP passe par SSH ; à 30 s le client reçoit un 504 sur une adoption **réussie**) et zone de débit `uisp_assign` 120 r/min (les adoptions arrivent par lots). Doc d'intégration : `docs/api-uisp-assign.md`. **Associe un équipement à un client CRM** — body `mac` + `crm_client_id`, plus `crm_service_id` **uniquement** si le client a plusieurs services. Équivalent du formulaire UISP (chercher la MAC en « unknown », choisir le client). Si l'équipement est absent du contrôleur, sa clé lui est posée d'abord et la réponse porte `pending_registration` (rejouer dans la minute — ce n'est pas une erreur). Rapport étape par étape. 400 MAC invalide · 404 client CRM introuvable **ou service n'appartenant pas à ce client** · **409 client à plusieurs services sans `crm_service_id`** (services renvoyés) · **409 équipement déjà rattaché à un AUTRE client** (id du détenteur renvoyé ; `reassign=true` pour passer outre) · 502 clé non posée (échec SSH — surtout pas un 404) · 403 token UISP sans droits d'écriture. Voir **Association client CRM** |
@@ -1429,6 +1508,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | Devices | `/devices` | Liste avec statut, dernière vue, métriques, modal détail. Sur un **LR**, un **AF60** et un **switch** (courbe de son port fibre), la fiche expose un bouton **« Plus d'infos — graphes d'historique »** (`MetricHistoryModal`) : courbes SVG sur 24h/7j/30j ou une plage de dates, avec **onglets** pilotés par `available_metrics` (latence Internet, capacité du lien, potentiel du lien, capacités DL/UL, débits DL/UL, **occupation du lien** sur un AF60). Bande min/max (garde visible un pic court noyé par la moyenne du bucket), ligne de seuil (au-dessus ou en dessous selon `threshold_direction`), survol détaillé, chiffres clés, et la **cadence réelle** du relevé affichée (elle est dictée par la durée d'un tour de poll, pas par le graphe). **Les trous = périodes sans mesure**, pas des 0. Source : `/devices/{id}/metric-history` |
 | Accès clients | `/access` | Table des LR abonnés (source UISP). Filtres dont **« Hors supervision »** : LR sans IP **et** non vu par UISP depuis `OUT_OF_SUPERVISION_DAYS` — badge ambre, **exclu du compteur « Accès actif »** (la tuile indique combien sont exclus). Distinct de « Hors ligne > 1 mois » (`long_offline`, absence prolongée vue par UISP) : ici c'est une absence de **mesure**, pas une absence constatée |
 | Anomalies détectées | `/incidents` | Anomalies actuellement détectées (lecture seule, résolution automatique) |
+| _(bandeau, toutes pages)_ | `AlertBanner` dans `AppShell` | **Anomalies à acquitter à la main** — F60 dégradée / vitesse de port dégradée / équipement instable, dans l'en-tête collant, avec un bouton **Résoudre** par ligne. Ne rend **rien** quand il n'y a rien à acquitter. ⚠️ Une ligne peut désigner une anomalie **déjà rétablie** : elle atteste que c'est arrivé, `/incidents` dit ce qui se passe maintenant. Rafraîchi toutes les 30 s. Source : `/manual-alerts`. Voir **Bandeau d'anomalies à acquitter** |
 | Capacité du réseau | `/capacity` | 2 cercles (LTU/airMAX) consommé vs disponible sur tout le réseau + barres par site (LTU/airMAX séparés) ; clic site → table Rockets (connectés/max + largeur). Donut SVG custom (pas de lib de charts). Inclut la section **« Capacité infra par site »** (table Site/Équip. infra/Max/Marge, marge +N vert / -N rouge) alimentée par la clé `infra` de `/network-capacity` |
 | Topologie du réseau | `/topology` | **Graphe inter-sites** — sites rendus par l'icône de pylône (`public/devices/antenne.png` ; ⚠️ **dans `devices/`** car le middleware d'auth intercepte tout sauf ce dossier — ailleurs l'image serait redirigée vers `/login`). **Pas de `refreshInterval`**, contrairement aux autres pages : elle affiche du **câblage**, pas des métriques vivantes. Affiche la date du dernier rapatriement du câblage, distincte de l'état des équipements qui est de maintenant. **Écran dépouillé** : le graphe seul (ni tuiles, ni légende, ni liste des liaisons — le détail d'un lien est au survol). **Pleine largeur + menu replié à l'arrivée** (`FULL_WIDTH_ROUTES` dans `AppShell` : la colonne perd son `max-w-6xl` et la barre latérale se masque). Le repli se commande par un bouton dans l'en-tête du menu, et un bouton flottant le ramène quand il est masqué — **jamais un clic n'importe où** : le graphe est lui-même cliquable (sélection d'un site), un basculement au moindre clic ferait disparaître le menu par accident. L'effet est clé sur `pathname` seul, donc un repli/dépli manuel n'est pas écrasé tant qu'on reste sur la page. Sous chaque site, le compteur **« 14/1 »** (équipements d'infra / en panne, la part rouge) et, si une de ses liaisons est pleine, un **anneau violet** autour de son icône + le pourcentage d'occupation (cf. **Le SITE saturé sur `/topology`** — canal visuel séparé, la saturation étant orthogonale à la panne). ⚠️ **Aucun bloc d'anomalies sous la carte** : sites sans liaison, composantes séparées et extrémités non supervisées restent **exacts dans la réponse d'API** (`layout.orphan_sites`, `layout.components`, `stats.unsupervised_ends`) et **visibles sur le dessin** (un site orphelin y est dessiné, simplement flottant) ; `scripts/dump_site_topology.py` continue de les nommer en clair. Rendu SVG **en couches** (jamais en arbre — le graphe porte de vraies boucles), nœuds cliquables pour filtrer les liaisons d'un site, liaisons colorées par **notre** mesure (vert au-dessus du plancher / ambre dégradée / rouge hors service / **gris non mesurée**), boucles de redondance en pointillé. Sous le graphe : la liste des liaisons avec leurs liens physiques et l'état de chaque bout, puis la section **« Ce que la carte ne montre pas »** (sites sans liaison, composantes séparées, liaisons sans mesure, extrémités non supervisées). Complète `SiteTopology` (intra-site, sur `/sites`). **Bascule Graphe / Carte** dans l'en-tête → voir **Vue carte de la topologie**. Source : `/network-topology` |
 | Destinations Internet | `/traffic` | 3 sections : **Débit en direct** (descendant/montant Gb/s + partage par opérateur, `/traffic/throughput`, refresh 30 s), **Débit descendant par opérateur** (graphe d'aires empilées SVG sur 1h/6h/24h, `/traffic/throughput-history`) et **Volume** (par opérateur sur 24h/7j/30j, down/up/total + part, `/traffic/top-destinations`). Repère les candidats à un serveur de cache. **Vide tant que `NETFLOW_COLLECTOR_ENABLED=false` ou que le routeur n'exporte pas vers le collecteur** |

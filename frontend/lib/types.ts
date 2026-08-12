@@ -242,6 +242,32 @@ export interface Incident {
   notification_channel_policy: string[]
 }
 
+// Une anomalie du bandeau du dashboard : elle y reste jusqu'à ce qu'un
+// opérateur clique « Résoudre », même si elle s'est rétablie entre-temps.
+// ⚠️ Distinct d'un Incident, et volontairement : l'incident, lui, s'ouvre et se
+// résout tout seul (et est purgé au passage) — voir
+// backend/app/core/alert_constants.MANUAL_ACK_ALERT_TYPES.
+export interface ManualAlert {
+  id: number
+  device_id: number
+  alert_type: string
+  severity: string      // info | warning | critical
+  title: string
+  description: string | null
+  detected_at: string
+  acknowledged_at: string | null
+  acknowledged_by: string | null
+  device_name: string | null
+  device_type: string | null
+  device_ip: string | null
+  device_site: string | null
+}
+
+export interface ManualAlertList {
+  alerts: ManualAlert[]
+  count: number
+}
+
 // Human-readable labels for every alert_type the engine can raise.
 // Keep aligned with backend/app/core/alert_labels.py — single operator vocabulary.
 export const ALERT_TYPE_LABELS: Record<string, string> = {
@@ -275,6 +301,9 @@ export const ALERT_TYPE_LABELS: Record<string, string> = {
   // Switch
   switch_port_down:        'Port du switch coupé',
   switch_port_speed_low:   'Vitesse du port switch dégradée',
+  // Backhaul P2P + stabilité — affichés dans le bandeau à acquitter
+  af60_link_substandard:   'Liaison F60 dégradée',
+  device_flapping:         'Équipement instable (coupures répétées)',
   // Transit
   transit_unavailable:     'Transit Internet indisponible',
   lr_no_transit:           'Client (LR) sans accès Internet',

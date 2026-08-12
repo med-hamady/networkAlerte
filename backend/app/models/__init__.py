@@ -3,6 +3,7 @@ from app.models.device import Device, Lr, Rocket, UispPower, UispSwitch
 from app.models.device_metric import DeviceMetric
 from app.models.incident import Incident
 from app.models.lr_metric_sample import LrMetricSample
+from app.models.manual_alert import ManualAlert
 from app.models.power_status_log import PowerStatusLog
 from app.models.site_link import SiteLink
 from app.models.system_setting import SystemSetting
@@ -15,6 +16,7 @@ __all__ = [
     "Incident",
     "Lr",
     "LrMetricSample",
+    "ManualAlert",
     "PowerStatusLog",
     "Rocket",
     "SiteLink",

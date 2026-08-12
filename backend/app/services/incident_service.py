@@ -12,6 +12,7 @@ from app.core.alert_constants import (
 )
 from app.models.device import Device
 from app.models.incident import Incident
+from app.services import manual_alert_service
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,27 @@ async def open_incident(
         device.name,
         device.ip_address,
         title,
+    )
+
+    # Canal PARALLÈLE (2026-08-12) : les trois anomalies de MANUAL_ACK_ALERT_TYPES
+    # sont en plus posées dans le bandeau du dashboard, d'où elles ne partent que
+    # sur un clic de l'opérateur. Rien du cycle de vie ci-dessus ne change — ni
+    # ouverture, ni résolution automatique, ni purge, ni notification.
+    #
+    # ⚠️ Ici, et pas dans une branche du moteur de règles : on est sur le seul
+    # chemin qui crée un incident, et sous le seul `if` qui distingue une
+    # DÉTECTION NOUVELLE d'un ré-déclenchement du même incident encore ouvert
+    # (le `return existing, False` plus haut). Cette distinction EST la règle de
+    # récidive demandée — une anomalie qui dure ne se resignale pas, une
+    # anomalie qui revient après rétablissement, si.
+    manual_alert_service.record_detection(
+        db,
+        device,
+        alert_type=alert_type,
+        title=title,
+        severity=severity,
+        description=description,
+        detected_at=now,
     )
     return incident, True
 

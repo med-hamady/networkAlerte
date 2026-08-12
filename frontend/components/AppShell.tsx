@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import Sidebar from '@/components/Sidebar'
 import DeviceSearchBar from '@/components/DeviceSearchBar'
+import AlertBanner from '@/components/AlertBanner'
 
 /**
  * Decides whether to render the dashboard chrome (Sidebar + main column) or
@@ -64,26 +65,33 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             ce <main>). Il porte aussi le bouton de retour du menu quand celui-ci
             est replié — dans la barre plutôt qu'en flottant sur le contenu, où
             il recouvrait le titre de la page. */}
-        <div className="sticky top-0 z-30 flex items-center gap-3 px-6 py-3
-                        bg-white/95 backdrop-blur border-b border-blue-100">
-          {menuHidden && (
-            <button
-              onClick={show}
-              title="Afficher le menu"
-              aria-label="Afficher le menu"
-              className="shrink-0 flex items-center justify-center w-9 h-9
-                         rounded-lg border border-slate-200 bg-white
-                         text-slate-600 shadow-sm hover:bg-blue-50 hover:text-blue-700
-                         hover:border-blue-200 transition-colors"
-            >
-              <ExpandIcon />
-            </button>
-          )}
-          <DeviceSearchBar
-            onSelect={openDevice}
-            shortcut
-            className="w-full max-w-xl"
-          />
+        <div className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-blue-100">
+          <div className="flex items-center gap-3 px-6 py-3">
+            {menuHidden && (
+              <button
+                onClick={show}
+                title="Afficher le menu"
+                aria-label="Afficher le menu"
+                className="shrink-0 flex items-center justify-center w-9 h-9
+                           rounded-lg border border-slate-200 bg-white
+                           text-slate-600 shadow-sm hover:bg-blue-50 hover:text-blue-700
+                           hover:border-blue-200 transition-colors"
+              >
+                <ExpandIcon />
+              </button>
+            )}
+            <DeviceSearchBar
+              onSelect={openDevice}
+              shortcut
+              className="w-full max-w-xl"
+            />
+          </div>
+          {/* Anomalies à acquitter à la main. DANS l'en-tête collant : elles
+              n'ont d'intérêt que si l'opérateur les voit quelle que soit la
+              page où il travaille et où il en est du défilement. Le composant
+              ne rend RIEN quand il n'y a rien à acquitter — pas de bandeau
+              vide, pas de place réservée. */}
+          <AlertBanner />
         </div>
 
         <div className={`px-6 py-6 ${fullWidth ? '' : 'max-w-6xl mx-auto'}`}>

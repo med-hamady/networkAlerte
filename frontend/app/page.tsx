@@ -7,6 +7,7 @@ import type { DashboardSummary } from '@/lib/types'
 import StatsBar from '@/components/StatsBar'
 import SiteOutageCharts from '@/components/SiteOutageCharts'
 import NetworkHealthBadge from '@/components/NetworkHealthBadge'
+import CpuBadge from '@/components/CpuBadge'
 
 const REFRESH = 15_000
 const WINDOW_DAYS = 7
@@ -51,10 +52,13 @@ export default function DashboardPage() {
               Supervision réseau — actualisation toutes les {REFRESH / 1000}s
             </p>
           </div>
-          <div className="text-blue-400 text-xs bg-white border border-blue-100 px-3 py-1.5 rounded-lg shadow-sm">
-            {new Date().toLocaleDateString('fr-FR', {
-              weekday: 'long', day: 'numeric', month: 'long',
-            })}
+          <div className="flex items-center gap-3">
+            <CpuBadge />
+            <div className="text-blue-400 text-xs bg-white border border-blue-100 px-3 py-1.5 rounded-lg shadow-sm">
+              {new Date().toLocaleDateString('fr-FR', {
+                weekday: 'long', day: 'numeric', month: 'long',
+              })}
+            </div>
           </div>
         </div>
 

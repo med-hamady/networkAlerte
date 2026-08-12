@@ -82,7 +82,7 @@ backend/app/
 │   ├── digest_service.py           # Regroupement des warnings en digest 15 min
 │   ├── lr_metric_history_service.py # Historique des courbes de la fiche (table `lr_metric_samples`). **`GRAPH_METRICS`** = l'allowlist des métriques traçables (latence, `total_capacity_mbps`, `link_potential_pct`, `dl_capacity_mbps`, `ul_capacity_mbps`, `dl_throughput_mbps`, `ul_throughput_mbps`) avec label/unité/seuil — **ajouter une clé ici suffit à rendre une métrique traçable** (pas de migration, pas de table). Le seuil peut être une chaîne (seuil unique) ou un **dict par famille radio** (`link_potential_pct` : 50 % LTU / 40 % airMAX) résolu par `threshold_setting_for(spec, device)`, qui réutilise `alert_rules._AIRMAX_LR_VARIANTS` — **importé, jamais recopié** : la ligne tracée doit être celle qui déclenche l'alerte. **ÉCRITURE** : `record_sample` est appelé depuis `persist_device_metrics` (le chokepoint de TOUS les polls → couvre sonde SSH, airOS, fan-out LTU, wstalist M5 d'un coup) et replie la valeur dans un **bucket** (60 s par défaut) par upsert (moyenne glissante recalculée EN SQL + `least`/`greatest` sur min/max). **LECTURE** : `get_history` sert 24h à la résolution native et re-binne les fenêtres larges via `date_bin` (moyenne **pondérée par `sample_count`**). `available_metrics` = les courbes que CE device possède (onglets de la modale). **Trous NON comblés** : un bucket sans relevé est absent, jamais ramené à 0
 │   ├── uisp_service.py             # Client REST contrôleur UISP/UNMS (login → token, GET /devices) — read-only
-│   ├── uisp_sync_service.py        # Import auto depuis UISP : INFRA (classify→upsert name/IP/site, creds par convention à la CRÉATION, **jamais de delete**) + STATIONS clientes via sync_uisp_stations (LR abonnés dans `lrs`, colonnes uisp_* mode/statut, identité MAC, gated UISP_STATION_SYNC_ENABLED). ⚠️ **Le sync des STATIONS SUPPRIME** pour rester synchro avec UISP : un LR **issu de UISP** (`uisp_synced_at` renseigné) dont la MAC a disparu du roster = déprovisionné dans UISP → `session.delete` (cascade). Un client **découvert par radio seul** (`uisp_synced_at` NULL) n'est JAMAIS supprimé (propriété de discovery_service). **Garde-fou** : pass de suppression sautée si le roster revient VIDE (échec de fetch — ne jamais prendre un payload vide pour « tout le monde déprovisionné »)
+│   ├── uisp_sync_service.py        # Import auto depuis UISP : INFRA (classify→upsert name/IP/site, creds par convention à la CRÉATION, **jamais de delete**) + STATIONS clientes via sync_uisp_stations (LR abonnés dans `lrs`, colonnes uisp_* mode/statut, identité MAC, gated UISP_STATION_SYNC_ENABLED). ⚠️ **Le sync des STATIONS SUPPRIME** pour rester synchro avec UISP : un LR **issu de UISP** (`uisp_synced_at` renseigné) dont la MAC a disparu du roster = déprovisionné dans UISP → `session.delete` (cascade). Un client **découvert par radio seul** (`uisp_synced_at` NULL) n'est JAMAIS supprimé (propriété de discovery_service). **Garde-fou** : pass de suppression sautée si le roster revient VIDE (échec de fetch — ne jamais prendre un payload vide pour « tout le monde déprovisionné »). ⚠️ **La RECLASSIFICATION va dans LES DEUX SENS** (`_demote_reclassified_stations`, en tête du sync infra) — voir **Un équipement d'infra redevenu abonné**
 │   ├── netflow_service.py          # Collecteur NetFlow (asyncio UDP) : décode v1/v5/v9/IPFIX (lib `netflow`). Attribue chaque flux à son **extrémité PUBLIQUE** (source en download, destination en upload ; l'extrémité INTERNE = client/WAN défini par NETFLOW_INTERNAL_PREFIXES), résout l'ASN (asn_service), agrège en mémoire par (asn, opérateur) avec **down_bytes/up_bytes** et flush dans `traffic_dest_stats`. Process long dédié (RUN_MODE=collector), PAS un job APScheduler
 │   ├── asn_service.py              # IP → (ASN, opérateur). PRIMAIRE : datasets BGP **iptoasn.com** (`ip2asn-v4/v6.tsv.gz`, sorted arrays + bisect, bien plus complets que GeoLite2 pour la longue traîne). FALLBACK : MaxMind GeoLite2-ASN (.mmdb). + map statique de labels CDN. Lazy load ; aucune source = tout sous "Indéterminé"
 │   └── traffic_service.py          # 2 roll-ups : `get_top_destinations` (VOLUME down/up/total par ASN sur 24h/7j/30j) + `get_throughput` (DÉBIT Gb/s = bytes÷bucket s, dernier bucket, descendant/montant + part). Alimente /traffic
@@ -352,7 +352,7 @@ Réglages **séparés par famille**, aucun budget partagé (`ping_infra_reconfir
 | `site_topology_sync_job` | **Cron quotidien `TOPOLOGY_SYNC_HOUR`:30 UTC** (défaut 07:30) + **1× au démarrage** | Rapatrie le **câblage inter-sites** (`GET /data-links` + `/devices` + `/sites`) dans la table **`site_links`** → alimente `/topology`. Avant ce job, la page interrogeait le contrôleur **à chaque affichage** (~1300 équipements + ~1400 sites + ~1300 liens) et son `refreshInterval` le rejouait **toutes les 2 min**. Ne touche **pas** à la santé des liaisons (lue en direct). Remplacement intégral de la table, **sauté si aucune liaison n'est résolue** (anti-purge). Gated `TOPOLOGY_SYNC_ENABLED`. Groupe **heavy**. Voir **Topologie inter-sites** |
 | `switch_snmp_poll_job` | `SWITCH_SNMP_INTERVAL_SECONDS` (60 s) | **Métriques SNMP des SWITCHES** (état/vitesse de chaque port, compteurs, lien fibre) → règles `switch_port_down`, `switch_port_speed_low`, `fiber_link_down`. Groupe scheduler **`poll-switch`**, dans son **conteneur dédié** `scheduler-poll-switch`. ⚠️ **Séparé pour une raison vécue** : les switches partageaient le tour des ~100 radios et, leur collecte étant la plus lente (28 ports), ils étaient traités **EN DERNIER** — tout incident amont les privait de leur écriture. Constaté le 2026-08-11 : **14 h sans une seule métrique de switch**, donc ces trois alertes aveugles, pendant que le job « tournait » normalement pour les radios. Le parc n'en compte qu'une quinzaine : un tour dure quelques secondes. |
 | `switch_port_mapping_job` | `SWITCH_PORT_MAPPING_INTERVAL_MINUTES` (60 min) + **1× au démarrage** | Détecte **quel équipement supervisé est câblé sur quel port** et écrit `devices.uplink_switch_id/_port` — la source de vérité de « quels ports surveiller » pour `snmp_poll_job`. **2 sources dans l'ordre** : (1) les **data-links du contrôleur UISP** (`portN`/`0/N`, la seule qui fonctionne sur notre matériel — 1 appel API pour tout le parc, index **vérifié** contre l'`ifDescr` du switch), (2) la **FDB BRIDGE-MIB** en fallback, **uniquement** sur les switches qu'UISP ne couvre pas. Contrôleur injoignable = WARNING, la passe FDB et les attributions en base survivent. Groupe **heavy**. Voir **Surveillance des ports de switch** |
-| `uisp_sync_job` | **Cron quotidien `UISP_SYNC_HOUR`:00 UTC** (défaut 07:00 ; Mauritanie GMT → 07:00 locale) + **1× au démarrage** (`next_run_time=now` → import dès le déploiement) | **Désactivé par défaut** (`UISP_SYNC_ENABLED=false`). Importe les équipements d'**infra** (Rocket LTU/airMAX role=ap, switches `uisps`/blackBox, UISP Power `uispp`, AF60* P2P) depuis `GET /nms/api/v2.1/devices` du contrôleur UISP. Mapping `classify_device(type, role, model)` ; identité = **MAC** (sinon IP, sinon (type,nom)). Met à jour **name/IP/site(location)** ; pose les **creds par convention famille/site à la création** (jamais d'écrasement). **Abonnés (LTU-LR/LiteBeam station)** : ignorés par l'import **infra**, mais importés dans `lrs` par `sync_uisp_stations` (après l'infra) si `UISP_STATION_SYNC_ENABLED` — apporte le mode routeur/bridge + statut UISP (colonnes `uisp_*` seules, identité MAC, AF60 exclus, **roster complet**) pour que `/access` reste complet même Rocket/LR down. **Infra : aucun delete.** **Stations : suppression des LR issus de UISP (`uisp_synced_at` renseigné) absents du roster** (déprovisionnés dans UISP), même bloqués ; jamais les clients radio-seuls ; passe sautée si roster vide. Voir `uisp_sync_service`. |
+| `uisp_sync_job` | **Cron quotidien `UISP_SYNC_HOUR`:00 UTC** (défaut 07:00 ; Mauritanie GMT → 07:00 locale) + **1× au démarrage** (`next_run_time=now` → import dès le déploiement) | **Désactivé par défaut** (`UISP_SYNC_ENABLED=false`). Importe les équipements d'**infra** (Rocket LTU/airMAX role=ap, switches `uisps`/blackBox, UISP Power `uispp`, AF60* P2P) depuis `GET /nms/api/v2.1/devices` du contrôleur UISP. Mapping `classify_device(type, role, model)` ; identité = **MAC** (sinon IP, sinon (type,nom)). Met à jour **name/IP/site(location)** ; pose les **creds par convention famille/site à la création** (jamais d'écrasement). **Abonnés (LTU-LR/LiteBeam station)** : ignorés par l'import **infra**, mais importés dans `lrs` par `sync_uisp_stations` (après l'infra) si `UISP_STATION_SYNC_ENABLED` — apporte le mode routeur/bridge + statut UISP (colonnes `uisp_*` seules, identité MAC, AF60 exclus, **roster complet**) pour que `/access` reste complet même Rocket/LR down. **Infra : aucun delete**, mais une **rétrogradation** possible — un `ptp_litebeam` que UISP donne désormais abonné (`sta-ptmp`) devient un `lr` avant la passe stations (cf. **Un équipement d'infra redevenu abonné** ; jamais un AF60). **Stations : suppression des LR issus de UISP (`uisp_synced_at` renseigné) absents du roster** (déprovisionnés dans UISP), même bloqués ; jamais les clients radio-seuls ; passe sautée si roster vide. Voir `uisp_sync_service`. |
 | `flap_detection_job` | `FLAP_CHECK_INTERVAL_MINUTES` (10 min) | Détecte les équipements d'**infra instables** (flapping). Compte par device les **incidents de disponibilité** (`AVAILABILITY_ALERT_TYPES`, conservés en DB après résolution) avec `detected_at` sur les dernières `FLAP_WINDOW_HOURS` ; au-delà de `FLAP_THRESHOLD_24H` (3) → ouvre `device_flapping` (critique → WhatsApp), résout sinon. **UISP Power exclus** (`device_type=="uisp_power"` filtré dans la requête : leurs up/down sur coupure secteur sont normaux). Infra-only par nature (un LR down n'est jamais un incident). |
 | `network_latency_aggregate_job` | `NETWORK_LATENCY_CHECK_INTERVAL_MINUTES` (**1440 min = 24 h**) | **Contrôle quotidien** réseau-wide : part des LR `up` dont le dernier `lr_latency_ms` ≥ seuil latence 100 ms (`lr_health_service.network_latency_summary`, réutilise `_fetch_latest_latency`). Si > `NETWORK_HIGH_LATENCY_PCT` (20%) et échantillon ≥ `NETWORK_LATENCY_MIN_SAMPLE` (10) → **message WhatsApp direct** (PAS un incident : un Incident exige un device_id). **Pas de flag/rétabli** : rapport quotidien qui n'envoie que si la condition est remplie. |
 | `rocket_saturation_report_job` | **Cron quotidien `ROCKET_SATURATION_REPORT_HOUR`:00 UTC** (défaut 07:00 ; Mauritanie GMT → 07:00 locale) + **1× au démarrage** (`next_run_time=now` → rapport dès le déploiement) | **Rapport PDF quotidien** des **Rockets saturés** envoyé en **document WhatsApp**. Réutilise `network_capacity_service.get_network_capacity` ; un Rocket est saturé quand ses **clients installés ≥ capacité max** (= condition `rocket_client_overload`). `saturation_report_service` génère le PDF (lib `fpdf2`, tableau Site/Rocket/Famille/Clients/Max/Charge/Largeur, trié par charge décroissante), `whatsapp_service.send_whatsapp_document` l'upload en base64 sur Ultramsg `/messages/document`. **Envoi systématique** (même si liste vide = PDF « aucun saturé », caption ✅), contrairement à la latence. Gated `ROCKET_SATURATION_REPORT_ENABLED`. Groupe scheduler **fast** (léger, pas de SSH). Dépend des clients installés → nécessite `UISP_STATION_SYNC_ENABLED`. |
@@ -976,6 +976,67 @@ enregistre le dernier enrôlement réussi — il sépare « jamais tenté » de 
 en attente du sync quotidien », mais n'atteste PAS la présence dans UISP (seul
 `uisp_synced_at`, écrit par le sync, le fait). Aucun job d'enforcement : un
 enrôlement est ponctuel, le réappliquer périodiquement dé-enrôlerait.
+
+#### Un équipement d'infra redevenu abonné (2026-08-12)
+
+Une **LiteBeam P2P déposée d'un mât et réinstallée chez un client** change de
+NATURE sans changer d'identité (même MAC, même ligne `devices`). Aucun des trois
+chemins ne reprenait ce changement, et **chacun refusait pour une bonne raison** :
+
+1. **Sync infra** — `classify_device` rend `None` pour un `sta-ptmp` : la ligne
+   n'est même plus regardée (elle tombe dans le `continue` des ~1000 abonnés), et
+   la reclassification était **à sens unique** (`_convert_to_ptp_litebeam` sait
+   faire `rocket`/`lr` → `ptp_litebeam`, jamais l'inverse).
+2. **Sync des stations** — la MAC est bien au roster, mais `match.device_type != "lr"`
+   → `skipped["type_conflict"]`, jamais importée. La passe de suppression ne la
+   voit pas non plus (elle ne cible que `isinstance(d, Lr)`).
+3. **Découverte radio** — l'AP la rapporte à chaque poll, mais
+   `discovery_service._mac_held_by_non_lr` refuse de créer un LR sur une MAC
+   d'infra (sans ce garde c'était une `UniqueViolationError` qui empoisonnait la
+   session — les 5 violations + 9 cascades du 2026-08-11).
+
+**Personne ne possédait la rétrogradation** : le sync auditait « ce que UISP
+appelle infra », jamais l'inverse. Cas fondateur, `1C:6A:1B:B6:36:F8` : figée
+7 jours sur « A2 TJN1 » avec une IP morte pendant que UISP la donnait **active**
+chez un client sous A2-TS1-OMNI.
+
+Le coût n'est pas cosmétique : la ligne fantôme est comptée dans la capacité
+infra du site (`INFRA_COUNTED_TYPES`), pingée par `infra_ping_job` — donc
+`device_unreachable` **ouvert et notifié sur WhatsApp pour un équipement sain** —
+et elle rougit le compteur « n/1 » du site sur `/topology` ; pendant ce temps
+l'abonné n'existe **nulle part** : absent de `/access`, de la consommation, et
+**incoupable** par le système de paiement (`POST /fai/block` répond 404, faute de
+ligne `lr`).
+
+`_demote_reclassified_stations` tourne **en tête** de `sync_uisp_devices` (donc
+avant `sync_uisp_stations`, même transaction : sinon la ligne ressortirait en
+`type_conflict`). Elle convertit la sous-classe en place
+(`_convert_ptp_litebeam_to_lr`) et **s'arrête là** : l'AP, le site, le nom CRM et
+l'IP sont posés juste après par `sync_uisp_stations` avec ses règles habituelles
+(`_adopt_uisp_attribution` — `last_discovered_at` est NULL sur cette ligne, donc
+UISP gagne l'arbitrage). Rien n'est deviné de ce qu'un écrivain existant sait
+déjà faire. Les incidents ouverts sont traités comme ceux d'un LR qui tombe :
+disponibilité conservée en `resolved` (le journal des coupures les a comptés),
+le reste purgé.
+
+⚠️ **Trois garde-fous, verrouillés par `tests/test_uisp_demote_ptp_to_station.py`** :
+
+- **Jamais sur une absence** — seule une affirmation POSITIVE du contrôleur dans
+  le payload courant rétrograde (`role=station` **ET** `wirelessMode=sta-ptmp`).
+  Un mode absent, ou un `sta-ptp`, n'affirme rien : `sta-ptp` **est** l'extrémité
+  d'un lien P2P, c'est précisément ce qu'un `ptp_litebeam` doit rester.
+- **`ptp_litebeam` UNIQUEMENT — surtout pas un AF60.** Un AF60 annonce
+  `role=station` à un bout de **chaque** lien P2P : c'est son état NORMAL (c'est
+  pour ça que `classify_device` teste son modèle AVANT le rôle). Le rétrograder
+  arracherait un backhaul de l'infra à chaque sync. Rockets, switches et UISP
+  Power ne sont pas concernés non plus. La garantie est **structurelle** (seul ce
+  `device_type` est candidat), pas un filtre sur le payload.
+- **Visible** — journalisée en INFO, comptée dans le résumé du sync (`demoted`,
+  échantillon `samples.demote`) et prévisualisable en `?dry_run=true`.
+
+⚠️ **Convertir, jamais supprimer/recréer** : l'identité (`devices.id`, MAC) est
+préservée, donc les métriques, l'historique des courbes et le journal FAI de
+l'abonné restent accrochés à la même ligne.
 
 #### Association client CRM (2026-07-28)
 

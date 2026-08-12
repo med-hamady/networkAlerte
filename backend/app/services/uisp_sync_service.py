@@ -14,7 +14,14 @@ Scope (deliberately narrow — see CLAUDE.md):
   - **Subscriber stations** (LTU-LR, LiteBeam, …) are IGNORED — CPE
     auto-discovery (discovery_service) owns those rows.
   - A device that **disappears** from UISP is left untouched: no delete, no
-    deactivate. The sync only ever creates or updates.
+    deactivate. The sync only ever creates, updates — or RECLASSIFIES.
+  - Reclassification runs BOTH ways, and only ever on a positive statement from
+    the controller in the current payload: an LR/Rocket that turns out to be a
+    PTP LiteBeam is promoted (`_convert_to_ptp_litebeam`), and a PTP LiteBeam
+    that UISP now reports as a subscriber CPE (`sta-ptmp`) is demoted back to an
+    LR (`_demote_reclassified_stations`) — the case of a LiteBeam taken off a
+    mast and reinstalled at a customer's. AF60s are never demoted: `role=station`
+    is the NORMAL state of one end of every P2P link.
 
 Identity / reconciliation: match an existing device by MAC first (stable across
 DHCP churn), then by IP, then by (device_type, name). A match of a different
@@ -41,6 +48,7 @@ from app.services import (
     client_block_service,
     device_service,
     discovery_service,
+    incident_service,
     uisp_service,
 )
 
@@ -208,6 +216,159 @@ async def _convert_to_ptp_litebeam(session: AsyncSession, dev: Device) -> bool:
     return True
 
 
+async def _convert_ptp_litebeam_to_lr(
+    session: AsyncSession, dev: Device, model_variant: str,
+) -> None:
+    """Rétrograde un `ptp_litebeam` en `lr` abonné (symétrique de la promotion).
+
+    Une LiteBeam déposée d'un mât P2P et réinstallée chez un client change de
+    NATURE, pas d'identité : même MAC, même ligne `devices`. Sans ce chemin, la
+    ligne reste `ptp_litebeam` pour toujours — voir `_demote_reclassified_stations`
+    pour la démonstration et le coût.
+
+    `rocket_id` reste NULL et l'IP n'est pas touchée ici : `sync_uisp_stations`
+    tourne juste après, dans la MÊME transaction, et pose l'AP, le site, le nom
+    CRM et l'IP par ses règles habituelles (`_adopt_uisp_attribution`). Rien
+    n'est deviné ici de ce qu'un écrivain existant sait déjà faire.
+
+    `auto_discovered` passe à True : la ligne vient du sync UISP, pas de la main
+    d'un opérateur — c'est ce drapeau qui autorise la découverte radio à
+    resynchroniser sa localisation sur son Rocket parent.
+    """
+    did = dev.id
+    await session.execute(
+        text(
+            "INSERT INTO lrs (id, model_variant, rocket_id, ssh_username, ssh_password, "
+            "ssh_port, ssh_host_fingerprint, distance_m, lan_interface) "
+            "SELECT id, :variant, NULL, ssh_username, ssh_password, COALESCE(ssh_port, 22), "
+            "ssh_host_fingerprint, distance_m, :lan FROM ptp_litebeams WHERE id=:id"
+        ),
+        {
+            "id": did,
+            "variant": model_variant,
+            "lan": client_block_service.default_lan_interface(model_variant),
+        },
+    )
+    await session.execute(text("DELETE FROM ptp_litebeams WHERE id=:id"), {"id": did})
+    await session.execute(
+        text("UPDATE devices SET device_type='lr', auto_discovered=true WHERE id=:id"),
+        {"id": did},
+    )
+    # Détaché AVANT tout autre travail ORM : l'objet en mémoire est encore un
+    # PtpLiteBeam alors que sa ligne ne l'est plus, et sa sous-table n'existe
+    # plus — un autoflush ou un refresh sur lui échouerait.
+    session.expunge(dev)
+    # Les incidents ouverts appartenaient à l'équipement d'INFRA qu'il n'est plus.
+    # Même politique que pour un LR qui tombe (cf. `_ping_sweep`) : on conserve les
+    # incidents de disponibilité en `resolved` (le journal des coupures du site les
+    # a comptés, les effacer réécrirait l'histoire), on purge le reste, devenu du
+    # bruit. Sans ça, « LiteBeam TJN1-DN1 indisponible » resterait ouvert à vie sur
+    # /incidents alors que l'équipement va bien — il a déménagé.
+    await incident_service.resolve_availability_incidents(session, did)
+    await incident_service.delete_open_incidents(session, did)
+
+
+async def _demote_reclassified_stations(
+    session: AsyncSession,
+    raw_devices: list[dict],
+    existing: list[Device],
+    *,
+    dry_run: bool,
+) -> list[dict]:
+    """Audit INVERSE : nos `ptp_litebeam` que UISP donne désormais pour des abonnés.
+
+    Pourquoi ce passage existe
+    --------------------------
+    Le sync infra audite « ce que UISP appelle infra » ; personne n'auditait
+    l'inverse. Une LiteBeam P2P déposée d'un mât et réinstallée chez un client
+    n'était donc reprise par AUCUN des trois chemins, chacun refusant pour une
+    raison valable :
+
+      1. ici même — `classify_device` rend None pour un `sta-ptmp`, donc la ligne
+         n'est même plus regardée, et la promotion est à sens unique ;
+      2. `sync_uisp_stations` — la MAC est bien au roster, mais le type ne
+         concorde pas → `type_conflict`, jamais importée ;
+      3. `discovery_service` — l'AP la rapporte à chaque poll, mais
+         `_mac_held_by_non_lr` refuse de créer un LR sur une MAC d'infra (sans ce
+         garde c'était une `UniqueViolationError` qui empoisonnait la session).
+
+    Constaté le 2026-08-12 sur `1C:6A:1B:B6:36:F8` : figée 7 jours à « A2 TJN1 »
+    sur une IP morte pendant que UISP la donnait active chez un client sous
+    A2-TS1-OMNI. Le coût n'est pas cosmétique — la ligne fantôme est comptée dans
+    la capacité infra du site, pingée par `infra_ping_job` (donc `device_unreachable`
+    ouvert et notifié sur WhatsApp pour un équipement sain), pendant que l'abonné,
+    lui, n'existe nulle part : absent de /access et **incoupable** par le système
+    de paiement (`POST /fai/block` répond 404, faute de ligne `lr`).
+
+    Trois garde-fous, non négociables
+    ---------------------------------
+    * **Jamais sur une absence** — on ne rétrograde que sur une affirmation
+      POSITIVE du contrôleur dans CE payload (`role=station` ET
+      `wirelessMode=sta-ptmp`). Un équipement disparu de UISP, ou dont le mode
+      n'est pas renseigné, n'est pas rétrogradé.
+    * **`ptp_litebeam` UNIQUEMENT.** Surtout pas un AF60 : `classify_device` teste
+      son modèle AVANT le rôle précisément parce qu'un AF60 annonce `role=station`
+      à un bout de chaque lien P2P — c'est son état NORMAL. Le rétrograder
+      arracherait un backhaul de l'infra à chaque sync. Rockets, switches et UISP
+      Power ne sont pas concernés non plus : rien ne les transforme en CPE.
+    * **Visible** — chaque rétrogradation est journalisée en INFO et comptée dans
+      le résumé du sync, et `dry_run` la prévisualise sans rien écrire.
+    """
+    station_models: dict[str, str] = {}
+    for raw in raw_devices:
+        ident = raw.get("identification") or {}
+        if ident.get("role") != "station":
+            continue
+        if ((raw.get("overview") or {}).get("wirelessMode") or "").lower() != "sta-ptmp":
+            continue
+        mac_raw = ident.get("mac")
+        try:
+            mac = normalize_mac(mac_raw) if mac_raw else None
+        except ValueError:
+            mac = None
+        if mac:
+            station_models[mac] = ident.get("modelName") or ident.get("model") or ""
+
+    demoted: list[dict] = []
+    if not station_models:
+        return demoted
+
+    for dev in existing:
+        if dev.device_type != "ptp_litebeam" or not dev.mac_address:
+            continue
+        # `normalize_mac` rend du minuscule et c'est ce que la base porte, mais on
+        # compare insensible à la casse : une ligne saisie à la main peut porter la
+        # forme majuscule affichée par l'UI, et un ratage ici serait SILENCIEUX
+        # (l'équipement resterait fantôme sans que rien ne le signale). Deux MAC
+        # distinctes ne peuvent pas se confondre par la casse — on n'élargit donc
+        # que les vrais positifs.
+        model = station_models.get(dev.mac_address.lower())
+        if model is None:
+            continue
+        # Un ptp_litebeam est un airMAX par construction (cf. `classify_device`) :
+        # sans chaîne de modèle, le repli famille de `_infer_model_variant` est
+        # celui d'un parent LTU et rendrait `ltu_lr` — faux ici.
+        variant = (
+            discovery_service._infer_model_variant({"model": model}, dev)
+            if model else "litebeam_5ac"
+        )
+        logger.info(
+            "UISP sync: '%s' (%s, %s) rétrogradé ptp_litebeam → lr — UISP le donne "
+            "abonné (sta-ptmp, modèle %s). Site/AP/IP repris par le sync des stations",
+            dev.name, dev.ip_address, dev.mac_address, model or "inconnu",
+        )
+        demoted.append({
+            "name": dev.name, "mac": dev.mac_address, "ip": dev.ip_address,
+            "site": dev.location, "variant": variant,
+        })
+        if not dry_run:
+            await _convert_ptp_litebeam_to_lr(session, dev, variant)
+
+    if demoted and not dry_run:
+        await session.flush()
+    return demoted
+
+
 async def sync_uisp_devices(session: AsyncSession, *, dry_run: bool = False) -> dict:
     """Fetch the UISP inventory and create/update infrastructure devices.
 
@@ -244,6 +405,25 @@ async def sync_uisp_devices(session: AsyncSession, *, dry_run: bool = False) -> 
         "by_type": {},
         "samples": {"create": [], "update": []},
     }
+
+    # Audit INVERSE avant la boucle d'upsert : un ptp_litebeam que UISP donne
+    # désormais abonné doit devenir un `lr` AVANT que `sync_uisp_stations` (même
+    # transaction, juste après) ne cherche à l'importer — sinon il ressort en
+    # `type_conflict`, exactement comme aujourd'hui. Voir la fonction.
+    demoted = await _demote_reclassified_stations(
+        session, raw_devices, existing, dry_run=dry_run,
+    )
+    summary["demoted"] = len(demoted)
+    if demoted:
+        summary["samples"]["demote"] = demoted[:_SAMPLE_CAP]
+        # Les lignes converties ne sont plus des cibles d'upsert infra : les index
+        # locaux pointeraient sur des objets ORM expunged.
+        demoted_macs = {d["mac"] for d in demoted}
+        by_mac = {m: d for m, d in by_mac.items() if m not in demoted_macs}
+        by_ip = {i: d for i, d in by_ip.items() if d.mac_address not in demoted_macs}
+        by_type_name = {
+            k: d for k, d in by_type_name.items() if d.mac_address not in demoted_macs
+        }
 
     ignored_sites = settings.uisp_ignored_site_set
 
@@ -382,9 +562,11 @@ async def sync_uisp_devices(session: AsyncSession, *, dry_run: bool = False) -> 
             })
 
     logger.info(
-        "UISP sync %s: fetched=%d infra=%d created=%d updated=%d unchanged=%d skipped=%s",
+        "UISP sync %s: fetched=%d infra=%d created=%d updated=%d unchanged=%d "
+        "demoted=%d skipped=%s",
         "(dry-run)" if dry_run else "", summary["fetched"], summary["infra_matched"],
-        summary["created"], summary["updated"], summary["unchanged"], summary["skipped"],
+        summary["created"], summary["updated"], summary["unchanged"],
+        summary["demoted"], summary["skipped"],
     )
     return summary
 

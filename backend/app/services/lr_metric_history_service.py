@@ -117,6 +117,49 @@ GRAPH_METRICS: dict[str, dict] = {
         "threshold_setting": None,
         "threshold_direction": None,
     },
+    # OCCUPATION d'un backhaul AF60 — le temps d'antenne consommé, dérivé dans
+    # `af60_api_service._set_occupancy`. C'est LA courbe qui répond à « depuis
+    # que ce site est tombé à 14 h, son lien de secours est-il en train de
+    # saturer ? » : ni le débit ni la capacité seuls ne le montrent, puisque la
+    # saturation est leur rapport.
+    #
+    # ⚠️ Le seuil tracé est le seuil CRITIQUE de l'alerte, pas un barème
+    # d'affichage : la ligne du graphe doit être celle qui déclenche l'incident.
+    # `threshold_direction: "max"` — ici c'est le dépassement qui alerte.
+    #
+    # ⚠️ La moyenne du bucket porte sur le RATIO déjà calculé, jamais sur ses
+    # opérandes : `moyenne(débit)/moyenne(capacité) ≠ moyenne(débit/capacité)`.
+    # Moyenner d'abord effacerait le pic d'une capacité effondrée à trafic
+    # constant — précisément l'événement cherché. C'est gratuit ici : la clé
+    # arrive déjà divisée dans `persist_device_metrics`.
+    "link_occupancy_pct": {
+        "label": "Occupation du lien",
+        "unit": "%",
+        "zero_based": True,
+        "threshold_setting": "af60_occupancy_critical_pct",
+        "threshold_direction": "max",
+    },
+    # Les deux PARTS du total ci-dessus — elles disent par quel bout le lien se
+    # remplit. Le total répond « est-ce plein ? », celles-ci « à cause de quoi ? ».
+    # ⚠️ PAS de seuil sur les parts : c'est leur SOMME qui sature (le lien est
+    # TDD, les deux sens se partagent le même temps d'antenne). Tracer la ligne
+    # des 90 % sur une part isolée ferait croire qu'un descendant à 89 % est au
+    # bord de la rupture alors que le lien peut être à 91 % au total, donc déjà
+    # en alerte — ou à 89 % seulement, donc pas encore.
+    "link_occupancy_dl_pct": {
+        "label": "Occupation — descendant",
+        "unit": "%",
+        "zero_based": True,
+        "threshold_setting": None,
+        "threshold_direction": None,
+    },
+    "link_occupancy_ul_pct": {
+        "label": "Occupation — montant",
+        "unit": "%",
+        "zero_based": True,
+        "threshold_setting": None,
+        "threshold_direction": None,
+    },
 }
 
 

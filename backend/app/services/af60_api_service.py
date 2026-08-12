@@ -37,6 +37,9 @@ METRIC_UNITS: dict[str, str] = {
     "ul_capacity_mbps":    "Mbps",
     "dl_throughput_mbps":  "Mbps",
     "ul_throughput_mbps":  "Mbps",
+    "link_occupancy_pct":     "%",
+    "link_occupancy_dl_pct":  "%",
+    "link_occupancy_ul_pct":  "%",
     "local_rx_rate_idx":   "x",
     "remote_rx_rate_idx":  "x",
     "distance_m":          "m",
@@ -126,6 +129,78 @@ def _set_throughput(raw: dict, result: dict[str, float | None]) -> None:
         result["ul_throughput_mbps"] = round(tx_bps / 1_000_000.0, 3)
 
 
+def _set_occupancy(result: dict[str, float | None]) -> None:
+    """Dérive ``link_occupancy_pct`` — le TEMPS D'ANTENNE consommé par le lien.
+
+    ⚠ **Le firmware ne l'expose pas.** Vérifié sur un AF60-LR réel le 2026-08-12
+    (10.135.80.1) : ``/api/v1.0/statistics`` ne contient ni airtime, ni duty
+    cycle, ni utilisation. ``wireless.radios[0]`` = ``{id, linkState, frequency,
+    channelWidth, waveAi, serviceUptime, dfs}`` et ``linkQuality`` = ``{signal,
+    snr, capacity, linkScore, idealSignal, mcs}`` — les seuls ``usage`` du
+    payload sont ceux du CPU et de la RAM du boîtier. Inutile de re-chercher.
+
+    **Modèle.** Le lien est TDD (une porteuse 60 GHz de 2160 MHz, ``channelWidth
+    .tx``) : les deux sens se partagent le temps d'antenne, chacun consommant la
+    fraction qu'il lui faut pour écouler son trafic. D'où la SOMME :
+
+        occupation = dl_débit/dl_capacité + ul_débit/ul_capacité   (saturé à 100 %)
+
+    ⚠ **Surtout pas ``débit_total / total_capacity_mbps``**, le réflexe naturel :
+    cette clé est la *moyenne* des deux sens (l'agrégat à un partage 50/50, cf.
+    ``parse_af60_metrics``). Sur le lien mesuré (dl_cap 1801 / ul_cap 1201), un
+    trafic de 1800 Mb/s en dl et nul en ul lui ferait rendre **120 %** — une
+    occupation au-dessus de 100 % prouve la formule fausse. La somme des temps
+    d'antenne rend 99,9 %.
+
+    **Pourquoi le ratio est commensurable** (ce qui rend la formule exacte et pas
+    seulement plausible) : ``capacity.dl/ul`` a DÉJÀ le rendement MAC appliqué.
+    Rapporté à la table MCS 802.11ad, le même facteur 0,78 sort des trois
+    modulations observées — MCS 6 : 1540 × 0,78 = 1201 ; MCS 8 : 2310 × 0,78 =
+    1801 ; MCS 9 : 2502,5 × 0,78 = 1951. Et le firmware garde la décimale dans
+    ``capacity.dlIdeal = 1951950`` (= 2502,5 × 0,78 × 1000, exact). La capacité
+    est donc du *goodput*, la même grandeur que les compteurs de ``wlan0`` : le
+    quotient est une vraie fraction de temps, sans facteur correctif.
+
+    ⚠ **Une valeur > 100 % n'est PAS écrêtée.** Elle signale une capacité
+    périmée par rapport au trafic (la capacité saute par crans de MCS, le débit
+    est continu) — c'est une information de diagnostic, la ramener à 100 la
+    détruirait. Le lien est saturé dans les deux cas.
+
+    ⚠ **Un relevé isolé ne prouve rien** : sur 70 s de mesure le débit a varié
+    ×1,7 (89,93 → 153,42 Mb/s) et la capacité a sauté d'un cran de MCS. C'est
+    l'anti-flap de la règle (``af60_occupancy_failure_threshold``) qui tranche,
+    jamais un point. Pour la même raison la moyenne du bucket d'historique porte
+    sur le RATIO déjà calculé ici, et non sur ses deux opérandes : moyenner
+    d'abord effacerait le pic d'occupation d'une capacité effondrée à trafic
+    constant — précisément l'événement cherché.
+
+    Une seule des quatre valeurs manquante ⇒ clé absente (trou), jamais un 0.
+    """
+    dl_thr = result.get("dl_throughput_mbps")
+    ul_thr = result.get("ul_throughput_mbps")
+    dl_cap = result.get("dl_capacity_mbps")
+    ul_cap = result.get("ul_capacity_mbps")
+    if None in (dl_thr, ul_thr, dl_cap, ul_cap):
+        return
+    if dl_cap <= 0 or ul_cap <= 0:
+        # Capacité nulle = lien sans modulation négociée : le quotient n'a pas de
+        # sens (et diviserait par zéro). Rien n'est affirmé.
+        return
+    dl_share = 100.0 * dl_thr / dl_cap
+    ul_share = 100.0 * ul_thr / ul_cap
+    # Le TOTAL décide de la saturation (c'est le temps d'antenne consommé), mais
+    # il ne dit pas PAR QUEL BOUT le lien se remplit — or c'est ça qui est
+    # actionnable : un descendant à 89 % et un montant à 5 % n'appellent pas le
+    # même geste qu'un lien rempli symétriquement. On garde donc les deux parts,
+    # dont la SOMME est le total. Elles sont relatives à l'équipement interrogé
+    # (`dl` = ce qu'il REÇOIT) ; c'est `site_topology_service.edge_occupancy` qui
+    # les renomme par site pour une liaison, où « descendant » ne veut plus rien
+    # dire tant qu'on n'a pas choisi un bout.
+    result["link_occupancy_dl_pct"] = round(dl_share, 2)
+    result["link_occupancy_ul_pct"] = round(ul_share, 2)
+    result["link_occupancy_pct"] = round(dl_share + ul_share, 2)
+
+
 def parse_af60_metrics(raw: dict) -> dict[str, float | None]:
     """Mappe ``/api/v1.0/statistics`` (déjà déballé) vers nos clés de métriques.
 
@@ -186,6 +261,11 @@ def parse_af60_metrics(raw: dict) -> dict[str, float | None]:
     if isinstance(rlq, dict):
         result["remote_signal_dbm"] = _float(rlq.get("signal"))
         result["remote_snr_db"] = _float(rlq.get("snr"))
+
+    # Dérivé en DERNIER : il croise le débit (bloc `interfaces`, posé plus haut)
+    # et la capacité (bloc `linkQuality`, posée juste au-dessus). Le `return`
+    # anticipé sans peer laisse la clé à None — pas de capacité, pas de ratio.
+    _set_occupancy(result)
 
     return result
 

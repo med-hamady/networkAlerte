@@ -1076,6 +1076,80 @@ class Af60LinkSubstandardRule(AlertRule):
         )
 
 
+class Af60LinkSaturatedRule(AlertRule):
+    """Backhaul AF60 SATURÉ — son temps d'antenne est plein.
+
+    ⚠️ **À ne pas confondre avec ``af60_link_substandard``**, et c'est tout
+    l'intérêt d'un type séparé : celle-là dit que le tuyau a RÉTRÉCI (capacité
+    ou potentiel sous leur plancher), celle-ci qu'il est PLEIN. Un lien à
+    1,9 Gb/s de capacité — donc au-dessus de tous les planchers, invisible pour
+    l'autre règle — peut être saturé et étrangler tout un site en aval. C'est le
+    cas typique d'un report de trafic sur un chemin de secours.
+
+    La métrique est ``link_occupancy_pct``, dérivée dans
+    :func:`af60_api_service._set_occupancy` : la SOMME des fractions de temps
+    d'antenne des deux sens (lien TDD). Voir là-bas pour la démonstration que le
+    ratio est exact (la capacité annoncée est déjà du goodput) et pourquoi il ne
+    faut surtout pas diviser par ``total_capacity_mbps``.
+
+    **Deux causes, une seule alerte** — l'occupation monte si le trafic
+    augmente, *ou* si la capacité s'effondre (modulation dégradée par la pluie
+    en 60 GHz). C'est voulu : dans les deux cas le lien ne passe plus ce qu'on
+    lui demande, et c'est la seule mesure qui attrape les deux ensemble.
+
+    Pas de bande d'hystérésis ici : l'anti-flap porte sur le NOMBRE DE CYCLES
+    (``af60_occupancy_failure_threshold``), comme pour ``lr_link_substandard``
+    et ``af60_link_substandard`` dont les métriques sont tout aussi volatiles.
+    Un seuil franchi une fois est une rafale, pas une saturation.
+    """
+
+    alert_type = "af60_link_saturated"
+
+    def evaluate(self, device_name: str, metrics: dict, settings) -> AlertEvalResult:
+        occupancy = metrics.get("link_occupancy_pct")
+        if occupancy is None:
+            # Une des quatre valeurs du ratio manque (débit ou capacité non
+            # relevés) : on n'affirme rien — surtout pas « lien au repos ».
+            return AlertEvalResult(
+                self.alert_type, None, "link_occupancy_pct", None, None, "", skip=True
+            )
+        warn = float(settings.af60_occupancy_warning_pct)
+        crit = float(settings.af60_occupancy_critical_pct)
+        # PAR QUEL BOUT le lien se remplit — c'est la partie actionnable du
+        # message. Un lien à 94 % dont 89 dans un seul sens n'appelle pas le même
+        # geste qu'un lien rempli symétriquement, et le total seul ne permet pas
+        # de les distinguer. `dl` = ce que l'équipement REÇOIT (cf. CLAUDE.md).
+        # Les parts peuvent manquer sur un relevé partiel : le message se replie
+        # alors sur le total plutôt que d'inventer une répartition.
+        dl = metrics.get("link_occupancy_dl_pct")
+        ul = metrics.get("link_occupancy_ul_pct")
+        split = (
+            f" — descendant {dl:.0f} % / montant {ul:.0f} %"
+            if dl is not None and ul is not None
+            else ""
+        )
+
+        if occupancy >= crit:
+            return AlertEvalResult(
+                self.alert_type, "critical", "link_occupancy_pct", occupancy, crit,
+                f"ALERTE CRITIQUE : backhaul AF60 saturé sur {device_name} — "
+                f"occupation {occupancy:.0f} % du temps d'antenne"
+                f"{split} (seuil critique {crit:.0f} %)",
+            )
+        if occupancy >= warn:
+            return AlertEvalResult(
+                self.alert_type, "warning", "link_occupancy_pct", occupancy, warn,
+                f"ALERTE WARNING : backhaul AF60 proche de la saturation sur "
+                f"{device_name} — occupation {occupancy:.0f} % du temps d'antenne"
+                f"{split} (seuil warning {warn:.0f} %)",
+            )
+        return AlertEvalResult(
+            self.alert_type, None, "link_occupancy_pct", occupancy, None,
+            f"RECOVERY : backhaul AF60 de {device_name} de nouveau fluide "
+            f"({occupancy:.0f} % d'occupation)",
+        )
+
+
 class P2pLinkSubstandardRule(AlertRule):
     """Lien P2P LiteBeam (airMAX) dégradé.
 
@@ -1167,6 +1241,7 @@ _AF60_RULES: list[AlertRule] = [
     Af60SignalLowRule(),
     Af60SnrLowRule(),
     Af60LinkSubstandardRule(),
+    Af60LinkSaturatedRule(),
 ]
 
 # PTP LiteBeam (airMAX point-à-point inter-sites) : supervisé sur la capacité du
@@ -1202,6 +1277,7 @@ FAILURE_THRESHOLDS: dict[str, str] = {
     "af60_snr_low": "af60_snr_failure_threshold",
     "af60_link_down": "af60_link_down_failure_threshold",
     "af60_link_substandard": "af60_link_substandard_failure_threshold",
+    "af60_link_saturated": "af60_occupancy_failure_threshold",
     "p2p_link_substandard": "p2p_link_substandard_failure_threshold",
     # Immediate rules (threshold = 0) are not listed here
 }

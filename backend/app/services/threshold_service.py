@@ -144,6 +144,28 @@ THRESHOLD_SCHEMA: dict[str, dict[str, Any]] = {
         "max": 5000,
         "step": 10,
     },
+    # Saturation d'un backhaul AF60 — occupation en temps d'antenne. Le max est
+    # volontairement > 100 : la mesure n'est pas écrêtée (une valeur au-dessus
+    # signale une capacité périmée par rapport au trafic), donc le réglage doit
+    # pouvoir la suivre.
+    "af60_occupancy_warning_pct": {
+        "label": "Lien AF60 — occupation, seuil warning",
+        "category": "p2p_link",
+        "unit": "%",
+        "type": float,
+        "min": 0,
+        "max": 150,
+        "step": 5,
+    },
+    "af60_occupancy_critical_pct": {
+        "label": "Lien AF60 — occupation, seuil critique",
+        "category": "p2p_link",
+        "unit": "%",
+        "type": float,
+        "min": 0,
+        "max": 150,
+        "step": 5,
+    },
     "lr_rx_rate_critical_idx_ltu": {
         "label": "Rate — plancher critique LTU (×)",
         "category": "lr_link",

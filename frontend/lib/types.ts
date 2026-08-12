@@ -689,6 +689,23 @@ export interface TopologyHealth {
   // connaît la relation parent/enfant, qui les traduit.
   traffic_a_to_b_mbps: number | null
   traffic_b_to_a_mbps: number | null
+  // OCCUPATION du lien — le temps d'antenne consommé (AF60 uniquement, dérivé
+  // du débit et de la capacité par sens). À ne pas confondre avec `traffic`
+  // ci-dessus : celui-là dit si ça PASSE, celle-ci si c'est PLEIN. Un backhaul
+  // de secours qui encaisse toute une branche est `active` (donc vert) tout en
+  // étant à bout de souffle.
+  // ⚠️ `null` = non mesurée, ce qui n'est PAS « au repos » — s'abstenir, ne
+  // jamais rendre une liaison fluide faute de mesure. Le seuil et le verdict
+  // viennent du BACKEND, comme `floor_mbps`/`degraded`.
+  occupancy_pct: number | null
+  // PAR DIRECTION, nommée par les sites (a = site_a, b = site_b) — même
+  // convention que `traffic_a_to_b_mbps`. Le total dit que le lien est plein,
+  // ces deux-là par quel bout il se remplit : 89/5 et 47/47 appellent des
+  // gestes différents.
+  occupancy_a_to_b_pct: number | null
+  occupancy_b_to_a_pct: number | null
+  occupancy_floor_pct: number
+  saturated: boolean
 }
 
 export interface TopologyPhysicalLink {
@@ -730,6 +747,15 @@ export interface TopologySite {
   // Site ENTIÈREMENT tombé (tous ses équipements down). C'est le seul cas qui
   // rougit ses liaisons — un équipement HS ne met pas un site à terre.
   is_down: boolean
+  // SATURATION — occupation de la liaison la plus chargée du site, et le
+  // verdict (calculé côté backend contre le seuil réel de l'alerte).
+  // ⚠️ Orthogonal à `is_down`/`device_down_count` : un site en parfaite santé
+  // peut être saturé, et c'est LE cas intéressant. À rendre comme un signal
+  // distinct, jamais comme une nuance de la couleur de disponibilité.
+  // `null` = aucune liaison mesurée (les liaisons fibre n'ont pas d'occupation)
+  // — ce qui n'est PAS « fluide ».
+  occupancy_pct: number | null
+  saturated: boolean
   // Position du pylône (table `site_locations`), pour la vue CARTE. `null` =
   // position inconnue : le site n'est pas plaçable et la carte le NOMME au lieu
   // de l'escamoter. 'uisp' = semée depuis le contrôleur, 'manual' = corrigée.

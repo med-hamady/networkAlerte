@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from app.core.alert_constants import (
     AT_AF60_LINK_DOWN,
+    AT_AF60_LINK_SATURATED,
     AT_AF60_LINK_SUBSTANDARD,
     AT_AF60_SIGNAL_LOW,
     AT_AF60_SNR_LOW,
@@ -105,6 +106,7 @@ ALERT_TYPE_LABELS: dict[str, str] = {
     AT_AF60_SIGNAL_LOW:       "Signal AF60 faible",
     AT_AF60_SNR_LOW:          "SNR AF60 faible",
     AT_AF60_LINK_SUBSTANDARD: "Lien backhaul AF60 dégradé",
+    AT_AF60_LINK_SATURATED:   "Lien backhaul AF60 saturé",
     AT_P2P_LINK_SUBSTANDARD:  "Lien P2P (backhaul airMAX) dégradé",
 
     # Transit
@@ -152,6 +154,9 @@ METRIC_LABELS: dict[str, str] = {
     "remote_snr_db":       "SNR extrémité distante (dB)",
     "af60_link_up":        "État du lien AF60 (1=connecté)",
     "af60_link_floors":    "Plancher lien AF60 (potentiel/capacité)",
+    "link_occupancy_pct":     "Occupation du lien — temps d'antenne (%)",
+    "link_occupancy_dl_pct":  "Occupation — part descendante (%)",
+    "link_occupancy_ul_pct":  "Occupation — part montante (%)",
 
     # Interfaces / counts
     "radio_if_up":     "État interface radio",

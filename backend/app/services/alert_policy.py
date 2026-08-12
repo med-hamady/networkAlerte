@@ -23,6 +23,7 @@ from dataclasses import dataclass
 
 from app.core.alert_constants import (
     AT_AF60_LINK_DOWN,
+    AT_AF60_LINK_SATURATED,
     AT_AF60_LINK_SUBSTANDARD,
     AT_AF60_SIGNAL_LOW,
     AT_AF60_SNR_LOW,
@@ -211,6 +212,27 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     ),
     AT_AF60_LINK_SUBSTANDARD: AlertPolicy(
         alert_type=AT_AF60_LINK_SUBSTANDARD,
+        severity=Severity.CRITICAL,
+        notify_immediately=True,
+        channels=_CHANNELS_CRITICAL,
+        groupable=False,
+    ),
+    # Saturation : politique d'INTENTION identique au lien dégradé — un backhaul
+    # plein étrangle tout un site en aval, donc immédiat et non groupable si un
+    # jour il notifie.
+    #
+    # ⚠️ **Aujourd'hui il ne notifie PAS** : le type est hors de
+    # `WHATSAPP_ALERT_TYPES` (décision opérateur, cf. le commentaire là-bas), et
+    # c'est cette liste qui décide — pas cette entrée. Même configuration que
+    # `mains_power_lost`, qui garde lui aussi `notify_immediately=True` sans être
+    # notifié : la politique décrit l'intention, la liste blanche est le
+    # chokepoint.
+    #
+    # ⚠️ La SÉVÉRITÉ RÉELLE de l'incident est décidée par la règle (warning au
+    # 1er seuil, critique au 2e) : cette entrée ne fixe que celle annoncée par
+    # l'API pour le type.
+    AT_AF60_LINK_SATURATED: AlertPolicy(
+        alert_type=AT_AF60_LINK_SATURATED,
         severity=Severity.CRITICAL,
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,

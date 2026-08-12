@@ -137,6 +137,13 @@ AT_AF60_LINK_DOWN        = "af60_link_down"        # radios[0].linkState != "con
 AT_AF60_SIGNAL_LOW       = "af60_signal_low"       # signal local sous seuil 60 GHz
 AT_AF60_SNR_LOW          = "af60_snr_low"          # SNR local sous seuil (pas de CINR en 60 GHz)
 AT_AF60_LINK_SUBSTANDARD = "af60_link_substandard" # consolidé : potentiel / capacité sous plancher
+# ⚠️ SATURÉ ≠ DÉGRADÉ — les deux types sont orthogonaux et doivent le rester.
+# `af60_link_substandard` dit que le tuyau a RÉTRÉCI (capacité/potentiel sous
+# leur plancher) ; celui-ci qu'il est PLEIN (occupation en temps d'antenne au-
+# dessus du seuil). Un lien à 1,9 Gb/s de capacité peut être saturé, un lien à
+# 600 Mb/s peut être au repos. Les fusionner rendrait indistinguables « il faut
+# réaligner l'antenne » et « il faut plus de capacité ou délester ce site ».
+AT_AF60_LINK_SATURATED   = "af60_link_saturated"   # occupation (airtime) au-dessus du seuil
 
 # Lien P2P LiteBeam (device_type ptp_litebeam) dégradé — capacité totale
 # sous le plancher dédié (airmax_backhaul_capacity_min_mbps). Équivalent airMAX
@@ -200,6 +207,7 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_LR_BRIDGE_MODE_MISCONFIG,
     AT_LR_LATENCY_HIGH,
     AT_AF60_LINK_DOWN, AT_AF60_SIGNAL_LOW, AT_AF60_SNR_LOW, AT_AF60_LINK_SUBSTANDARD,
+    AT_AF60_LINK_SATURATED,
     AT_P2P_LINK_SUBSTANDARD,
     AT_SECURITY_ANOMALY,
     AT_ROCKET_CLIENT_OVERLOAD,
@@ -227,6 +235,16 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
 #      DIRECT, pas un incident → toujours actif, pas concerné par cette liste)
 #   5. Liaison P2P dégradée ......... af60_link_substandard + af60_link_down
 #      + p2p_link_substandard (backhaul airMAX inter-sites < plancher capacité)
+#
+# ⚠️ **`af60_link_saturated` est VOLONTAIREMENT ABSENT de cette liste**
+# (décision opérateur du 2026-08-12, à sa mise en service). Il ouvre et résout
+# son incident en base, s'affiche sur /incidents et trace sa courbe, mais ne
+# notifie nulle part — le temps d'observer ce que le parc produit réellement et
+# de caler `af60_occupancy_warning_pct` / `_critical_pct` sur du vécu. C'est le
+# seul type dont la cause peut être une simple hausse de trafic et non une
+# panne : ses seuils n'ont pas encore d'historique terrain, et une liste blanche
+# se juge sur ce qu'elle NE réveille pas la nuit. L'y ajouter est une ligne à
+# écrire ici, sans rien changer d'autre.
 #   6. Équipement injoignable (down)  rocket_down + switch_down +
 #      device_unreachable + airmax_down (couvre aussi un UISP Power down, via
 #      device_unreachable du ping job → uisp_power_unreachable HORS liste, plus

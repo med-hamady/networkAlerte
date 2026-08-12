@@ -24,7 +24,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { NetworkTopology, TopologyEdge, TopologyPort } from '@/lib/types'
 // Barème de couleurs partagé avec la vue CARTE — une liaison doit être de la
 // même couleur dans les deux rendus (cf. lib/topologyColors).
-import { downSiteSet, edgeColor } from '@/lib/topologyColors'
+import { SATURATION_COLOR, downSiteSet, edgeColor } from '@/lib/topologyColors'
 
 // Bornes de la rangée. Le minimum évite l'illisible sur un parc très profond
 // (mieux vaut défiler que rendre les libellés illisibles) ; le maximum évite un
@@ -266,6 +266,22 @@ export default function TopologyGraph({
                 width={g.icon} height={g.icon}
                 opacity={dim ? 0.35 : 1}
               />
+              {/* SATURATION — anneau violet autour de l'icône.
+                  ⚠️ Canal visuel SÉPARÉ, et c'est le point : la saturation est
+                  orthogonale à la disponibilité (un site dont tout répond peut
+                  être saturé — c'est même LE cas cherché). La bordure de la
+                  carte encode déjà sélection/panne/racine et la couleur du nom
+                  la panne : y ajouter la saturation ferait que chaque état
+                  masquerait l'autre. L'anneau ceint l'icône, dont la position
+                  est fixe — il ne peut donc jamais chevaucher un nom long. */}
+              {site.saturated && (
+                <circle
+                  cx={-g.nodeW / 2 + 7 + g.icon / 2} cy={0} r={g.icon * 0.62}
+                  fill="none" stroke={SATURATION_COLOR}
+                  strokeWidth={dim ? 1.2 : 2}
+                  opacity={dim ? 0.4 : 1}
+                />
+              )}
               {/* Un site ENTIÈREMENT tombé porte son nom en rouge — même
                   critère que la couleur de ses liaisons, pour qu'on ne cherche
                   pas deux lectures différentes de la même panne. */}
@@ -292,8 +308,23 @@ export default function TopologyGraph({
                     /{site.device_down_count}
                   </tspan>
                 )}
+                {/* Le CHIFFRE de la saturation, dans le même flux de texte que
+                    le compteur : aucune collision possible avec un nom long, et
+                    l'anneau seul ne dirait pas à quel point c'est plein. */}
+                {site.saturated && site.occupancy_pct != null && (
+                  <tspan fill={dim ? '#c4b5fd' : SATURATION_COLOR} fontWeight={700}>
+                    {' · '}{site.occupancy_pct.toFixed(0)} %
+                  </tspan>
+                )}
                 {isRoot && <tspan> · racine</tspan>}
               </text>
+              <title>
+                {site.saturated && site.occupancy_pct != null
+                  ? `${site.site} — liaison saturée : `
+                    + `${site.occupancy_pct.toFixed(0)} % du temps d'antenne. `
+                    + `Survoler ses traits pour voir laquelle.`
+                  : site.site}
+              </title>
             </g>
           )
         })}
@@ -529,14 +560,18 @@ function fmtRate(mbps: number): string {
 function edgeDetails(edge: TopologyEdge, parentOf: Map<string, string | null>) {
   const rows: { label: string; value: string; tone?: 'down' | 'muted' }[] = []
 
+  // Le parent est l'amont : ce qui en descend est le « descendant ». Résolu une
+  // seule fois — le débit ET l'occupation doivent nommer leurs sens de la MÊME
+  // façon, sans quoi la carte de survol se lirait à l'envers d'une ligne à
+  // l'autre.
+  const aIsParent = parentOf.get(edge.site_b) === edge.site_a
+  const bIsParent = parentOf.get(edge.site_a) === edge.site_b
+
   const aToB = edge.health.traffic_a_to_b_mbps
   const bToA = edge.health.traffic_b_to_a_mbps
   if (edge.health.traffic === 'unknown') {
     rows.push({ label: 'Trafic', value: 'non mesuré', tone: 'muted' })
   } else {
-    // Le parent est l'amont : ce qui en descend est le « descendant ».
-    const aIsParent = parentOf.get(edge.site_b) === edge.site_a
-    const bIsParent = parentOf.get(edge.site_a) === edge.site_b
     const down = aIsParent ? aToB : bIsParent ? bToA : null
     const up = aIsParent ? bToA : bIsParent ? aToB : null
     if (down !== null || up !== null) {
@@ -556,6 +591,38 @@ function edgeDetails(edge: TopologyEdge, parentOf: Map<string, string | null>) {
 
   if (edge.health.capacity_mbps != null) {
     rows.push({ label: 'Capacité', value: fmtRate(edge.health.capacity_mbps) })
+  }
+  // OCCUPATION — la seule ligne qui distingue « ça passe » de « c'est plein ».
+  // Un backhaul de secours qui encaisse toute une branche affiche un trafic
+  // élevé ET une pleine capacité : rien d'autre dans cette infobulle ne révèle
+  // qu'il est à bout de souffle. Absente si non mesurée (les liaisons fibre
+  // n'ont pas d'occupation) — ne jamais afficher 0 %, qui se lirait « au repos ».
+  if (edge.health.occupancy_pct != null) {
+    rows.push({
+      label: 'Occupation',
+      value: `${edge.health.occupancy_pct.toFixed(0)} %`,
+      tone: edge.health.saturated ? 'down' : undefined,
+    })
+    // PAR QUEL BOUT le lien se remplit. Le total dit qu'il est plein, cette
+    // ligne dit à cause de quoi — 89/5 et 47/47 n'appellent pas le même geste.
+    // Sens nommés exactement comme le trafic juste au-dessus (descendant/montant
+    // sur une arête d'arbre, par site sur une boucle sans amont).
+    const occAB = edge.health.occupancy_a_to_b_pct
+    const occBA = edge.health.occupancy_b_to_a_pct
+    if (occAB != null || occBA != null) {
+      const dn = aIsParent ? occAB : bIsParent ? occBA : null
+      const up = aIsParent ? occBA : bIsParent ? occAB : null
+      const pct = (v: number | null) => (v == null ? '—' : `${v.toFixed(0)} %`)
+      rows.push(
+        dn !== null || up !== null
+          ? { label: '· dont ↓ / ↑', value: `${pct(dn)} / ${pct(up)}`, tone: 'muted' }
+          : {
+              label: `· dont → ${edge.site_b} / → ${edge.site_a}`,
+              value: `${pct(occAB)} / ${pct(occBA)}`,
+              tone: 'muted',
+            },
+      )
+    }
   }
   rows.push({
     label: 'Support',

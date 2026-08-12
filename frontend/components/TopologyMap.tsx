@@ -21,7 +21,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { NetworkTopology, TopologyEdge, TopologySite } from '@/lib/types'
 import { DEFAULT_CENTER, MAPS_KEY, loadGoogleMaps } from '@/lib/googleMaps'
-import { downSiteSet, edgeColor, siteColor } from '@/lib/topologyColors'
+import { SATURATION_COLOR, downSiteSet, edgeColor, siteColor } from '@/lib/topologyColors'
 
 interface Props {
   topo: NetworkTopology
@@ -144,6 +144,28 @@ export default function TopologyMap({ topo, selectedSite, onSelectSite }: Props)
     //    liaisons : masquer les autres pylônes ferait croire à un réseau réduit.
     placeable.forEach((site) => {
       const isSelected = selectedSite === site.site
+      // SATURATION — anneau violet AUTOUR de la pastille, le même signal que
+      // l'anneau du graphe. ⚠️ Marqueur séparé plutôt qu'une bordure : le
+      // `strokeColor` de la pastille encode déjà la sélection, et sa couleur de
+      // remplissage l'état de panne — or la saturation est ORTHOGONALE aux
+      // deux (un site dont tout répond peut être saturé). Non cliquable, pour
+      // ne pas voler le clic de sélection au marqueur qu'il entoure.
+      if (site.saturated) {
+        markersRef.current.push(new g.maps.Marker({
+          position: { lat: site.latitude!, lng: site.longitude! },
+          map,
+          clickable: false,
+          zIndex: 1,
+          icon: {
+            path: g.maps.SymbolPath.CIRCLE,
+            scale: isSelected ? 17 : 14,
+            fillOpacity: 0,
+            strokeColor: SATURATION_COLOR,
+            strokeOpacity: 0.95,
+            strokeWeight: 2.5,
+          },
+        }))
+      }
       const marker = new g.maps.Marker({
         position: { lat: site.latitude!, lng: site.longitude! },
         map,
@@ -251,6 +273,18 @@ function siteHtml(site: TopologySite, root: string | null): string {
       '</div>',
   )
   rows.push(`<div style="color:#475569">Liaisons : ${site.degree}</div>`)
+  // SATURATION — la liaison la plus chargée du site. Affichée SEULEMENT si
+  // mesurée : une liaison fibre n'a pas d'occupation, et écrire « 0 % » se
+  // lirait « au repos » alors qu'on n'en sait rien.
+  if (site.occupancy_pct != null) {
+    const sat = site.saturated
+    rows.push(
+      `<div style="color:${sat ? SATURATION_COLOR : '#475569'};${sat ? 'font-weight:600' : ''}">` +
+        `Liaison la plus chargée : ${site.occupancy_pct.toFixed(0)} %` +
+        (sat ? ' — saturée' : '') +
+        '</div>',
+    )
+  }
   if (site.position_source === 'manual') {
     rows.push('<div style="color:#64748b;font-size:11px">Position corrigée à la main</div>')
   }
@@ -287,6 +321,27 @@ function edgeHtml(edge: TopologyEdge): string {
       : degraded ? 'dégradée'
       : 'nominale'
   rows.push(`<div style="color:#475569">État : ${label}</div>`)
+  // OCCUPATION + la répartition par sens. ⚠️ Nommée PAR LES SITES et non
+  // « descendant/montant » : la carte n'a pas la relation parent→enfant sous la
+  // main, et ces mots n'ont de sens que vu d'un bout. Le nom du site est
+  // toujours exact.
+  const { occupancy_pct: occ, saturated } = edge.health
+  if (occ != null) {
+    rows.push(
+      `<div style="color:${saturated ? SATURATION_COLOR : '#475569'};` +
+        `${saturated ? 'font-weight:600' : ''}">` +
+        `Occupation : ${occ.toFixed(0)} %${saturated ? ' — saturée' : ''}</div>`,
+    )
+    const ab = edge.health.occupancy_a_to_b_pct
+    const ba = edge.health.occupancy_b_to_a_pct
+    if (ab != null || ba != null) {
+      const pct = (v: number | null) => (v == null ? '—' : `${v.toFixed(0)} %`)
+      rows.push(
+        `<div style="color:#64748b;font-size:11px">` +
+          `→ ${esc(edge.site_b)} ${pct(ab)} · → ${esc(edge.site_a)} ${pct(ba)}</div>`,
+      )
+    }
+  }
   rows.push(
     '<div style="color:#94a3b8;font-size:11px;margin-top:2px">' +
       'Détail complet au survol dans la vue graphe.</div>',

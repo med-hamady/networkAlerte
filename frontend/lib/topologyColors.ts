@@ -56,3 +56,29 @@ export function siteColor(site: TopologySite): string {
   if (site.device_down_count > 0) return '#f59e0b'
   return '#16a34a'
 }
+
+/**
+ * Couleur du marqueur de SATURATION d'un site — violet, et délibérément hors du
+ * nuancier vert/ambre/rouge de `siteColor`.
+ *
+ * ⚠️ La saturation est ORTHOGONALE à la disponibilité : un site dont tous les
+ * équipements répondent peut être saturé, et c'est précisément le cas qu'on
+ * cherche (un backhaul de secours qui encaisse toute une branche est debout,
+ * de pleine capacité, et écoule — donc vert partout). En faire une nuance de la
+ * couleur du site ferait que chaque état masquerait l'autre : un site saturé ET
+ * partiellement en panne ne pourrait plus montrer qu'une seule des deux choses.
+ * C'est donc un CANAL VISUEL SÉPARÉ (une pastille en plus), pas une teinte.
+ */
+export const SATURATION_COLOR = '#7c3aed'
+
+/**
+ * Un site est-il à signaler comme saturé ?
+ *
+ * Le verdict vient du BACKEND (`site.saturated`, calculé contre le seuil réel
+ * de l'alerte) — on ne compare aucun pourcentage ici : recopier le barème dans
+ * le rendu le ferait diverger du seuil qui déclenche l'incident, exactement ce
+ * que le projet interdit pour les planchers de capacité.
+ */
+export function isSaturated(site: TopologySite): boolean {
+  return site.saturated
+}

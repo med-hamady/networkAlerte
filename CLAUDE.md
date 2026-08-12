@@ -80,7 +80,7 @@ backend/app/
 │   ├── alert_formatter.py          # Formatage messages WhatsApp/log par type d'alerte. `_DESCRIPTION_ALERT_TYPES` = les types dont la **description** est rendue en ligne supplémentaire, parce qu'elle porte le seul contenu actionnable : batteries UISP Power (charge % + autonomie) et **ports de switch** (quels ports, et quel équipement au bout — les champs structurés ne nomment que le switch, inutile sur une unité 24 ports)
 │   ├── alert_policy.py             # Registre interne : politique (canal/groupable/recovery/immédiat) par alert_type — plus exposé en API
 │   ├── digest_service.py           # Regroupement des warnings en digest 15 min
-│   ├── lr_metric_history_service.py # Historique des courbes de la fiche (table `lr_metric_samples`). **`GRAPH_METRICS`** = l'allowlist des métriques traçables (latence, `total_capacity_mbps`, `link_potential_pct`, `dl_capacity_mbps`, `ul_capacity_mbps`, `dl_throughput_mbps`, `ul_throughput_mbps`) avec label/unité/seuil — **ajouter une clé ici suffit à rendre une métrique traçable** (pas de migration, pas de table). Le seuil peut être une chaîne (seuil unique) ou un **dict par famille radio** (`link_potential_pct` : 50 % LTU / 40 % airMAX) résolu par `threshold_setting_for(spec, device)`, qui réutilise `alert_rules._AIRMAX_LR_VARIANTS` — **importé, jamais recopié** : la ligne tracée doit être celle qui déclenche l'alerte. **ÉCRITURE** : `record_sample` est appelé depuis `persist_device_metrics` (le chokepoint de TOUS les polls → couvre sonde SSH, airOS, fan-out LTU, wstalist M5 d'un coup) et replie la valeur dans un **bucket** (60 s par défaut) par upsert (moyenne glissante recalculée EN SQL + `least`/`greatest` sur min/max). **LECTURE** : `get_history` sert 24h à la résolution native et re-binne les fenêtres larges via `date_bin` (moyenne **pondérée par `sample_count`**). `available_metrics` = les courbes que CE device possède (onglets de la modale). **Trous NON comblés** : un bucket sans relevé est absent, jamais ramené à 0
+│   ├── lr_metric_history_service.py # Historique des courbes de la fiche (table `lr_metric_samples`). **`GRAPH_METRICS`** = l'allowlist des métriques traçables (latence, `total_capacity_mbps`, `link_potential_pct`, `dl_capacity_mbps`, `ul_capacity_mbps`, `dl_throughput_mbps`, `ul_throughput_mbps`, `link_occupancy_pct` = l'**occupation** d'un backhaul AF60) avec label/unité/seuil — **ajouter une clé ici suffit à rendre une métrique traçable** (pas de migration, pas de table). Le seuil peut être une chaîne (seuil unique) ou un **dict par famille radio** (`link_potential_pct` : 50 % LTU / 40 % airMAX) résolu par `threshold_setting_for(spec, device)`, qui réutilise `alert_rules._AIRMAX_LR_VARIANTS` — **importé, jamais recopié** : la ligne tracée doit être celle qui déclenche l'alerte. **ÉCRITURE** : `record_sample` est appelé depuis `persist_device_metrics` (le chokepoint de TOUS les polls → couvre sonde SSH, airOS, fan-out LTU, wstalist M5 d'un coup) et replie la valeur dans un **bucket** (60 s par défaut) par upsert (moyenne glissante recalculée EN SQL + `least`/`greatest` sur min/max). **LECTURE** : `get_history` sert 24h à la résolution native et re-binne les fenêtres larges via `date_bin` (moyenne **pondérée par `sample_count`**). `available_metrics` = les courbes que CE device possède (onglets de la modale). **Trous NON comblés** : un bucket sans relevé est absent, jamais ramené à 0
 │   ├── uisp_service.py             # Client REST contrôleur UISP/UNMS (login → token, GET /devices) — read-only
 │   ├── uisp_sync_service.py        # Import auto depuis UISP : INFRA (classify→upsert name/IP/site, creds par convention à la CRÉATION, **jamais de delete**) + STATIONS clientes via sync_uisp_stations (LR abonnés dans `lrs`, colonnes uisp_* mode/statut, identité MAC, gated UISP_STATION_SYNC_ENABLED). ⚠️ **Le sync des STATIONS SUPPRIME** pour rester synchro avec UISP : un LR **issu de UISP** (`uisp_synced_at` renseigné) dont la MAC a disparu du roster = déprovisionné dans UISP → `session.delete` (cascade). Un client **découvert par radio seul** (`uisp_synced_at` NULL) n'est JAMAIS supprimé (propriété de discovery_service). **Garde-fou** : pass de suppression sautée si le roster revient VIDE (échec de fetch — ne jamais prendre un payload vide pour « tout le monde déprovisionné »). ⚠️ **La RECLASSIFICATION va dans LES DEUX SENS** (`_demote_reclassified_stations`, en tête du sync infra) — voir **Un équipement d'infra redevenu abonné**
 │   ├── netflow_service.py          # Collecteur NetFlow (asyncio UDP) : décode v1/v5/v9/IPFIX (lib `netflow`). Attribue chaque flux à son **extrémité PUBLIQUE** (source en download, destination en upload ; l'extrémité INTERNE = client/WAN défini par NETFLOW_INTERNAL_PREFIXES), résout l'ASN (asn_service), agrège en mémoire par (asn, opérateur) avec **down_bytes/up_bytes** et flush dans `traffic_dest_stats`. Process long dédié (RUN_MODE=collector), PAS un job APScheduler
@@ -173,6 +173,8 @@ backend/app/
 | `LR_LINK_POTENTIAL_MIN_PCT_LTU` | Plancher link_potential pour les LR LTU (défaut 50 %) |
 | `LR_LINK_POTENTIAL_MIN_PCT_AIRMAX` | Plancher link_potential pour les LR airMAX/Litebeam (défaut 40 %) |
 | `LR_TOTAL_CAPACITY_MIN_MBPS` | Plancher capacité totale du lien (défaut 60 Mbps) |
+| `AF60_OCCUPANCY_WARNING_PCT` / `AF60_OCCUPANCY_CRITICAL_PCT` | Seuils de **saturation** d'un backhaul AF60 — occupation en **temps d'antenne** (`link_occupancy_pct`, défauts **75 %** / **90 %**) → `af60_link_saturated`. ⚠️ **Orthogonal à `AF60_TOTAL_CAPACITY_MIN_MBPS`** : celui-là dit que le tuyau a **rétréci**, ceux-ci qu'il est **plein**. ⚠️ Volontairement **bien sous 100 %** pour deux raisons indépendantes : l'ordonnanceur TDD ne peut pas donner tout le temps d'antenne à un seul sens (gardes, balises, minimum pour le sens opposé) — la saturation réelle arrive donc avant que la formule n'atteigne 100 — et sur un lien radio la latence se dégrade bien avant le remplissage. Réglables depuis la page **Seuils** (catégorie `p2p_link`). Voir **Occupation d'un backhaul AF60** |
+| `AF60_OCCUPANCY_FAILURE_THRESHOLD` | Anti-flap de `af60_link_saturated` (défaut **3** → ouvre au 4e cycle consécutif, ~4 min). Les **deux** opérandes du ratio sont bruités : débit mesuré à ×1,7 d'amplitude entre deux relevés à 8 s, capacité quantifiée qui saute d'un cran de MCS. Une rafale ne doit jamais ouvrir |
 | `LR_RX_RATE_CRITICAL_IDX_LTU` | LTU : critical strict si rate local/remote < ×6 (pas de warning) |
 | `LR_RX_RATE_WARNING_IDX_AIRMAX` | airMAX : warning si rate local/remote < ×6 (défaut 6.0) |
 | `LR_RX_RATE_CRITICAL_IDX_AIRMAX` | airMAX : critical si rate local/remote < ×4 (défaut 4.0) |
@@ -1172,6 +1174,161 @@ lit », ce qui avait fait conclure à tort que le firmware n'exposait pas le
 débit. Une fixture doit rester la preuve de ce que l'équipement envoie, pas le
 miroir de ce que le code sait déjà lire.
 
+#### Occupation d'un backhaul AF60 — « c'est plein » (2026-08-12)
+
+Troisième grandeur, à ne confondre ni avec le débit ni avec la capacité :
+`link_occupancy_pct`, le **temps d'antenne consommé**. C'est elle qui répond à
+« ce backhaul est-il saturé ? », question à laquelle ni le débit ni la capacité
+ne répondent seuls — la saturation est leur **rapport**.
+
+##### Le firmware ne l'expose pas — vérifié, ne pas re-chercher
+
+Relevé sur `10.135.80.1` : `/api/v1.0/statistics` ne contient **ni airtime, ni
+duty cycle TDD, ni utilisation**. `wireless.radios[0]` = `{id, linkState,
+frequency, channelWidth, waveAi, serviceUptime, dfs}` et `linkQuality` =
+`{signal, snr, capacity, linkScore, idealSignal, mcs}` ; les seuls `usage` du
+payload sont ceux du **CPU et de la RAM** du boîtier. La dérivation n'est pas un
+raccourci, c'est le seul chemin.
+
+##### La formule — somme des deux sens
+
+```
+occupation = dl_débit/dl_capacité + ul_débit/ul_capacité        (saturé à 100 %)
+```
+
+Le lien est **TDD** (une porteuse 60 GHz de 2160 MHz, `channelWidth.tx`) : les
+deux sens se **partagent** le temps d'antenne, chacun consommant la fraction
+qu'il lui faut. D'où la somme.
+
+⚠️ **Surtout PAS `débit_total / total_capacity_mbps`**, le réflexe naturel :
+cette clé est la **moyenne** des deux sens (l'agrégat à un partage 50/50, ce que
+le dashboard affiche en « TOTAL CAPACITY »). Avec dl_cap 1801 / ul_cap 1201 et
+1800 Mb/s en descendant, elle rend **120 %** — une occupation au-dessus de 100 %
+prouve la formule fausse ; la somme des temps d'antenne rend 99,9 %. Les deux
+formules restent proches sur un lien peu chargé (11,36 % contre 8,82 % sur la
+fixture) : **rien ne signalerait la substitution** hors
+`tests/test_af60_link_occupancy.py`.
+
+##### Pourquoi le quotient est exact et pas seulement plausible
+
+`capacity.dl/ul` a **déjà le rendement MAC appliqué** — donc c'est du *goodput*,
+la même grandeur que les compteurs de `wlan0`, et le rapport est une vraie
+fraction de temps. Rapporté à la table MCS 802.11ad, le **même facteur 0,78**
+sort des trois modulations observées :
+
+| MCS | débit PHY 802.11ad | capacité annoncée |
+|---|---|---|
+| 6 (QPSK 1/2) | 1540 Mb/s | 1201 |
+| 8 (QPSK 3/4) | 2310 Mb/s | 1801 |
+| 9 (QPSK 13/16) | 2502,5 Mb/s | 1951 |
+
+Et `capacity.dlIdeal = 1951950` garde la décimale : `2502,5 × 0,78 = 1951,95`,
+exact. (Contrôle indépendant de la table : `1801/1201 = 1,4996` contre
+`2310/1540 = 1,5000`.)
+
+##### Le total sature, les DEUX PARTS disent par quel bout
+
+Les deux termes de la somme sont conservés (`link_occupancy_dl_pct` /
+`link_occupancy_ul_pct`, dont la somme **est** `link_occupancy_pct`) parce que le
+total seul n'est pas actionnable : un lien à 94 % dont **89 dans un seul sens**
+n'appelle pas le même geste qu'un lien rempli symétriquement à 47/47. Le message
+d'alerte les nomme (« descendant 89 % / montant 5 % »), l'infobulle de la liaison
+les affiche, et chacune a sa courbe d'historique.
+
+- ⚠️ **Seul le TOTAL porte un seuil.** Tracer la ligne des 90 % sur une part
+  isolée ferait croire qu'un descendant à 89 % est au bord de la rupture, alors
+  que le lien peut déjà être à 91 % au total (donc en alerte) ou à 89 %
+  seulement (donc pas encore). C'est la somme qui sature, le lien étant TDD.
+- ⚠️ **Sur une LIAISON, les sens sont nommés PAR LES SITES**
+  (`occupancy_a_to_b_pct` / `occupancy_b_to_a_pct` via `edge_occupancy`), jamais
+  en descendant/montant : `dl` d'un bout est le `ul` de l'autre
+  (`A→B = ul de A = dl de B`), exactement la convention de `edge_traffic`.
+  L'inverser afficherait la charge à l'envers sur la moitié des liaisons sans
+  que rien n'échoue. Le graphe les retraduit en ↓/↑ **uniquement** sur une arête
+  d'arbre, où l'amont est connu.
+- Un **seul bout qui répond suffit** à donner les deux sens : chaque équipement
+  voit l'une en réception et l'autre en émission.
+- ⚠️ Le total n'est **pas** recalculé depuis les deux parts : il vaut le plus
+  haut des totaux **par équipement**, chacun étant un instantané cohérent de ses
+  quatre valeurs. Quand les deux bouts s'accordent — le cas normal — la somme
+  des parts retombe dessus.
+
+##### Deux causes, une seule alerte — et c'est voulu
+
+L'occupation monte si le **trafic augmente** *ou* si la **capacité s'effondre**
+(modulation dégradée par la pluie en 60 GHz). Dans les deux cas le lien ne passe
+plus ce qu'on lui demande. C'est la seule mesure qui attrape les deux ensemble,
+et c'est ce qui la rend utile après un **report de trafic sur un chemin de
+secours** : le lien de secours est debout, de pleine capacité, `traffic=active`
+donc **vert** — et pourtant à bout de souffle.
+
+##### Précautions
+
+- ⚠️ **Un relevé isolé ne prouve rien.** Les deux opérandes sont bruités : sur
+  70 s de mesure le débit a varié **×1,7** (89,93 → 153,42 Mb/s) et la capacité a
+  sauté d'un cran de MCS. C'est l'anti-flap
+  (`AF60_OCCUPANCY_FAILURE_THRESHOLD`, 4e cycle) qui tranche.
+- ⚠️ **Moyenner les RATIOS, pas les opérandes** :
+  `moyenne(débit)/moyenne(capacité) ≠ moyenne(débit/capacité)`. Moyenner d'abord
+  effacerait le pic d'une capacité effondrée à trafic constant — précisément
+  l'événement cherché. Gratuit ici : la clé arrive déjà divisée dans
+  `persist_device_metrics`, donc le bucket de `lr_metric_samples` moyenne le bon
+  nombre.
+- ⚠️ **Jamais écrêtée à 100 %** : un dépassement signale une capacité périmée par
+  rapport au trafic (la capacité saute par crans, le débit est continu) —
+  information de diagnostic, et le lien est saturé dans les deux cas.
+- ⚠️ **Sur une liaison, MAX des deux bouts** (`edge_health`), alors que la
+  capacité prend le `min` : dans les deux cas on retient l'extrémité la plus mal
+  en point, mais ici « plus mal » veut dire **plus haut**. On prend l'occupation
+  **déjà calculée par chaque équipement** — croiser le débit de A avec la
+  capacité de B apparierait une valeur fraîche à une valeur périmée.
+- **Non mesurée ⇒ `null`, jamais 0** (les liaisons fibre n'en ont pas : deux
+  switches aux bouts). Une occupation absente n'est pas une liaison au repos.
+
+##### Où ça se voit
+
+Courbe **« Occupation du lien »** sur la fiche de l'AF60 (`GRAPH_METRICS` →
+`MetricHistoryModal`, avec la ligne du seuil critique), ligne **Occupation** dans
+l'infobulle d'une liaison sur `/topology` (rouge si saturée), et l'incident
+`af60_link_saturated` sur `/incidents`. Seuils réglables depuis la page
+**Seuils** (catégorie `p2p_link`).
+
+##### Le SITE saturé sur `/topology`
+
+`site_occupancy_map` fait le passage de la liaison au site : chaque site porte
+`occupancy_pct` (sa liaison **la plus chargée**) et `saturated`. Rendu par un
+**anneau violet** autour de l'icône du site, dans les **deux** vues (graphe et
+carte — barème dans `lib/topologyColors`, `SATURATION_COLOR`), plus le
+pourcentage à côté du compteur « 14/1 ».
+
+- ⚠️ **Canal visuel SÉPARÉ, jamais une nuance de la couleur du site.** La
+  saturation est **orthogonale** à la disponibilité : un site dont tous les
+  équipements répondent peut être saturé, et c'est même LE cas cherché (un
+  backhaul de secours qui encaisse toute une branche est debout, de pleine
+  capacité, et écoule — donc **vert partout**). Fondre les deux ferait que
+  chaque état masque l'autre. L'anneau ceint l'**icône**, dont la position est
+  fixe : il ne peut pas chevaucher un nom de site long, contrairement à un
+  badge posé au bord de la carte.
+- ⚠️ **Attribuée aux DEUX extrémités** d'une liaison pleine (les deux bouts sont
+  gênés). Ne marquer que l'aval supposerait que le trafic emprunte l'arête
+  d'**arbre**, or `parent` vient d'un parcours en largeur du **câblage** et non
+  du routage : après un basculement, le chemin qui porte le trafic est
+  justement celui que l'arbre ne montre pas. On n'affirme que le mesuré, et le
+  survol du trait dit **quelle** liaison.
+- ⚠️ **Le MAX, jamais la moyenne** : un site à 5 liaisons dont une saturée est
+  un site à problème ; moyenner le noierait sous les quatre saines.
+- Un site dont aucune liaison n'est mesurée (fibre) reste **absent** du calcul →
+  `occupancy_pct: null`, pas d'anneau, **jamais 0 %** (qui se lirait « fluide »).
+
+⚠️ **Pas de notification WhatsApp** — le type est délibérément hors de
+`WHATSAPP_ALERT_TYPES` (décision opérateur du 2026-08-12, à la mise en service) :
+ses seuils n'ont **aucun historique terrain**, et c'est le seul type dont la
+cause peut être une simple hausse de trafic plutôt qu'une panne. On observe
+d'abord ce que le parc produit, on cale les seuils, puis on décide. L'y ajouter
+est **une ligne** dans `alert_constants`, sans rien changer d'autre — le
+verrouillage étant dans `tests/test_af60_link_occupancy.py` pour que ce soit un
+choix conscient et non un effet de bord.
+
 #### Le M5 sert bien `status.cgi` — mais en schéma airOS 6
 
 Vérifié le 2026-07-21 sur un LiteBeam M5 (fw v6.3.24 XW) : il **répond** à `status.cgi`, contrairement à ce qu'on croyait. Mais sa structure est celle d'airOS 6 — champs **à plat** sous `wireless` (`signal`, `ccq`, `txrate`, `rxrate`, `polling.capacity`) et **aucun bloc `sta[]`**. Le parser airOS AC, qui lit `wireless.sta[0]`, n'en tire donc **que l'uptime**. La conclusion pratique (passer par le SSH `wstalist`) reste la bonne ; c'est la raison qui était fausse. ⚠️ `wireless.polling.capacity` y est un **pourcentage** (« airMAX Capacity 33 % »), pas des Mb/s — ne pas le mapper sur `dl_capacity_mbps`.
@@ -1199,7 +1356,7 @@ La page `/incidents` ne montre que les incidents **d'infrastructure**. Les incid
 
 Conséquence : plus aucune notification ni ligne `alerts` pour les alertes client (signal/ccq/cinr/capacity sur LR, `lr_link_substandard`, `lr_no_transit`, `lr_latency_high`, `lr_discovered`/`lr_ip_changed`/`lr_reassigned`, `cpe_disconnected`). Les jobs continuent de sonder les LR (latence/transit/SSH) et d'incrémenter leurs `AlertState` ; seul l'incident final est court-circuité.
 
-### 23 Alert types
+### 24 Alert types
 | Catégorie | alert_type | Déclencheur |
 |---|---|---|
 | Disponibilité | `rocket_down` | Ping LTU Rocket échoue ×3 |
@@ -1228,6 +1385,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | Transit | `lr_latency_high` | Latence moyenne LR → `8.8.8.8` ≥ `LR_LATENCY_CRITICAL_MS` (défaut 100 ms) sur 3 cycles → critique |
 | Lien client | `lr_link_substandard` | Incident **consolidé** per-LR — seuils par famille radio. LTU : potentiel < 50 % / capacité < 60 Mbps / RX < ×6 → critical. airMAX : potentiel < 40 % / capacité < 60 Mbps / RX < ×4 → critical, 4 ≤ RX < 6 → warning. Anti-flap : 5 cycles. |
 | Config | `lr_bridge_mode_misconfig` | LR détecté en mode bridge (au lieu de routeur) → le blocage client ne peut pas fonctionner ; l'opérateur doit reconfigurer le LR en routeur via airOS |
+| Backhaul | `af60_link_saturated` | Backhaul AF60 **plein** : occupation en temps d'antenne (`link_occupancy_pct`) ≥ `AF60_OCCUPANCY_WARNING_PCT` (75 %) → warning, ≥ `AF60_OCCUPANCY_CRITICAL_PCT` (90 %) → critique. Anti-flap 4 cycles. ⚠️ **NON notifié** — hors `WHATSAPP_ALERT_TYPES` (décision opérateur du 2026-08-12) : incident en base + affichage `/incidents` + courbe, mais aucun envoi, le temps de caler les seuils sur du vécu. ⚠️ **Orthogonal à `af60_link_substandard`** : celui-là dit que le tuyau a **rétréci**, celui-ci qu'il est **plein**. Un lien à 1,9 Gb/s de capacité passe tous les planchers et peut être saturé. Voir **Occupation d'un backhaul AF60** |
 
 ### API Endpoints
 | Méthode | Chemin | Auth | Description |
@@ -1251,7 +1409,7 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 | POST | `/api/v1/uisp/assign` | **Assign** | Clé **dédiée `UISP_ASSIGN_API_KEY`** (router `uisp_assign.py` séparé, `require_uisp_assign_client`) : scellée à cette seule route — n'ouvre **pas** `/uisp/sync`, ni block/unblock ; repli accepté sur l'auth normale (master `API_KEY` / session). ⚠️ **Consommée en HTTPS** : le port 80 renvoie un `301`, et une redirection **convertit un POST en GET et détruit le corps JSON** → `405` (prouvé en journal le 2026-08-11 : `POST … 301` puis `GET … 405`, même seconde, même client). C'est pourquoi `/fai/verify` (un GET) tolère `http://` et pas cette route. `location ^~ /api/v1/uisp/assign` dédiée dans nginx : `proxy_read_timeout` **120 s** (la pose de la clé UISP passe par SSH ; à 30 s le client reçoit un 504 sur une adoption **réussie**) et zone de débit `uisp_assign` 120 r/min (les adoptions arrivent par lots). Doc d'intégration : `docs/api-uisp-assign.md`. **Associe un équipement à un client CRM** — body `mac` + `crm_client_id`, plus `crm_service_id` **uniquement** si le client a plusieurs services. Équivalent du formulaire UISP (chercher la MAC en « unknown », choisir le client). Si l'équipement est absent du contrôleur, sa clé lui est posée d'abord et la réponse porte `pending_registration` (rejouer dans la minute — ce n'est pas une erreur). Rapport étape par étape. 400 MAC invalide · 404 client CRM introuvable **ou service n'appartenant pas à ce client** · **409 client à plusieurs services sans `crm_service_id`** (services renvoyés) · **409 équipement déjà rattaché à un AUTRE client** (id du détenteur renvoyé ; `reassign=true` pour passer outre) · 502 clé non posée (échec SSH — surtout pas un 404) · 403 token UISP sans droits d'écriture. Voir **Association client CRM** |
 | POST | `/api/v1/uisp/sync` | Oui | Import des équipements d'infra depuis le contrôleur UISP (`?dry_run=true` = prévisualisation sans écriture). Renvoie un résumé (créés/màj/ignorés + échantillon) |
 | GET | `/api/v1/network-capacity` | Oui | Capacité clients : par famille (LTU/airMAX) et par site, clients connectés (`peer_count`) vs max (seuil `rocket_client_overload`). Rockets sans largeur connue exclus des totaux (`unknown`). `network_capacity_service`. Inclut aussi la clé **`infra`** (`site_infra_service.get_site_infra_capacity`) : budget d'équipements infra par site (Rockets+AF60+PTP) vs `SITE_INFRA_MAX`, avec marge `remaining` signée |
-| GET | `/api/v1/network-topology` | Oui | **Graphe INTER-SITES** (le maillage des backhauls). **Servi depuis NOTRE base — zéro appel au contrôleur.** Le câblage vient de la table `site_links` (rapatrié 1×/jour par `site_topology_sync_job`) ; la **santé** de chaque liaison est relue **en direct** depuis `devices`/`device_metrics`. Renvoie `synced_at` (date du **câblage** — l'état, lui, est de maintenant), `sites[]` (`depth` = couche, `parent`, `degree`, `reachable`, **`device_count`/`device_down_count`** = le compteur « 14/1 », **`is_down`** = site ENTIÈREMENT tombé, le seul cas qui rougit ses liaisons), **`latitude`/`longitude`/`position_source`** = position du pylône, jointe depuis `site_locations` sur la chaîne **exacte** du nom de site — `null` quand elle est inconnue, jamais devinée), `edges[]` (une **liaison logique** par paire de sites, portant 1..n `links[]` physiques, `redundant`, `is_tree_edge`, `health`), `layout` (`components`, `orphan_sites`, `unreached_sites`, `extra_edges`) et `stats`. `?root=` sinon `TOPOLOGY_ROOT_SITE`. `available:false` tant que le câblage n'a jamais été synchronisé — carte **absente** plutôt que vide (une carte vide se lit comme un réseau sans liaisons). Voir **Topologie inter-sites** |
+| GET | `/api/v1/network-topology` | Oui | **Graphe INTER-SITES** (le maillage des backhauls). **Servi depuis NOTRE base — zéro appel au contrôleur.** Le câblage vient de la table `site_links` (rapatrié 1×/jour par `site_topology_sync_job`) ; la **santé** de chaque liaison est relue **en direct** depuis `devices`/`device_metrics`. Renvoie `synced_at` (date du **câblage** — l'état, lui, est de maintenant), `sites[]` (`depth` = couche, `parent`, `degree`, `reachable`, **`device_count`/`device_down_count`** = le compteur « 14/1 », **`is_down`** = site ENTIÈREMENT tombé, le seul cas qui rougit ses liaisons, **`occupancy_pct`/`saturated`** = occupation de sa liaison la plus chargée — voir **Occupation d'un backhaul AF60**), **`latitude`/`longitude`/`position_source`** = position du pylône, jointe depuis `site_locations` sur la chaîne **exacte** du nom de site — `null` quand elle est inconnue, jamais devinée), `edges[]` (une **liaison logique** par paire de sites, portant 1..n `links[]` physiques, `redundant`, `is_tree_edge`, `health`), `layout` (`components`, `orphan_sites`, `unreached_sites`, `extra_edges`) et `stats`. `?root=` sinon `TOPOLOGY_ROOT_SITE`. `available:false` tant que le câblage n'a jamais été synchronisé — carte **absente** plutôt que vide (une carte vide se lit comme un réseau sans liaisons). Voir **Topologie inter-sites** |
 | POST | `/api/v1/network-topology/sync` | Oui | **Rapatrie le câblage maintenant** (le seul chemin de ce module qui parle à UISP), sans attendre le job quotidien — après une intervention terrain. **502** si le contrôleur est injoignable ; la table reste alors intacte |
 | GET | `/api/v1/traffic/top-destinations` | Oui | **Volume** Internet par opérateur/CDN (ASN) sur `?period=24h\|7d\|30d` : SUM(down/up) GROUP BY asn depuis `traffic_dest_stats`, trié par total + part %. `traffic_service.get_top_destinations` |
 | GET | `/api/v1/traffic/throughput` | Oui | **Débit** (Gb/s) par opérateur sur le dernier bucket : descendant/montant Mbps + part du download. Montre le partage de la bande passante WAN en direct. `traffic_service.get_throughput` |
@@ -1268,11 +1426,11 @@ Conséquence : plus aucune notification ni ligne `alerts` pour les alertes clien
 ### Frontend Next.js
 | Page | Chemin | Contenu |
 |---|---|---|
-| Devices | `/devices` | Liste avec statut, dernière vue, métriques, modal détail. Sur un **LR**, un **AF60** et un **switch** (courbe de son port fibre), la fiche expose un bouton **« Plus d'infos — graphes d'historique »** (`MetricHistoryModal`) : courbes SVG sur 24h/7j/30j ou une plage de dates, avec **onglets** pilotés par `available_metrics` (latence Internet, capacité du lien, potentiel du lien, capacités DL/UL, débits DL/UL). Bande min/max (garde visible un pic court noyé par la moyenne du bucket), ligne de seuil (au-dessus ou en dessous selon `threshold_direction`), survol détaillé, chiffres clés, et la **cadence réelle** du relevé affichée (elle est dictée par la durée d'un tour de poll, pas par le graphe). **Les trous = périodes sans mesure**, pas des 0. Source : `/devices/{id}/metric-history` |
+| Devices | `/devices` | Liste avec statut, dernière vue, métriques, modal détail. Sur un **LR**, un **AF60** et un **switch** (courbe de son port fibre), la fiche expose un bouton **« Plus d'infos — graphes d'historique »** (`MetricHistoryModal`) : courbes SVG sur 24h/7j/30j ou une plage de dates, avec **onglets** pilotés par `available_metrics` (latence Internet, capacité du lien, potentiel du lien, capacités DL/UL, débits DL/UL, **occupation du lien** sur un AF60). Bande min/max (garde visible un pic court noyé par la moyenne du bucket), ligne de seuil (au-dessus ou en dessous selon `threshold_direction`), survol détaillé, chiffres clés, et la **cadence réelle** du relevé affichée (elle est dictée par la durée d'un tour de poll, pas par le graphe). **Les trous = périodes sans mesure**, pas des 0. Source : `/devices/{id}/metric-history` |
 | Accès clients | `/access` | Table des LR abonnés (source UISP). Filtres dont **« Hors supervision »** : LR sans IP **et** non vu par UISP depuis `OUT_OF_SUPERVISION_DAYS` — badge ambre, **exclu du compteur « Accès actif »** (la tuile indique combien sont exclus). Distinct de « Hors ligne > 1 mois » (`long_offline`, absence prolongée vue par UISP) : ici c'est une absence de **mesure**, pas une absence constatée |
 | Anomalies détectées | `/incidents` | Anomalies actuellement détectées (lecture seule, résolution automatique) |
 | Capacité du réseau | `/capacity` | 2 cercles (LTU/airMAX) consommé vs disponible sur tout le réseau + barres par site (LTU/airMAX séparés) ; clic site → table Rockets (connectés/max + largeur). Donut SVG custom (pas de lib de charts). Inclut la section **« Capacité infra par site »** (table Site/Équip. infra/Max/Marge, marge +N vert / -N rouge) alimentée par la clé `infra` de `/network-capacity` |
-| Topologie du réseau | `/topology` | **Graphe inter-sites** — sites rendus par l'icône de pylône (`public/devices/antenne.png` ; ⚠️ **dans `devices/`** car le middleware d'auth intercepte tout sauf ce dossier — ailleurs l'image serait redirigée vers `/login`). **Pas de `refreshInterval`**, contrairement aux autres pages : elle affiche du **câblage**, pas des métriques vivantes. Affiche la date du dernier rapatriement du câblage, distincte de l'état des équipements qui est de maintenant. **Écran dépouillé** : le graphe seul (ni tuiles, ni légende, ni liste des liaisons — le détail d'un lien est au survol). **Pleine largeur + menu replié à l'arrivée** (`FULL_WIDTH_ROUTES` dans `AppShell` : la colonne perd son `max-w-6xl` et la barre latérale se masque). Le repli se commande par un bouton dans l'en-tête du menu, et un bouton flottant le ramène quand il est masqué — **jamais un clic n'importe où** : le graphe est lui-même cliquable (sélection d'un site), un basculement au moindre clic ferait disparaître le menu par accident. L'effet est clé sur `pathname` seul, donc un repli/dépli manuel n'est pas écrasé tant qu'on reste sur la page. Sous chaque site, le compteur **« 14/1 »** (équipements d'infra / en panne, la part rouge). ⚠️ **Aucun bloc d'anomalies sous la carte** : sites sans liaison, composantes séparées et extrémités non supervisées restent **exacts dans la réponse d'API** (`layout.orphan_sites`, `layout.components`, `stats.unsupervised_ends`) et **visibles sur le dessin** (un site orphelin y est dessiné, simplement flottant) ; `scripts/dump_site_topology.py` continue de les nommer en clair. Rendu SVG **en couches** (jamais en arbre — le graphe porte de vraies boucles), nœuds cliquables pour filtrer les liaisons d'un site, liaisons colorées par **notre** mesure (vert au-dessus du plancher / ambre dégradée / rouge hors service / **gris non mesurée**), boucles de redondance en pointillé. Sous le graphe : la liste des liaisons avec leurs liens physiques et l'état de chaque bout, puis la section **« Ce que la carte ne montre pas »** (sites sans liaison, composantes séparées, liaisons sans mesure, extrémités non supervisées). Complète `SiteTopology` (intra-site, sur `/sites`). **Bascule Graphe / Carte** dans l'en-tête → voir **Vue carte de la topologie**. Source : `/network-topology` |
+| Topologie du réseau | `/topology` | **Graphe inter-sites** — sites rendus par l'icône de pylône (`public/devices/antenne.png` ; ⚠️ **dans `devices/`** car le middleware d'auth intercepte tout sauf ce dossier — ailleurs l'image serait redirigée vers `/login`). **Pas de `refreshInterval`**, contrairement aux autres pages : elle affiche du **câblage**, pas des métriques vivantes. Affiche la date du dernier rapatriement du câblage, distincte de l'état des équipements qui est de maintenant. **Écran dépouillé** : le graphe seul (ni tuiles, ni légende, ni liste des liaisons — le détail d'un lien est au survol). **Pleine largeur + menu replié à l'arrivée** (`FULL_WIDTH_ROUTES` dans `AppShell` : la colonne perd son `max-w-6xl` et la barre latérale se masque). Le repli se commande par un bouton dans l'en-tête du menu, et un bouton flottant le ramène quand il est masqué — **jamais un clic n'importe où** : le graphe est lui-même cliquable (sélection d'un site), un basculement au moindre clic ferait disparaître le menu par accident. L'effet est clé sur `pathname` seul, donc un repli/dépli manuel n'est pas écrasé tant qu'on reste sur la page. Sous chaque site, le compteur **« 14/1 »** (équipements d'infra / en panne, la part rouge) et, si une de ses liaisons est pleine, un **anneau violet** autour de son icône + le pourcentage d'occupation (cf. **Le SITE saturé sur `/topology`** — canal visuel séparé, la saturation étant orthogonale à la panne). ⚠️ **Aucun bloc d'anomalies sous la carte** : sites sans liaison, composantes séparées et extrémités non supervisées restent **exacts dans la réponse d'API** (`layout.orphan_sites`, `layout.components`, `stats.unsupervised_ends`) et **visibles sur le dessin** (un site orphelin y est dessiné, simplement flottant) ; `scripts/dump_site_topology.py` continue de les nommer en clair. Rendu SVG **en couches** (jamais en arbre — le graphe porte de vraies boucles), nœuds cliquables pour filtrer les liaisons d'un site, liaisons colorées par **notre** mesure (vert au-dessus du plancher / ambre dégradée / rouge hors service / **gris non mesurée**), boucles de redondance en pointillé. Sous le graphe : la liste des liaisons avec leurs liens physiques et l'état de chaque bout, puis la section **« Ce que la carte ne montre pas »** (sites sans liaison, composantes séparées, liaisons sans mesure, extrémités non supervisées). Complète `SiteTopology` (intra-site, sur `/sites`). **Bascule Graphe / Carte** dans l'en-tête → voir **Vue carte de la topologie**. Source : `/network-topology` |
 | Destinations Internet | `/traffic` | 3 sections : **Débit en direct** (descendant/montant Gb/s + partage par opérateur, `/traffic/throughput`, refresh 30 s), **Débit descendant par opérateur** (graphe d'aires empilées SVG sur 1h/6h/24h, `/traffic/throughput-history`) et **Volume** (par opérateur sur 24h/7j/30j, down/up/total + part, `/traffic/top-destinations`). Repère les candidats à un serveur de cache. **Vide tant que `NETFLOW_COLLECTOR_ENABLED=false` ou que le routeur n'exporte pas vers le collecteur** |
 | Règles du routeur | `/router-rules` | Sous **FAI** dans la barre latérale (à côté du Journal des blocages). Les coupures d'abonnés **réellement posées sur le routeur de cœur**, lues en direct à l'ouverture. Complète les deux autres vues du blocage : le **journal** dit ce qui s'est passé, la **base** ce qu'on croit avoir posé, celle-ci ce que le routeur porte **maintenant** — la seule qui réponde à « ce client a payé, pourquoi est-il coupé ? ». Tuiles (règles, coupés à tort, MAC inconnues, coupures manquantes, posées par nous), bloc rouge des **coupures absentes du routeur**, table filtrable (client/MAC/site/état/origine/trafic jeté/commentaire). ⚠️ **Pas de `refreshInterval`** (comme `/topology`, et pour une raison plus forte) : chaque chargement ouvre une session API RouterOS — le clic dans le menu **est** la demande, et le bouton « Actualiser » rejoue la lecture. Une règle **désactivée** est listée mais marquée « ne coupe pas » (elle explique un client bloqué toujours en ligne). Source : `/router-rules` |
 | Diagnostics d'accès | `/access-diagnostics` | 2 sections d'anomalies de gestion du parc abonné (sidebar **Anomalies**) : **LR qui refusent le SSH** (mot de passe invalide / SSH désactivé / clé d'hôte incompatible — les **offline sont exclus**, ce n'est pas un refus) et **découverts par radio mais absents de UISP** (non provisionnés, potentiellement non facturés). Source : `/access-diagnostics`. La 1re remplace côté UI l'ancien diag SSH par grep de logs. La 2e porte l'**action d'enrôlement** : bouton par ligne + « Tout enrôler dans UISP », avec un interrupteur **Forcer** décoché par défaut (il écrase une clé existante — cf. **Enrôlement UISP**). Une ligne déjà enrôlée affiche la date au lieu du bouton : elle attend le sync quotidien |

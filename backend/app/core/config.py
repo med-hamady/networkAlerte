@@ -722,6 +722,21 @@ class Settings(BaseSettings):
     af60_link_potential_min_pct: float = 30.0
     af60_total_capacity_min_mbps: float = 975.0
 
+    # SATURATION du lien — occupation en TEMPS D'ANTENNE (`link_occupancy_pct`,
+    # dérivé dans af60_api_service : dl_débit/dl_capacité + ul_débit/ul_capacité).
+    # Orthogonal à `af60_total_capacity_min_mbps` ci-dessus : celui-là dit que le
+    # tuyau a RÉTRÉCI, celui-ci qu'il est PLEIN. Un lien à 1,9 Gb/s de capacité
+    # peut être saturé, un lien à 600 Mb/s peut être au repos.
+    #
+    # ⚠️ Seuils bien SOUS 100 %, pour deux raisons indépendantes : (1)
+    # l'ordonnanceur TDD ne peut pas donner tout le temps d'antenne à un seul
+    # sens (intervalles de garde, balises, minimum pour le sens opposé), donc la
+    # saturation réelle arrive avant que la formule n'atteigne 100 ; (2) sur un
+    # lien radio la latence se dégrade bien avant le remplissage — alerter à
+    # 95 % reviendrait à alerter quand les clients se plaignent déjà.
+    af60_occupancy_warning_pct: float = 75.0
+    af60_occupancy_critical_pct: float = 90.0
+
     # Liens P2P LiteBeam (device_type ptp_litebeam) : plancher
     # de capacité totale (Mbps) sous lequel le lien inter-site est jugé dégradé
     # (p2p_link_substandard, notifié WhatsApp). Équivalent airMAX du plancher AF60
@@ -756,6 +771,12 @@ class Settings(BaseSettings):
     af60_snr_failure_threshold: int = 2
     af60_link_down_failure_threshold: int = 2
     af60_link_substandard_failure_threshold: int = 3
+    # Saturation : les DEUX opérandes du ratio sont bruités (capacité quantifiée
+    # qui saute d'un cran de MCS, débit instantané mesuré à ×1,7 d'amplitude
+    # entre deux relevés à 8 s d'intervalle le 2026-08-12) → une rafale ne doit
+    # jamais ouvrir. Ouvre au 4e cycle consécutif (count > 3), soit ~4 min de
+    # saturation tenue au poll AF60 de 60 s.
+    af60_occupancy_failure_threshold: int = 3
     # Lien P2P airMAX dégradé : capacité volatile → débounce sur 4e cycle (count>3).
     p2p_link_substandard_failure_threshold: int = 3
     # Le nombre de clients fluctue (associations/désassociations transitoires) →

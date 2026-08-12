@@ -104,6 +104,17 @@ EDGE_METRICS: tuple[str, ...] = (
     # `snmp_poll_job` : c'est la seule mesure de trafic possible sur une liaison
     # inter-sites en fibre, dont les deux bouts sont des switches.
     "fiber_dl_throughput_mbps", "fiber_ul_throughput_mbps",
+    # Occupation du lien (temps d'antenne, AF60 seulement — cf.
+    # `af60_api_service._set_occupancy`). Distincte des débits ci-dessus : ceux-là
+    # disent si ça PASSE, celle-ci si c'est PLEIN. Un backhaul de secours qui
+    # encaisse le trafic d'une branche entière écoule beaucoup (donc « actif »,
+    # vert) tout en étant à bout de souffle — seule l'occupation le montre.
+    "link_occupancy_pct",
+    # Les deux PARTS du total, par sens (relatives à l'équipement interrogé) :
+    # elles disent par quel bout le lien se remplit. `edge_occupancy` les
+    # renomme par site — sur une liaison, « descendant » ne veut rien dire tant
+    # qu'on n'a pas choisi une extrémité.
+    "link_occupancy_dl_pct", "link_occupancy_ul_pct",
 )
 
 # Types d'équipement qui font d'un site un site d'INFRA dans notre inventaire.
@@ -545,6 +556,93 @@ def edge_traffic(end_a: dict | None, end_b: dict | None) -> dict:
     }
 
 
+def edge_occupancy(end_a: dict | None, end_b: dict | None) -> dict:
+    """Occupation de la liaison, **par direction**, nommée par les sites.
+
+    Renvoie ``{total_pct, a_to_b_pct, b_to_a_pct}``. Le **total** dit si le lien
+    est plein (c'est lui qui alerte) ; les deux parts disent **par quel bout** il
+    se remplit — la question qui rend l'information actionnable, un lien à 94 %
+    dont 89 dans un seul sens n'appelant pas le même geste qu'un lien rempli
+    symétriquement.
+
+    ⚠️ **Même convention de sens que** :func:`edge_traffic`, et pour la même
+    raison : ``link_occupancy_dl_pct`` est la part de temps d'antenne que
+    l'équipement interrogé consomme à **recevoir**, ``ul`` à **émettre**. Un même
+    flux est donc mesuré deux fois sous deux noms opposés ::
+
+        A → B   =  ul de A   =  dl de B
+        B → A   =  dl de A   =  ul de B
+
+    On expose donc les directions **nommées par les sites**, jamais un
+    « descendant/montant » global : ces mots n'ont de sens que vu d'un bout, et
+    les inverser afficherait la charge à l'envers sur la moitié des liaisons.
+
+    Pour chaque direction on retient le relevé le **plus élevé** des deux bouts
+    (ils décrivent le même flux, mais l'un peut n'avoir aucune valeur fraîche).
+
+    ⚠️ **Le total n'est PAS recalculé depuis les deux parts** : il vaut le plus
+    haut des totaux **par équipement**, chacun étant un instantané cohérent de
+    ses quatre valeurs. Quand les deux bouts sont d'accord — le cas normal — la
+    somme des parts retombe sur le total ; quand ils divergent, mieux vaut un
+    total tiré d'une seule lecture cohérente que la somme de deux moitiés prises
+    à des instants différents.
+    """
+    def _share(end: dict | None, key: str) -> float | None:
+        return ((end or {}).get("metrics") or {}).get(key)
+
+    def _best(*values: float | None) -> float | None:
+        known = [v for v in values if v is not None]
+        return max(known) if known else None
+
+    totals = [
+        v for v in (_share(end_a, "link_occupancy_pct"), _share(end_b, "link_occupancy_pct"))
+        if v is not None
+    ]
+    return {
+        "total_pct": max(totals) if totals else None,
+        "a_to_b_pct": _best(
+            _share(end_a, "link_occupancy_ul_pct"), _share(end_b, "link_occupancy_dl_pct")
+        ),
+        "b_to_a_pct": _best(
+            _share(end_a, "link_occupancy_dl_pct"), _share(end_b, "link_occupancy_ul_pct")
+        ),
+    }
+
+
+def site_occupancy_map(edges: list[dict]) -> dict[str, float]:
+    """Par site : l'occupation de sa liaison la PLUS CHARGÉE.
+
+    L'occupation se **mesure** par liaison, mais ce qu'un opérateur cherche sur
+    la carte, c'est quel **site** étrangle. Cette fonction fait le passage.
+
+    ⚠️ **Attribuée aux DEUX extrémités**, délibérément : un tuyau plein gêne ses
+    deux bouts — le site d'aval ne peut plus recevoir, celui d'amont ne peut
+    plus émettre. Le réflexe serait de ne marquer que l'aval (« son uplink est
+    plein »), mais ça supposerait que le trafic emprunte l'arête d'**arbre** :
+    or `parent` vient d'un parcours en largeur du **câblage**, pas du routage
+    réel. Après un basculement, le chemin qui porte le trafic est justement
+    celui que l'arbre ne montre pas. On n'affirme donc que le mesuré — « ce site
+    a une liaison pleine » — et le survol du trait dit laquelle.
+
+    ⚠️ **Le MAX, jamais la moyenne** : un site à 5 liaisons dont une saturée est
+    un site à problème ; moyenner le noierait sous les quatre saines.
+
+    Une liaison sans occupation mesurée (fibre : deux switches aux bouts)
+    n'entre pas dans le calcul — un site n'ayant que celles-là reste **absent**
+    du dict, ce qui se rend en « non mesuré » et surtout pas en « fluide ».
+    """
+    out: dict[str, float] = {}
+    for edge in edges:
+        occupancy = (edge.get("health") or {}).get("occupancy_pct")
+        if occupancy is None:
+            continue
+        for side in ("site_a", "site_b"):
+            site = edge.get(side)
+            if site is not None and occupancy > out.get(site, -1.0):
+                out[site] = occupancy
+    return out
+
+
 def edge_health(end_a: dict | None, end_b: dict | None) -> dict:
     """Santé d'une arête à partir de ses deux bouts — le **pire** des deux.
 
@@ -581,12 +679,43 @@ def edge_health(end_a: dict | None, end_b: dict | None) -> dict:
     capacity = min(caps) if caps else None
     floor = capacity_floor(end_a, end_b)
     tr = edge_traffic(end_a, end_b)
+
+    # OCCUPATION — le MAX des deux bouts, alors que la capacité prend le min :
+    # dans les deux cas on retient l'extrémité la plus mal en point, mais ici
+    # « plus mal » veut dire PLUS HAUT. Si un bout se dit à 50 % et l'autre à
+    # 90 %, la liaison est à 90 %.
+    #
+    # ⚠️ On prend l'occupation DÉJÀ CALCULÉE par chaque équipement, on ne la
+    # recalcule pas en croisant les bouts : chaque AF60 a une vue cohérente de
+    # ses quatre valeurs au même instant, marier le débit de A avec la capacité
+    # de B apparierait une valeur fraîche à une valeur périmée.
+    #
+    # ⚠️ Seuil lu dans les réglages d'ENV (`get_settings`), comme
+    # `capacity_floor` juste au-dessus — donc une surcharge posée sur la page
+    # Seuils s'applique à l'ALERTE mais pas encore à cette couleur. Limitation
+    # connue et partagée avec le plancher de capacité ; à corriger pour les deux
+    # ensemble en faisant descendre les réglages effectifs jusqu'ici.
+    occ = edge_occupancy(end_a, end_b)
+    occupancy = occ["total_pct"]
+    sat_floor = float(get_settings().af60_occupancy_critical_pct)
     return {
         "state": state,
         "capacity_mbps": capacity,
         "link_potential_pct": min(pots) if pots else None,
         "measured_ends": len(caps),
         "floor_mbps": floor,
+        # Occupation en temps d'antenne (AF60 seulement). None = non mesurée, ce
+        # qui n'est PAS « au repos » : le rendu doit s'abstenir, jamais peindre
+        # une liaison comme fluide faute de mesure.
+        "occupancy_pct": occupancy,
+        # PAR DIRECTION, nommée par les sites (a = site_a, b = site_b) — même
+        # convention que `traffic_a_to_b_mbps` et pour la même raison : le
+        # « descendant/montant » n'a de sens que vu d'un bout. Le total dit que
+        # le lien est plein, ces deux-là par quel bout il se remplit.
+        "occupancy_a_to_b_pct": occ["a_to_b_pct"],
+        "occupancy_b_to_a_pct": occ["b_to_a_pct"],
+        "occupancy_floor_pct": sat_floor,
+        "saturated": bool(occupancy is not None and occupancy >= sat_floor),
         # "active" | "idle" | "unknown" — `unknown` ⇒ le rendu s'abstient.
         "traffic": tr["state"],
         "traffic_mbps": tr["total_mbps"],
@@ -793,6 +922,9 @@ async def get_site_topology(session: AsyncSession, root: str | None = None) -> d
         entry["port_a"] = _slowest_port([link_["device_a"] for link_ in entry["links"]])
         entry["port_b"] = _slowest_port([link_["device_b"] for link_ in entry["links"]])
 
+    sat_floor = float(settings.af60_occupancy_critical_pct)
+    site_occupancy = site_occupancy_map(list(merged.values()))
+
     # Position géographique du pylône, pour la vue CARTE de /topology. Jointure
     # sur la chaîne EXACTE (`site_locations.site` = `devices.site`) — les noms
     # portent des bizarreries voulues, dont le double espace de « A2  ARF1 » :
@@ -817,6 +949,15 @@ async def get_site_topology(session: AsyncSession, root: str | None = None) -> d
             "device_down_count": health.get(name, {}).get("down", 0),
             # Site ENTIÈREMENT tombé — le seul cas qui rougit ses liaisons.
             "is_down": health.get(name, {}).get("is_down", False),
+            # Occupation de sa liaison la plus chargée, et le verdict.
+            # ⚠️ ORTHOGONAL à `is_down`/`device_down_count` : un site en parfaite
+            # santé peut être saturé — c'est même LE cas intéressant (un
+            # backhaul de secours qui encaisse toute une branche). Le rendu doit
+            # donc en faire un signal DISTINCT, jamais une nuance de la couleur
+            # de disponibilité, sinon les deux se masqueraient l'un l'autre.
+            # None = aucune liaison mesurée (fibre), et ce n'est PAS « fluide ».
+            "occupancy_pct": site_occupancy.get(name),
+            "saturated": name in site_occupancy and site_occupancy[name] >= sat_floor,
             "latitude": coords[name].latitude if name in coords else None,
             "longitude": coords[name].longitude if name in coords else None,
             # 'uisp' (semée depuis le contrôleur) ou 'manual' (corrigée à la
@@ -956,7 +1097,10 @@ def _worst(healths: list[dict]) -> dict:
         return {"state": "unmeasured", "capacity_mbps": None, "link_potential_pct": None,
                 "measured_ends": 0, "floor_mbps": None, "degraded": False,
                 "traffic": "unknown", "traffic_mbps": None,
-                "traffic_a_to_b_mbps": None, "traffic_b_to_a_mbps": None}
+                "traffic_a_to_b_mbps": None, "traffic_b_to_a_mbps": None,
+                "occupancy_pct": None, "occupancy_a_to_b_pct": None,
+                "occupancy_b_to_a_pct": None,
+                "occupancy_floor_pct": None, "saturated": False}
     # Une branche saine l'emporte sur une branche dégradée : sans ce second
     # critère, `max` rendrait la première rencontrée et une liaison redondante
     # pourrait s'afficher dégradée alors qu'elle a une branche intacte. Même

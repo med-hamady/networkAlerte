@@ -2630,7 +2630,11 @@ async def lr_internet_probe_job() -> None:
 
     Remplace l'ancien `lr_transit_probe_job` (qui n'évaluait qu'un seul LR
     pour des raisons historiques de maquette). Tous les LR sont désormais
-    couverts, avec une seule session SSH par cycle.
+    couverts, avec une seule session SSH par cycle — **sauf les LR bloqués**
+    (`client_blocked`), dont l'abonné est coupé délibérément : on ne mesure pas
+    la latence d'un accès qu'on a soi-même fermé, et leur dernière latence
+    connue est purgée pour ne pas rester affichée. Ils reviennent dans la sonde
+    au déblocage.
 
     Les seuils (transit_probe_threshold, lr_latency_critical_ms,
     lr_latency_failure_threshold, lr_latency_ping_count) sont lus via
@@ -2646,6 +2650,16 @@ async def lr_internet_probe_job() -> None:
         # gaspille un timeout SSH (~10–30 s) par LR mort. Un LR down ne lève
         # aucun incident (panne côté client) ; on reprend la sonde dès qu'il
         # remonte (status repassé à up).
+        #
+        # ⚠️ Les LR **bloqués** (`client_blocked`) sont exclus : leur abonné est
+        # coupé DÉLIBÉRÉMENT, donc mesurer sa latence ne renseigne sur rien —
+        # et le `client_block_enforcement_job` ouvre déjà sa propre session SSH
+        # sur ces mêmes LR toutes les 120 s. Chaque session économisée retourne
+        # au budget du tour, qui est la ressource rare de ce job (100–480 s à
+        # ~557 LR). Ils reviennent dans la sonde au déblocage, sans délai (le
+        # filtre est relu à chaque cycle). L'exclusion porte sur l'INTENTION en
+        # base, pas sur la coupure constatée : un blocage qu'on n'a pas encore
+        # pu appliquer est déjà un abonné qu'on ne cherche plus à mesurer.
         result = await session.execute(
             select(Lr).where(
                 Lr.ssh_username.is_not(None),
@@ -2656,15 +2670,37 @@ async def lr_internet_probe_job() -> None:
         )
         # Snapshot des champs nécessaires à la sonde SSH (lus session ouverte) —
         # la Phase 1 tourne hors session.
+        eligible = result.scalars().all()
+        blocked_ids = [lr.id for lr in eligible if lr.client_blocked]
         targets = [
             (lr.id, lr.name, lr.ip_address, lr.ssh_port or 22,
              lr.ssh_username, lr.ssh_password, lr.ssh_host_fingerprint,
              lr.model_variant, lr.mac_address)
-            for lr in result.scalars().all()
+            for lr in eligible
+            if not lr.client_blocked
         ]
+        # Cesser de mesurer ne doit JAMAIS laisser une mesure derrière soi : la
+        # dernière latence relevée avant le blocage resterait sinon en base pour
+        # toujours et `/lr-health` (comme le contrôle quotidien
+        # `network_latency_aggregate_job`) continuerait de compter cet abonné en
+        # « latence élevée » sur une valeur figée. Même geste, même raison que la
+        # purge du cas « pas de transit » plus bas. Un DELETE par cycle, qui ne
+        # matche plus rien dès le second.
+        if blocked_ids:
+            await session.execute(
+                delete(DeviceMetric).where(
+                    DeviceMetric.device_id.in_(blocked_ids),
+                    DeviceMetric.metric_name == "lr_latency_ms",
+                )
+            )
+            await session.commit()
 
     if not targets:
-        logger.debug("lr_internet_probe: aucun LR up avec credentials SSH — ignoré")
+        logger.debug(
+            "lr_internet_probe: aucun LR up avec credentials SSH à sonder "
+            "(%d LR bloqué(s) exclu(s)) — ignoré",
+            len(blocked_ids),
+        )
         return
 
     # Backoff : on saute ce cycle-ci les LR qui enchaînent ≥ _LR_SSH_FAIL_THRESHOLD
@@ -2689,8 +2725,9 @@ async def lr_internet_probe_job() -> None:
         return
 
     logger.info(
-        "lr_internet_probe — sonde sur %d/%d LR(s) (%d en backoff SSH)",
-        len(targets), total, backed_off,
+        "lr_internet_probe — sonde sur %d/%d LR(s) (%d en backoff SSH, "
+        "%d bloqué(s) exclu(s))",
+        len(targets), total, backed_off, len(blocked_ids),
     )
 
     # ── Phase 1 : sonder tous les LR EN PARALLÈLE (borné par le pool) ──

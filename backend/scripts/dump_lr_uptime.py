@@ -1,13 +1,18 @@
 """
-Exporte en JSON le nom, l'adresse IP et l'uptime de chaque LR abonné.
+Exporte en JSON le nom, l'adresse IP, l'uptime et le statut de chaque LR abonné.
 
 Lecture seule — le script ne touche à rien, il lit `lrs` + `device_metrics`.
 
-Sortie : un TABLEAU d'objets à exactement TROIS clés — `name`, `ip_address`,
-`uptime_seconds`. C'est un contrat : ne rien y ajouter (ni site, ni MAC, ni
-statut, ni horodatage). Tout ce qui informe sur l'export lui-même (nombre de
+Sortie : un TABLEAU d'objets à exactement QUATRE clés — `name`, `ip_address`,
+`uptime_seconds`, `status`. C'est un contrat : ne rien y ajouter (ni site, ni
+MAC, ni horodatage). Tout ce qui informe sur l'export lui-même (nombre de
 lignes, exclusions) part sur **stderr**, donc `> fichier.json` ne récupère que
 le document.
+
+⚠️ **`status` a TROIS valeurs, pas deux** : `ONLINE` (`up`), `OFFLINE` (`down`)
+et `UNKNOWN` — ce dernier étant un LR que plus rien ne mesure (IP libérée au
+churn DHCP → hors du sweep de ping), et surtout PAS une panne constatée. Le
+replier sur `OFFLINE` ferait remonter des coupures qui n'ont pas eu lieu.
 
 ⚠️ **Les LR « hors supervision » sont EXCLUS** (sans IP ET non vus par UISP
 depuis `OUT_OF_SUPERVISION_DAYS`) : aucune source ne parle d'eux, donc leur
@@ -63,6 +68,14 @@ from app.schemas.device import is_out_of_supervision
 
 # Par ordre de PRÉFÉRENCE : l'uptime de l'équipement l'emporte sur celui du lien.
 _UPTIME_KEYS = ("uptime_seconds", "peer_uptime_s")
+
+# `devices.status` porte TROIS valeurs, pas deux. « unknown » n'est pas une
+# panne : c'est un LR que plus rien ne mesure (IP libérée au churn DHCP → il
+# sort du sweep de ping). Le rendre OFFLINE affirmerait une coupure que
+# personne n'a constatée — exactement la lecture fausse que le badge ambre de
+# /access a été créé pour éviter. Il sort donc sous son propre libellé.
+_STATUS_LABELS = {"up": "ONLINE", "down": "OFFLINE"}
+_STATUS_FALLBACK = "UNKNOWN"
 
 
 async def _latest_uptimes(session) -> dict[int, tuple[str, float, datetime.datetime]]:
@@ -120,11 +133,12 @@ async def run(out_path: str | None, skip_missing: bool) -> None:
             if found is None and skip_missing:
                 continue
             _key, value, _collected_at = found if found else (None, None, None)
-            # TROIS clés, jamais une de plus : ce JSON est un contrat.
+            # QUATRE clés, jamais une de plus : ce JSON est un contrat.
             rows.append({
                 "name": lr.name,
                 "ip_address": lr.ip_address,
                 "uptime_seconds": value,
+                "status": _STATUS_LABELS.get(lr.status, _STATUS_FALLBACK),
             })
 
     text = json.dumps(rows, ensure_ascii=False, indent=2)

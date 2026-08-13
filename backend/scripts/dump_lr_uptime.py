@@ -9,10 +9,13 @@ horodatage). Tout ce qui informe sur l'export lui-même (nombre de lignes,
 exclusions) part sur **stderr**, donc `> fichier.json` ne récupère que le
 document.
 
-⚠️ **`status` a TROIS valeurs, pas deux** : `ONLINE` (`up`), `OFFLINE` (`down`)
-et `UNKNOWN` — ce dernier étant un LR que plus rien ne mesure (IP libérée au
-churn DHCP → hors du sweep de ping), et surtout PAS une panne constatée. Le
-replier sur `OFFLINE` ferait remonter des coupures qui n'ont pas eu lieu.
+⚠️ **`status` ne vaut que `ONLINE` (`up`) ou `OFFLINE` (`down`).** La base porte
+une TROISIÈME valeur, `unknown` — un LR que plus rien ne mesure (IP libérée au
+churn DHCP → hors du sweep de ping) — et ces lignes sont **EXCLUES**, jamais
+repliées sur `OFFLINE` : ce sont des états non constatés, les rendre hors ligne
+ferait remonter des coupures qui n'ont pas eu lieu. L'export ne porte donc que
+des états mesurés, et il est **plus court que le parc** ; le compte des exclus
+est annoncé sur stderr.
 
 ⚠️ **Le statut n'est pas mesuré à l'instant de l'export** : il est écrit par le
 sweep de ping (`_ping_sweep`), et ne bascule à `down` qu'au seuil anti-flap
@@ -62,6 +65,7 @@ async def run(out_path: str | None) -> None:
 
         rows = []
         excluded = 0
+        unknown = 0
         for lr in lrs:
             # « Hors supervision » = sans IP ET invisible pour UISP depuis
             # `OUT_OF_SUPERVISION_DAYS` : les deux sources se taisent, donc son
@@ -70,11 +74,18 @@ async def run(out_path: str | None) -> None:
             if is_out_of_supervision(lr.ip_address, lr.uisp_last_seen):
                 excluded += 1
                 continue
+            # Statut indéterminé → EXCLU, jamais rendu OFFLINE : ce LR n'est pas
+            # tombé, il n'est plus mesuré (IP libérée au churn DHCP → hors du
+            # sweep de ping). L'export ne porte donc que des états CONSTATÉS.
+            label = _STATUS_LABELS.get(lr.status, _STATUS_FALLBACK)
+            if label == _STATUS_FALLBACK:
+                unknown += 1
+                continue
             # TROIS clés, jamais une de plus : ce JSON est un contrat.
             rows.append({
                 "name": lr.name,
                 "ip_address": lr.ip_address,
-                "status": _STATUS_LABELS.get(lr.status, _STATUS_FALLBACK),
+                "status": label,
             })
 
     text = json.dumps(rows, ensure_ascii=False, indent=2)
@@ -82,10 +93,9 @@ async def run(out_path: str | None) -> None:
     # Les comptes vont sur STDERR, jamais dans le JSON : ils restent lisibles à
     # l'exécution sans polluer un document qui ne doit porter que les 3 champs.
     online = sum(1 for r in rows if r["status"] == "ONLINE")
-    unknown = sum(1 for r in rows if r["status"] == _STATUS_FALLBACK)
     summary = (
-        f"{len(rows)} LR ({online} ONLINE, {unknown} UNKNOWN, "
-        f"{excluded} hors supervision exclus)."
+        f"{len(rows)} LR ({online} ONLINE, {len(rows) - online} OFFLINE) — "
+        f"exclus : {unknown} au statut indéterminé, {excluded} hors supervision."
     )
 
     if out_path:

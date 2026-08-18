@@ -7,8 +7,9 @@
   "south": 17.962,
   "east": -15.882,
   "north": 18.166,
-  "z": 13,
-  "bytes": 421021
+  "z": 14,
+  "attribution": "© Esri · Maxar · Earthstar Geographics",
+  "bytes": 1458293
  },
  {
   "name": "nouadhibou",
@@ -18,8 +19,9 @@
   "south": 20.885,
   "east": -16.983,
   "north": 21.0,
-  "z": 13,
-  "bytes": 78133
+  "z": 14,
+  "attribution": "© Esri · Maxar · Earthstar Geographics",
+  "bytes": 271422
  },
  {
   "name": "rosso",
@@ -29,7 +31,8 @@
   "south": 16.495,
   "east": -15.776,
   "north": 16.531,
-  "z": 14,
-  "bytes": 78622
+  "z": 15,
+  "attribution": "© Esri · Maxar · Earthstar Geographics",
+  "bytes": 229480
  }
 ]

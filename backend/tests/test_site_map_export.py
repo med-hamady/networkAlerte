@@ -8,19 +8,19 @@ Ce que ces tests verrouillent, et pourquoi ça compte :
    silence produirait un document qui se lit comme un réseau qui n'a pas ce
    site — la même règle que la vue carte de `/topology` et ses `outliers`.
 
-2. **Une liaison dont un bout n'est pas traçable est ignorée sans exploser.**
-   C'est le corollaire du point 1 : le jour où un site perd sa position, l'export
-   doit rendre une carte amputée et honnête, pas une 500.
+2. **Vert = en service, rouge = programmé.** C'est le message principal de la
+   carte, et il ne s'appuie sur aucune légende : si la couleur cessait de dire
+   l'état, le document annoncerait comme installés des mâts qui ne sont pas
+   montés. Les deux compteurs restent séparés jusqu'au titre de chaque planche.
 
-3. **Les noms de site ne se posent pas SUR les liaisons.** Sans cette règle, le
+3. **Les sites programmés ne touchent JAMAIS la base.** Ils n'existent pas
+   encore ; les écrire en base les ferait compter dans la capacité, pinguer, et
+   alerter comme injoignables. Ils vivent dans une constante et n'en sortent
+   qu'au moment du dessin.
+
+4. **Les noms de site ne se posent pas SUR les liaisons.** Sans cette règle, le
    placement met tout à l'est et masque les backhauls — c'est-à-dire l'objet
-   même de la carte. Le test le vérifie sur une géométrie où la pose « à l'est »
-   couvrirait le trait.
-
-4. **Les villes transcrites ne contaminent pas la planche vivante.** Nouadhibou
-   et Rosso sont des constantes reportées d'un plan (hors supervision) ; elles
-   ne doivent jamais apparaître sur la planche de Nouakchott, qui n'affiche que
-   ce que la base contient.
+   même de la carte.
 """
 
 import io
@@ -50,17 +50,24 @@ def _topo(sites, edges=(), synced="2026-08-17T09:55:20+00:00"):
     }
 
 
+def _names(sites):
+    return {name for name, _lat, _lon, _planned in sites}
+
+
 # ---------------------------------------------------------------- assets
 def test_shipped_basemaps_and_bounds_are_present():
     """Les trois fonds de carte sont livrés avec le code, pas téléchargés."""
     bounds = sms._load_bounds()
     for plate in sms._PLATES:
         assert plate.key in bounds, f"fenêtre géographique absente : {plate.key}"
-        asset = sms._ASSETS / f"{plate.key}.jpg"
-        assert asset.exists(), f"fond de carte absent : {asset}"
+        assert (sms._ASSETS / f"{plate.key}.jpg").exists()
         window = bounds[plate.key]
         assert window["west"] < window["east"]
         assert window["south"] < window["north"]
+        # La mention de source voyage AVEC l'image : c'est elle qui est dessinée
+        # sur la planche, donc changer de fournisseur d'imagerie sans changer
+        # l'attribution devient impossible.
+        assert window.get("attribution"), f"attribution absente : {plate.key}"
 
 
 # ------------------------------------------------- sites non représentables
@@ -68,10 +75,10 @@ def test_site_without_position_is_reported_not_dropped():
     topo = _topo([("A2 HQ", 18.114964, -15.991145), ("A2 NEUF", None, None)])
     sites, _edges, missing = sms._plate_data(sms._PLATES[0], topo, _bounds())
 
-    assert [name for name, _, _ in sites] == ["A2 HQ"]
+    assert "A2 HQ" in _names(sites)
+    assert "A2 NEUF" not in _names(sites)
     assert len(missing) == 1
-    assert "A2 NEUF" in missing[0]
-    assert "position inconnue" in missing[0]
+    assert "A2 NEUF" in missing[0] and "position inconnue" in missing[0]
 
 
 def test_site_outside_the_frozen_frame_is_reported_not_dropped():
@@ -79,9 +86,8 @@ def test_site_outside_the_frozen_frame_is_reported_not_dropped():
     topo = _topo([("A2 HQ", 18.114964, -15.991145), ("A2 NDB", 20.94, -17.03)])
     sites, _edges, missing = sms._plate_data(sms._PLATES[0], topo, _bounds())
 
-    assert [name for name, _, _ in sites] == ["A2 HQ"]
-    assert len(missing) == 1
-    assert "hors du cadrage" in missing[0]
+    assert "A2 NDB" not in _names(sites)
+    assert len(missing) == 1 and "hors du cadrage" in missing[0]
 
 
 def test_edge_touching_an_undrawable_site_is_skipped():
@@ -104,8 +110,120 @@ def test_wired_links_are_solid_and_radio_links_are_dashed(medium, tree, expected
         [("A2 HQ", "A2 AT1", medium, tree)],
     )
     _sites, edges, _missing = sms._plate_data(sms._PLATES[0], topo, _bounds())
-    assert edges[0][2] is expected_dashed
-    assert edges[0][3] is tree
+    live = [e for e in edges if {e[0], e[1]} == {"A2 HQ", "A2 AT1"}]
+    assert live and live[0][2] is expected_dashed
+    assert live[0][3] is tree
+
+
+# -------------------------------------------------- installé vs programmé
+def test_installed_sites_are_green_and_planned_sites_are_red():
+    """La couleur dit l'ÉTAT — c'est tout le message de la carte."""
+    assert sms._PIN_INSTALLED == sms._GREEN
+    assert sms._PIN_PLANNED == sms._RED
+    assert sms._PIN_INSTALLED != sms._PIN_PLANNED
+
+
+def test_the_live_plate_carries_both_populations():
+    """Nouakchott montre l'existant ET ce qui manque, sur le même plan."""
+    topo = _topo([("A2 HQ", 18.114964, -15.991145)])
+    sites, _edges, _missing = sms._plate_data(sms._PLATES[0], topo, _bounds())
+
+    installed = {n for n, _la, _lo, planned in sites if not planned}
+    planned = {n for n, _la, _lo, planned in sites if planned}
+
+    assert installed == {"A2 HQ"}
+    assert planned == {n for n, _la, _lo in sms._PLANNED["nouakchott"]["sites"]}
+
+
+def test_a_planned_site_that_went_live_is_not_drawn_twice():
+    """Mis en service, il est déjà en vert : on ne le redouble pas en rouge.
+
+    C'est ce qui rend le retrait de sa ligne de `_PLANNED` facultatif le jour
+    de sa mise en service — l'oubli ne produit pas une carte fausse.
+    """
+    name, lat, lon = sms._PLANNED["nouakchott"]["sites"][0]
+    topo = _topo([(name, lat, lon)])
+    sites, _edges, _missing = sms._plate_data(sms._PLATES[0], topo, _bounds())
+
+    matching = [s for s in sites if s[0] == name]
+    assert len(matching) == 1
+    assert matching[0][3] is False, "le site en service doit rester vert"
+
+
+def test_no_link_is_invented_from_a_planned_nouakchott_site():
+    """Leur raccordement n'est pas arrêté : en dessiner un inventerait la topologie."""
+    assert sms._PLANNED["nouakchott"]["edges"] == []
+
+    topo = _topo([("A2 HQ", 18.114964, -15.991145)])
+    _sites, edges, _missing = sms._plate_data(sms._PLATES[0], topo, _bounds())
+    planned_names = {n for n, _la, _lo in sms._PLANNED["nouakchott"]["sites"]}
+    for a, b, _dashed, _tree in edges:
+        assert a not in planned_names and b not in planned_names
+
+
+# ------------------------------------------------- cloisonnement des villes
+def test_a_city_never_leaks_into_another_plate():
+    topo = _topo([("A2 HQ", 18.114964, -15.991145)])
+    sites, _edges, _missing = sms._plate_data(sms._PLATES[0], topo, _bounds())
+    names = _names(sites)
+
+    for key in ("nouadhibou", "rosso"):
+        for name, _lat, _lon in sms._PLANNED[key]["sites"]:
+            assert name not in names
+
+
+def test_planned_cities_ignore_the_database_entirely():
+    """Une topologie vide ne vide pas Nouadhibou ni Rosso.
+
+    Ces sites n'existent pas encore — leur absence de la base est leur état
+    NORMAL, pas un signal qu'ils ont disparu.
+    """
+    empty = _topo([])
+    for plate in sms._PLATES[1:]:
+        bounds = sms._load_bounds()[plate.key]
+        sites, edges, missing = sms._plate_data(plate, empty, bounds)
+        assert sites, f"{plate.key} devrait rester dessinée sans la base"
+        assert all(planned for _n, _la, _lo, planned in sites)
+        assert edges
+        assert missing == []
+
+
+def test_planned_sites_sit_inside_their_own_frame():
+    """Chaque site programmé tombe dans la fenêtre de sa ville."""
+    bounds_by_key = sms._load_bounds()
+    for key, cfg in sms._PLANNED.items():
+        bounds = bounds_by_key[key]
+        for name, lat, lon in cfg["sites"]:
+            assert sms._inside(bounds, lat, lon), f"{name} hors de la fenêtre {key}"
+
+
+def test_rosso_sites_stay_north_of_the_senegal_river():
+    """Rosso Mauritanie est au NORD du fleuve ; Rosso Sénégal est l'autre ville.
+
+    Le fleuve passe vers 16,505° N à hauteur de la ville. Un site sous cette
+    latitude n'est pas chez nous — erreur commise puis corrigée le 2026-08-18.
+    """
+    for name, lat, _lon in sms._PLANNED["rosso"]["sites"]:
+        assert lat > 16.505, f"{name} est tombé au sud du fleuve (Sénégal)"
+
+
+def test_rosso_sites_are_aligned_horizontally():
+    """Les deux mâts se répondent d'ouest en est, pas du nord au sud."""
+    lats = [lat for _n, lat, _lon in sms._PLANNED["rosso"]["sites"]]
+    lons = [lon for _n, _lat, lon in sms._PLANNED["rosso"]["sites"]]
+    assert max(lats) - min(lats) < 0.001, "les sites de Rosso ne sont plus alignés"
+    assert max(lons) - min(lons) > 0.005, "les sites de Rosso se chevauchent"
+
+
+def test_nouadhibou_sites_stay_on_land():
+    """NDB-SUD tombait dans la baie : une pastille sur l'eau se voit tout de suite.
+
+    La ville tient dans une bande étroite de la presqu'île ; on borne la
+    longitude à cette bande plutôt qu'à la fenêtre de la planche, qui contient
+    beaucoup d'océan des deux côtés.
+    """
+    for name, _lat, lon in sms._PLANNED["nouadhibou"]["sites"]:
+        assert -17.048 < lon < -17.018, f"{name} est hors de la bande urbaine"
 
 
 # ------------------------------------------------------- placement des noms
@@ -124,9 +242,7 @@ def test_label_is_not_placed_on_top_of_a_link():
     items = [("A2 GAUCHE", 200.0, 300.0), ("A2 DROITE", 1000.0, 300.0)]
     segments = [((200.0, 300.0), (1000.0, 300.0))]
 
-    placed = dict(
-        sms._place_labels(items, r, font, draw, (1200.0, 600.0), segments)
-    )
+    placed = dict(sms._place_labels(items, r, font, draw, (1200.0, 600.0), segments))
     box = placed["A2 GAUCHE"]
 
     on_the_link = any(
@@ -150,58 +266,26 @@ def test_label_placement_is_deterministic():
     assert first == second
 
 
-# ------------------------------------------------- cloisonnement des villes
-def test_transcribed_cities_never_leak_into_the_live_plate():
-    """La planche de Nouakchott n'affiche QUE ce que la base contient."""
+# ------------------------------------------------------------ paragraphes
+def test_paragraphs_count_what_the_map_actually_shows():
+    """Les chiffres du texte sortent des planches, jamais d'une valeur en dur.
+
+    Un document dont le texte contredit sa propre carte ne serait plus lu.
+    """
     topo = _topo([("A2 HQ", 18.114964, -15.991145)])
-    sites, _edges, _missing = sms._plate_data(sms._PLATES[0], topo, _bounds())
-    names = {name for name, _, _ in sites}
+    plates, _missing = sms.render_plates(topo)
+    existing, extension = sms._network_paragraphs(plates)
 
-    for city in sms._TRANSCRIBED.values():
-        for name, _lat, _lon in city["sites"]:
-            assert name not in names
+    installed = sum(count for _p, _png, count, _planned in plates)
+    planned = sum(count for _p, _png, _installed, count in plates)
 
-
-def test_transcribed_cities_ignore_the_database_entirely():
-    """À l'inverse : une topologie vide ne vide pas Nouadhibou ni Rosso.
-
-    Ces sites ne sont pas supervisés — leur absence de la base est l'état
-    NORMAL, pas un signal qu'ils ont disparu.
-    """
-    empty = _topo([])
-    for plate in sms._PLATES[1:]:
-        bounds = sms._load_bounds()[plate.key]
-        sites, edges, missing = sms._plate_data(plate, empty, bounds)
-        assert sites, f"{plate.key} devrait rester dessinée sans la base"
-        assert edges
-        assert missing == []
-
-
-def test_transcribed_sites_sit_inside_their_own_frame():
-    """Chaque site transcrit tombe dans la fenêtre de sa ville.
-
-    Rosso est le cas qui a mordu : une latitude prise trop au sud plaçait le
-    site de l'autre côté du fleuve Sénégal, donc en territoire sénégalais.
-    """
-    bounds_by_key = sms._load_bounds()
-    for key, cfg in sms._TRANSCRIBED.items():
-        bounds = bounds_by_key[key]
-        for name, lat, lon in cfg["sites"]:
-            assert sms._inside(bounds, lat, lon), f"{name} hors de la fenêtre {key}"
-
-
-def test_rosso_sites_stay_north_of_the_senegal_river():
-    """Rosso Mauritanie est au NORD du fleuve ; Rosso Sénégal est l'autre ville.
-
-    Le fleuve passe vers 16,505° N à hauteur de la ville. Un site sous cette
-    latitude n'est pas chez nous — erreur commise puis corrigée le 2026-08-18.
-    """
-    for name, lat, _lon in sms._TRANSCRIBED["rosso"]["sites"]:
-        assert lat > 16.505, f"{name} est tombé au sud du fleuve (Sénégal)"
+    assert f"{installed} sites d'infrastructure" in existing
+    assert f"{planned} nouveaux sites" in extension
+    assert "rouge" in extension
 
 
 # ------------------------------------------------------------------ export
-def test_docx_carries_one_page_per_city():
+def test_docx_carries_one_page_per_city_and_both_paragraphs():
     topo = _topo(
         [("A2 HQ", 18.114964, -15.991145), ("A2 AT1", 18.140022, -15.919665)],
         [("A2 HQ", "A2 AT1", "wired", True)],
@@ -212,11 +296,12 @@ def test_docx_carries_one_page_per_city():
         names = archive.namelist()
         document = archive.read("word/document.xml").decode("utf-8")
 
-    images = [n for n in names if n.startswith("word/media/")]
-    assert len(images) == len(sms._PLATES)
+    assert len([n for n in names if n.startswith("word/media/")]) == len(sms._PLATES)
     assert document.count('w:type="page"') == len(sms._PLATES) - 1
     assert "Cartographie des sites A2 Holding" in document
     assert "17/08/2026" in document
+    assert "bonne capacit" in document      # paragraphe « réseau en service »
+    assert "programm" in document           # paragraphe « extensions »
 
 
 def test_docx_names_the_sites_it_could_not_draw():

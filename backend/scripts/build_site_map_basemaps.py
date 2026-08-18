@@ -40,20 +40,33 @@ from pathlib import Path
 from PIL import Image
 
 _OUT = Path(__file__).resolve().parents[1] / "data" / "maps"
-_TILE_URL = "https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png"
-_TILE_PX = 512  # tuiles @2x
+_TILE_PX = 256
 _HEADERS = {"User-Agent": "a2-network-supervisor/1.0 (site map basemaps)"}
+
+# Imagerie SATELLITE + calque de repères (routes et noms de lieux), la
+# combinaison « hybride » d'Esri. ⚠️ L'URL Esri est en `{z}/{y}/{x}` — l'ordre
+# est inversé par rapport à la convention XYZ de tout le reste du monde, et
+# l'intervertir rend des tuiles d'un autre continent sans jamais échouer.
+_IMAGERY_URL = (
+    "https://server.arcgisonline.com/ArcGIS/rest/services/"
+    "World_Imagery/MapServer/tile/{z}/{y}/{x}"
+)
+_REFERENCE_URL = (
+    "https://services.arcgisonline.com/ArcGIS/rest/services/"
+    "Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
+)
+_ATTRIBUTION = "© Esri · Maxar · Earthstar Geographics"
 
 # Fenêtre géographique et zoom de chaque planche.
 #
-# Le zoom fixe la résolution : à z13 une tuile couvre 0,0439° de longitude, donc
-# une ville de 0,18° tient dans ~2000 px — assez pour que les noms de site
-# restent lisibles sur une page A4, sans faire un fichier de 20 Mo.
+# Le zoom fixe la résolution : à z14 une tuile de 256 px couvre 0,0220° de
+# longitude, donc une ville de 0,18° tient dans ~2000 px — assez pour que les
+# noms de site restent lisibles sur une page A4, sans faire un fichier énorme.
 _WINDOWS: dict[str, tuple[float, float, float, float, int]] = {
     #            west,      south,    east,      north,   zoom
-    "nouakchott": (-16.058, 17.962, -15.882, 18.166, 13),
-    "nouadhibou": (-17.088, 20.885, -16.983, 21.000, 13),
-    "rosso": (-15.818, 16.495, -15.776, 16.531, 14),
+    "nouakchott": (-16.058, 17.962, -15.882, 18.166, 14),
+    "nouadhibou": (-17.088, 20.885, -16.983, 21.000, 14),
+    "rosso": (-15.818, 16.495, -15.776, 16.531, 15),
 }
 
 
@@ -66,16 +79,33 @@ def _lat_to_px(lat: float, zoom: int) -> float:
     return (0.5 - math.log((1 + s) / (1 - s)) / (4 * math.pi)) * (2**zoom) * _TILE_PX
 
 
-def _fetch_tile(zoom: int, x: int, y: int, cache: Path) -> Image.Image:
-    path = cache / f"{zoom}_{x}_{y}.png"
+def _fetch_tile(url: str, layer: str, zoom: int, x: int, y: int,
+                cache: Path) -> Image.Image:
+    path = cache / f"{layer}_{zoom}_{x}_{y}.bin"
     if not path.exists():
         request = urllib.request.Request(
-            _TILE_URL.format(z=zoom, x=x, y=y), headers=_HEADERS
+            url.format(z=zoom, x=x, y=y), headers=_HEADERS
         )
         with urllib.request.urlopen(request, timeout=45) as response:
             path.write_bytes(response.read())
         time.sleep(0.05)  # courtoisie envers le fournisseur de tuiles
-    return Image.open(path).convert("RGB")
+    return Image.open(path)
+
+
+def _tile(zoom: int, x: int, y: int, cache: Path) -> Image.Image:
+    """Une tuile satellite, avec les repères Esri composés par-dessus.
+
+    Le calque de repères porte les grands axes et les noms de quartiers. Sur de
+    l'imagerie brute, ce sont eux qui permettent de situer un site autrement
+    qu'en reconnaissant la forme des toits — un plan sans aucun texte se lit mal
+    dès qu'on n'est pas du quartier.
+    """
+    base = _fetch_tile(_IMAGERY_URL, "img", zoom, x, y, cache).convert("RGBA")
+    try:
+        marks = _fetch_tile(_REFERENCE_URL, "ref", zoom, x, y, cache).convert("RGBA")
+    except OSError:
+        return base.convert("RGB")  # repères indisponibles : l'imagerie suffit
+    return Image.alpha_composite(base, marks).convert("RGB")
 
 
 def build(city: str, cache: Path) -> dict:
@@ -91,7 +121,7 @@ def build(city: str, cache: Path) -> dict:
     for tx in range(tx0, tx1 + 1):
         for ty in range(ty0, ty1 + 1):
             canvas.paste(
-                _fetch_tile(zoom, tx, ty, cache),
+                _tile(zoom, tx, ty, cache),
                 ((tx - tx0) * _TILE_PX, (ty - ty0) * _TILE_PX),
             )
 
@@ -103,11 +133,11 @@ def build(city: str, cache: Path) -> dict:
             int(bottom - ty0 * _TILE_PX),
         )
     )
-    # JPEG et pas PNG : un fond de carte est une photo de tuiles, la compression
-    # sans perte le ferait peser cinq fois plus pour rien. Le dessin par-dessus
+    # JPEG et pas PNG : un fond de carte est une photo, la compression sans
+    # perte le ferait peser cinq fois plus pour rien. Le dessin par-dessus
     # (pastilles, traits, noms) est vectoriel et composé après.
     target = _OUT / f"{city}.jpg"
-    crop.save(target, quality=84, optimize=True)
+    crop.save(target, quality=80, optimize=True, progressive=True)
     return {
         "name": city,
         "w": crop.width,
@@ -117,6 +147,7 @@ def build(city: str, cache: Path) -> dict:
         "east": east,
         "north": north,
         "z": zoom,
+        "attribution": _ATTRIBUTION,
         "bytes": target.stat().st_size,
     }
 

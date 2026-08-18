@@ -87,7 +87,7 @@ backend/app/
 │   ├── uisp_sync_service.py        # Import auto depuis UISP : INFRA (classify→upsert name/IP/site, creds par convention à la CRÉATION, **jamais de delete**) + STATIONS clientes via sync_uisp_stations (LR abonnés dans `lrs`, colonnes uisp_* mode/statut, identité MAC, gated UISP_STATION_SYNC_ENABLED). ⚠️ **Le sync des STATIONS SUPPRIME** pour rester synchro avec UISP : un LR **issu de UISP** (`uisp_synced_at` renseigné) dont la MAC a disparu du roster = déprovisionné dans UISP → `session.delete` (cascade). Un client **découvert par radio seul** (`uisp_synced_at` NULL) n'est JAMAIS supprimé (propriété de discovery_service). **Garde-fou** : pass de suppression sautée si le roster revient VIDE (échec de fetch — ne jamais prendre un payload vide pour « tout le monde déprovisionné »). ⚠️ **La RECLASSIFICATION va dans LES DEUX SENS** (`_demote_reclassified_stations`, en tête du sync infra) — voir **Un équipement d'infra redevenu abonné**
 │   ├── netflow_service.py          # Collecteur NetFlow (asyncio UDP) : décode v1/v5/v9/IPFIX (lib `netflow`). Attribue chaque flux à son **extrémité PUBLIQUE** (source en download, destination en upload ; l'extrémité INTERNE = client/WAN défini par NETFLOW_INTERNAL_PREFIXES), résout l'ASN (asn_service), agrège en mémoire par (asn, opérateur) avec **down_bytes/up_bytes** et flush dans `traffic_dest_stats`. Process long dédié (RUN_MODE=collector), PAS un job APScheduler
 │   ├── asn_service.py              # IP → (ASN, opérateur). PRIMAIRE : datasets BGP **iptoasn.com** (`ip2asn-v4/v6.tsv.gz`, sorted arrays + bisect, bien plus complets que GeoLite2 pour la longue traîne). FALLBACK : MaxMind GeoLite2-ASN (.mmdb). + map statique de labels CDN. Lazy load ; aucune source = tout sous "Indéterminé"
-│   ├── site_map_service.py        # **Cartographie imprimable** des sites (export Word). Compose pastilles/backhauls/noms sur un fond de carte **EMBARQUÉ** (`data/maps/*.jpg` + `bounds.json`, régénérés par `scripts/build_site_map_basemaps.py`) — rien n'est téléchargé à l'export : le serveur de prod n'a pas d'accès Internet sortant garanti. ⚠️ Cadrage **figé** en contrepartie : un site hors fenêtre (ou sans coordonnées) est **NOMMÉ** en fin de document, jamais escamoté. Nouakchott est lu dans la topologie à chaque appel ; Nouadhibou et Rosso sont des constantes `_TRANSCRIBED` (hors supervision). Voir **Cartographie des sites en Word**
+│   ├── site_map_service.py        # **Cartographie imprimable** des sites (export Word). Compose pastilles/backhauls/noms sur un fond de carte **EMBARQUÉ** (`data/maps/*.jpg` + `bounds.json`, régénérés par `scripts/build_site_map_basemaps.py`) — rien n'est téléchargé à l'export : le serveur de prod n'a pas d'accès Internet sortant garanti. ⚠️ Cadrage **figé** en contrepartie : un site hors fenêtre (ou sans coordonnées) est **NOMMÉ** en fin de document, jamais escamoté. ⚠️ **VERT = en service** (Nouakchott, lu dans la topologie à chaque appel) / **ROUGE = extension PROGRAMMÉE** (constante `_PLANNED` : 2 à NKC, 3 à NDB, 2 à Rosso) — jamais écrites en base, sinon elles seraient pinguées et alerteraient comme injoignables. Voir **Cartographie des sites en Word**
 │   └── traffic_service.py          # 2 roll-ups : `get_top_destinations` (VOLUME down/up/total par ASN sur 24h/7j/30j) + `get_throughput` (DÉBIT Gb/s = bytes÷bucket s, dernier bucket, descendant/montant + part). Alimente /traffic
 ├── tasks/
 │   ├── scheduler.py         # Init APScheduler, start/stop lifecycle
@@ -976,7 +976,10 @@ bord. L'état, lui, se lit sur `/topology`, où il change toutes les minutes.
 
 ##### Le fond de carte est EMBARQUÉ, jamais téléchargé
 
-`data/maps/*.jpg` + `bounds.json` sont **commités** (~580 Ko). Le serveur de
+`data/maps/*.jpg` + `bounds.json` sont **commités** (~1,9 Mo d'imagerie
+**satellite** Esri/Maxar, calque de repères Esri composé par-dessus pour les
+grands axes et les noms de quartiers — sur de l'imagerie brute, ce sont eux qui
+permettent de situer un site autrement qu'en reconnaissant la forme des toits). Le serveur de
 prod est derrière le FortiGate et n'a pas d'accès Internet sortant garanti : un
 export qui dépendrait d'un CDN de tuiles échouerait le jour où on en a besoin.
 Régénération par `scripts/build_site_map_basemaps.py` depuis un poste connecté
@@ -991,15 +994,41 @@ en fin de document (« Sites non représentés : … »). Même règle que les
 comme un réseau qui n'a pas ce site. C'est aussi le signal qu'il faut élargir la
 fenêtre.
 
-##### Nouakchott vient de la base, les deux autres villes sont TRANSCRITES
+##### VERT = en service, ROUGE = programmé — le message principal de la carte
 
-Les 17 sites de Nouakchott ont des coordonnées relevées et des liaisons
-mesurées : tout est relu à chaque export, donc un backhaul posé hier apparaît.
-**Nouadhibou (3) et Rosso (2) ne sont dans AUCUNE de nos tables** — ni site, ni
-équipement, ni liaison — et sont reportés du plan existant par la constante
-`_TRANSCRIBED`. Positions approchées, **jamais écrites en base** : les y
-inscrire les ferait passer pour des relevés. Le jour où ces sites entrent dans
-UISP, ils remontent par le chemin normal et la constante disparaît.
+Deux populations sur les mêmes planches, et la couleur dit l'**état**, jamais la
+ville (un code par ville obligerait à lire une légende pour comprendre l'essentiel) :
+
+* **VERT** — les 17 sites de Nouakchott, relus dans la topologie à chaque
+  export : coordonnées relevées, liaisons mesurées, donc un backhaul posé hier
+  apparaît sans rien toucher.
+* **ROUGE** — les **extensions programmées**, pas encore installées : 2 à
+  Nouakchott (une à côté d'AT2, une dans la zone laissée nue derrière VEL1),
+  3 à Nouadhibou, 2 à Rosso. Elles ne sont dans **aucune** de nos tables — c'est
+  leur état NORMAL — et vivent dans la constante `_PLANNED`.
+
+⚠️ **Jamais écrites en base.** Les y inscrire les ferait compter dans la
+capacité du site, pinguer par `infra_ping_job`, et alerter en `device_unreachable`
+— exactement le dégât décrit dans **Un équipement d'infra redevenu abonné**,
+mais pour des mâts qui ne sont même pas montés.
+
+⚠️ **Aucune liaison n'est inventée depuis un site programmé de Nouakchott** :
+son raccordement n'est pas arrêté. Celles de Nouadhibou et Rosso, en revanche,
+font partie du plan lui-même (réseaux à créer d'un bloc) et sont donc tracées.
+
+Le jour où un site programmé est posé et enrôlé, il remonte en vert par le
+chemin normal — et **il n'est pas dessiné deux fois** : `_plate_data` saute une
+ligne de `_PLANNED` dont le nom est déjà en base, ce qui rend son retrait
+facultatif plutôt qu'obligatoire (un oubli ne produit pas une carte fausse).
+
+##### Les deux compteurs restent SÉPARÉS
+
+`render_plates` rend `(installés, programmés)` par ville, et le titre de chaque
+planche les nomme séparément (« Nouakchott — 17 en service · 2 programmés »).
+Les additionner annoncerait comme parc en service des mâts qui n'existent pas.
+Les deux paragraphes d'ouverture du document tirent leurs chiffres de là —
+**jamais d'une valeur en dur** : un texte qui contredit sa propre carte ne serait
+plus lu.
 
 ⚠️ Erreur commise puis corrigée le 2026-08-18 : `RSO-SUD` était placé **au sud
 du fleuve Sénégal**, donc au Sénégal (« Rosso Sénégal » est l'autre ville, sur
@@ -1033,8 +1062,13 @@ deux exports des mêmes données rendent exactement la même image.
 - **`fonts-dejavu-core` dans l'image backend**. Sans police vectorielle, le
   service **refuse de rendre** (503) au lieu de sortir une carte aux noms
   illisibles — l'image est le produit.
-- **Attribution OSM/CARTO dessinée DANS l'image**, pas à côté : elle doit
-  survivre à un copier-coller de la carte hors du document.
+- **Attribution dessinée DANS l'image**, pas à côté : elle doit survivre à un
+  copier-coller de la carte hors du document. Son texte vient de `bounds.json`,
+  donc du script qui a téléchargé les tuiles — changer de fournisseur d'imagerie
+  sans changer la mention devient impossible.
+- **Planches en JPEG et pas en PNG** : la planche finie est une PHOTO, que le
+  sans-perte fait peser dix fois plus (9,9 Mo contre 1,6 Mo sur Nouakchott, pour
+  un document Word qui dépassait alors 13 Mo).
 
 ##### Vue CARTE de la topologie (Google Maps) — 2026-08-10
 

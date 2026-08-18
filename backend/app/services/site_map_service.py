@@ -16,14 +16,22 @@ peut pas être dessiné, et il est alors **nommé** dans le document plutôt
 qu'escamoté (même règle que la vue carte : une carte qui omet un site sans le
 dire se lit comme un réseau qui n'a pas ce site).
 
-⚠️ **Nouakchott vient de la BASE, les deux autres villes sont TRANSCRITES.**
-Les 17 sites de Nouakchott ont des coordonnées relevées (`site_locations`) et
-des liaisons mesurées : tout est lu dans la topologie à chaque export, donc un
-backhaul posé hier apparaît. Nouadhibou et Rosso ne sont **pas** dans le
-périmètre supervisé — ni site, ni équipement, ni liaison — et sont reportés du
-plan existant par la constante `_TRANSCRIBED` ci-dessous. Le jour où ces sites
-entrent dans UISP, ils remonteront tout seuls par le chemin normal et la
-constante n'aura plus qu'à disparaître.
+⚠️ **Deux populations, deux couleurs, deux sources.**
+
+* **VERT — l'existant.** Les 17 sites de Nouakchott, lus dans la topologie à
+  chaque export : coordonnées relevées (`site_locations`), liaisons mesurées.
+  Un backhaul posé hier apparaît sans rien toucher ici.
+* **ROUGE — les extensions PROGRAMMÉES**, pas encore installées : deux à
+  Nouakchott, trois à Nouadhibou, deux à Rosso. Elles ne sont dans aucune de
+  nos tables — c'est leur état NORMAL, elles n'existent pas encore — et vivent
+  dans la constante `_PLANNED` ci-dessous. Leurs positions sont des
+  **intentions**, pas des relevés, et ne sont **jamais écrites en base** : les y
+  inscrire les ferait passer pour du parc installé, donc les ferait compter dans
+  la capacité, pinguer, et alerter comme injoignables.
+
+Le jour où un site programmé est posé et enrôlé dans UISP, il remonte tout seul
+par le chemin normal, en vert — il ne reste plus qu'à retirer sa ligne de
+`_PLANNED`.
 """
 
 from __future__ import annotations
@@ -86,37 +94,59 @@ class Plate:
 
     key: str
     title: str
-    color: tuple[int, int, int]
     scale: float
 
 
 _PLATES: tuple[Plate, ...] = (
-    Plate("nouakchott", "Nouakchott", _GREEN, 1.0),
-    Plate("nouadhibou", "Nouadhibou", _BLUE, 1.55),
-    Plate("rosso", "Rosso", _RED, 1.5),
+    Plate("nouakchott", "Nouakchott", 1.0),
+    Plate("nouadhibou", "Nouadhibou", 1.55),
+    Plate("rosso", "Rosso", 1.5),
 )
 
-# Sites reportés du plan existant, hors supervision (cf. en-tête du module).
-# Positions approchées : elles situent le site dans sa ville, elles ne sont pas
-# un relevé. Aucune n'est écrite en base — les inventer là serait les faire
-# passer pour des données mesurées.
-_TRANSCRIBED: dict[str, dict] = {
+# La couleur d'une pastille dit son ÉTAT, jamais sa ville : vert = installé,
+# rouge = programmé. Un code couleur par ville obligerait à lire une légende
+# pour comprendre le message principal de la carte.
+_PIN_INSTALLED = _GREEN
+_PIN_PLANNED = _RED
+
+# Extensions PROGRAMMÉES — pas encore installées (cf. en-tête du module).
+# Positions approchées : elles situent l'intention dans la ville, ce ne sont pas
+# des relevés. Rendues en ROUGE partout.
+#
+# ⚠️ Nouakchott en a aussi : la planche « vivante » porte donc les deux
+# populations. C'est tout l'intérêt de la carte — voir d'un coup ce qui est
+# debout et ce qui manque, sur le même plan.
+#
+# ⚠️ Aucune liaison n'est tracée depuis un site programmé de Nouakchott : son
+# raccordement n'est pas arrêté. En dessiner une inventerait de la topologie,
+# ce que ce module ne fait nulle part. Les liaisons de Nouadhibou et Rosso, en
+# revanche, font partie du plan lui-même — ce sont des réseaux à créer d'un
+# bloc, pas des ajouts à un maillage existant.
+_PLANNED: dict[str, dict] = {
+    "nouakchott": {
+        "sites": [
+            ("NKC-NORD", 18.1456, -15.9593),   # à côté d'AT2
+            ("NKC-SUD", 18.0270, -15.9210),    # la zone laissée nue derrière VEL1
+        ],
+        "edges": [],
+    },
     "nouadhibou": {
         "sites": [
             ("NDB-NORD", 20.9782, -17.0285),
-            ("NDB-CENTRE", 20.9385, -17.0415),
-            ("NDB-SUD", 20.9075, -17.0245),
+            ("NDB-CENTRE", 20.9500, -17.0375),
+            ("NDB-SUD", 20.9155, -17.0395),
         ],
         "edges": [
             ("NDB-NORD", "NDB-CENTRE"),
             ("NDB-CENTRE", "NDB-SUD"),
-            ("NDB-NORD", "NDB-SUD"),
         ],
     },
     "rosso": {
+        # Alignés à la MÊME latitude : les deux mâts se répondent d'ouest en
+        # est le long du fleuve, pas du nord au sud.
         "sites": [
-            ("RSO-NORD", 16.5215, -15.8020),
-            ("RSO-SUD", 16.5105, -15.7965),
+            ("RSO-NORD", 16.5155, -15.8100),
+            ("RSO-SUD", 16.5155, -15.7950),
         ],
         "edges": [("RSO-NORD", "RSO-SUD")],
     },
@@ -342,12 +372,14 @@ def _compass(draw: ImageDraw.ImageDraw, bounds: dict, scale: float) -> None:
 
 
 def _attribution(draw: ImageDraw.ImageDraw, bounds: dict, scale: float) -> None:
-    """Mention de source du fond de carte — exigée par les licences OSM/CARTO.
+    """Mention de source de l'imagerie — exigée par la licence du fournisseur.
 
     Elle est dessinée DANS l'image : le document Word n'a pas d'autre endroit
-    où elle survivrait à un copier-coller de la carte.
+    où elle survivrait à un copier-coller de la carte. Le texte vient de
+    `bounds.json`, donc du script qui a téléchargé les tuiles — un changement
+    de fournisseur d'imagerie ne peut pas oublier de changer la mention.
     """
-    text = "\u00a9 OpenStreetMap contributors \u00b7 \u00a9 CARTO"
+    text = bounds.get("attribution") or "© Esri"
     font = _font(int(round(19 * scale)), bold=False)
     x, y = 14 * scale, bounds["h"] * _SS - 14 * scale
     left, top, right, bottom = draw.textbbox((x, y), text, font=font, anchor="ls")
@@ -361,21 +393,18 @@ def _attribution(draw: ImageDraw.ImageDraw, bounds: dict, scale: float) -> None:
 
 # ------------------------------------------------------------- rendu
 def _plate_data(plate: Plate, topo: dict, bounds: dict
-                ) -> tuple[list[tuple[str, float, float]], list[tuple[str, str, bool, bool]], list[str]]:
-    """Sites et liaisons à tracer sur une planche, plus les sites non traçables.
+                ) -> tuple[list[tuple[str, float, float, bool]],
+                           list[tuple[str, str, bool, bool]], list[str]]:
+    """Sites et liaisons d'une planche, plus les sites non traçables.
 
-    Pour Nouakchott, tout sort de la topologie servie par l'API — donc de la
-    base. Pour les deux autres villes, de la transcription du plan existant.
+    Un site est rendu `(nom, lat, lon, programmé)`. L'installé de Nouakchott
+    sort de la topologie — donc de la base — et les extensions programmées de
+    `_PLANNED` ; les deux se retrouvent sur la même planche.
     """
-    if plate.key != "nouakchott":
-        cfg = _TRANSCRIBED[plate.key]
-        sites = [(name, lat, lon) for name, lat, lon in cfg["sites"]]
-        edges = [(a, b, True, True) for a, b in cfg["edges"]]
-        return sites, edges, []
-
-    sites: list[tuple[str, float, float]] = []
+    sites: list[tuple[str, float, float, bool]] = []
     missing: list[str] = []
-    for site in topo.get("sites", []):
+
+    for site in topo.get("sites", []) if plate.key == "nouakchott" else []:
         lat, lon = site.get("latitude"), site.get("longitude")
         name = site.get("site", "")
         if lat is None or lon is None:
@@ -384,23 +413,38 @@ def _plate_data(plate: Plate, topo: dict, bounds: dict
         if not _inside(bounds, lat, lon):
             missing.append(f"{name} (hors du cadrage de la carte)")
             continue
-        sites.append((" ".join(name.split()), lat, lon))
+        sites.append((" ".join(name.split()), lat, lon, False))
 
-    drawable = {name for name, _, _ in sites}
+    installed = {name for name, _lat, _lon, _p in sites}
+    planned = _PLANNED.get(plate.key, {"sites": [], "edges": []})
+    for name, lat, lon in planned["sites"]:
+        # Un site programmé qui existe désormais en base est déjà dessiné en
+        # vert : on ne le redouble pas en rouge. C'est ce qui rend le retrait de
+        # sa ligne de `_PLANNED` facultatif le jour de sa mise en service.
+        if name in installed:
+            continue
+        sites.append((name, lat, lon, True))
+
+    drawable = {name for name, _lat, _lon, _p in sites}
     edges: list[tuple[str, str, bool, bool]] = []
-    for edge in topo.get("edges", []):
+    for edge in topo.get("edges", []) if plate.key == "nouakchott" else []:
         a = " ".join(str(edge.get("site_a", "")).split())
         b = " ".join(str(edge.get("site_b", "")).split())
         if a not in drawable or b not in drawable:
             continue
         wired = edge.get("medium") == "wired"
         edges.append((a, b, not wired, bool(edge.get("is_tree_edge", True))))
+
+    for a, b in planned["edges"]:
+        if a in drawable and b in drawable:
+            edges.append((a, b, True, True))
+
     return sites, edges, missing
 
 
 def render_plate(plate: Plate, topo: dict, bounds_by_key: dict[str, dict]
                  ) -> tuple[bytes, list[str]]:
-    """Dessine une planche et rend le PNG plus la liste des sites non traçables."""
+    """Dessine une planche et rend le JPEG plus la liste des sites non traçables."""
     bounds = bounds_by_key.get(plate.key)
     if bounds is None:
         raise MapAssetsError(f"Fenêtre géographique absente pour « {plate.key} »")
@@ -422,7 +466,7 @@ def render_plate(plate: Plate, topo: dict, bounds_by_key: dict[str, dict]
     # La pastille est posée AU-DESSUS du point, sa pointe sur les coordonnées :
     # c'est la pointe qui désigne le lieu, pas le centre du disque.
     anchors: dict[str, tuple[float, float]] = {}
-    for name, lat, lon in sites:
+    for name, lat, lon, _planned in sites:
         x, y = _project(bounds, lat, lon)
         anchors[name] = (x * _SS, y * _SS - 1.25 * r)
 
@@ -433,11 +477,11 @@ def render_plate(plate: Plate, topo: dict, bounds_by_key: dict[str, dict]
         segments.append((anchors[a], anchors[b]))
 
     ordered = sorted(sites, key=lambda s: -s[1])
-    for name, _lat, _lon in ordered:
+    for name, _lat, _lon, planned in ordered:
         cx, cy = anchors[name]
-        _pin(draw, cx, cy, r, plate.color)
+        _pin(draw, cx, cy, r, _PIN_PLANNED if planned else _PIN_INSTALLED)
 
-    items = [(name, *anchors[name]) for name, _lat, _lon in ordered]
+    items = [(name, *anchors[name]) for name, _lat, _lon, _planned in ordered]
     canvas = (bounds["w"] * _SS, bounds["h"] * _SS)
     for name, box in _place_labels(items, r, font, draw, canvas, segments):
         draw.rounded_rectangle(box, radius=(box[3] - box[1]) * 0.30, fill=_WHITE,
@@ -451,20 +495,31 @@ def render_plate(plate: Plate, topo: dict, bounds_by_key: dict[str, dict]
     overlay = overlay.resize((bounds["w"], bounds["h"]), Image.LANCZOS)
     composed = Image.alpha_composite(base, overlay).convert("RGB")
 
+    # JPEG et pas PNG : la planche finie est une PHOTO (imagerie satellite) que
+    # le sans-perte fait peser dix fois plus — 9,9 Mo contre 1,6 Mo mesurés sur
+    # Nouakchott, pour un document Word qui dépassait alors 13 Mo. La qualité 88
+    # garde les étiquettes nettes ; ce sont elles, pas les toits, qu'on lit.
     buffer = io.BytesIO()
-    composed.save(buffer, format="PNG", optimize=True)
+    composed.save(buffer, format="JPEG", quality=88, optimize=True, progressive=True)
     return buffer.getvalue(), missing
 
 
-def render_plates(topo: dict) -> tuple[list[tuple[Plate, bytes, int]], list[str]]:
-    """Rend les trois planches. Retourne (planche, png, nb de sites) + non traçables."""
+def render_plates(topo: dict) -> tuple[list[tuple[Plate, bytes, int, int]], list[str]]:
+    """Rend les trois planches.
+
+    Retourne `(planche, png, installés, programmés)` par ville, plus les sites
+    qu'aucune planche n'a pu dessiner. Les deux compteurs restent SÉPARÉS
+    jusqu'au document : les additionner annoncerait comme parc en service des
+    mâts qui ne sont pas montés.
+    """
     bounds_by_key = _load_bounds()
-    out: list[tuple[Plate, bytes, int]] = []
+    out: list[tuple[Plate, bytes, int, int]] = []
     missing: list[str] = []
     for plate in _PLATES:
         png, plate_missing = render_plate(plate, topo, bounds_by_key)
-        count = len(_plate_data(plate, topo, bounds_by_key[plate.key])[0])
-        out.append((plate, png, count))
+        sites = _plate_data(plate, topo, bounds_by_key[plate.key])[0]
+        installed = sum(1 for _n, _la, _lo, planned in sites if not planned)
+        out.append((plate, png, installed, len(sites) - installed))
         missing.extend(plate_missing)
     return out, missing
 
@@ -474,6 +529,38 @@ def _sync_label(topo: dict) -> str:
     raw = str(topo.get("synced_at") or "")[:10]
     parts = raw.split("-")
     return f"{parts[2]}/{parts[1]}/{parts[0]}" if len(parts) == 3 else "-"
+
+
+def _network_paragraphs(plates) -> tuple[str, str]:
+    """Les deux paragraphes d'ouverture : l'existant, puis ce qui est programmé.
+
+    Les chiffres sont CALCULÉS à partir des planches, jamais écrits en dur — un
+    document dont le texte contredit sa propre carte ne serait plus lu.
+    """
+    installed = sum(count for _plate, _png, count, _planned in plates)
+    planned = sum(count for _plate, _png, _installed, count in plates)
+    cities = [
+        f"{plate.title} ({count})"
+        for plate, _png, _installed, count in plates
+        if count
+    ]
+
+    existing = (
+        f"Notre réseau actuel couvre Nouakchott avec une bonne capacité : "
+        f"{installed} sites d'infrastructure sont en service, raccordés au siège "
+        f"par des dorsales fibre et un maillage de faisceaux radio, avec des "
+        f"boucles de secours qui permettent à la plupart des sites d'atteindre "
+        f"Internet par plusieurs chemins. L'ensemble est supervisé en continu : "
+        f"disponibilité, qualité radio et charge de chaque liaison."
+    )
+    extension = (
+        f"Les sites en rouge sont les extensions programmées, non encore "
+        f"installées : {planned} nouveaux sites — {', '.join(cities)} — "
+        f"destinés à compléter la couverture là où elle manque et à augmenter "
+        f"la capacité du réseau. Leur emplacement est une intention de "
+        f"déploiement ; ils n'apparaissent pas encore dans la supervision."
+    )
+    return existing, extension
 
 
 def build_topology_docx(topo: dict) -> bytes:
@@ -506,16 +593,31 @@ def build_topology_docx(topo: dict) -> bytes:
 
     subtitle = document.add_paragraph()
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    counts = " \u00b7 ".join(f"{plate.title} {count} sites" for plate, _png, count in plates)
-    sub_run = subtitle.add_run(f"{counts} \u2014 c\u00e2blage du {_sync_label(topo)}")
+    sub_run = subtitle.add_run(f"Câblage du {_sync_label(topo)}")
     sub_run.font.size = Pt(10)
     sub_run.font.color.rgb = RGBColor(91, 106, 125)
 
-    for index, (plate, png, count) in enumerate(plates):
+    # Les deux paragraphes ouvrent le document, AVANT la première carte : ils
+    # disent quoi lire dans les couleurs. Les découvrir après les planches
+    # obligerait à revenir en arrière pour comprendre le rouge.
+    existing, extension = _network_paragraphs(plates)
+    for text, color in ((existing, _INK), (extension, _RED)):
+        para = document.add_paragraph()
+        para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        para_run = para.add_run(text)
+        para_run.font.size = Pt(10.5)
+        para_run.font.color.rgb = RGBColor(*color)
+
+    for index, (plate, png, installed, planned) in enumerate(plates):
         if index:
             document.add_page_break()
         heading = document.add_paragraph()
-        head_run = heading.add_run(f"{plate.title} \u2014 {count} sites")
+        parts = []
+        if installed:
+            parts.append(f"{installed} site{'s' if installed > 1 else ''} en service")
+        if planned:
+            parts.append(f"{planned} programmé{'s' if planned > 1 else ''}")
+        head_run = heading.add_run(f"{plate.title} — {' · '.join(parts)}")
         head_run.bold = True
         head_run.font.size = Pt(14)
         head_run.font.color.rgb = RGBColor(*_INK)
@@ -528,7 +630,7 @@ def build_topology_docx(topo: dict) -> bytes:
         # ce qu'elle omet se lit comme un réseau qui n'a pas ces sites.
         note = document.add_paragraph()
         note_run = note.add_run(
-            "Sites non repr\u00e9sent\u00e9s : " + " \u00b7 ".join(missing)
+            "Sites non représentés : " + " · ".join(missing)
         )
         note_run.font.size = Pt(9)
         note_run.font.color.rgb = RGBColor(192, 39, 30)

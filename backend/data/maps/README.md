@@ -7,9 +7,9 @@ les backhauls et les noms, puis assemble le document.
 
 | Fichier | Ville | Cadrage |
 |---|---|---|
-| `nouakchott.jpg` | Nouakchott (17 sites, supervisés) | 2051 × 2500 px, z13 |
-| `nouadhibou.jpg` | Nouadhibou (3 sites, transcrits) | 1223 × 1435 px, z13 |
-| `rosso.jpg` | Rosso (2 sites, transcrits) | 979 × 875 px, z14 |
+| `nouakchott.jpg` | Nouakchott — 17 en service, 2 programmés | 2051 × 2500 px, z14 |
+| `nouadhibou.jpg` | Nouadhibou — 3 programmés | 1223 × 1435 px, z14 |
+| `rosso.jpg` | Rosso — 2 programmés | 979 × 875 px, z15 |
 | `bounds.json` | Contrat image ↔ géographie | écrit par le script |
 
 ## Pourquoi ils sont commités
@@ -43,10 +43,17 @@ un second passage ne retélécharge rien.
 
 ## Sources et licence
 
-Tuiles **CARTO** (style « voyager ») sur données **OpenStreetMap**. La mention
-`© OpenStreetMap contributors · © CARTO` est dessinée dans chaque planche par
+Imagerie **satellite Esri World Imagery** (Maxar, Earthstar Geographics), avec
+le calque de repères Esri (`World_Boundaries_and_Places`) composé par-dessus :
+sur de l'imagerie brute, ce sont les grands axes et les noms de quartiers qui
+permettent de situer un site autrement qu'en reconnaissant la forme des toits.
+
+La mention de source est dessinée dans chaque planche par
 `site_map_service._attribution` — dans l'image et non à côté, pour qu'elle
-survive à un copier-coller de la carte hors du document.
+survive à un copier-coller de la carte hors du document. Son texte vient du
+champ `attribution` de `bounds.json`, donc du script qui a téléchargé les
+tuiles : changer de fournisseur d'imagerie sans changer la mention est
+impossible.
 
 ## Polices
 

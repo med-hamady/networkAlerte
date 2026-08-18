@@ -207,6 +207,12 @@ def test_rosso_sites_stay_north_of_the_senegal_river():
         assert lat > 16.505, f"{name} est tombé au sud du fleuve (Sénégal)"
 
 
+def test_nouakchott_extensions_keep_their_agreed_names():
+    """Noms arrêtés avec l'exploitation : ils figurent tels quels sur le plan."""
+    names = [n for n, _lat, _lon in sms._PLANNED["nouakchott"]["sites"]]
+    assert names == ["NKTT NEW 1", "NKTT NEW 2"]
+
+
 def test_rosso_sites_are_aligned_horizontally():
     """Les deux mâts se répondent d'ouest en est, pas du nord au sud."""
     lats = [lat for _n, lat, _lon in sms._PLANNED["rosso"]["sites"]]
@@ -226,67 +232,81 @@ def test_nouadhibou_sites_stay_on_land():
         assert -17.048 < lon < -17.018, f"{name} est hors de la bande urbaine"
 
 
-# --------------------------------------------------- arrivée Internet
-def test_every_feed_points_at_a_site_that_exists_on_its_plate():
-    """Une cible mal orthographiée ne dessinerait RIEN, et sans rien dire.
+# --------------------------------------------------- source Internet
+def test_every_source_names_a_site_that_exists_on_its_plate():
+    """Une cible mal orthographiée n'écrirait RIEN, et sans rien dire.
 
-    Le cartouche et son câble ne sont tracés que si le site d'entrée est sur la
-    planche ; une faute de frappe dans `target` les ferait disparaître en
-    silence, sur la seule information de la carte qui ne vient pas d'une mesure.
+    La mention « source Internet » est la seule information de la carte qui ne
+    vient pas d'une mesure ; une faute de frappe la ferait disparaître en
+    silence, anneau doré compris.
     """
-    for key, feeds in sms._FEEDS.items():
+    for key, sources in sms._SOURCES.items():
         plate = next(p for p in sms._PLATES if p.key == key)
         topo = _topo([("A2 HQ", 18.114964, -15.991145)])
         sites, _edges, _missing = sms._plate_data(plate, topo, sms._load_bounds()[key])
         names = _names(sites)
-        for feed in feeds:
-            assert feed["target"] in names, f"{key} : cible « {feed['target']} » absente"
+        for site in sources:
+            assert site in names, f"{key} : site source « {site} » absent"
 
 
-def test_nouakchott_feed_enters_through_the_headquarters():
-    """Le siège est la tête de réseau — c'est ce que la carte doit montrer."""
-    targets = [feed["target"] for feed in sms._FEEDS["nouakchott"]]
-    assert targets == ["A2 HQ"]
+def test_nouakchott_source_is_the_headquarters():
+    """Le siège est la tête de réseau — c'est ce que la carte doit dire."""
+    assert list(sms._SOURCES["nouakchott"]) == ["A2 HQ"]
 
 
-def test_feed_cartouche_is_kept_inside_the_plate():
-    """Sa position est visée à la main, sa taille dépend du texte et de la police.
+def test_the_source_mention_lives_on_the_site_not_on_a_link():
+    """L'arrivée amont n'est PAS une liaison de notre réseau.
 
-    Sans recadrage, un mot de plus dans le libellé sortirait la moitié du
-    cartouche hors de l'image — et personne ne le verrait avant l'impression.
+    Elle était dessinée comme un câble vers un cartouche, ce qui la faisait
+    ressembler à un de nos backhauls. C'est une propriété du site : elle
+    s'écrit sur son étiquette, et rien ne se trace vers l'extérieur.
     """
+    topo = _topo([("A2 HQ", 18.114964, -15.991145)])
+    _sites, edges, _missing = sms._plate_data(sms._PLATES[0], topo, _bounds())
+    assert edges == [], "aucun trait ne doit partir vers une source externe"
+
     from PIL import Image, ImageDraw
 
-    bounds_by_key = sms._load_bounds()
-    for plate in sms._PLATES:
-        bounds = bounds_by_key[plate.key]
-        canvas = (bounds["w"] * sms._SS, bounds["h"] * sms._SS)
-        draw = ImageDraw.Draw(Image.new("RGBA", (int(canvas[0]), int(canvas[1]))))
-        # Cible fictive au centre : on ne teste que le cadrage du cartouche.
-        anchors = {
-            feed["target"]: (canvas[0] / 2, canvas[1] / 2)
-            for feed in sms._FEEDS.get(plate.key, ())
-        }
-        feeds = sms._feed_geometry(
-            sms._FEEDS.get(plate.key, ()), bounds, plate.scale * sms._SS, draw, anchors
-        )
-        for feed in feeds:
-            box = feed["box"]
-            assert box[0] >= 0 and box[1] >= 0, f"{plate.key} : cartouche hors cadre"
-            assert box[2] <= canvas[0] and box[3] <= canvas[1]
+    draw = ImageDraw.Draw(Image.new("RGBA", (400, 200)))
+    font, caption = sms._font(30), sms._font(20)
+    rows, _sizes, _w, _h = sms._measure_label(
+        draw, "A2 HQ", sms._SOURCES["nouakchott"]["A2 HQ"], font, caption
+    )
+    assert [text for text, _f, _c in rows][0] == "A2 HQ"
+    assert any(is_caption for _t, _f, is_caption in rows)
 
 
-def test_feed_without_its_target_site_draws_nothing():
-    """Rien à raccorder ⇒ pas de câble en l'air pointant vers le vide."""
-    from PIL import Image, ImageDraw
+# ------------------------------------------------------------- légende
+def test_legend_is_published_from_a_single_place():
+    """La page et le document Word lisent la MÊME légende.
 
-    bounds = _bounds()
-    draw = ImageDraw.Draw(Image.new("RGBA", (100, 100)))
-    feeds = sms._feed_geometry(sms._FEEDS["nouakchott"], bounds, 1.0, draw, {})
-    assert feeds == []
+    Deux légendes du même dessin finiraient par se contredire au premier
+    ajustement de couleur.
+    """
+    entries = sms.legend_entries()
+    assert len(entries) == len(sms.LEGEND)
+    for entry in entries:
+        assert entry["hex"].startswith("#") and len(entry["hex"]) == 7
+        assert entry["shape"] in {"solid", "dashed", "pin", "ring"}
+        assert entry["label"] and entry["glyph"]
+
+
+def test_legend_colours_are_the_ones_actually_drawn():
+    """Une légende qui annonce une autre couleur que le trait est pire que rien."""
+    by_label = {e["label"]: e["color"] for e in sms.LEGEND}
+    assert by_label["Liaison fibre / cuivre"] == sms._BLUE
+    assert by_label["Backhaul radio — boucle de secours"] == sms._AMBER
+    assert by_label["Site en service"] == sms._PIN_INSTALLED
+    assert by_label["Site programmé (extension)"] == sms._PIN_PLANNED
+    assert by_label["Site source Internet"] == sms._GOLD
 
 
 # ------------------------------------------------------- placement des noms
+def _item(draw, name, x, y, font):
+    rows, sizes, w, h = sms._measure_label(draw, name, (), font, font)
+    return {"name": name, "x": x, "y": y, "rows": rows, "sizes": sizes, "w": w, "h": h}
+
+
 def test_label_is_not_placed_on_top_of_a_link():
     """Le nom cède le passage au trait — sinon la carte masque ce qu'elle montre.
 
@@ -299,10 +319,12 @@ def test_label_is_not_placed_on_top_of_a_link():
     draw = ImageDraw.Draw(Image.new("RGBA", (1200, 600)))
     font = sms._font(34)
     r = 60.0
-    items = [("A2 GAUCHE", 200.0, 300.0), ("A2 DROITE", 1000.0, 300.0)]
+    items = [_item(draw, "A2 GAUCHE", 200.0, 300.0, font),
+             _item(draw, "A2 DROITE", 1000.0, 300.0, font)]
     segments = [((200.0, 300.0), (1000.0, 300.0))]
 
-    placed = dict(sms._place_labels(items, r, font, draw, (1200.0, 600.0), segments))
+    placed = {it["name"]: it["box"]
+              for it in sms._place_labels(items, r, draw, (1200.0, 600.0), segments)}
     box = placed["A2 GAUCHE"]
 
     on_the_link = any(
@@ -318,12 +340,15 @@ def test_label_placement_is_deterministic():
 
     draw = ImageDraw.Draw(Image.new("RGBA", (1200, 900)))
     font = sms._font(34)
-    items = [("A2 UN", 300.0, 300.0), ("A2 DEUX", 700.0, 350.0), ("A2 TROIS", 500.0, 700.0)]
+    coords = [("A2 UN", 300.0, 300.0), ("A2 DEUX", 700.0, 350.0), ("A2 TROIS", 500.0, 700.0)]
     segments = [((300.0, 300.0), (700.0, 350.0)), ((700.0, 350.0), (500.0, 700.0))]
 
-    first = sms._place_labels(items, 60.0, font, draw, (1200.0, 900.0), segments)
-    second = sms._place_labels(items, 60.0, font, draw, (1200.0, 900.0), segments)
-    assert first == second
+    def run():
+        items = [_item(draw, n, x, y, font) for n, x, y in coords]
+        return [it["box"] for it in
+                sms._place_labels(items, 60.0, draw, (1200.0, 900.0), segments)]
+
+    assert run() == run()
 
 
 # ------------------------------------------------------------ paragraphes
@@ -358,7 +383,7 @@ def test_docx_carries_one_page_per_city_and_both_paragraphs():
 
     assert len([n for n in names if n.startswith("word/media/")]) == len(sms._PLATES)
     assert document.count('w:type="page"') == len(sms._PLATES) - 1
-    assert "Cartographie des sites A2 Holding" in document
+    assert "Cartographie des sites A2 Connect" in document
     assert "17/08/2026" in document
     assert "bonne capacit" in document      # paragraphe « réseau en service »
     assert "programm" in document           # paragraphe « extensions »

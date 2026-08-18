@@ -1010,7 +1010,7 @@ ville (un code par ville obligerait à lire une légende pour comprendre l'essen
   export : coordonnées relevées, liaisons mesurées, donc un backhaul posé hier
   apparaît sans rien toucher.
 * **ROUGE** — les **extensions programmées**, pas encore installées : 2 à
-  Nouakchott (une à côté d'AT2, une dans la zone laissée nue derrière VEL1),
+  Nouakchott (`NKTT NEW 1` à côté d'AT2, `NKTT NEW 2` dans la zone laissée nue derrière VEL1),
   3 à Nouadhibou, 2 à Rosso. Elles ne sont dans **aucune** de nos tables — c'est
   leur état NORMAL — et vivent dans la constante `_PLANNED`.
 
@@ -1041,26 +1041,46 @@ plus lu.
 du fleuve Sénégal**, donc au Sénégal (« Rosso Sénégal » est l'autre ville, sur
 l'autre rive). Verrouillé par `test_rosso_sites_stay_north_of_the_senegal_river`.
 
-##### D'où vient Internet — les cartouches d'arrivée
+##### D'où vient Internet — écrit SUR le site, pas au bout d'un câble
 
-Un cartouche bleu marine (globe + libellé) relié à un site par un **trait plein
-bleu**, comme une fibre : **INTERNET / arrivée nationale → A2 HQ** à Nouakchott,
-**INTERNET / depuis Nouakchott / par câble fibre optique** → NDB-CENTRE et
-RSO-NORD. Constante `_FEEDS`.
+Le site par lequel Internet entre porte un **anneau doré** autour de sa pastille
+et deux lignes de plus dans son étiquette : `A2 HQ / SOURCE INTERNET / arrivée
+nationale`, `NDB-CENTRE` et `RSO-NORD` / `SOURCE INTERNET` / `fibre optique
+depuis Nouakchott`. Constante `_SOURCES`.
+
+⚠️ **Ce n'est pas un câble vers un cartouche**, et c'est le point : l'arrivée
+amont n'est **pas une liaison de notre réseau**, et lui donner un trait la
+faisait ressembler à un de nos backhauls. C'est une **propriété du site**.
+
+⚠️ **L'anneau est un canal visuel SÉPARÉ de la couleur de la pastille** : « en
+service » et « source du réseau » sont deux faits indépendants, et les fondre
+ferait que chacun masque l'autre — même raison que l'anneau de saturation sur
+`/topology`.
 
 ⚠️ **C'est la seule chose que la carte affirme sans la tenir d'une mesure.**
 Aucune table ne dit qu'un site est la tête de réseau : le lien amont n'est pas
 un data-link, et le contrôleur ignore lui aussi quel site fait face à l'amont
-(c'est exactement pourquoi `TOPOLOGY_ROOT_SITE` est un réglage). C'est donc un
-fait d'exploitation, écrit à la main, et signalé comme tel dans le module.
+(c'est exactement pourquoi `TOPOLOGY_ROOT_SITE` est un réglage). Fait
+d'exploitation, écrit à la main, et signalé comme tel dans le module. Un nom de
+site mal orthographié n'écrit **rien** — verrouillé par un test, sinon la seule
+information non mesurée de la carte disparaîtrait en silence.
 
-- `lat`/`lon` situent le **cartouche**, pas une installation — une zone vide du
-  cadre, visée à la main. Il est **recadré automatiquement** s'il déborde : sa
-  taille dépend du texte et de la police trouvée sur la machine, donc un mot de
-  plus dans le libellé en sortirait la moitié hors de l'image.
-- Une `target` qui ne correspond à **aucun site de la planche** ne dessine
-  **rien** — ni cartouche ni câble. Verrouillé par un test : une faute de frappe
-  ferait disparaître en silence la seule information non mesurée de la carte.
+##### Légende et identité de marque
+
+La légende est **publiée par le service** (`LEGEND` + `legend_entries()`) et
+consommée telle quelle par la page comme par le document Word : deux légendes du
+même dessin finiraient par se contredire au premier ajustement de couleur. Un
+test vérifie qu'elle annonce bien les couleurs réellement tracées.
+
+L'identité est celle d'**A2 Connect** (relevée sur `a2connect.mr`) : charbon-vert
+`#2c3c34` du sigle, vert-de-gris `#a7b9ad` du mot « Connect », or `#f9b524` de
+l'accent — ce dernier sert précisément à marquer la source Internet.
+
+⚠️ **Les couleurs FONCTIONNELLES de la carte ne suivent pas la marque.** Elles
+doivent rester distinguables entre elles **et** sur de l'imagerie satellite
+(sable, toits gris, eau) : bleu fibre, vert dorsale, ambre secours, rouge
+programmé. La marque tient l'identité — cadres, titres, texte des étiquettes —
+la sémantique tient la lecture.
 
 ##### Le placement des noms est AUTOMATIQUE, et il évite les traits
 

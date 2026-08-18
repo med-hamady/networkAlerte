@@ -54,14 +54,23 @@ _ASSETS = Path(__file__).resolve().parents[2] / "data" / "maps"
 # Les couleurs de trait viennent de la NATURE de la liaison, pas de son état :
 # ce document est un plan de câblage, pas un tableau de supervision. L'état
 # vivant se lit sur /topology, où il change toutes les minutes.
-_INK = (15, 47, 94)
-_GREEN = (21, 127, 60)      # backhaul radio de dorsale
+# Identité A2 Connect, relevée sur a2connect.mr : le charbon-vert du sigle et
+# le vert-de-gris du mot « Connect ».
+_INK = (44, 60, 52)         # #2c3c34 — texte, cadres, fonds sombres
+_SAGE = (167, 185, 173)     # #a7b9ad — le vert-de-gris de la marque
+_GOLD = (249, 181, 36)      # #f9b524 — l'accent de la marque
+
+# ⚠️ Les couleurs FONCTIONNELLES de la carte ne suivent pas la marque : elles
+# doivent rester distinguables entre elles ET sur de l'imagerie satellite
+# (sable, toits gris, eau). La marque tient l'identité — cadres, titres, texte
+# des étiquettes — la sémantique tient la lecture.
+_GREEN = (30, 107, 79)      # backhaul radio de dorsale + site en service
 _BLUE = (26, 95, 208)       # fibre / cuivre
 _AMBER = (224, 138, 30)     # backhaul radio hors arbre = boucle de secours
-_RED = (192, 39, 30)
+_RED = (192, 39, 30)        # site programmé
 _WHITE = (255, 255, 255)
-_DEEP = (11, 36, 71)        # fond des cartouches « arrivée Internet »
-_LABEL_BORDER = (195, 204, 217)
+_LABEL_BORDER = (196, 207, 199)
+_GOLD_TEXT = (176, 118, 8)  # l'or de marque assombri : #f9b524 sur blanc ne se lit pas
 
 # Supersampling du calque de dessin. PIL ne lisse pas les formes : tracer les
 # pastilles à 1× donne des cercles crénelés sur un fond de carte net. On dessine
@@ -126,8 +135,8 @@ _PIN_PLANNED = _RED
 _PLANNED: dict[str, dict] = {
     "nouakchott": {
         "sites": [
-            ("NKC-NORD", 18.1456, -15.9593),   # à côté d'AT2
-            ("NKC-SUD", 18.0270, -15.9210),    # la zone laissée nue derrière VEL1
+            ("NKTT NEW 1", 18.1456, -15.9593),  # à côté d'AT2
+            ("NKTT NEW 2", 18.0270, -15.9210),  # la zone laissée nue derrière VEL1
         ],
         "edges": [],
     },
@@ -153,44 +162,51 @@ _PLANNED: dict[str, dict] = {
     },
 }
 
-# D'où vient Internet, et par quel site il entre dans la ville.
+# Le site par lequel Internet entre dans chaque ville, et ce qu'on en dit.
 #
-# C'est la seule chose que la carte affirme SANS la tenir d'une mesure : aucune
-# de nos tables ne dit qu'un site est la tête de réseau (le lien amont n'est pas
-# un data-link, cf. `TOPOLOGY_ROOT_SITE` — le contrôleur ignore lui aussi quel
-# site fait face à l'amont). C'est donc un fait d'exploitation, écrit ici.
+# ⚠️ C'est la seule chose que la carte affirme SANS la tenir d'une mesure :
+# aucune de nos tables ne dit qu'un site est la tête de réseau (le lien amont
+# n'est pas un data-link — le contrôleur ignore lui aussi quel site fait face à
+# l'amont, c'est exactement pourquoi `TOPOLOGY_ROOT_SITE` est un réglage). Fait
+# d'exploitation, écrit ici.
 #
-# `lat`/`lon` situent le CARTOUCHE, pas une installation : il est posé dans une
-# zone vide du cadre, et recadré automatiquement s'il déborde.
-_FEEDS: dict[str, list[dict]] = {
-    "nouakchott": [
-        {
-            "target": "A2 HQ",
-            "lat": 18.1150,
-            "lon": -16.0330,
-            "title": "INTERNET",
-            "lines": ["arrivée nationale"],
-        }
-    ],
-    "nouadhibou": [
-        {
-            "target": "NDB-CENTRE",
-            "lat": 20.9930,
-            "lon": -17.0640,
-            "title": "INTERNET",
-            "lines": ["depuis Nouakchott", "par câble fibre optique"],
-        }
-    ],
-    "rosso": [
-        {
-            "target": "RSO-NORD",
-            "lat": 16.5295,
-            "lon": -15.8135,
-            "title": "INTERNET",
-            "lines": ["depuis Nouakchott", "par câble fibre optique"],
-        }
-    ],
+# ⚠️ Écrit SUR le site, pas au bout d'un câble vers un cartouche : l'arrivée
+# amont n'est pas une liaison de notre réseau, et lui donner un trait la
+# faisait ressembler à un de nos backhauls. C'est une PROPRIÉTÉ du site.
+_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
+    "nouakchott": {"A2 HQ": ("SOURCE INTERNET", "arrivée nationale")},
+    "nouadhibou": {"NDB-CENTRE": ("SOURCE INTERNET", "fibre optique depuis Nouakchott")},
+    "rosso": {"RSO-NORD": ("SOURCE INTERNET", "fibre optique depuis Nouakchott")},
 }
+
+# La légende, partagée par la page et le document Word — jamais recopiée dans
+# l'un des deux : deux légendes du même dessin finiraient par se contredire.
+LEGEND: tuple[dict, ...] = (
+    {"color": _BLUE, "shape": "solid", "label": "Liaison fibre / cuivre"},
+    {"color": _GREEN, "shape": "dashed", "label": "Backhaul radio — dorsale"},
+    {"color": _AMBER, "shape": "dashed", "label": "Backhaul radio — boucle de secours"},
+    {"color": _GREEN, "shape": "pin", "label": "Site en service"},
+    {"color": _RED, "shape": "pin", "label": "Site programmé (extension)"},
+    {"color": _GOLD, "shape": "ring", "label": "Site source Internet"},
+)
+
+
+# Glyphes de la légende pour le document Word. Choisis parmi les caractères que
+# les polices bureautiques courantes portent toutes : un trait de type
+# semi-graphique s'afficherait en carré vide chez le lecteur, sur le seul bloc
+# qui explique le dessin.
+_LEGEND_GLYPH = {"solid": "▬▬", "dashed": "▬ ▬",
+                 "pin": "●", "ring": "◉"}
+
+
+def legend_entries() -> list[dict]:
+    """La légende sous une forme prête à rendre (hex + forme + libellé)."""
+    return [
+        {"hex": "#{:02x}{:02x}{:02x}".format(*entry["color"]), "shape": entry["shape"],
+         "glyph": _LEGEND_GLYPH[entry["shape"]], "color": entry["color"],
+         "label": entry["label"]}
+        for entry in LEGEND
+    ]
 
 
 # ------------------------------------------------------------- géométrie
@@ -313,10 +329,8 @@ def _pin(draw: ImageDraw.ImageDraw, cx: float, cy: float, r: float,
 _LABEL_SIDES = ("e", "w", "s", "n", "ne", "nw", "se", "sw")
 
 
-def _label_box(cx: float, cy: float, r: float, side: str, tw: float,
-               th: float) -> tuple[float, float, float, float]:
-    pad_x, pad_y = th * 0.55, th * 0.38
-    w, h = tw + pad_x * 2, th + pad_y * 2
+def _label_box(cx: float, cy: float, r: float, side: str, w: float,
+               h: float) -> tuple[float, float, float, float]:
     gap = r * 0.55
     left, right = cx - r - gap - w, cx + r + gap
     above, below = cy - r - gap - h, cy + r * 1.7
@@ -332,6 +346,28 @@ def _label_box(cx: float, cy: float, r: float, side: str, tw: float,
     }
     x, y = positions[side]
     return x, y, x + w, y + h
+
+
+def _measure_label(draw: ImageDraw.ImageDraw, name: str, captions: Sequence[str],
+                   font: ImageFont.FreeTypeFont, caption_font: ImageFont.FreeTypeFont,
+                   ) -> tuple[list[tuple[str, ImageFont.FreeTypeFont, bool]],
+                              list[tuple[float, float]], float, float]:
+    """Mesure une étiquette, éventuellement suivie de lignes de légende.
+
+    Les lignes de légende ne servent qu'à un site : celui par lequel Internet
+    entre. Elles vivent DANS l'étiquette plutôt que dans un cartouche à part —
+    c'est une propriété du site, pas un objet du réseau.
+    """
+    rows = [(name, font, False)] + [(text, caption_font, True) for text in captions]
+    sizes = []
+    for text, row_font, _is_caption in rows:
+        left, top, right, bottom = draw.textbbox((0, 0), text, font=row_font)
+        sizes.append((right - left, bottom - top))
+    line_gap = sizes[0][1] * 0.42
+    pad_x, pad_y = sizes[0][1] * 0.55, sizes[0][1] * 0.38
+    width = max(w for w, _h in sizes) + pad_x * 2
+    height = sum(h for _w, h in sizes) + line_gap * (len(rows) - 1) + pad_y * 2
+    return rows, sizes, width, height
 
 
 def _overlap(a, b) -> float:
@@ -358,55 +394,45 @@ def _segment_samples(segments: Iterable[tuple[tuple[float, float], tuple[float, 
     return points
 
 
-def _place_labels(items: Sequence[tuple[str, float, float]], r: float,
-                  font: ImageFont.FreeTypeFont, draw: ImageDraw.ImageDraw,
+def _place_labels(items: Sequence[dict], r: float, draw: ImageDraw.ImageDraw,
                   canvas: tuple[float, float],
                   segments: Sequence[tuple[tuple[float, float], tuple[float, float]]],
-                  obstacles: Sequence[tuple] = (),
-                  ) -> list[tuple[str, tuple]]:
-    """Choisit de quel côté de sa pastille chaque nom se pose.
+                  ) -> list[dict]:
+    """Choisit de quel côté de sa pastille chaque étiquette se pose.
 
-    Placement glouton, essayé dans l'ordre est / ouest / sud / nord, noté par
-    ce qu'il recouvrirait : les autres noms déjà posés, les pastilles, **les
-    traits de liaison**, et le débord hors cadre. Volontairement AUTOMATIQUE et
-    non une table de réglages par site : un backhaul posé sur un nouveau site
-    doit apparaître à l'export suivant sans qu'on ait à toucher au code.
+    Placement glouton sur **huit** positions (quatre côtés, quatre diagonales),
+    noté par ce que l'étiquette recouvrirait. Volontairement AUTOMATIQUE et non
+    une table de réglages par site : un backhaul posé sur un nouveau site doit
+    apparaître à l'export suivant sans qu'on touche au code.
 
-    ⚠️ Les traits comptent, et c'est le point qui change tout : sans eux, tous
-    les noms se posent à l'est et masquent précisément les liaisons que la carte
-    est là pour montrer. Ils sont pénalisés plus lourdement qu'un simple
-    chevauchement de surface — un nom qui mord sur un autre nom se lit encore,
-    un nom posé sur un backhaul l'efface.
+    ⚠️ Les diagonales ne sont pas du luxe : un site très maillé (le siège en
+    porte cinq liaisons) n'a AUCUN des quatre côtés droits de libre, et le
+    solveur choisissait alors le moins mauvais — en pratique, par-dessus le nom
+    du voisin.
+
+    ⚠️ Les trois gênes sont ramenées à la MÊME ÉCHELLE (une fraction de la
+    surface de l'étiquette) avant d'être pondérées, sans quoi les poids ne sont
+    pas comparables et le terme brut le plus grand décide seul. Le recouvrement
+    d'une autre étiquette pèse le plus lourd : deux noms superposés sont
+    illisibles, alors qu'un nom posé sur un trait laisse deviner le trait.
 
     L'ordre de parcours est figé (nord → sud) pour que deux exports des mêmes
     données rendent exactement la même image.
     """
     width, height = canvas
-    pins = [(x - r, y - r, x + r, y + r * 1.7) for _, x, y in items]
+    pins = [(it["x"] - r, it["y"] - r, it["x"] + r, it["y"] + r * 1.7) for it in items]
     samples = _segment_samples(segments, r * 0.35)
-    # Les cartouches d'arrivée Internet sont posés AVANT les noms et ne bougent
-    # plus : ils entrent donc dans le calcul comme des noms déjà placés.
-    placed: list[tuple] = list(obstacles)
-    out: list[tuple[str, tuple]] = []
-    for name, x, y in items:
-        left, top, right, bottom = draw.textbbox((0, 0), name, font=font)
-        tw, th = right - left, bottom - top
+    placed: list[tuple] = []
+    out: list[dict] = []
+    for item in items:
         best, best_cost = None, None
         for side in _LABEL_SIDES:
-            box = _label_box(x, y, r, side, tw, th)
+            box = _label_box(item["x"], item["y"], r, side, item["w"], item["h"])
             area = max((box[2] - box[0]) * (box[3] - box[1]), 1.0)
             hits = sum(
                 1 for px, py in samples
                 if box[0] <= px <= box[2] and box[1] <= py <= box[3]
             )
-            # Trois gênes RAMENÉES À LA MÊME ÉCHELLE (une fraction de la surface
-            # du nom), sans quoi les poids ne sont pas comparables et le terme
-            # brut le plus grand décide seul.
-            #
-            # ⚠️ Le recouvrement d'un AUTRE NOM pèse le plus lourd : deux noms
-            # superposés sont illisibles, alors qu'un nom posé sur un trait
-            # masque un trait qu'on devine encore. C'était l'inverse avant, et
-            # « A2 HQ » se posait sur « A2 NR1 » pour éviter ses liaisons.
             cost = (
                 4.0 * sum(_overlap(box, other) for other in placed) / area
                 + 1.5 * sum(_overlap(box, pin) for pin in pins) / area
@@ -417,102 +443,40 @@ def _place_labels(items: Sequence[tuple[str, float, float]], r: float,
             if best_cost is None or cost < best_cost:
                 best, best_cost = box, cost
         placed.append(best)
-        out.append((name, best))
+        out.append({**item, "box": best})
     return out
 
 
-def _globe(draw: ImageDraw.ImageDraw, cx: float, cy: float, r: float,
-           color: tuple[int, int, int]) -> None:
-    """Petit globe : ce qui fait lire le cartouche comme « Internet » d'un coup."""
-    lw = max(1, int(round(r * 0.16)))
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=color, width=lw)
-    draw.line([(cx - r, cy), (cx + r, cy)], fill=color, width=lw)
-    draw.arc([cx - r * 0.48, cy - r, cx + r * 0.48, cy + r], 0, 360, fill=color, width=lw)
-
-
-def _clip_to_box(box: tuple[float, float, float, float],
-                 target: tuple[float, float]) -> tuple[float, float]:
-    """Point du bord du cartouche vers la cible — le trait ne le traverse pas."""
-    cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-    tx, ty = target
-    dx, dy = tx - cx, ty - cy
-    if dx == 0 and dy == 0:
-        return cx, cy
-    half_w, half_h = (box[2] - box[0]) / 2, (box[3] - box[1]) / 2
-    scale = min(
-        half_w / abs(dx) if dx else float("inf"),
-        half_h / abs(dy) if dy else float("inf"),
-    )
-    return cx + dx * scale, cy + dy * scale
-
-
-def _feed_geometry(feeds: Iterable[dict], bounds: dict, scale: float,
-                   draw: ImageDraw.ImageDraw, anchors: dict[str, tuple[float, float]],
-                   ) -> list[dict]:
-    """Place les cartouches d'arrivée Internet et calcule leur trait.
-
-    Le cartouche est **recadré dans la planche** s'il déborde : sa position
-    n'est qu'une zone vide visée à la main, alors que sa taille dépend du texte
-    et de la police trouvée sur la machine. Sans ce recadrage, un mot de plus
-    dans le libellé sortirait la moitié du cartouche hors de l'image.
-    """
-    title_font = _font(int(round(40 * scale)))
-    line_font = _font(int(round(27 * scale)), bold=False)
-    pad = 20 * scale
-    gap = 9 * scale
-    placed: list[dict] = []
-
-    for feed in feeds:
-        target = anchors.get(feed["target"])
-        if target is None:
-            continue  # le site d'entrée n'est pas dessiné : rien à raccorder
-
-        globe_r = 19 * scale
-        rows = [(feed["title"], title_font)] + [(t, line_font) for t in feed["lines"]]
-        sizes = []
-        for text, font in rows:
-            left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
-            sizes.append((right - left, bottom - top))
-        width = max(w for w, _h in sizes) + globe_r * 2 + gap
-        height = sum(h for _w, h in sizes) + gap * (len(rows) - 1)
-
-        x, y = _project(bounds, feed["lat"], feed["lon"])
-        cx, cy = x * _SS, y * _SS
-        box = [cx - width / 2 - pad, cy - height / 2 - pad,
-               cx + width / 2 + pad, cy + height / 2 + pad]
-
-        margin = 12 * scale
-        max_x, max_y = bounds["w"] * _SS, bounds["h"] * _SS
-        shift_x = max(margin - box[0], 0) - max(box[2] - (max_x - margin), 0)
-        shift_y = max(margin - box[1], 0) - max(box[3] - (max_y - margin), 0)
-        box = [box[0] + shift_x, box[1] + shift_y, box[2] + shift_x, box[3] + shift_y]
-
-        placed.append({
-            "box": tuple(box),
-            "rows": rows,
-            "sizes": sizes,
-            "globe_r": globe_r,
-            "gap": gap,
-            "pad": pad,
-            "anchor": _clip_to_box(tuple(box), target),
-            "target": target,
-        })
-    return placed
-
-
-def _draw_feed_box(draw: ImageDraw.ImageDraw, feed: dict) -> None:
-    box = feed["box"]
-    pad, gap, globe_r = feed["pad"], feed["gap"], feed["globe_r"]
-    draw.rounded_rectangle(box, radius=pad * 0.8, fill=_DEEP,
-                           outline=_WHITE, width=max(2, int(round(pad * 0.16))))
-
-    text_left = box[0] + pad + globe_r * 2 + gap
-    total = sum(h for _w, h in feed["sizes"]) + gap * (len(feed["sizes"]) - 1)
+def _draw_label(draw: ImageDraw.ImageDraw, item: dict, scale: float) -> None:
+    box = item["box"]
+    rows, sizes = item["rows"], item["sizes"]
+    line_gap = sizes[0][1] * 0.42
+    total = sum(h for _w, h in sizes) + line_gap * (len(rows) - 1)
+    radius = min((box[3] - box[1]) * 0.30, sizes[0][1] * 0.8)
+    draw.rounded_rectangle(box, radius=radius, fill=_WHITE,
+                           outline=_LABEL_BORDER, width=max(1, int(round(scale))))
+    cx = (box[0] + box[2]) / 2
     y = (box[1] + box[3]) / 2 - total / 2
-    _globe(draw, box[0] + pad + globe_r, (box[1] + box[3]) / 2, globe_r, _WHITE)
-    for (text, font), (_w, h) in zip(feed["rows"], feed["sizes"], strict=True):
-        draw.text((text_left, y + h / 2), text, font=font, fill=_WHITE, anchor="lm")
-        y += h + gap
+    for (text, font, is_caption), (_w, h) in zip(rows, sizes, strict=True):
+        draw.text((cx, y + h / 2), text, font=font,
+                  fill=_GOLD_TEXT if is_caption else _INK, anchor="mm")
+        y += h + line_gap
+
+
+def _source_ring(draw: ImageDraw.ImageDraw, cx: float, cy: float, r: float,
+                 scale: float) -> None:
+    """Anneau doré autour de la pastille du site par lequel Internet entre.
+
+    Un canal visuel SÉPARÉ de la couleur de la pastille : « en service » et
+    « source du réseau » sont deux faits indépendants, et fondre les deux ferait
+    que chacun masque l'autre. Même raison que l'anneau de saturation sur
+    `/topology`.
+    """
+    ring = r + 9 * scale
+    draw.ellipse([cx - ring, cy - ring, cx + ring, cy + ring],
+                 outline=_WHITE, width=max(3, int(round(9 * scale))))
+    draw.ellipse([cx - ring, cy - ring, cx + ring, cy + ring],
+                 outline=_GOLD, width=max(2, int(round(5.5 * scale))))
 
 
 def _compass(draw: ImageDraw.ImageDraw, bounds: dict, scale: float) -> None:
@@ -615,11 +579,13 @@ def render_plate(plate: Plate, topo: dict, bounds_by_key: dict[str, dict]
         raise MapAssetsError(f"Fond de carte « {plate.key} » illisible : {exc}") from exc
 
     sites, edges, missing = _plate_data(plate, topo, bounds)
+    sources = _SOURCES.get(plate.key, {})
 
-    scale = plate.scale
-    r = 32 * scale * _SS
-    width = 7.2 * scale * _SS
-    font = _font(int(round(35 * scale * _SS)))
+    scale = plate.scale * _SS
+    r = 32 * scale
+    width = 7.2 * scale
+    font = _font(int(round(35 * scale)))
+    caption_font = _font(int(round(23 * scale)))
 
     overlay = Image.new("RGBA", (bounds["w"] * _SS, bounds["h"] * _SS), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
@@ -637,33 +603,28 @@ def render_plate(plate: Plate, topo: dict, bounds_by_key: dict[str, dict]
         _link(draw, anchors[a], anchors[b], color, width, dashed, r + width)
         segments.append((anchors[a], anchors[b]))
 
-    # L'arrivée Internet se raccorde comme une fibre : trait plein, même bleu.
-    # Le trait passe SOUS les pastilles et le cartouche AU-DESSUS des noms —
-    # c'est l'élément qui répond à « d'où vient Internet ici ».
-    feeds = _feed_geometry(_FEEDS.get(plate.key, ()), bounds, scale * _SS, draw, anchors)
-    for feed in feeds:
-        _link(draw, feed["anchor"], feed["target"], _BLUE, width, False, r + width)
-        segments.append((feed["anchor"], feed["target"]))
-
     ordered = sorted(sites, key=lambda s: -s[1])
     for name, _lat, _lon, planned in ordered:
         cx, cy = anchors[name]
+        if name in sources:
+            _source_ring(draw, cx, cy, r, scale)
         _pin(draw, cx, cy, r, _PIN_PLANNED if planned else _PIN_INSTALLED)
 
-    items = [(name, *anchors[name]) for name, _lat, _lon, _planned in ordered]
+    items = []
+    for name, _lat, _lon, _planned in ordered:
+        rows, sizes, w, h = _measure_label(
+            draw, name, sources.get(name, ()), font, caption_font
+        )
+        cx, cy = anchors[name]
+        items.append({"name": name, "x": cx, "y": cy, "rows": rows,
+                      "sizes": sizes, "w": w, "h": h})
+
     canvas = (bounds["w"] * _SS, bounds["h"] * _SS)
-    obstacles = [feed["box"] for feed in feeds]
-    for name, box in _place_labels(items, r, font, draw, canvas, segments, obstacles):
-        draw.rounded_rectangle(box, radius=(box[3] - box[1]) * 0.30, fill=_WHITE,
-                               outline=_LABEL_BORDER, width=int(round(2 * scale * _SS / 2)))
-        draw.text(((box[0] + box[2]) / 2, (box[1] + box[3]) / 2), name,
-                  font=font, fill=_INK, anchor="mm")
+    for item in _place_labels(items, r, draw, canvas, segments):
+        _draw_label(draw, item, scale)
 
-    for feed in feeds:
-        _draw_feed_box(draw, feed)
-
-    _compass(draw, bounds, scale * _SS)
-    _attribution(draw, bounds, scale * _SS)
+    _compass(draw, bounds, scale)
+    _attribution(draw, bounds, scale)
 
     overlay = overlay.resize((bounds["w"], bounds["h"]), Image.LANCZOS)
     composed = Image.alpha_composite(base, overlay).convert("RGB")
@@ -759,7 +720,7 @@ def build_topology_docx(topo: dict) -> bytes:
 
     title = document.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = title.add_run("Cartographie des sites A2 Holding")
+    run = title.add_run("Cartographie des sites A2 Connect")
     run.bold = True
     run.font.size = Pt(20)
     run.font.color.rgb = RGBColor(*_INK)
@@ -780,6 +741,25 @@ def build_topology_docx(topo: dict) -> bytes:
         para_run = para.add_run(text)
         para_run.font.size = Pt(10.5)
         para_run.font.color.rgb = RGBColor(*color)
+
+    # La légende suit les paragraphes et précède la première planche : elle
+    # apprend à lire les couleurs, donc elle doit être vue avant la carte.
+    legend = document.add_paragraph()
+    legend.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    intro = legend.add_run("Légende  ")
+    intro.bold = True
+    intro.font.size = Pt(9)
+    intro.font.color.rgb = RGBColor(91, 106, 125)
+    for position, entry in enumerate(legend_entries()):
+        if position:
+            separator = legend.add_run("   ")
+            separator.font.size = Pt(9)
+        glyph = legend.add_run(entry["glyph"] + " ")
+        glyph.font.size = Pt(9)
+        glyph.font.color.rgb = RGBColor(*entry["color"])
+        text = legend.add_run(entry["label"])
+        text.font.size = Pt(9)
+        text.font.color.rgb = RGBColor(*_INK)
 
     for index, (plate, png, installed, planned) in enumerate(plates):
         if index:

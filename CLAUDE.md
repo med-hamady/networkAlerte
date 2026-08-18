@@ -979,7 +979,14 @@ bord. L'état, lui, se lit sur `/topology`, où il change toutes les minutes.
 `data/maps/*.jpg` + `bounds.json` sont **commités** (~1,9 Mo d'imagerie
 **satellite** Esri/Maxar, calque de repères Esri composé par-dessus pour les
 grands axes et les noms de quartiers — sur de l'imagerie brute, ce sont eux qui
-permettent de situer un site autrement qu'en reconnaissant la forme des toits). Le serveur de
+permettent de situer un site autrement qu'en reconnaissant la forme des toits).
+
+⚠️ **Pourquoi pas Google Maps**, alors qu'on a une clé et qu'elle sert déjà aux
+vues carte de `/topology` et `/map` : les conditions d'utilisation de Google
+Maps Platform interdisent de **stocker** les tuiles, or tout ce module repose
+sur un fond de carte **commité** et servi hors ligne. La clé Google reste le bon
+outil là où elle est déjà employée — des pages vivantes où le navigateur du
+visiteur appelle Google directement, ce qui est l'usage licencié. Le serveur de
 prod est derrière le FortiGate et n'a pas d'accès Internet sortant garanti : un
 export qui dépendrait d'un CDN de tuiles échouerait le jour où on en a besoin.
 Régénération par `scripts/build_site_map_basemaps.py` depuis un poste connecté
@@ -1034,17 +1041,44 @@ plus lu.
 du fleuve Sénégal**, donc au Sénégal (« Rosso Sénégal » est l'autre ville, sur
 l'autre rive). Verrouillé par `test_rosso_sites_stay_north_of_the_senegal_river`.
 
+##### D'où vient Internet — les cartouches d'arrivée
+
+Un cartouche bleu marine (globe + libellé) relié à un site par un **trait plein
+bleu**, comme une fibre : **INTERNET / arrivée nationale → A2 HQ** à Nouakchott,
+**INTERNET / depuis Nouakchott / par câble fibre optique** → NDB-CENTRE et
+RSO-NORD. Constante `_FEEDS`.
+
+⚠️ **C'est la seule chose que la carte affirme sans la tenir d'une mesure.**
+Aucune table ne dit qu'un site est la tête de réseau : le lien amont n'est pas
+un data-link, et le contrôleur ignore lui aussi quel site fait face à l'amont
+(c'est exactement pourquoi `TOPOLOGY_ROOT_SITE` est un réglage). C'est donc un
+fait d'exploitation, écrit à la main, et signalé comme tel dans le module.
+
+- `lat`/`lon` situent le **cartouche**, pas une installation — une zone vide du
+  cadre, visée à la main. Il est **recadré automatiquement** s'il déborde : sa
+  taille dépend du texte et de la police trouvée sur la machine, donc un mot de
+  plus dans le libellé en sortirait la moitié hors de l'image.
+- Une `target` qui ne correspond à **aucun site de la planche** ne dessine
+  **rien** — ni cartouche ni câble. Verrouillé par un test : une faute de frappe
+  ferait disparaître en silence la seule information non mesurée de la carte.
+
 ##### Le placement des noms est AUTOMATIQUE, et il évite les traits
 
-`_place_labels` essaie chaque nom à l'est / ouest / sud / nord de sa pastille et
-retient le moins coûteux : recouvrement des noms déjà posés, des pastilles, du
-débord hors cadre, et surtout **des traits de liaison**.
+`_place_labels` essaie chaque nom sur **huit** positions autour de sa pastille
+(quatre côtés + quatre diagonales) et retient la moins coûteuse.
 
-⚠️ Ce dernier terme porte tout le résultat. Sans lui, tous les noms se posent à
-l'est — le premier côté essayé — et masquent précisément les backhauls que la
-carte est là pour montrer. Un nom qui mord sur un autre nom se lit encore ; un
-nom posé sur une liaison l'efface. D'où sa pénalité, bien plus lourde qu'un
-simple chevauchement de surface.
+⚠️ **Les diagonales ne sont pas du luxe** : le siège porte cinq liaisons plus
+l'arrivée Internet, donc aucun des quatre côtés droits n'est libre — le solveur
+prenait alors le moins mauvais, c'est-à-dire par-dessus le nom du voisin
+(« A2 HQ » sur « A2 NR1 »).
+
+⚠️ **Les trois gênes sont ramenées à la même échelle** (une fraction de la
+surface du nom) avant d'être pondérées : sans ça les poids ne sont pas
+comparables et le terme brut le plus grand décide seul. Le recouvrement d'un
+**autre nom** pèse le plus lourd (deux noms superposés sont illisibles), devant
+le trait de liaison (qu'on devine encore sous une étiquette) et la pastille.
+Sans le terme « traits », tous les noms se posent à l'est et masquent
+précisément les backhauls que la carte est là pour montrer.
 
 Volontairement automatique et **pas** une table de réglages par site : un
 backhaul posé sur un nouveau site doit sortir correctement à l'export suivant

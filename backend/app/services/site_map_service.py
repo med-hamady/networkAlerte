@@ -60,6 +60,7 @@ _BLUE = (26, 95, 208)       # fibre / cuivre
 _AMBER = (224, 138, 30)     # backhaul radio hors arbre = boucle de secours
 _RED = (192, 39, 30)
 _WHITE = (255, 255, 255)
+_DEEP = (11, 36, 71)        # fond des cartouches « arrivée Internet »
 _LABEL_BORDER = (195, 204, 217)
 
 # Supersampling du calque de dessin. PIL ne lisse pas les formes : tracer les
@@ -100,7 +101,7 @@ class Plate:
 _PLATES: tuple[Plate, ...] = (
     Plate("nouakchott", "Nouakchott", 1.0),
     Plate("nouadhibou", "Nouadhibou", 1.55),
-    Plate("rosso", "Rosso", 1.5),
+    Plate("rosso", "Rosso", 1.2),
 )
 
 # La couleur d'une pastille dit son ÉTAT, jamais sa ville : vert = installé,
@@ -150,6 +151,45 @@ _PLANNED: dict[str, dict] = {
         ],
         "edges": [("RSO-NORD", "RSO-SUD")],
     },
+}
+
+# D'où vient Internet, et par quel site il entre dans la ville.
+#
+# C'est la seule chose que la carte affirme SANS la tenir d'une mesure : aucune
+# de nos tables ne dit qu'un site est la tête de réseau (le lien amont n'est pas
+# un data-link, cf. `TOPOLOGY_ROOT_SITE` — le contrôleur ignore lui aussi quel
+# site fait face à l'amont). C'est donc un fait d'exploitation, écrit ici.
+#
+# `lat`/`lon` situent le CARTOUCHE, pas une installation : il est posé dans une
+# zone vide du cadre, et recadré automatiquement s'il déborde.
+_FEEDS: dict[str, list[dict]] = {
+    "nouakchott": [
+        {
+            "target": "A2 HQ",
+            "lat": 18.1150,
+            "lon": -16.0330,
+            "title": "INTERNET",
+            "lines": ["arrivée nationale"],
+        }
+    ],
+    "nouadhibou": [
+        {
+            "target": "NDB-CENTRE",
+            "lat": 20.9930,
+            "lon": -17.0640,
+            "title": "INTERNET",
+            "lines": ["depuis Nouakchott", "par câble fibre optique"],
+        }
+    ],
+    "rosso": [
+        {
+            "target": "RSO-NORD",
+            "lat": 16.5295,
+            "lon": -15.8135,
+            "title": "INTERNET",
+            "lines": ["depuis Nouakchott", "par câble fibre optique"],
+        }
+    ],
 }
 
 
@@ -265,19 +305,32 @@ def _pin(draw: ImageDraw.ImageDraw, cx: float, cy: float, r: float,
     draw.ellipse([cx - dot, cy - 11 * g - dot, cx + dot, cy - 11 * g + dot], fill=_WHITE)
 
 
+# Positions candidates d'un nom autour de sa pastille, dans l'ordre d'essai.
+# Les quatre diagonales ne sont pas du luxe : un site très maillé (le siège en
+# porte cinq liaisons plus l'arrivée Internet) n'a AUCUN des quatre côtés droits
+# de libre, et le solveur choisissait alors le moins mauvais — en pratique, par-
+# dessus le nom du voisin.
+_LABEL_SIDES = ("e", "w", "s", "n", "ne", "nw", "se", "sw")
+
+
 def _label_box(cx: float, cy: float, r: float, side: str, tw: float,
                th: float) -> tuple[float, float, float, float]:
     pad_x, pad_y = th * 0.55, th * 0.38
     w, h = tw + pad_x * 2, th + pad_y * 2
     gap = r * 0.55
-    if side == "s":
-        x, y = cx - w / 2, cy + r * 1.7
-    elif side == "n":
-        x, y = cx - w / 2, cy - r - gap - h
-    elif side == "e":
-        x, y = cx + r + gap, cy - h / 2
-    else:
-        x, y = cx - r - gap - w, cy - h / 2
+    left, right = cx - r - gap - w, cx + r + gap
+    above, below = cy - r - gap - h, cy + r * 1.7
+    positions = {
+        "e": (right, cy - h / 2),
+        "w": (left, cy - h / 2),
+        "s": (cx - w / 2, below),
+        "n": (cx - w / 2, above),
+        "ne": (cx + r * 0.45, above),
+        "nw": (cx - r * 0.45 - w, above),
+        "se": (cx + r * 0.45, below),
+        "sw": (cx - r * 0.45 - w, below),
+    }
+    x, y = positions[side]
     return x, y, x + w, y + h
 
 
@@ -309,6 +362,7 @@ def _place_labels(items: Sequence[tuple[str, float, float]], r: float,
                   font: ImageFont.FreeTypeFont, draw: ImageDraw.ImageDraw,
                   canvas: tuple[float, float],
                   segments: Sequence[tuple[tuple[float, float], tuple[float, float]]],
+                  obstacles: Sequence[tuple] = (),
                   ) -> list[tuple[str, tuple]]:
     """Choisit de quel côté de sa pastille chaque nom se pose.
 
@@ -330,28 +384,135 @@ def _place_labels(items: Sequence[tuple[str, float, float]], r: float,
     width, height = canvas
     pins = [(x - r, y - r, x + r, y + r * 1.7) for _, x, y in items]
     samples = _segment_samples(segments, r * 0.35)
-    line_weight = r * r * 0.9
-    placed: list[tuple] = []
+    # Les cartouches d'arrivée Internet sont posés AVANT les noms et ne bougent
+    # plus : ils entrent donc dans le calcul comme des noms déjà placés.
+    placed: list[tuple] = list(obstacles)
     out: list[tuple[str, tuple]] = []
     for name, x, y in items:
         left, top, right, bottom = draw.textbbox((0, 0), name, font=font)
         tw, th = right - left, bottom - top
         best, best_cost = None, None
-        for side in ("e", "w", "s", "n"):
+        for side in _LABEL_SIDES:
             box = _label_box(x, y, r, side, tw, th)
-            cost = sum(_overlap(box, other) for other in placed)
-            cost += sum(_overlap(box, pin) for pin in pins)
-            cost += line_weight * sum(
+            area = max((box[2] - box[0]) * (box[3] - box[1]), 1.0)
+            hits = sum(
                 1 for px, py in samples
                 if box[0] <= px <= box[2] and box[1] <= py <= box[3]
             )
+            # Trois gênes RAMENÉES À LA MÊME ÉCHELLE (une fraction de la surface
+            # du nom), sans quoi les poids ne sont pas comparables et le terme
+            # brut le plus grand décide seul.
+            #
+            # ⚠️ Le recouvrement d'un AUTRE NOM pèse le plus lourd : deux noms
+            # superposés sont illisibles, alors qu'un nom posé sur un trait
+            # masque un trait qu'on devine encore. C'était l'inverse avant, et
+            # « A2 HQ » se posait sur « A2 NR1 » pour éviter ses liaisons.
+            cost = (
+                4.0 * sum(_overlap(box, other) for other in placed) / area
+                + 1.5 * sum(_overlap(box, pin) for pin in pins) / area
+                + 2.0 * min(1.0, hits / 8.0)
+            )
             if box[0] < 0 or box[1] < 0 or box[2] > width or box[3] > height:
-                cost += 1e9
+                cost += 1e6
             if best_cost is None or cost < best_cost:
                 best, best_cost = box, cost
         placed.append(best)
         out.append((name, best))
     return out
+
+
+def _globe(draw: ImageDraw.ImageDraw, cx: float, cy: float, r: float,
+           color: tuple[int, int, int]) -> None:
+    """Petit globe : ce qui fait lire le cartouche comme « Internet » d'un coup."""
+    lw = max(1, int(round(r * 0.16)))
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=color, width=lw)
+    draw.line([(cx - r, cy), (cx + r, cy)], fill=color, width=lw)
+    draw.arc([cx - r * 0.48, cy - r, cx + r * 0.48, cy + r], 0, 360, fill=color, width=lw)
+
+
+def _clip_to_box(box: tuple[float, float, float, float],
+                 target: tuple[float, float]) -> tuple[float, float]:
+    """Point du bord du cartouche vers la cible — le trait ne le traverse pas."""
+    cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    tx, ty = target
+    dx, dy = tx - cx, ty - cy
+    if dx == 0 and dy == 0:
+        return cx, cy
+    half_w, half_h = (box[2] - box[0]) / 2, (box[3] - box[1]) / 2
+    scale = min(
+        half_w / abs(dx) if dx else float("inf"),
+        half_h / abs(dy) if dy else float("inf"),
+    )
+    return cx + dx * scale, cy + dy * scale
+
+
+def _feed_geometry(feeds: Iterable[dict], bounds: dict, scale: float,
+                   draw: ImageDraw.ImageDraw, anchors: dict[str, tuple[float, float]],
+                   ) -> list[dict]:
+    """Place les cartouches d'arrivée Internet et calcule leur trait.
+
+    Le cartouche est **recadré dans la planche** s'il déborde : sa position
+    n'est qu'une zone vide visée à la main, alors que sa taille dépend du texte
+    et de la police trouvée sur la machine. Sans ce recadrage, un mot de plus
+    dans le libellé sortirait la moitié du cartouche hors de l'image.
+    """
+    title_font = _font(int(round(40 * scale)))
+    line_font = _font(int(round(27 * scale)), bold=False)
+    pad = 20 * scale
+    gap = 9 * scale
+    placed: list[dict] = []
+
+    for feed in feeds:
+        target = anchors.get(feed["target"])
+        if target is None:
+            continue  # le site d'entrée n'est pas dessiné : rien à raccorder
+
+        globe_r = 19 * scale
+        rows = [(feed["title"], title_font)] + [(t, line_font) for t in feed["lines"]]
+        sizes = []
+        for text, font in rows:
+            left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+            sizes.append((right - left, bottom - top))
+        width = max(w for w, _h in sizes) + globe_r * 2 + gap
+        height = sum(h for _w, h in sizes) + gap * (len(rows) - 1)
+
+        x, y = _project(bounds, feed["lat"], feed["lon"])
+        cx, cy = x * _SS, y * _SS
+        box = [cx - width / 2 - pad, cy - height / 2 - pad,
+               cx + width / 2 + pad, cy + height / 2 + pad]
+
+        margin = 12 * scale
+        max_x, max_y = bounds["w"] * _SS, bounds["h"] * _SS
+        shift_x = max(margin - box[0], 0) - max(box[2] - (max_x - margin), 0)
+        shift_y = max(margin - box[1], 0) - max(box[3] - (max_y - margin), 0)
+        box = [box[0] + shift_x, box[1] + shift_y, box[2] + shift_x, box[3] + shift_y]
+
+        placed.append({
+            "box": tuple(box),
+            "rows": rows,
+            "sizes": sizes,
+            "globe_r": globe_r,
+            "gap": gap,
+            "pad": pad,
+            "anchor": _clip_to_box(tuple(box), target),
+            "target": target,
+        })
+    return placed
+
+
+def _draw_feed_box(draw: ImageDraw.ImageDraw, feed: dict) -> None:
+    box = feed["box"]
+    pad, gap, globe_r = feed["pad"], feed["gap"], feed["globe_r"]
+    draw.rounded_rectangle(box, radius=pad * 0.8, fill=_DEEP,
+                           outline=_WHITE, width=max(2, int(round(pad * 0.16))))
+
+    text_left = box[0] + pad + globe_r * 2 + gap
+    total = sum(h for _w, h in feed["sizes"]) + gap * (len(feed["sizes"]) - 1)
+    y = (box[1] + box[3]) / 2 - total / 2
+    _globe(draw, box[0] + pad + globe_r, (box[1] + box[3]) / 2, globe_r, _WHITE)
+    for (text, font), (_w, h) in zip(feed["rows"], feed["sizes"], strict=True):
+        draw.text((text_left, y + h / 2), text, font=font, fill=_WHITE, anchor="lm")
+        y += h + gap
 
 
 def _compass(draw: ImageDraw.ImageDraw, bounds: dict, scale: float) -> None:
@@ -476,6 +637,14 @@ def render_plate(plate: Plate, topo: dict, bounds_by_key: dict[str, dict]
         _link(draw, anchors[a], anchors[b], color, width, dashed, r + width)
         segments.append((anchors[a], anchors[b]))
 
+    # L'arrivée Internet se raccorde comme une fibre : trait plein, même bleu.
+    # Le trait passe SOUS les pastilles et le cartouche AU-DESSUS des noms —
+    # c'est l'élément qui répond à « d'où vient Internet ici ».
+    feeds = _feed_geometry(_FEEDS.get(plate.key, ()), bounds, scale * _SS, draw, anchors)
+    for feed in feeds:
+        _link(draw, feed["anchor"], feed["target"], _BLUE, width, False, r + width)
+        segments.append((feed["anchor"], feed["target"]))
+
     ordered = sorted(sites, key=lambda s: -s[1])
     for name, _lat, _lon, planned in ordered:
         cx, cy = anchors[name]
@@ -483,11 +652,15 @@ def render_plate(plate: Plate, topo: dict, bounds_by_key: dict[str, dict]
 
     items = [(name, *anchors[name]) for name, _lat, _lon, _planned in ordered]
     canvas = (bounds["w"] * _SS, bounds["h"] * _SS)
-    for name, box in _place_labels(items, r, font, draw, canvas, segments):
+    obstacles = [feed["box"] for feed in feeds]
+    for name, box in _place_labels(items, r, font, draw, canvas, segments, obstacles):
         draw.rounded_rectangle(box, radius=(box[3] - box[1]) * 0.30, fill=_WHITE,
                                outline=_LABEL_BORDER, width=int(round(2 * scale * _SS / 2)))
         draw.text(((box[0] + box[2]) / 2, (box[1] + box[3]) / 2), name,
                   font=font, fill=_INK, anchor="mm")
+
+    for feed in feeds:
+        _draw_feed_box(draw, feed)
 
     _compass(draw, bounds, scale * _SS)
     _attribution(draw, bounds, scale * _SS)

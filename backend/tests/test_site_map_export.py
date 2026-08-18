@@ -226,6 +226,66 @@ def test_nouadhibou_sites_stay_on_land():
         assert -17.048 < lon < -17.018, f"{name} est hors de la bande urbaine"
 
 
+# --------------------------------------------------- arrivée Internet
+def test_every_feed_points_at_a_site_that_exists_on_its_plate():
+    """Une cible mal orthographiée ne dessinerait RIEN, et sans rien dire.
+
+    Le cartouche et son câble ne sont tracés que si le site d'entrée est sur la
+    planche ; une faute de frappe dans `target` les ferait disparaître en
+    silence, sur la seule information de la carte qui ne vient pas d'une mesure.
+    """
+    for key, feeds in sms._FEEDS.items():
+        plate = next(p for p in sms._PLATES if p.key == key)
+        topo = _topo([("A2 HQ", 18.114964, -15.991145)])
+        sites, _edges, _missing = sms._plate_data(plate, topo, sms._load_bounds()[key])
+        names = _names(sites)
+        for feed in feeds:
+            assert feed["target"] in names, f"{key} : cible « {feed['target']} » absente"
+
+
+def test_nouakchott_feed_enters_through_the_headquarters():
+    """Le siège est la tête de réseau — c'est ce que la carte doit montrer."""
+    targets = [feed["target"] for feed in sms._FEEDS["nouakchott"]]
+    assert targets == ["A2 HQ"]
+
+
+def test_feed_cartouche_is_kept_inside_the_plate():
+    """Sa position est visée à la main, sa taille dépend du texte et de la police.
+
+    Sans recadrage, un mot de plus dans le libellé sortirait la moitié du
+    cartouche hors de l'image — et personne ne le verrait avant l'impression.
+    """
+    from PIL import Image, ImageDraw
+
+    bounds_by_key = sms._load_bounds()
+    for plate in sms._PLATES:
+        bounds = bounds_by_key[plate.key]
+        canvas = (bounds["w"] * sms._SS, bounds["h"] * sms._SS)
+        draw = ImageDraw.Draw(Image.new("RGBA", (int(canvas[0]), int(canvas[1]))))
+        # Cible fictive au centre : on ne teste que le cadrage du cartouche.
+        anchors = {
+            feed["target"]: (canvas[0] / 2, canvas[1] / 2)
+            for feed in sms._FEEDS.get(plate.key, ())
+        }
+        feeds = sms._feed_geometry(
+            sms._FEEDS.get(plate.key, ()), bounds, plate.scale * sms._SS, draw, anchors
+        )
+        for feed in feeds:
+            box = feed["box"]
+            assert box[0] >= 0 and box[1] >= 0, f"{plate.key} : cartouche hors cadre"
+            assert box[2] <= canvas[0] and box[3] <= canvas[1]
+
+
+def test_feed_without_its_target_site_draws_nothing():
+    """Rien à raccorder ⇒ pas de câble en l'air pointant vers le vide."""
+    from PIL import Image, ImageDraw
+
+    bounds = _bounds()
+    draw = ImageDraw.Draw(Image.new("RGBA", (100, 100)))
+    feeds = sms._feed_geometry(sms._FEEDS["nouakchott"], bounds, 1.0, draw, {})
+    assert feeds == []
+
+
 # ------------------------------------------------------- placement des noms
 def test_label_is_not_placed_on_top_of_a_link():
     """Le nom cède le passage au trait — sinon la carte masque ce qu'elle montre.

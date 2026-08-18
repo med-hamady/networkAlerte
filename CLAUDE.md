@@ -1065,12 +1065,27 @@ d'exploitation, écrit à la main, et signalé comme tel dans le module. Un nom 
 site mal orthographié n'écrit **rien** — verrouillé par un test, sinon la seule
 information non mesurée de la carte disparaîtrait en silence.
 
+##### La langue du document est l'ANGLAIS
+
+Tout ce que porte la carte et le document — titres, paragraphes, légende,
+mentions « INTERNET SOURCE », noms de villes dans les bandeaux — est en
+**anglais** (décision du 2026-08-18). ⚠️ Les commentaires et docstrings du code
+restent en **français**, comme partout ailleurs dans le projet : ce sont deux
+publics différents, et mélanger les deux dans un même fichier rend les deux
+illisibles.
+
 ##### Légende et identité de marque
 
 La légende est **publiée par le service** (`LEGEND` + `legend_entries()`) et
 consommée telle quelle par la page comme par le document Word : deux légendes du
 même dessin finiraient par se contredire au premier ajustement de couleur. Un
 test vérifie qu'elle annonce bien les couleurs réellement tracées.
+
+⚠️ **Le témoin montre la FORME réellement tracée, pas un aplat de couleur.** Une
+liaison radio est dessinée en tirets de couleur sur un liseré blanc : sur la
+carte on voit donc alterner du vert et du blanc, et le témoin de la légende le
+reproduit. Il est posé sur une petite tuile sombre — sans elle, les segments
+blancs seraient invisibles sur le fond clair du panneau.
 
 L'identité est celle d'**A2 Connect** (relevée sur `a2connect.mr`) : charbon-vert
 `#2c3c34` du sigle, vert-de-gris `#a7b9ad` du mot « Connect », or `#f9b524` de

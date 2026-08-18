@@ -78,7 +78,7 @@ def test_site_without_position_is_reported_not_dropped():
     assert "A2 HQ" in _names(sites)
     assert "A2 NEUF" not in _names(sites)
     assert len(missing) == 1
-    assert "A2 NEUF" in missing[0] and "position inconnue" in missing[0]
+    assert "A2 NEUF" in missing[0] and "position unknown" in missing[0]
 
 
 def test_site_outside_the_frozen_frame_is_reported_not_dropped():
@@ -87,7 +87,7 @@ def test_site_outside_the_frozen_frame_is_reported_not_dropped():
     sites, _edges, missing = sms._plate_data(sms._PLATES[0], topo, _bounds())
 
     assert "A2 NDB" not in _names(sites)
-    assert len(missing) == 1 and "hors du cadrage" in missing[0]
+    assert len(missing) == 1 and "outside the map frame" in missing[0]
 
 
 def test_edge_touching_an_undrawable_site_is_skipped():
@@ -294,11 +294,11 @@ def test_legend_is_published_from_a_single_place():
 def test_legend_colours_are_the_ones_actually_drawn():
     """Une légende qui annonce une autre couleur que le trait est pire que rien."""
     by_label = {e["label"]: e["color"] for e in sms.LEGEND}
-    assert by_label["Liaison fibre / cuivre"] == sms._BLUE
-    assert by_label["Backhaul radio — boucle de secours"] == sms._AMBER
-    assert by_label["Site en service"] == sms._PIN_INSTALLED
-    assert by_label["Site programmé (extension)"] == sms._PIN_PLANNED
-    assert by_label["Site source Internet"] == sms._GOLD
+    assert by_label["Fibre / copper link"] == sms._BLUE
+    assert by_label["Radio backhaul — backup ring"] == sms._AMBER
+    assert by_label["Site in service"] == sms._PIN_INSTALLED
+    assert by_label["Planned site (expansion)"] == sms._PIN_PLANNED
+    assert by_label["Internet source site"] == sms._GOLD
 
 
 # ------------------------------------------------------- placement des noms
@@ -364,9 +364,9 @@ def test_paragraphs_count_what_the_map_actually_shows():
     installed = sum(count for _p, _png, count, _planned in plates)
     planned = sum(count for _p, _png, _installed, count in plates)
 
-    assert f"{installed} sites d'infrastructure" in existing
-    assert f"{planned} nouveaux sites" in extension
-    assert "rouge" in extension
+    assert f"{installed} infrastructure sites" in existing
+    assert f"{planned} new sites" in extension
+    assert "red" in extension
 
 
 # ------------------------------------------------------------------ export
@@ -383,10 +383,10 @@ def test_docx_carries_one_page_per_city_and_both_paragraphs():
 
     assert len([n for n in names if n.startswith("word/media/")]) == len(sms._PLATES)
     assert document.count('w:type="page"') == len(sms._PLATES) - 1
-    assert "Cartographie des sites A2 Connect" in document
+    assert "A2 Connect — Site Map" in document
     assert "17/08/2026" in document
-    assert "bonne capacit" in document      # paragraphe « réseau en service »
-    assert "programm" in document           # paragraphe « extensions »
+    assert "solid capacity" in document     # paragraphe « réseau en service »
+    assert "planned expansions" in document  # paragraphe « extensions »
 
 
 def test_docx_names_the_sites_it_could_not_draw():
@@ -397,4 +397,4 @@ def test_docx_names_the_sites_it_could_not_draw():
         document = archive.read("word/document.xml").decode("utf-8")
 
     assert "A2 NEUF" in document
-    assert "non repr" in document  # « Sites non représentés : … »
+    assert "not shown" in document  # « Sites not shown: … »

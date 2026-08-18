@@ -174,20 +174,20 @@ _PLANNED: dict[str, dict] = {
 # amont n'est pas une liaison de notre réseau, et lui donner un trait la
 # faisait ressembler à un de nos backhauls. C'est une PROPRIÉTÉ du site.
 _SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
-    "nouakchott": {"A2 HQ": ("SOURCE INTERNET", "arrivée nationale")},
-    "nouadhibou": {"NDB-CENTRE": ("SOURCE INTERNET", "fibre optique depuis Nouakchott")},
-    "rosso": {"RSO-NORD": ("SOURCE INTERNET", "fibre optique depuis Nouakchott")},
+    "nouakchott": {"A2 HQ": ("INTERNET SOURCE", "national gateway")},
+    "nouadhibou": {"NDB-CENTRE": ("INTERNET SOURCE", "fibre from Nouakchott")},
+    "rosso": {"RSO-NORD": ("INTERNET SOURCE", "fibre from Nouakchott")},
 }
 
 # La légende, partagée par la page et le document Word — jamais recopiée dans
 # l'un des deux : deux légendes du même dessin finiraient par se contredire.
 LEGEND: tuple[dict, ...] = (
-    {"color": _BLUE, "shape": "solid", "label": "Liaison fibre / cuivre"},
-    {"color": _GREEN, "shape": "dashed", "label": "Backhaul radio — active"},
-    {"color": _AMBER, "shape": "dashed", "label": "Backhaul radio — boucle de secours"},
-    {"color": _GREEN, "shape": "pin", "label": "Site en service"},
-    {"color": _RED, "shape": "pin", "label": "Site programmé (extension)"},
-    {"color": _GOLD, "shape": "ring", "label": "Site source Internet"},
+    {"color": _BLUE, "shape": "solid", "label": "Fibre / copper link"},
+    {"color": _GREEN, "shape": "dashed", "label": "Radio backhaul — active"},
+    {"color": _AMBER, "shape": "dashed", "label": "Radio backhaul — backup ring"},
+    {"color": _GREEN, "shape": "pin", "label": "Site in service"},
+    {"color": _RED, "shape": "pin", "label": "Planned site (expansion)"},
+    {"color": _GOLD, "shape": "ring", "label": "Internet source site"},
 )
 
 
@@ -533,10 +533,10 @@ def _plate_data(plate: Plate, topo: dict, bounds: dict
         lat, lon = site.get("latitude"), site.get("longitude")
         name = site.get("site", "")
         if lat is None or lon is None:
-            missing.append(f"{name} (position inconnue)")
+            missing.append(f"{name} (position unknown)")
             continue
         if not _inside(bounds, lat, lon):
-            missing.append(f"{name} (hors du cadrage de la carte)")
+            missing.append(f"{name} (outside the map frame)")
             continue
         sites.append((" ".join(name.split()), lat, lon, False))
 
@@ -585,7 +585,11 @@ def render_plate(plate: Plate, topo: dict, bounds_by_key: dict[str, dict]
     r = 32 * scale
     width = 7.2 * scale
     font = _font(int(round(35 * scale)))
-    caption_font = _font(int(round(23 * scale)))
+    # Plus discrètes que le nom : ces lignes qualifient le site, elles ne le
+    # nomment pas. Leur largeur commande aussi le placement — trop larges, la
+    # seule pose possible partait vers le MILIEU de la planche au lieu de rester
+    # au bord (constaté sur RSO-NORD).
+    caption_font = _font(int(round(20 * scale)))
 
     overlay = Image.new("RGBA", (bounds["w"] * _SS, bounds["h"] * _SS), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
@@ -680,19 +684,18 @@ def _network_paragraphs(plates) -> tuple[str, str]:
     ]
 
     existing = (
-        f"Notre réseau actuel couvre Nouakchott avec une bonne capacité : "
-        f"{installed} sites d'infrastructure sont en service, raccordés au siège "
-        f"par des dorsales fibre et un maillage de faisceaux radio, avec des "
-        f"boucles de secours qui permettent à la plupart des sites d'atteindre "
-        f"Internet par plusieurs chemins. L'ensemble est supervisé en continu : "
-        f"disponibilité, qualité radio et charge de chaque liaison."
+        f"Our network already covers Nouakchott with solid capacity: "
+        f"{installed} infrastructure sites are in service, connected to "
+        f"headquarters by fibre backbones and a mesh of radio links, with "
+        f"backup rings that let most sites reach the Internet over more than "
+        f"one path. Everything is monitored continuously — availability, "
+        f"radio quality and the load carried by every link."
     )
     extension = (
-        f"Les sites en rouge sont les extensions programmées, non encore "
-        f"installées : {planned} nouveaux sites — {', '.join(cities)} — "
-        f"destinés à compléter la couverture là où elle manque et à augmenter "
-        f"la capacité du réseau. Leur emplacement est une intention de "
-        f"déploiement ; ils n'apparaissent pas encore dans la supervision."
+        f"The sites shown in red are planned expansions, not yet installed: "
+        f"{planned} new sites — {', '.join(cities)} — meant to close "
+        f"the coverage gaps and raise the capacity of the network. Their "
+        f"position is a deployment intent; they do not appear in monitoring yet."
     )
     return existing, extension
 
@@ -720,14 +723,14 @@ def build_topology_docx(topo: dict) -> bytes:
 
     title = document.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = title.add_run("Cartographie des sites A2 Connect")
+    run = title.add_run("A2 Connect — Site Map")
     run.bold = True
     run.font.size = Pt(20)
     run.font.color.rgb = RGBColor(*_INK)
 
     subtitle = document.add_paragraph()
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    sub_run = subtitle.add_run(f"Câblage du {_sync_label(topo)}")
+    sub_run = subtitle.add_run(f"Cabling surveyed on {_sync_label(topo)}")
     sub_run.font.size = Pt(10)
     sub_run.font.color.rgb = RGBColor(91, 106, 125)
 
@@ -746,7 +749,7 @@ def build_topology_docx(topo: dict) -> bytes:
     # apprend à lire les couleurs, donc elle doit être vue avant la carte.
     legend = document.add_paragraph()
     legend.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    intro = legend.add_run("Légende  ")
+    intro = legend.add_run("Legend  ")
     intro.bold = True
     intro.font.size = Pt(9)
     intro.font.color.rgb = RGBColor(91, 106, 125)
@@ -767,9 +770,9 @@ def build_topology_docx(topo: dict) -> bytes:
         heading = document.add_paragraph()
         parts = []
         if installed:
-            parts.append(f"{installed} site{'s' if installed > 1 else ''} en service")
+            parts.append(f"{installed} site{'s' if installed > 1 else ''} in service")
         if planned:
-            parts.append(f"{planned} programmé{'s' if planned > 1 else ''}")
+            parts.append(f"{planned} planned")
         head_run = heading.add_run(f"{plate.title} — {' · '.join(parts)}")
         head_run.bold = True
         head_run.font.size = Pt(14)
@@ -783,7 +786,7 @@ def build_topology_docx(topo: dict) -> bytes:
         # ce qu'elle omet se lit comme un réseau qui n'a pas ces sites.
         note = document.add_paragraph()
         note_run = note.add_run(
-            "Sites non représentés : " + " · ".join(missing)
+            "Sites not shown: " + " · ".join(missing)
         )
         note_run.font.size = Pt(9)
         note_run.font.color.rgb = RGBColor(192, 39, 30)

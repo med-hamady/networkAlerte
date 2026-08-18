@@ -61,6 +61,14 @@ racine est donc un **paramètre** (``TOPOLOGY_ROOT_SITE``), avec repli sur le si
 de plus haut degré — et la sortie dit toujours laquelle des deux a servi, pour
 qu'un repli silencieux ne passe pas pour une déduction.
 
+Les routes vers Internet
+------------------------
+Puisque le graphe porte des boucles, un site a souvent **deux** chemins vers la
+racine. :func:`internet_routes` les énumère, désigne le meilleur (celui dont le
+maillon le plus chargé est le moins occupé) et nomme sur chacun le **goulot**.
+⚠️ Ce sont les chemins que le **câblage permet** : ni OSPF ni la table de
+routage ne sont lus, donc rien n'affirme par où le trafic passe réellement.
+
 Colorer une arête
 -----------------
 Les mesures viennent de NOTRE poll (``total_capacity_mbps``, ``link_potential_pct``),
@@ -86,7 +94,7 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.models.device import Device
+from app.models.device import Device, UispSwitch
 from app.models.site_link import SiteLink
 from app.models.site_location import SiteLocation
 from app.services import uisp_service
@@ -643,6 +651,646 @@ def site_occupancy_map(edges: list[dict]) -> dict[str, float]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Routes vers Internet — la meilleure, et où ça sature
+# ---------------------------------------------------------------------------
+#
+# ⚠️ CE QU'ON ÉNUMÈRE EST LE CÂBLAGE, PAS LE ROUTAGE. Le contrôleur nous dit
+# quel site est relié à quel autre ; il ne dit pas par où le trafic passe, et on
+# ne lit ni OSPF ni la table de routage. Une « route » ici est donc un chemin
+# que le câblage PERMET vers la racine — pas une affirmation sur le chemin
+# emprunté. C'est la même mise en garde que dans `site_occupancy_map`, et elle
+# doit rester visible jusque dans l'UI : sans elle, l'écran se lit comme un
+# diagnostic de routage, ce qu'il n'est pas.
+
+# Bornes de l'énumération. Une recherche de chemins simples est exponentielle
+# par nature : un parc futur plus maillé ne doit pas pouvoir faire exploser un
+# affichage.
+#
+# ⚠️ 12 et non 8, et le raisonnement qui donnait 8 était FAUX : ce qui borne un
+# chemin n'est pas la profondeur de l'arbre (4 sur ce parc) mais la longueur du
+# plus long chemin SIMPLE, qui serpente à travers les boucles. Mesuré sur les
+# 17 sites : le plus long fait **11 sauts**, et à 8 l'énumération se coupait sur
+# **6 sites sur 17** — six bandeaux « liste incomplète » qui auraient usé la
+# confiance dans l'écran. À 12 elle est complète, pour 44 chemins et moins de
+# 2 ms (le graphe est creux : 19 arêtes pour 17 nœuds).
+ROUTE_MAX_HOPS = 12
+# ⚠️ Le budget compte les DÉPILAGES, pas les chemins complets — c'est la seule
+# borne qui tienne quel que soit le facteur de branchement. Mesuré : 17
+# dépilages au pire sur le parc réel, donc ~300× de marge avant qu'il ne morde.
+ROUTE_MAX_EXPANSIONS = 5000
+# Garde-fou de TAILLE de réponse, pas une politique d'affichage : on veut voir
+# toutes les sorties d'un site, et le parc réel n'en produit que 3 ou 4.
+ROUTE_KEEP = 12
+
+
+# Sous ce taux d'occupation, la projection ci-dessous n'extrapole que du bruit.
+# Vu sur les données réelles : `CT2↔PK1`, qui ne portait quasiment rien, était
+# désigné « point de saturation » d'un chemin avec un « pic 0 Mb/s » — un lien
+# VIDE présenté comme le maillon qui bride.
+ROUTE_MIN_OCCUPANCY_FOR_PROJECTION = 5.0
+
+
+async def fibre_cut_edges(
+    session: AsyncSession, device_ids_by_edge: dict[frozenset, set[int]]
+) -> set[frozenset]:
+    """Les liaisons FIBRE dont le port SFP ne passe plus la lumière.
+
+    ⚠️ **Sans ça, une fibre coupée passe pour saine.** L'état d'une arête vient
+    du statut PING de ses deux bouts — or une fibre coupée ne rend pas ses
+    switches injoignables : le site reste atteignable **par sa liaison radio de
+    secours**, les deux switches répondent, et la dorsale morte continue de
+    s'afficher comme la meilleure route. C'est le scénario exact où l'opérateur
+    a besoin qu'on lui montre l'autre chemin — et c'était le seul où l'écran se
+    taisait.
+
+    Le signal existe déjà : le port désigné `fiber_port_index` est relevé à
+    chaque cycle SNMP dans `port_N_up`, et c'est lui qui déclenche l'alerte
+    `fiber_link_down`. On lit **la même métrique**, pour que la carte et
+    l'alerte ne puissent pas se contredire.
+
+    ⚠️ **On ne coupe que sur un DOWN constaté** (`port_N_up == 0`). Métrique
+    absente = pas de relevé, pas un verdict : la liaison reste telle quelle.
+    Côté HQ le switch est un UniFi hors inventaire, donc un seul bout porte
+    l'information — un seul suffit.
+    """
+    ids = sorted({d for group in device_ids_by_edge.values() for d in group})
+    if not ids:
+        return set()
+
+    ports = dict((await session.execute(
+        select(UispSwitch.id, UispSwitch.fiber_port_index).where(
+            UispSwitch.id.in_(ids), UispSwitch.fiber_port_index.isnot(None)
+        )
+    )).all())
+    if not ports:
+        return set()
+
+    rows = (await session.execute(
+        text("""
+            SELECT DISTINCT ON (dm.device_id, dm.metric_name)
+                   dm.device_id, dm.metric_name, dm.metric_value
+            FROM device_metrics dm
+            WHERE dm.device_id = ANY(CAST(:ids AS integer[]))
+              AND dm.metric_name = ANY(CAST(:names AS text[]))
+            ORDER BY dm.device_id, dm.metric_name, dm.collected_at DESC
+        """),
+        {
+            "ids": sorted(ports),
+            "names": sorted({f"port_{idx}_up" for idx in ports.values()}),
+        },
+    )).all()
+    states = {(r.device_id, r.metric_name): float(r.metric_value) for r in rows}
+
+    cut = set()
+    for key, devices in device_ids_by_edge.items():
+        for device_id in devices:
+            index = ports.get(device_id)
+            if index is None:
+                continue
+            if states.get((device_id, f"port_{index}_up")) == 0.0:
+                cut.add(key)
+                break
+    return cut
+
+
+def silence_dead_link(health: dict) -> None:
+    """Un lien COUPÉ ne porte rien — ni descendant, ni montant.
+
+    ⚠️ Sans ça, la dernière valeur relevée survit à la panne et se propage
+    partout : marge, goulot, couleur de la liaison, infobulle. Le cas est vécu
+    sur `ARF1↔HQ`, dont le compteur SNMP du port SFP annonçait **18 645 Mb/s**
+    dans un sens et **0** dans l'autre alors que la fibre est coupée — un débit
+    fantôme, d'un facteur 24 au-dessus de ce que la branche peut produire.
+
+    C'est le pendant de la règle déjà tenue pour la capacité : la dernière valeur
+    connue ne doit pas maquiller la panne. Ici elle doit valoir **zéro**, pas
+    « inconnu » : on ne s'abstient pas faute de mesure, on SAIT que rien ne passe.
+
+    ⚠️ `traffic` reste distinct de `idle` : une liaison coupée n'est pas une
+    liaison debout et inerte, et seule la seconde mérite le signalement « dorsale
+    sans trafic ».
+    """
+    health["traffic_mbps"] = 0.0
+    health["traffic_a_to_b_mbps"] = 0.0
+    health["traffic_b_to_a_mbps"] = 0.0
+    health["occupancy_pct"] = None
+    health["occupancy_a_to_b_pct"] = None
+    health["occupancy_b_to_a_pct"] = None
+    health["saturated"] = False
+
+
+def peak_load(
+    traffic_mbps: float | None, occupancy_pct: float | None
+) -> dict | None:
+    """Débit maximal d'un lien, et marge restante, à partir d'un point de charge.
+
+    ⚠️ **Surtout pas `capacité − trafic`.** Sur un lien TDD (AF60),
+    ``total_capacity_mbps`` est la MOYENNE des deux sens : la soustraire d'un
+    ``dl + ul`` est faux dimensionnellement — exactement l'erreur que le projet
+    a déjà écartée pour le calcul de l'occupation, où elle rendait 120 %.
+
+    On passe donc par l'occupation, qui est un **temps d'antenne** et sature à
+    100 % : à mélange descendant/montant constant, multiplier le trafic par
+    ``100 / occupation`` remplit le lien.
+
+        débit max = trafic ÷ (occupation / 100)
+        marge     = débit max − trafic
+
+    Ce que ça dit exactement : « au mélange de sens observé à cet instant, ce
+    lien plafonne à X Mb/s ». Changer le mélange changerait le plafond — c'est
+    une projection, pas une constante physique.
+
+    ⚠️ **Rend ``None`` sur un lien quasi vide.** Diviser un trafic infime par une
+    occupation infime amplifie le bruit de mesure : 0,4 Mb/s à 0,1 % projette
+    400 Mb/s de plafond sur rien du tout. Pire, le lien se retrouvait désigné
+    « point de saturation » du chemin alors qu'il ne portait aucun trafic. Un
+    lien vide ne contraint personne : on ne se prononce pas, et il sort du calcul
+    de la marge au lieu de la fausser.
+    """
+    if traffic_mbps is None or occupancy_pct is None:
+        return None
+    if occupancy_pct < ROUTE_MIN_OCCUPANCY_FOR_PROJECTION:
+        return None
+    max_rate = traffic_mbps * 100.0 / occupancy_pct
+    return {
+        "peak_traffic_mbps": round(traffic_mbps, 1),
+        "peak_occupancy_pct": round(occupancy_pct, 1),
+        "max_rate_mbps": round(max_rate, 1),
+        "headroom_mbps": round(max_rate - traffic_mbps, 1),
+    }
+
+
+def _rank_routes(routes: list[dict]) -> list[dict]:
+    """Classe les chemins d'un site — « la plus grande marge restante ».
+
+    Décision opérateur : entre deux chemins **mesurés**, le meilleur est celui
+    dont le maillon le PLUS CHARGÉ est le MOINS occupé. Le nombre de sauts ne
+    départage qu'à égalité — un détour moins chargé vaut mieux qu'un raccourci
+    saturé, et c'est bien ce qui est demandé.
+
+    ⚠️ ``degraded`` ne pénalise pas. L'occupation étant débit/capacité, un lien
+    dégradé (capacité sous son plancher) affiche déjà mécaniquement une
+    occupation plus haute : le repénaliser compterait le même fait deux fois.
+    Il est exposé (``degraded_hops``), pas déduit du classement.
+
+    ⚠️ **Le cas qui piège : un chemin NON MESURÉ n'est comparable à rien.** Le
+    laisser systématiquement derrière les mesurés produit une absurdité vécue —
+    ARF1 est relié au HQ par une fibre directe qu'on ne sait pas mesurer, et le
+    classement recommandait à sa place un **détour de 5 sauts chargé à 86 %**
+    par tout le maillage. Un chemin non mesuré passe donc devant quand il est
+    **strictement plus court que tous les mesurés** : c'est la référence
+    évidente de l'opérateur. Aucune marge n'est inventée pour autant — il est
+    seulement placé, jamais élu (cf. le retrait du badge dans
+    :func:`internet_routes`).
+    """
+    usable = [r for r in routes if r["usable"]]
+    with_margin = [r["hop_count"] for r in usable if r["headroom_mbps"] is not None]
+    shortest_measured = min(with_margin) if with_margin else None
+
+    def _group(route: dict) -> int:
+        if not route["usable"]:
+            return 4  # un chemin coupé reste listé, mais toujours en dernier
+        if route["radio_hop_count"] == 0:
+            # Tout en FIBRE : rien ne le bride côté radio, et on sait qu'il est
+            # debout. C'est le meilleur chemin possible, sans discussion — c'est
+            # le cas des trois dorsales du HQ.
+            return 0
+        if route["headroom_mbps"] is not None:
+            return 2
+        # Radio sans historique de charge : incomparable. Devant si strictement
+        # plus court que tout chemin chiffré (le réflexe de l'opérateur), sinon
+        # derrière. Jamais élu dans un cas comme dans l'autre.
+        if shortest_measured is None or route["hop_count"] < shortest_measured:
+            return 1
+        return 3
+
+    def _key(route: dict) -> tuple:
+        return (
+            _group(route),
+            # LA marge, décroissante : le plus de place restante d'abord.
+            -(route["headroom_mbps"] if route["headroom_mbps"] is not None else 0.0),
+            route["radio_hop_count"] - route["measured_hops"],
+            route["hop_count"],
+            -(route["min_capacity_mbps"] or 0.0),
+            route["id"],  # déterminisme à égalité parfaite
+        )
+
+    return sorted(routes, key=_key)
+
+
+def _select_shown(routes: list[dict], keep: int) -> list[dict]:
+    """TOUTES les routes du site, classées — on n'en cache aucune.
+
+    ⚠️ Ce module a d'abord masqué des chemins : un seul par « point de rupture »,
+    et une seule route coupée. L'intention était bonne (AT2 affichait trois
+    chemins dont deux morts sur le MÊME lien), mais la décision n'appartient pas
+    au backend : l'opérateur veut voir **toutes** les sorties possibles de son
+    site, y compris les redondantes et les mortes. C'est le RENDU qui replie le
+    surplus derrière un « voir les autres », ce qui se déplie ; une route absente
+    de la réponse, non.
+
+    Ce qui subsiste des règles écartées : le CLASSEMENT (les plus utiles en
+    tête) et l'annotation `same_bottleneck_as`, qui dit qu'un chemin cède au même
+    endroit qu'un autre au lieu de le supprimer pour cette raison.
+
+    `keep` ne reste qu'un garde-fou de taille de réponse, jamais une politique
+    d'affichage — et l'écart est rapporté par `found`/`kept`.
+    """
+    shown = routes[:keep]
+
+    seen: dict[frozenset, str] = {}
+    for route in shown:
+        bottleneck = route["bottleneck"]
+        route["same_bottleneck_as"] = None
+        if bottleneck is None:
+            continue
+        key = frozenset((bottleneck["site_a"], bottleneck["site_b"]))
+        if key in seen:
+            # Pas une raison de cacher le chemin — une raison de dire qu'il ne
+            # constitue pas une alternative au même point de rupture.
+            route["same_bottleneck_as"] = seen[key]
+        else:
+            seen[key] = route["id"]
+    return shown
+
+
+def _describe_route(path: list[str], by_pair: dict[frozenset, dict]) -> dict:
+    """Un chemin (liste de sites, du site vers la racine) → son verdict complet.
+
+    ⚠️ **Un saut FIBRE ne se juge pas comme un saut radio.** Les trois dorsales
+    du HQ (ARF1, AT1, CT1) sont en fibre : la seule question qu'elles posent est
+    « le lien est-il debout et du trafic passe-t-il ». Elles n'ont ni taux
+    d'occupation ni plafond utile à comparer aux AF60, et le contraire s'était
+    vu à l'écran : comptées comme « non mesurées », elles faisaient afficher
+    « départage impossible » sur les trois sites de la dorsale et dégradaient
+    tous les badges en « MEILLEURE · 2/3 mesurés ». Un chemin se juge donc sur
+    ses sauts RADIO — et le goulot est toujours un AF60, jamais la fibre.
+    """
+    hops: list[dict] = []
+    for origin, target in zip(path, path[1:], strict=False):
+        key = frozenset((origin, target))
+        edge = by_pair[key]
+        health = edge.get("health") or {}
+        # ⚠️ La charge vient de la DERNIÈRE VALEUR EN BASE de l'équipement, pas
+        # d'un historique : sur un lien radio, l'état de maintenant décrit mieux
+        # le réseau qu'un pic d'hier. Aucun équipement n'est interrogé ici.
+        load = peak_load(health.get("traffic_mbps"), health.get("occupancy_pct")) or {}
+        fibre = edge.get("medium") == "wired"
+        hops.append({
+            # La fibre : up + trafic, rien d'autre. `traffic` vaut 'active',
+            # 'idle' (mesuré à zéro — anormal sur une dorsale, donc signalé) ou
+            # 'unknown' (un switch n'expose pas toujours son débit).
+            "is_fibre": fibre,
+            # Fibre dont le port SFP ne passe plus la lumière. Distinct d'un
+            # simple « hors service » : ici l'équipement répond, c'est le VERRE
+            # qui est coupé — et le geste terrain n'est pas le même.
+            "fibre_cut": bool(health.get("fibre_cut")),
+            "traffic": health.get("traffic"),
+            # Débit brut courant de la liaison — sert au contrôle d'agrégat de
+            # `_project_failover` (ce qui alimente un lien borne ce qu'il porte).
+            "traffic_mbps": health.get("traffic_mbps"),
+            # Charge courante et marge — vides sur la fibre, par construction.
+            "peak_traffic_mbps": load.get("peak_traffic_mbps"),
+            "peak_occupancy_pct": load.get("peak_occupancy_pct"),
+            "max_rate_mbps": load.get("max_rate_mbps"),
+            "headroom_mbps": load.get("headroom_mbps"),
+            # ⚠️ Orientation reprise TELLE QUELLE de l'arête : c'est la clé par
+            # laquelle le frontend rejoint `edges[]`. La réorienter dans le sens
+            # de la marche ferait rater le lookup en silence.
+            "site_a": edge["site_a"],
+            "site_b": edge["site_b"],
+            # Le sens de marche vers la racine, que la paire ne porte pas.
+            "from": origin,
+            "to": target,
+            "occupancy_pct": health.get("occupancy_pct"),
+            "saturated": bool(health.get("saturated")),
+            "state": health.get("state"),
+            "degraded": bool(health.get("degraded")),
+            "capacity_mbps": health.get("capacity_mbps"),
+            "redundant": bool(edge.get("redundant")),
+            "links_count": len(edge.get("links") or []),
+            "medium": edge.get("medium"),
+            "is_bottleneck": False,
+        })
+
+    # ⚠️ Tout ce qui suit ne regarde QUE les sauts radio : la fibre n'a pas de
+    # taux, et ne doit ni porter le goulot ni faire baisser la couverture.
+    radio = [h for h in hops if not h["is_fibre"]]
+    measured = [h for h in radio if h["occupancy_pct"] is not None]
+    with_margin = [h for h in radio if h["headroom_mbps"] is not None]
+
+    # LE verdict : ce que le chemin peut encore écouler, borné par son maillon
+    # le plus juste. `None` = aucun saut radio ne rend de mesure de charge.
+    headroom = min((h["headroom_mbps"] for h in with_margin), default=None)
+    max_rate = min((h["max_rate_mbps"] for h in with_margin), default=None)
+    # ⚠️ Le max des sauts MESURÉS, et `None` s'il n'y en a aucun. Ni 0 ni 100 —
+    # une occupation absente n'est ni « fluide » ni « pleine ».
+    max_occupancy = max((h["occupancy_pct"] for h in measured), default=None)
+
+    # Le goulot est le maillon de plus petite MARGE : c'est lui qui plafonne le
+    # chemin en Mb/s. ⚠️ Ce n'est pas forcément le plus occupé en % — un lien à
+    # 90 % de 1951 Mb/s laisse 195 Mb/s, un lien à 50 % de 300 Mb/s n'en laisse
+    # que 150 : c'est le second qui bride. Sans historique de charge, on retombe
+    # sur l'occupation, qui reste une indication.
+    bottleneck = None
+    if with_margin:
+        # À égalité, le saut le plus PROCHE DU SITE : celui sur lequel
+        # l'opérateur peut agir localement, et le choix reste déterministe.
+        pick = min(with_margin, key=lambda h: (h["headroom_mbps"], hops.index(h)))
+    elif measured:
+        pick = max(measured, key=lambda h: (h["occupancy_pct"], -hops.index(h)))
+    else:
+        pick = None
+    if pick is not None:
+        pick["is_bottleneck"] = True
+        bottleneck = {
+            "site_a": pick["site_a"],
+            "site_b": pick["site_b"],
+            "occupancy_pct": pick["occupancy_pct"],
+            "headroom_mbps": pick["headroom_mbps"],
+            "max_rate_mbps": pick["max_rate_mbps"],
+            "peak_traffic_mbps": pick["peak_traffic_mbps"],
+        }
+
+    capacities = [h["capacity_mbps"] for h in hops if h["capacity_mbps"] is not None]
+    down_hops = [
+        {"site_a": h["site_a"], "site_b": h["site_b"], "fibre_cut": h["fibre_cut"]}
+        for h in hops if h["state"] == "down"
+    ]
+    degraded_hops = [
+        {"site_a": h["site_a"], "site_b": h["site_b"]} for h in hops if h["degraded"]
+    ]
+
+    # ⚠️ La couverture se compte sur les sauts RADIO seuls. Un chemin tout en
+    # fibre n'est pas « non mesuré » : il n'a simplement rien à mesurer.
+    if not radio:
+        coverage = "full"
+    elif not measured:
+        coverage = "none"
+    elif len(measured) == len(radio):
+        coverage = "full"
+    else:
+        coverage = "partial"
+
+    # ⚠️ **AUCUNE projection de bascule, et c'est physique.** Le réflexe est
+    # d'annoncer « après bascule ce maillon portera X » en additionnant sa charge
+    # actuelle et le trafic du chemin coupé. C'est un DOUBLE COMPTAGE : dès que
+    # la dorsale d'ARF1 tombe, elle ne porte plus rien et le trafic d'ARF1 est
+    # DÉJÀ reparti par PK1 et TS1 — donc la mesure courante de ces liaisons
+    # contient déjà ce qu'on voulait y ajouter.
+    #
+    # Après une coupure réelle, il n'y a donc rien à projeter : il suffit de
+    # LIRE. L'occupation du secours a monté, sa marge a fondu, et les deux se
+    # voient directement. (Une version « et si ça coupait ? » avant la panne
+    # serait une autre fonctionnalité, avec son propre modèle — pas une addition.)
+    # Dorsale debout mais à l'arrêt : anormal sur ces trois liens, donc signalé.
+    # ⚠️ `unknown` n'est PAS `idle` — un switch n'expose pas toujours son débit.
+    fibre_idle_hops = [
+        {"site_a": h["site_a"], "site_b": h["site_b"]}
+        for h in hops
+        if h["is_fibre"] and h["traffic"] == "idle" and h["state"] != "down"
+    ]
+
+    return {
+        "id": ">".join(path),
+        "sites": path,
+        "hop_count": len(hops),
+        # Le nombre de sauts qui portent réellement une contrainte de débit.
+        # 0 = chemin tout en fibre : rien ne le bride côté radio.
+        "radio_hop_count": len(radio),
+        "hops": hops,
+        # LE verdict, en Mb/s : ce que le chemin peut encore prendre, et son
+        # plafond. `None` sur un chemin tout fibre (rien ne le borne) comme sur
+        # un chemin radio sans historique — `radio_hop_count` sépare les deux.
+        "headroom_mbps": headroom,
+        "max_rate_mbps": max_rate,
+        "max_occupancy_pct": max_occupancy,
+        "bottleneck": bottleneck,
+        "min_capacity_mbps": min(capacities) if capacities else None,
+        "measured_hops": len(measured),
+        "coverage": coverage,
+        # Un saut `unmeasured` n'est PAS un saut `down` : il reste utilisable,
+        # il baisse seulement la couverture.
+        "usable": not down_hops,
+        "down_hops": down_hops,
+        "degraded_hops": degraded_hops,
+        "fibre_idle_hops": fibre_idle_hops,
+        # Renseigné par `_select_shown` : ce chemin cède au même endroit qu'un
+        # autre, donc il n'est pas une alternative pour CE point de rupture.
+        "same_bottleneck_as": None,
+        "is_best": False,
+    }
+
+
+def internet_routes(
+    merged_edges: list[dict],
+    root: str | None,
+    sites: set[str] | None = None,
+    *,
+    max_hops: int = ROUTE_MAX_HOPS,
+    max_expansions: int = ROUTE_MAX_EXPANSIONS,
+    keep: int = ROUTE_KEEP,
+) -> dict[str, dict]:
+    """Par site : ses chemins vers la racine, le meilleur, et le goulot de chacun.
+
+    Prend les arêtes **LOGIQUES** (celles de ``edges[]``, déjà fusionnées par
+    paire de sites), jamais les liens physiques : deux radios entre les deux
+    mêmes sites sont **un seul saut** redondant. Les énumérer séparément
+    afficherait « deux routes » comme quatre et distinguerait des chemins que la
+    couche IP ne choisit pas — la redondance est un attribut du saut
+    (``redundant``, ``links_count``), pas une route de plus.
+
+    ``sites`` (optionnel) = l'ensemble des sites à couvrir, pour qu'un site
+    ORPHELIN reçoive une entrée disant pourquoi il n'a aucune route, au lieu
+    d'être simplement absent du dict — une absence se lirait comme un oubli.
+
+    Les trois bornes sont **rapportées**, jamais silencieuses (``found``/
+    ``kept``/``truncated``) : un rendu qui écarte un chemin sans le dire est
+    exactement la faute que ce module refuse déjà pour les boucles du graphe.
+    """
+    if root is None:
+        return {}
+
+    by_pair: dict[frozenset, dict] = {}
+    adjacency: dict[str, set[str]] = defaultdict(set)
+    for edge in merged_edges:
+        site_a, site_b = edge["site_a"], edge["site_b"]
+        by_pair[frozenset((site_a, site_b))] = edge
+        adjacency[site_a].add(site_b)
+        adjacency[site_b].add(site_a)
+
+    neighbours = {site: sorted(peers) for site, peers in adjacency.items()}
+    covered = set(sites) if sites else set()
+    covered |= set(neighbours) | {root}
+
+    out: dict[str, dict] = {}
+    for site in sorted(covered):
+        if site == root:
+            out[site] = _empty_route_group(site, "racine")
+            continue
+
+        paths, truncated = _walk_to_root(site, root, neighbours, max_hops, max_expansions)
+        if not paths:
+            out[site] = _empty_route_group(site, "aucun chemin vers la racine", truncated)
+            continue
+
+        routes = _rank_routes([_describe_route(p, by_pair) for p in paths])
+        kept_routes = _select_shown(routes, keep)
+
+        # Le badge « meilleure » va en TÊTE DE LISTE, et seulement si ce chemin
+        # est utilisable ET mesuré : élire un chemin dont on ne sait rien serait
+        # recommander sur la foi de rien, et élire le second reviendrait à dire
+        # que le premier est moins bon alors qu'on ne l'a pas mesuré. Quand on
+        # ne tranche pas, on dit pourquoi — c'est en soi actionnable (« la
+        # dorsale la plus courte n'est pas instrumentée »).
+        leader = kept_routes[0]
+        best_id, best_reason = None, None
+        if not leader["usable"]:
+            best_reason = "toutes les routes traversent un lien tombé"
+        elif leader["radio_hop_count"] == 0 or leader["headroom_mbps"] is not None:
+            # Élu : soit tout en fibre (rien ne le bride), soit sa marge est
+            # chiffrée. Ce sont les deux seuls cas où l'on sait ce qu'on
+            # recommande.
+            leader["is_best"] = True
+            best_id = leader["id"]
+        else:
+            best_reason = (
+                "aucune route dont la charge soit mesurée"
+                if all(r["headroom_mbps"] is None for r in routes if r["usable"])
+                else "le chemin le plus court n'a pas d'historique de charge"
+            )
+
+        out[site] = {
+            "site": site,
+            "reason": None,
+            "best_id": best_id,
+            "best_reason": best_reason,
+            "found": len(routes),
+            "kept": len(kept_routes),
+            "truncated": truncated,
+            "paths": kept_routes,
+            # Renseignés juste après, une fois TOUS les sites connus.
+            "role": None,
+            "exits": [],
+            "decider": None,
+        }
+
+    _assign_roles(out, root)
+    return out
+
+
+def _assign_roles(groups: dict[str, dict], root: str) -> None:
+    """Qui DÉCIDE de la direction du trafic, et qui ne fait que la subir.
+
+    ⚠️ Distinction structurelle que le rendu ignorait, et qui change ce qu'on a
+    le droit d'afficher. Un site à **plusieurs sorties** vers la racine arbitre
+    réellement ; un site à **une seule** ne choisit rien — il remet son trafic au
+    site du dessus. VEL1 n'a que TS1 : lui annoncer « 3 routes possibles » laisse
+    croire à un choix qu'elle n'a pas. Ses trois chemins sont ceux de TS1, et
+    c'est **TS1** qui arbitre entre ARF1 et SM1.
+
+    Conséquence pratique : sur un site enfant, l'écran doit renvoyer vers son
+    décideur — c'est là qu'on agit, pas sur l'enfant.
+
+    ⚠️ Une **sortie** n'est pas une liaison voisine : c'est le premier saut d'un
+    chemin qui MÈNE quelque part. TJN1 est voisin de DN1 mais c'est un
+    cul-de-sac, donc pas une sortie de DN1 — les compter ferait passer des
+    enfants pour des décideurs.
+    """
+    for site, group in groups.items():
+        if group["reason"]:
+            continue
+        exits: list[str] = []
+        for path in group["paths"]:
+            first = path["sites"][1]
+            if first not in exits:
+                exits.append(first)
+        group["exits"] = exits
+        group["role"] = (
+            "root" if site == root else "decider" if len(exits) > 1 else "child"
+        )
+
+    # Pour un enfant : le premier site EN AMONT qui a réellement un choix.
+    # NR1 et SNDE n'en ont aucun — leur sortie unique va droit à la racine, donc
+    # personne ne peut les rerouter. Le dire vaut mieux que laisser un blanc.
+    for site, group in groups.items():
+        if group["role"] != "child":
+            continue
+        seen, current = {site}, group["exits"][0]
+        while True:
+            upstream = groups.get(current)
+            if upstream is None or current in seen or upstream["reason"]:
+                break
+            if upstream["role"] == "decider":
+                group["decider"] = current
+                break
+            seen.add(current)
+            if not upstream["exits"]:
+                break
+            current = upstream["exits"][0]
+
+
+def _empty_route_group(site: str, reason: str, truncated: dict | None = None) -> dict:
+    """Un site sans route — avec la raison en clair, jamais une liste vide muette."""
+    return {
+        "site": site,
+        "reason": reason,
+        "role": "root" if reason == "racine" else "isolated",
+        "exits": [],
+        "decider": None,
+        "best_id": None,
+        "best_reason": None,
+        "found": 0,
+        "kept": 0,
+        "truncated": truncated or {"by_hops": False, "by_budget": False},
+        "paths": [],
+    }
+
+
+def _walk_to_root(
+    site: str,
+    root: str,
+    neighbours: dict[str, list[str]],
+    max_hops: int,
+    max_expansions: int,
+) -> tuple[list[list[str]], dict]:
+    """Tous les chemins SIMPLES de ``site`` à ``root``, bornés — et ce qu'on a coupé.
+
+    Parcours en profondeur itératif (pile explicite) : la récursion sur un
+    graphe dont on ne maîtrise pas la densité future est le meilleur moyen de
+    faire tomber un worker sur un dépassement de pile.
+    """
+    stack: list[tuple[str, list[str], frozenset]] = [(site, [site], frozenset((site,)))]
+    paths: list[list[str]] = []
+    truncated = {"by_hops": False, "by_budget": False}
+    expansions = 0
+
+    while stack:
+        if expansions >= max_expansions:
+            truncated["by_budget"] = True
+            break
+        expansions += 1
+        current, path, visited = stack.pop()
+
+        if current == root:
+            paths.append(path)
+            continue
+
+        unexplored = [n for n in neighbours.get(current, ()) if n not in visited]
+        if len(path) - 1 >= max_hops:
+            # On ne lève le drapeau que si on renonce vraiment à explorer :
+            # une impasse atteinte à la longueur max n'est pas une troncature.
+            if unexplored:
+                truncated["by_hops"] = True
+            continue
+
+        for neighbour in unexplored:
+            stack.append((neighbour, [*path, neighbour], visited | {neighbour}))
+
+    return paths, truncated
+
+
 def edge_health(end_a: dict | None, end_b: dict | None) -> dict:
     """Santé d'une arête à partir de ses deux bouts — le **pire** des deux.
 
@@ -843,7 +1491,9 @@ async def get_site_topology(session: AsyncSession, root: str | None = None) -> d
         return {
             "available": False,
             "reason": "câblage jamais synchronisé — lancer le sync de topologie",
-            "sites": [], "edges": [], "layout": {}, "stats": {},
+            # `routes` est présent même vide : la forme de la réponse doit rester
+            # stable pour les consommateurs de `--json` et du frontend.
+            "sites": [], "edges": [], "routes": {}, "layout": {}, "stats": {},
         }
 
     # Reconstruire la forme d'arête que le reste du module attend. Les sites
@@ -925,6 +1575,34 @@ async def get_site_topology(session: AsyncSession, root: str | None = None) -> d
     sat_floor = float(settings.af60_occupancy_critical_pct)
     site_occupancy = site_occupancy_map(list(merged.values()))
 
+    # Les chemins vers la racine, par site. Une seule requête de plus : le pic
+    # de charge des 24 h par liaison, qui donne la MARGE en Mb/s — le verdict
+    # que l'opérateur lit, là où un pourcentage ne se traduit en rien.
+    device_ids_by_edge = {
+        frozenset((entry["site_a"], entry["site_b"])): {
+            link_[side]["device_id"]
+            for link_ in entry["links"] for side in ("device_a", "device_b")
+            if link_[side]["device_id"] is not None
+        }
+        for entry in merged.values()
+    }
+    # ⚠️ Une fibre coupée ne rend pas ses switches injoignables : le site reste
+    # atteignable par sa radio de secours, donc l'arête passerait pour saine et
+    # la dorsale morte resterait « meilleure route ». On relit le port SFP.
+    cut = await fibre_cut_edges(session, device_ids_by_edge)
+    for key in cut:
+        health = merged[key]["health"]
+        health["state"] = "down"
+        health["fibre_cut"] = True
+        silence_dead_link(health)
+
+    # La marge et le classement se calculent sur la DERNIÈRE VALEUR EN BASE de
+    # chaque équipement (écrasée à chaque poll) — l'état de maintenant décrit
+    # mieux le réseau qu'un pic d'hier, et aucun équipement n'est interrogé ici.
+    # Aucun historique n'est lu : après une bascule, la charge reportée est déjà
+    # DANS la mesure courante du chemin de secours.
+    routes = internet_routes(list(merged.values()), layout["root"], infra_sites)
+
     # Position géographique du pylône, pour la vue CARTE de /topology. Jointure
     # sur la chaîne EXACTE (`site_locations.site` = `devices.site`) — les noms
     # portent des bizarreries voulues, dont le double espace de « A2  ARF1 » :
@@ -982,6 +1660,9 @@ async def get_site_topology(session: AsyncSession, root: str | None = None) -> d
         "synced_at": synced_at.isoformat(),
         "sites": sites,
         "edges": sorted(merged.values(), key=lambda e: (e["site_a"], e["site_b"])),
+        # Indexé par nom de site : un seul site à la fois consomme ses chemins,
+        # alors que `sites[]` est parcouru en entier par le graphe ET la carte.
+        "routes": routes,
         "layout": {
             "components": layout["components"],
             "orphan_sites": layout["orphan_sites"],
@@ -996,6 +1677,13 @@ async def get_site_topology(session: AsyncSession, root: str | None = None) -> d
             "edges": len(merged),
             "physical_links": len(edges),
             "unsupervised_ends": unsupervised,
+            # Les sites dont l'énumération a buté sur une borne : un coup d'œil
+            # au JSON ou au CLI suffit à savoir que la liste n'est pas complète.
+            "routes_truncated_sites": sorted(
+                site
+                for site, group in routes.items()
+                if group["truncated"]["by_hops"] or group["truncated"]["by_budget"]
+            ),
         },
     }
 

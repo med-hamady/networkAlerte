@@ -274,6 +274,7 @@ backend/app/
 - [x] **Pas d'audit trail des notifications** — la table `alerts` et la page `/notifications` ont été **supprimées** (2026-06-09, migration `a8b9c0d1e2f3`). Les notifications sont toujours **envoyées** mais aucune ligne d'audit n'est persistée.
 - [x] **Contrôle d'identité avant blocage** (2026-07-22) — une fiche cible une **MAC**, mais la session SSH part sur une **IP** que le DHCP a pu redonner à un autre abonné. `ssh_service.identity_refusal` lit les MAC de toutes les interfaces de l'équipement joint (une commande sur la session **déjà ouverte** — le coût sur ces radios, c'est la poignée de main, pas la lecture) et **refuse d'agir** si la MAC attendue n'y est pas. Câblé sur les **trois** chemins (`set_lan_interface`, `set_whatsapp_only`, `set_content_block`). ⚠️ **Invérifiable = autorisé** : un firmware sans `/sys/class/net` rendrait sinon tout blocage impossible sur cette famille — on ne refuse que sur preuve positive. Le refus est **structurel** (le job d'enforcement sort la ligne de sa boucle, `block_unenforceable_reason` posé) et journalisé sous l'action dédiée **`IDENT_KO`** (« Identité refusée », violet sur `/fai-journal`) — distincte d'`ABANDON` : ici il n'y a rien à réparer sur l'équipement, c'est la fiche qui est périmée.
 - [x] **Blocage internet client (2 modes)** — SSH sur le LR. Mode `full` : shutdown du port LAN (`lan_interface`). Mode `whatsapp_only` : **3 couches** sur le LR pour vraiment séparer WhatsApp de FB/IG (qui partagent les IP Meta) : (1) DNAT en `iptables -t nat PREROUTING` redirigeant tout DNS du sous-réseau client vers le dnsmasq du LR (anti-bypass `8.8.8.8`), (2) entrées `address=/<domaine>/0.0.0.0` ajoutées à `/etc/dnsmasq.conf` pour FB/IG/Messenger/Threads (résolus en `0.0.0.0` → connexion immédiate impossible), (3) chaîne `CLIENTBLOCK` sur `FORWARD` autorisant DNS + plages Meta (`WHATSAPP_ALLOW_CIDRS`), `DROP` le reste. **Quirk terrain (airOS 8) : `kill -HUP dnsmasq` n'applique pas les `address=` — il faut `killall dnsmasq` (airOS le respawn).** Mode persisté (`block_mode`) + `client_blocked` en DB + job `client_block_enforcement_job` qui ré-applique le mode actif toutes les 120 s (survit au reboot du LR — airOS régénère `/etc/dnsmasq.conf` au boot, l'enforcement remet le bloc dans la minute). **Garde-fou dynamique du mode `full`** : avant un shutdown, `ssh_service._collect_forbidden_ifaces` calcule en direct sur le LR les interfaces du chemin SSH/route par défaut (+ membres de bridge, parents VLAN) et refuse de les couper. **Défaut `lan_interface` par famille** : `client_block_service.default_lan_interface(model_variant)` → `eth0.1` (LTU) / `eth0` (airMAX), appliqué à la création par `discovery_service` et backfillé par la migration `m4e5f6a7b8c9`. Remplace l'ancien `is_suspended` (flag no-op supprimé)
+- [x] **Routes vers Internet** (2026-08-17) — par site, **toutes** ses sorties vers la racine, la **meilleure** (la plus grande marge restante, en Mb/s) et le **maillon qui bride** de chacune. Distingue les sites qui **décident** de ceux qui **subissent**. Panneau latéral de `/topology` + clé `routes` de `/network-topology` + `--site` du script. ⚠️ Chemins permis par le **câblage** : ni OSPF ni la table de routage ne sont lus. Voir **Routes vers Internet**
 - [x] **Dashboard frontend** — Next.js avec pages : devices, incidents, etc.
 
 ### Jobs planifiés actifs
@@ -617,9 +618,18 @@ permanence. **Ne jamais figer la santé dans `site_links`** — ce serait affich
 l'état d'hier comme celui de maintenant. Et ne jamais remettre la page en lecture
 live : avant ce découpage, chaque ouverture d'onglet téléchargeait ~1300
 équipements + ~1400 sites + ~1300 liens, et le `refreshInterval` de la page le
-**rejouait toutes les 2 minutes** sur un onglet oublié. La page n'a donc
-**délibérément pas** de `refreshInterval`, contrairement aux autres du projet —
-elles affichent des métriques vivantes, celle-ci du câblage.
+**rejouait toutes les 2 minutes** sur un onglet oublié.
+
+⚠️ **La page A un `refreshInterval` (60 s) depuis le 2026-08-17**, et l'ancienne
+consigne inverse est caduque. Elle disait « celle-ci affiche du câblage, pas des
+métriques vivantes » — ce n'est plus vrai : avec les **Routes vers Internet**, le
+panneau porte la charge de chaque liaison et la marge qui reste, sur lesquelles
+l'opérateur décide. Une marge figée sur l'état d'il y a une heure serait pire que
+pas de marge du tout. **60 s et pas plus vite** : c'est la cadence du poll AF60
+(`scheduler-poll-af60`), donc rafraîchir davantage relirait les mêmes valeurs.
+L'inquiétude d'origine ne s'applique plus — elle portait sur une page qui
+appelait le CONTRÔLEUR à chaque affichage, alors que tout vient désormais de
+notre base.
 
 Pourquoi une table plutôt qu'un cache : les data-links désignent leurs extrémités
 par l'**id UISP de l'équipement**, id qu'on ne stocke pas — résoudre un lien exige
@@ -663,6 +673,123 @@ Mesuré sur le parc : **17 sites, 19 liaisons, dont 2 hors arbre** (`SK1↔CT2` 
 service produit donc des **couches** (parcours en largeur : `sites[].depth`) et
 rend les arêtes surnuméraires à part (`layout.extra_edges`), tracées en
 pointillé. Ne jamais « simplifier » en arbre.
+
+##### Routes vers Internet — la meilleure, et où ça sature (2026-08-17)
+
+Puisque le graphe porte de vraies boucles, un site a souvent **plusieurs
+chemins** vers la racine. `site_topology_service.internet_routes` les énumère
+**tous**, les classe, et nomme sur chacun le maillon qui bride — clé `routes` de
+`/network-topology`, rendue par `TopologyRoutesPanel` au clic sur un site.
+
+⚠️ **CE QU'ON ÉNUMÈRE EST LE CÂBLAGE, PAS LE ROUTAGE.** Ni OSPF ni la table de
+routage ne sont lus : une « route » est un chemin que le câblage **permet**, pas
+une affirmation sur celui qu'emprunte le trafic. C'est écrit jusque dans le
+panneau — sans ça, l'écran se lit comme un diagnostic de routage.
+
+##### Qui DÉCIDE, et qui subit
+
+Distinction structurelle, portée par `role` / `exits` / `decider` :
+
+* un site à **plusieurs sorties** vers la racine **arbitre** (`decider`) ;
+* un site à **une seule** ne choisit rien (`child`) : il remet son trafic au site
+  du dessus. VEL1 n'a que TS1 — lui annoncer « 3 routes » lui prête un choix
+  qu'elle n'a pas, ses chemins sont ceux de TS1. Le panneau renvoie donc vers son
+  **décideur**, le premier site en amont qui a un vrai choix : c'est là qu'on
+  agit. Mesuré : **10 décideurs, 6 enfants**, dont NR1 et SNDE accrochés
+  directement à la racine — aucun décideur en amont, personne ne peut les
+  rerouter.
+
+⚠️ **Une SORTIE n'est pas une liaison voisine** : c'est le premier saut d'un
+chemin qui MÈNE à la racine. TJN1 est voisin de DN1 mais c'est un cul-de-sac ;
+les compter ferait passer des enfants pour des décideurs (erreur commise puis
+corrigée le 2026-08-18).
+
+##### Le verdict est un DÉBIT, jamais un pourcentage
+
+Pour chaque saut radio, à partir de sa **dernière valeur en base** (écrasée à
+chaque poll — aucun équipement n'est interrogé, aucun historique n'est lu) :
+
+```
+plafond = trafic ÷ (occupation / 100)        marge = plafond − trafic
+```
+
+⚠️ **Surtout pas `capacité − trafic`** : sur un lien TDD, `total_capacity_mbps`
+est la MOYENNE des deux sens, la soustraire d'un `dl + ul` est faux
+dimensionnellement — la même erreur qui rendait 120 % d'occupation. Contrôle qui
+rassure : sur `CT1↔SK1`, la projection rend **1500,7** quand le firmware annonce
+**1501,0** — deux sources indépendantes qui se recoupent.
+
+⚠️ **Sous `ROUTE_MIN_OCCUPANCY_FOR_PROJECTION` (5 %), aucune projection** : un
+trafic infime divisé par une occupation infime n'extrapole que du bruit, et un
+lien VIDE se retrouvait désigné « point de saturation » avec un « pic 0 Mb/s ».
+
+⚠️ **Le goulot est le maillon de plus petite MARGE, pas le plus occupé en %.**
+Cas réel : sur la route TS1 d'ARF1, `DN1↔AT1` affiche 46 % et `ARF1↔TS1` 36 % —
+c'est pourtant le second qui bride (1252 − 452 = **800** contre 1951 − 887 =
+1064). D'où l'affichage en **jauge `porté / plafond`** dans la chaîne : le
+pourcentage seul rendait le verdict invérifiable à l'écran.
+
+**Meilleure route = la plus grande marge restante** (décision opérateur). Le
+nombre de sauts ne départage qu'à égalité. `down` disqualifie ; `degraded` non —
+l'occupation intègre déjà la capacité réduite, le repénaliser compterait deux
+fois. Une liaison redondante = **un** saut.
+
+##### La FIBRE ne se juge pas comme la radio
+
+Les trois dorsales du HQ (ARF1, AT1, CT1) sont en fibre : la seule question est
+« up, et du trafic passe ». Pas d'occupation, pas de plafond à comparer. Un saut
+fibre ne porte **jamais** le goulot et ne compte **pas** comme un trou de mesure
+(`coverage` se calcule sur les sauts RADIO seuls) — les compter « non mesurés »
+faisait afficher « départage impossible » sur les trois sites de la dorsale. Un
+chemin **tout en fibre** (`radio_hop_count == 0`) est la meilleure route
+possible, sans discussion. Une dorsale debout mais **inerte** est signalée
+(`fibre_idle_hops`) sans être disqualifiée.
+
+##### Une fibre coupée — le trou que rien ne voyait
+
+⚠️ **Une fibre coupée ne rend PAS ses switches injoignables** : le site reste
+atteignable par sa radio de secours, les deux bouts répondent au ping, et la
+dorsale morte continuait d'être désignée « meilleure route ». `fibre_cut_edges`
+relit donc le port SFP (`port_N_up` sur `fiber_port_index`) — **la même métrique
+que l'alerte `fiber_link_down`**, pour que la carte et l'alerte ne se
+contredisent pas. On ne coupe que sur un DOWN **constaté** ; métrique absente =
+pas de verdict.
+
+⚠️ **Un lien coupé porte ZÉRO dans les deux sens** (`silence_dead_link`), et
+zéro comme un FAIT (`traffic_mbps = 0`) là où l'occupation devient `null` — « rien
+ne passe » n'est pas « on ne mesure pas ». Sans ça la dernière valeur survit à la
+panne : `ARF1↔HQ` annonçait **18 645 Mb/s** sur une fibre coupée (compteur SNMP
+qui reboucle), soit **×24 le possible physique** — sa branche entière ne produit
+que 788 Mb/s. Une coupée n'est pas non plus une « dorsale inerte » : deux gestes
+différents.
+
+##### ⚠️ AUCUNE projection de bascule — ce serait un double comptage
+
+Le réflexe est d'annoncer « après bascule ce maillon portera X » en additionnant
+sa charge actuelle et le trafic du chemin coupé. **C'est faux, et physiquement** :
+dès que la dorsale d'ARF1 tombe, elle ne porte plus rien et le trafic d'ARF1 est
+**déjà** reparti par PK1 et TS1 — la mesure courante de ces liaisons contient
+donc déjà ce qu'on voulait y ajouter. Après une coupure réelle, il n'y a rien à
+projeter : la marge du secours a fondu toute seule, et elle se **LIT**. Verrouillé
+par `test_no_failover_projection_is_ever_added`.
+
+##### Rien n'est caché — on replie, on ne filtre pas
+
+`internet_routes` rend **toutes** les routes trouvées ; c'est le RENDU qui replie
+au-delà de 3 derrière « Voir les N autres ». Deux règles de filtrage ont été
+écrites puis retirées (un chemin par point de rupture, une seule route coupée) :
+l'intention se défendait, mais la décision n'appartient pas au backend — un
+chemin replié se déplie, un chemin absent de la réponse, non. Il en reste le
+**classement** et l'annotation `same_bottleneck_as`, qui dit qu'un chemin cède au
+même endroit qu'un autre au lieu de le supprimer.
+
+**Bornes rapportées, jamais silencieuses** : `ROUTE_MAX_HOPS` (**12**),
+`ROUTE_MAX_EXPANSIONS` (5000 dépilages), `ROUTE_KEEP` (12, garde-fou de taille de
+réponse) → `found`/`kept`/`truncated` + `stats.routes_truncated_sites`.
+⚠️ 12 sauts et non 8 : ce qui borne un chemin n'est pas la profondeur de l'arbre
+(4) mais la longueur du plus long chemin **simple**, qui serpente dans les
+boucles — **11 sauts** ici. À 8, l'énumération se coupait sur **6 sites sur 17**.
+
 
 ##### La racine ne se déduit pas
 
@@ -823,6 +950,7 @@ d'un lien, où les deux extrémités décrivent le même lien physique.
 dc exec backend python scripts/dump_site_topology.py            # lit la base, 0 appel UISP
 dc exec backend python scripts/dump_site_topology.py --sync     # rapatrie d'abord le câblage
 dc exec backend python scripts/dump_site_topology.py --root "A2 HQ"
+dc exec backend python scripts/dump_site_topology.py --site "A2 CT2"   # ses routes
 dc exec backend python scripts/dump_site_topology.py --json > topo.json
 ```
 
@@ -1303,6 +1431,11 @@ l'infobulle d'une liaison sur `/topology` (rouge si saturée), et l'incident
 carte — barème dans `lib/topologyColors`, `SATURATION_COLOR`), plus le
 pourcentage à côté du compteur « 14/1 ».
 
+⚠️ **Même mesure que le goulot d'une route** (cf. **Routes vers Internet**), vue
+sous deux angles : ici « ce site a une liaison pleine », là « sur CE chemin,
+voici le maillon qui cédera ». Aucun des deux n'invente de seuil — les deux
+lisent `occupancy_pct` et le verdict `saturated` du backend.
+
 - ⚠️ **Canal visuel SÉPARÉ, jamais une nuance de la couleur du site.** La
   saturation est **orthogonale** à la disponibilité : un site dont tous les
   équipements répondent peut être saturé, et c'est même LE cas cherché (un
@@ -1488,7 +1621,7 @@ visibles sur `/incidents`.
 | POST | `/api/v1/uisp/assign` | **Assign** | Clé **dédiée `UISP_ASSIGN_API_KEY`** (router `uisp_assign.py` séparé, `require_uisp_assign_client`) : scellée à cette seule route — n'ouvre **pas** `/uisp/sync`, ni block/unblock ; repli accepté sur l'auth normale (master `API_KEY` / session). ⚠️ **Consommée en HTTPS** : le port 80 renvoie un `301`, et une redirection **convertit un POST en GET et détruit le corps JSON** → `405` (prouvé en journal le 2026-08-11 : `POST … 301` puis `GET … 405`, même seconde, même client). C'est pourquoi `/fai/verify` (un GET) tolère `http://` et pas cette route. `location ^~ /api/v1/uisp/assign` dédiée dans nginx : `proxy_read_timeout` **120 s** (la pose de la clé UISP passe par SSH ; à 30 s le client reçoit un 504 sur une adoption **réussie**) et zone de débit `uisp_assign` 120 r/min (les adoptions arrivent par lots). Doc d'intégration : `docs/api-uisp-assign.md`. **Associe un équipement à un client CRM** — body `mac` + `crm_client_id`, plus `crm_service_id` **uniquement** si le client a plusieurs services. Équivalent du formulaire UISP (chercher la MAC en « unknown », choisir le client). Si l'équipement est absent du contrôleur, sa clé lui est posée d'abord et la réponse porte `pending_registration` (rejouer dans la minute — ce n'est pas une erreur). Rapport étape par étape. 400 MAC invalide · 404 client CRM introuvable **ou service n'appartenant pas à ce client** · **409 client à plusieurs services sans `crm_service_id`** (services renvoyés) · **409 équipement déjà rattaché à un AUTRE client** (id du détenteur renvoyé ; `reassign=true` pour passer outre) · 502 clé non posée (échec SSH — surtout pas un 404) · 403 token UISP sans droits d'écriture. Voir **Association client CRM** |
 | POST | `/api/v1/uisp/sync` | Oui | Import des équipements d'infra depuis le contrôleur UISP (`?dry_run=true` = prévisualisation sans écriture). Renvoie un résumé (créés/màj/ignorés + échantillon) |
 | GET | `/api/v1/network-capacity` | Oui | Capacité clients : par famille (LTU/airMAX) et par site, clients connectés (`peer_count`) vs max (seuil `rocket_client_overload`). Rockets sans largeur connue exclus des totaux (`unknown`). `network_capacity_service`. Inclut aussi la clé **`infra`** (`site_infra_service.get_site_infra_capacity`) : budget d'équipements infra par site (Rockets+AF60+PTP) vs `SITE_INFRA_MAX`, avec marge `remaining` signée |
-| GET | `/api/v1/network-topology` | Oui | **Graphe INTER-SITES** (le maillage des backhauls). **Servi depuis NOTRE base — zéro appel au contrôleur.** Le câblage vient de la table `site_links` (rapatrié 1×/jour par `site_topology_sync_job`) ; la **santé** de chaque liaison est relue **en direct** depuis `devices`/`device_metrics`. Renvoie `synced_at` (date du **câblage** — l'état, lui, est de maintenant), `sites[]` (`depth` = couche, `parent`, `degree`, `reachable`, **`device_count`/`device_down_count`** = le compteur « 14/1 », **`is_down`** = site ENTIÈREMENT tombé, le seul cas qui rougit ses liaisons, **`occupancy_pct`/`saturated`** = occupation de sa liaison la plus chargée — voir **Occupation d'un backhaul AF60**), **`latitude`/`longitude`/`position_source`** = position du pylône, jointe depuis `site_locations` sur la chaîne **exacte** du nom de site — `null` quand elle est inconnue, jamais devinée), `edges[]` (une **liaison logique** par paire de sites, portant 1..n `links[]` physiques, `redundant`, `is_tree_edge`, `health`), `layout` (`components`, `orphan_sites`, `unreached_sites`, `extra_edges`) et `stats`. `?root=` sinon `TOPOLOGY_ROOT_SITE`. `available:false` tant que le câblage n'a jamais été synchronisé — carte **absente** plutôt que vide (une carte vide se lit comme un réseau sans liaisons). Voir **Topologie inter-sites** |
+| GET | `/api/v1/network-topology` | Oui | **Graphe INTER-SITES** (le maillage des backhauls). **Servi depuis NOTRE base — zéro appel au contrôleur.** Le câblage vient de la table `site_links` (rapatrié 1×/jour par `site_topology_sync_job`) ; la **santé** de chaque liaison est relue **en direct** depuis `devices`/`device_metrics`. Renvoie `synced_at` (date du **câblage** — l'état, lui, est de maintenant), `sites[]` (`depth` = couche, `parent`, `degree`, `reachable`, **`device_count`/`device_down_count`** = le compteur « 14/1 », **`is_down`** = site ENTIÈREMENT tombé, le seul cas qui rougit ses liaisons, **`occupancy_pct`/`saturated`** = occupation de sa liaison la plus chargée — voir **Occupation d'un backhaul AF60**), **`latitude`/`longitude`/`position_source`** = position du pylône, jointe depuis `site_locations` sur la chaîne **exacte** du nom de site — `null` quand elle est inconnue, jamais devinée), `edges[]` (une **liaison logique** par paire de sites, portant 1..n `links[]` physiques, `redundant`, `is_tree_edge`, `health`), **`routes`** (indexé par site : `role` (`decider`/`child`/`root`) + `exits` + `decider`, `best_id` + `best_reason`, et par chemin `hops[]` / `headroom_mbps` / `max_rate_mbps` / `bottleneck` (le maillon de plus petite MARGE, pas le plus occupé) / `coverage` / `usable`. **Tous** les chemins sont rendus — c'est l'UI qui replie. Voir **Routes vers Internet**), `layout` (`components`, `orphan_sites`, `unreached_sites`, `extra_edges`) et `stats` (dont `routes_truncated_sites`). `?root=` sinon `TOPOLOGY_ROOT_SITE`. `available:false` tant que le câblage n'a jamais été synchronisé — carte **absente** plutôt que vide (une carte vide se lit comme un réseau sans liaisons). Voir **Topologie inter-sites** |
 | POST | `/api/v1/network-topology/sync` | Oui | **Rapatrie le câblage maintenant** (le seul chemin de ce module qui parle à UISP), sans attendre le job quotidien — après une intervention terrain. **502** si le contrôleur est injoignable ; la table reste alors intacte |
 | GET | `/api/v1/traffic/top-destinations` | Oui | **Volume** Internet par opérateur/CDN (ASN) sur `?period=24h\|7d\|30d` : SUM(down/up) GROUP BY asn depuis `traffic_dest_stats`, trié par total + part %. `traffic_service.get_top_destinations` |
 | GET | `/api/v1/traffic/throughput` | Oui | **Débit** (Gb/s) par opérateur sur le dernier bucket : descendant/montant Mbps + part du download. Montre le partage de la bande passante WAN en direct. `traffic_service.get_throughput` |
@@ -1510,9 +1643,9 @@ visibles sur `/incidents`.
 | Anomalies détectées | `/incidents` | Anomalies actuellement détectées (lecture seule, résolution automatique) |
 | _(bandeau, toutes pages)_ | `AlertBanner` dans `AppShell` | **Anomalies à acquitter à la main** — F60 dégradée / vitesse de port dégradée / équipement instable, dans l'en-tête collant, avec un bouton **Résoudre** par ligne. Ne rend **rien** quand il n'y a rien à acquitter. ⚠️ Une ligne peut désigner une anomalie **déjà rétablie** : elle atteste que c'est arrivé, `/incidents` dit ce qui se passe maintenant. Rafraîchi toutes les 30 s. Source : `/manual-alerts`. Voir **Bandeau d'anomalies à acquitter** |
 | Capacité du réseau | `/capacity` | 2 cercles (LTU/airMAX) consommé vs disponible sur tout le réseau + barres par site (LTU/airMAX séparés) ; clic site → table Rockets (connectés/max + largeur). Donut SVG custom (pas de lib de charts). Inclut la section **« Capacité infra par site »** (table Site/Équip. infra/Max/Marge, marge +N vert / -N rouge) alimentée par la clé `infra` de `/network-capacity` |
-| Topologie du réseau | `/topology` | **Graphe inter-sites** — sites rendus par l'icône de pylône (`public/devices/antenne.png` ; ⚠️ **dans `devices/`** car le middleware d'auth intercepte tout sauf ce dossier — ailleurs l'image serait redirigée vers `/login`). **Pas de `refreshInterval`**, contrairement aux autres pages : elle affiche du **câblage**, pas des métriques vivantes. Affiche la date du dernier rapatriement du câblage, distincte de l'état des équipements qui est de maintenant. **Écran dépouillé** : le graphe seul (ni tuiles, ni légende, ni liste des liaisons — le détail d'un lien est au survol). **Pleine largeur + menu replié à l'arrivée** (`FULL_WIDTH_ROUTES` dans `AppShell` : la colonne perd son `max-w-6xl` et la barre latérale se masque). Le repli se commande par un bouton dans l'en-tête du menu, et un bouton flottant le ramène quand il est masqué — **jamais un clic n'importe où** : le graphe est lui-même cliquable (sélection d'un site), un basculement au moindre clic ferait disparaître le menu par accident. L'effet est clé sur `pathname` seul, donc un repli/dépli manuel n'est pas écrasé tant qu'on reste sur la page. Sous chaque site, le compteur **« 14/1 »** (équipements d'infra / en panne, la part rouge) et, si une de ses liaisons est pleine, un **anneau violet** autour de son icône + le pourcentage d'occupation (cf. **Le SITE saturé sur `/topology`** — canal visuel séparé, la saturation étant orthogonale à la panne). ⚠️ **Aucun bloc d'anomalies sous la carte** : sites sans liaison, composantes séparées et extrémités non supervisées restent **exacts dans la réponse d'API** (`layout.orphan_sites`, `layout.components`, `stats.unsupervised_ends`) et **visibles sur le dessin** (un site orphelin y est dessiné, simplement flottant) ; `scripts/dump_site_topology.py` continue de les nommer en clair. Rendu SVG **en couches** (jamais en arbre — le graphe porte de vraies boucles), nœuds cliquables pour filtrer les liaisons d'un site, liaisons colorées par **notre** mesure (vert au-dessus du plancher / ambre dégradée / rouge hors service / **gris non mesurée**), boucles de redondance en pointillé. Sous le graphe : la liste des liaisons avec leurs liens physiques et l'état de chaque bout, puis la section **« Ce que la carte ne montre pas »** (sites sans liaison, composantes séparées, liaisons sans mesure, extrémités non supervisées). Complète `SiteTopology` (intra-site, sur `/sites`). **Bascule Graphe / Carte** dans l'en-tête → voir **Vue carte de la topologie**. Source : `/network-topology` |
+| Topologie du réseau | `/topology` | **Graphe inter-sites** — sites rendus par l'icône de pylône (`public/devices/antenne.png` ; ⚠️ **dans `devices/`** car le middleware d'auth intercepte tout sauf ce dossier — ailleurs l'image serait redirigée vers `/login`). **`refreshInterval` 60 s** depuis le 2026-08-17 (elle n'en avait délibérément pas tant qu'elle n'affichait que du câblage — les **Routes vers Internet** y ont mis de la charge live, sur laquelle on décide ; 60 s = la cadence du poll AF60, pas plus vite). Affiche la date du dernier rapatriement du câblage, distincte de l'état des équipements qui est de maintenant. **Écran dépouillé** : le graphe seul (ni tuiles, ni légende, ni liste des liaisons — le détail d'un lien est au survol). **Pleine largeur + menu replié à l'arrivée** (`FULL_WIDTH_ROUTES` dans `AppShell` : la colonne perd son `max-w-6xl` et la barre latérale se masque). Le repli se commande par un bouton dans l'en-tête du menu, et un bouton flottant le ramène quand il est masqué — **jamais un clic n'importe où** : le graphe est lui-même cliquable (sélection d'un site), un basculement au moindre clic ferait disparaître le menu par accident. L'effet est clé sur `pathname` seul, donc un repli/dépli manuel n'est pas écrasé tant qu'on reste sur la page. Sous chaque site, le compteur **« 14/1 »** (équipements d'infra / en panne, la part rouge) et, si une de ses liaisons est pleine, un **anneau violet** autour de son icône + le pourcentage d'occupation (cf. **Le SITE saturé sur `/topology`** — canal visuel séparé, la saturation étant orthogonale à la panne). ⚠️ **Aucun bloc d'anomalies sous la carte** : sites sans liaison, composantes séparées et extrémités non supervisées restent **exacts dans la réponse d'API** (`layout.orphan_sites`, `layout.components`, `stats.unsupervised_ends`) et **visibles sur le dessin** (un site orphelin y est dessiné, simplement flottant) ; `scripts/dump_site_topology.py` continue de les nommer en clair. Rendu SVG **en couches** (jamais en arbre — le graphe porte de vraies boucles), nœuds cliquables pour filtrer les liaisons d'un site, liaisons colorées par **notre** mesure (vert au-dessus du plancher / ambre dégradée / rouge hors service / **gris non mesurée**), boucles de redondance en pointillé. Sous le graphe : la liste des liaisons avec leurs liens physiques et l'état de chaque bout, puis la section **« Ce que la carte ne montre pas »** (sites sans liaison, composantes séparées, liaisons sans mesure, extrémités non supervisées). Complète `SiteTopology` (intra-site, sur `/sites`). **Bascule Graphe / Carte** dans l'en-tête → voir **Vue carte de la topologie**. **Panneau latéral `TopologyRoutesPanel`** à la sélection d'un site : **toutes** ses sorties vers Internet (repliées au-delà de 3, jamais filtrées), la meilleure en tête, chaque saut en **jauge `porté / plafond`** et le **point de saturation** — celui où il RESTE le moins, pas le plus rempli. Dit d'abord la NATURE du site : « point de décision » (plusieurs sorties) ou « site enfant » avec renvoi vers son décideur. Cliquer une route la **surligne** (le graphe estompe le reste, la carte filtre — `highlightPairs`/`highlightSites`, les deux vues ne peuvent pas se contredire). ⚠️ Une route non mesurée n'affiche **aucune barre** et jamais « 0 % ». Voir **Routes vers Internet**. Source : `/network-topology` |
 | Destinations Internet | `/traffic` | 3 sections : **Débit en direct** (descendant/montant Gb/s + partage par opérateur, `/traffic/throughput`, refresh 30 s), **Débit descendant par opérateur** (graphe d'aires empilées SVG sur 1h/6h/24h, `/traffic/throughput-history`) et **Volume** (par opérateur sur 24h/7j/30j, down/up/total + part, `/traffic/top-destinations`). Repère les candidats à un serveur de cache. **Vide tant que `NETFLOW_COLLECTOR_ENABLED=false` ou que le routeur n'exporte pas vers le collecteur** |
-| Règles du routeur | `/router-rules` | Sous **FAI** dans la barre latérale (à côté du Journal des blocages). Les coupures d'abonnés **réellement posées sur le routeur de cœur**, lues en direct à l'ouverture. Complète les deux autres vues du blocage : le **journal** dit ce qui s'est passé, la **base** ce qu'on croit avoir posé, celle-ci ce que le routeur porte **maintenant** — la seule qui réponde à « ce client a payé, pourquoi est-il coupé ? ». Tuiles (règles, coupés à tort, MAC inconnues, coupures manquantes, posées par nous), bloc rouge des **coupures absentes du routeur**, table filtrable (client/MAC/site/état/origine/trafic jeté/commentaire). ⚠️ **Pas de `refreshInterval`** (comme `/topology`, et pour une raison plus forte) : chaque chargement ouvre une session API RouterOS — le clic dans le menu **est** la demande, et le bouton « Actualiser » rejoue la lecture. Une règle **désactivée** est listée mais marquée « ne coupe pas » (elle explique un client bloqué toujours en ligne). Source : `/router-rules` |
+| Règles du routeur | `/router-rules` | Sous **FAI** dans la barre latérale (à côté du Journal des blocages). Les coupures d'abonnés **réellement posées sur le routeur de cœur**, lues en direct à l'ouverture. Complète les deux autres vues du blocage : le **journal** dit ce qui s'est passé, la **base** ce qu'on croit avoir posé, celle-ci ce que le routeur porte **maintenant** — la seule qui réponde à « ce client a payé, pourquoi est-il coupé ? ». Tuiles (règles, coupés à tort, MAC inconnues, coupures manquantes, posées par nous), bloc rouge des **coupures absentes du routeur**, table filtrable (client/MAC/site/état/origine/trafic jeté/commentaire). ⚠️ **Pas de `refreshInterval`** (⚠️ `/topology` en a repris un depuis : ici la raison est plus forte) : chaque chargement ouvre une session API RouterOS — le clic dans le menu **est** la demande, et le bouton « Actualiser » rejoue la lecture. Une règle **désactivée** est listée mais marquée « ne coupe pas » (elle explique un client bloqué toujours en ligne). Source : `/router-rules` |
 | Diagnostics d'accès | `/access-diagnostics` | 2 sections d'anomalies de gestion du parc abonné (sidebar **Anomalies**) : **LR qui refusent le SSH** (mot de passe invalide / SSH désactivé / clé d'hôte incompatible — les **offline sont exclus**, ce n'est pas un refus) et **découverts par radio mais absents de UISP** (non provisionnés, potentiellement non facturés). Source : `/access-diagnostics`. La 1re remplace côté UI l'ancien diag SSH par grep de logs. La 2e porte l'**action d'enrôlement** : bouton par ligne + « Tout enrôler dans UISP », avec un interrupteur **Forcer** décoché par défaut (il écrase une clé existante — cf. **Enrôlement UISP**). Une ligne déjà enrôlée affiche la date au lieu du bouton : elle attend le sync quotidien |
 
 ### À implémenter (prochaines phases)

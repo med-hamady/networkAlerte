@@ -72,10 +72,18 @@ export default function TopologyGraph({
   topo,
   onSelectSite,
   selectedSite,
+  highlightPairs = null,
+  highlightSites = null,
 }: {
   topo: NetworkTopology
   onSelectSite: (site: string) => void
   selectedSite: string | null
+  // Chemin surligné (une route vers Internet choisie dans le panneau). Quand il
+  // est posé, il PRIME sur l'estompage par site.
+  // ⚠️ Les deux vont ENSEMBLE : surligner les arêtes sans rallumer leurs nœuds
+  // ferait lire le chemin comme rompu.
+  highlightPairs?: Set<string> | null
+  highlightSites?: Set<string> | null
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const [viewport, setViewport] = useState({ w: 0, h: 0 })
@@ -187,8 +195,14 @@ export default function TopologyGraph({
           const a = positions.get(edge.site_a)
           const b = positions.get(edge.site_b)
           if (!a || !b) return null
-          const dim = selectedSite != null
-            && selectedSite !== edge.site_a && selectedSite !== edge.site_b
+          const key = `${edge.site_a}|${edge.site_b}`
+          // Un chemin surligné PRIME sur l'estompage par site : c'est la
+          // question la plus précise que l'opérateur vient de poser.
+          const onRoute = highlightPairs?.has(key) ?? false
+          const dim = highlightPairs
+            ? !onRoute
+            : selectedSite != null
+              && selectedSite !== edge.site_a && selectedSite !== edge.site_b
           // Le STYLE du trait dit le SUPPORT : radio en tirets, fibre/cuivre en
           // trait plein. Les boucles de redondance, elles, se lisent maintenant
           // à leur COULEUR (gris) — les tirets ne les distinguaient plus, toutes
@@ -202,12 +216,12 @@ export default function TopologyGraph({
           const portFrom = aIsLeft ? edge.port_a : edge.port_b
           const portTo = aIsLeft ? edge.port_b : edge.port_a
           return (
-            <g key={`${edge.site_a}|${edge.site_b}`} opacity={dim ? 0.18 : 1}>
+            <g key={key} opacity={dim ? 0.18 : 1}>
               <path
                 d={curve(a, b, !edge.is_tree_edge, g, dyL, dyR)}
                 fill="none"
                 stroke={edgeColor(edge, downSites)}
-                strokeWidth={edge.redundant ? 3.5 : 2}
+                strokeWidth={(edge.redundant ? 3.5 : 2) + (onRoute ? 1.5 : 0)}
                 strokeDasharray={edge.medium === 'wireless' ? '7 5' : undefined}
                 strokeLinecap="round"
               />
@@ -239,7 +253,11 @@ export default function TopologyGraph({
           const p = positions.get(site.site)!
           const isRoot = site.site === topo.root
           const selected = selectedSite === site.site
-          const dim = selectedSite != null && !selected
+          // ⚠️ Le pendant du surlignage des arêtes : sans rallumer les nœuds du
+          // chemin, ses extrémités resteraient éteintes et il se lirait rompu.
+          const dim = highlightSites
+            ? !highlightSites.has(site.site)
+            : selectedSite != null && !selected
           return (
             <g
               key={site.site}

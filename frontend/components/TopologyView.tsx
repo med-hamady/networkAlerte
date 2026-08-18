@@ -13,20 +13,42 @@
 // et visible sur le dessin : un site orphelin y est dessiné, simplement flottant.
 // `scripts/dump_site_topology.py` continue de les nommer en clair.
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { NetworkTopology } from '@/lib/types'
 import TopologyGraph from '@/components/TopologyGraph'
 import TopologyMap from '@/components/TopologyMap'
+import TopologyRoutesPanel from '@/components/TopologyRoutesPanel'
 
 type ViewMode = 'graph' | 'map'
 
 export default function TopologyView({ topo }: { topo: NetworkTopology }) {
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
+  const [selectedRoute, setSelectedRoute] = useState<string | null>(null)
   // Le GRAPHE reste la vue par défaut, délibérément : il est complet (tous les
   // sites y figurent, même ceux sans position connue) et ne dépend d'aucun
   // service externe. La carte est un complément — elle apporte la distance et
   // la direction, que le graphe en couches ne peut pas montrer.
   const [mode, setMode] = useState<ViewMode>('graph')
+
+  // ⚠️ Changer de site remet la route à zéro ICI, dans le même geste — pas dans
+  // un `useEffect`, qui laisserait un surlignage périmé le temps d'une frame.
+  const pickSite = (site: string | null) => {
+    setSelectedSite(site)
+    setSelectedRoute(null)
+  }
+
+  // Le chemin surligné, résolu en clés d'arêtes. Même clé `site_a|site_b` que
+  // celle du rendu : c'est ce qui garantit que le surlignage retombe sur les
+  // bons traits (verrouillé côté backend par un test d'orientation).
+  const highlight = useMemo(() => {
+    if (!selectedSite || !selectedRoute) return null
+    const route = topo.routes?.[selectedSite]?.paths.find((p) => p.id === selectedRoute)
+    if (!route) return null
+    return {
+      pairs: new Set(route.hops.map((h) => `${h.site_a}|${h.site_b}`)),
+      sites: new Set(route.sites),
+    }
+  }, [topo, selectedSite, selectedRoute])
 
   return (
     <>
@@ -52,7 +74,7 @@ export default function TopologyView({ topo }: { topo: NetworkTopology }) {
           <h1 className="text-xl font-bold text-slate-900">Topologie du réseau</h1>
           <div className="flex shrink-0 items-center gap-3">
             {selectedSite && (
-              <button onClick={() => setSelectedSite(null)}
+              <button onClick={() => pickSite(null)}
                       className="text-xs text-blue-700 hover:underline">
                 Tout afficher
               </button>
@@ -84,24 +106,57 @@ export default function TopologyView({ topo }: { topo: NetworkTopology }) {
               la carte montée derrière le graphe laisserait tourner une instance
               Google Maps invisible, et une carte dimensionnée à zéro se cadre
               de travers au retour. */}
-          <div className="flex min-h-0 flex-1 flex-col">
-            {mode === 'graph' ? (
-              <TopologyGraph topo={topo} onSelectSite={setSelectedSite}
-                             selectedSite={selectedSite} />
-            ) : (
-              <TopologyMap topo={topo} onSelectSite={setSelectedSite}
-                           selectedSite={selectedSite} />
+          {/*
+            Rangée : la vue à gauche, les routes du site sélectionné à droite.
+
+            ⚠️ `min-h-0` sur la RANGÉE comme sur l'`aside` — sans lui, le
+            panneau qui défile refuse de se comprimer et repousse toute la
+            colonne hors de l'écran (même symptôme que ci-dessus, autre chemin).
+            ⚠️ Largeur FIXE et pas d'animation : le graphe garde `flex-1` et son
+            ResizeObserver recadre seul, mais une transition de largeur le
+            ferait relayouter à chaque frame.
+          */}
+          <div className="flex min-h-0 flex-1 gap-3">
+            {/* ⚠️ `min-w-0` est aussi indispensable que `min-h-0`, et pour la
+                même raison par l'autre axe : un enfant flex vaut `min-width:
+                auto`, donc cette colonne refuse de descendre sous la largeur
+                intrinsèque du SVG qu'elle contient. Sans lui, elle garde sa
+                pleine largeur et POUSSE le panneau hors de l'écran — il est
+                bien monté, simplement invisible au-delà du bord droit. */}
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+              {mode === 'graph' ? (
+                <TopologyGraph topo={topo} onSelectSite={pickSite}
+                               selectedSite={selectedSite}
+                               highlightPairs={highlight?.pairs ?? null}
+                               highlightSites={highlight?.sites ?? null} />
+              ) : (
+                <TopologyMap topo={topo} onSelectSite={pickSite}
+                             selectedSite={selectedSite}
+                             highlightPairs={highlight?.pairs ?? null}
+                             highlightSites={highlight?.sites ?? null} />
+              )}
+            </div>
+
+            {selectedSite && (
+              <aside className="flex min-h-0 w-80 shrink-0 flex-col border-l
+                                border-slate-200 pl-3">
+                <TopologyRoutesPanel topo={topo} site={selectedSite}
+                                     selectedRouteId={selectedRoute}
+                                     onSelectRoute={setSelectedRoute} />
+              </aside>
             )}
           </div>
 
           {/* Deux fraîcheurs, et il faut le dire : le câblage date du dernier
-              rapatriement, l'état des équipements est de maintenant. Une seule
-              date laisserait croire que tout l'écran a le même âge. */}
+              rapatriement (1×/jour), l'état et la CHARGE des liaisons sont ceux
+              du dernier poll, réactualisés toutes les minutes. Une seule date
+              laisserait croire que tout l'écran a le même âge. */}
           <p className="shrink-0 pt-2 text-xs text-slate-400">
             Racine : {topo.root} ({topo.root_source}). Le lien Internet→HQ
             n&apos;existe pas dans le contrôleur — la racine est un réglage, pas
             une déduction. Câblage rapatrié le {formatSynced(topo.synced_at)} ;
-            état des équipements relevé en direct.
+            état et charge des liaisons issus du dernier poll, réactualisés
+            chaque minute.
           </p>
         </section>
       </div>

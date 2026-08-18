@@ -27,9 +27,17 @@ interface Props {
   topo: NetworkTopology
   selectedSite: string | null
   onSelectSite: (site: string | null) => void
+  // Chemin surligné (une route vers Internet choisie dans le panneau). La carte
+  // FILTRE là où le graphe estompe — c'est le bon geste sur une carte, et le
+  // panneau restant monté à la bascule Graphe/Carte, ne pas propager ferait se
+  // contredire les deux vues sur le même chemin.
+  highlightPairs?: Set<string> | null
+  highlightSites?: Set<string> | null
 }
 
-export default function TopologyMap({ topo, selectedSite, onSelectSite }: Props) {
+export default function TopologyMap({
+  topo, selectedSite, onSelectSite, highlightPairs = null, highlightSites = null,
+}: Props) {
   const divRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<any>(null)
   const infoRef = useRef<any>(null)
@@ -90,10 +98,14 @@ export default function TopologyMap({ topo, selectedSite, onSelectSite }: Props)
     const downSites = downSiteSet(topo.sites)
     const bounds = new g.maps.LatLngBounds()
 
-    // Sélection d'un site = on ne garde que SES liaisons, comme sur le graphe.
-    const edges = selectedSite
-      ? topo.edges.filter((e) => e.site_a === selectedSite || e.site_b === selectedSite)
-      : topo.edges
+    // Un chemin surligné PRIME sur le filtre par site : c'est la question la
+    // plus précise que l'opérateur vient de poser.
+    // Sinon, sélection d'un site = on ne garde que SES liaisons, comme sur le graphe.
+    const edges = highlightPairs
+      ? topo.edges.filter((e) => highlightPairs.has(`${e.site_a}|${e.site_b}`))
+      : selectedSite
+        ? topo.edges.filter((e) => e.site_a === selectedSite || e.site_b === selectedSite)
+        : topo.edges
 
     // 1) Les liaisons d'abord, pour qu'elles passent SOUS les marqueurs.
     edges.forEach((edge) => {
@@ -144,6 +156,10 @@ export default function TopologyMap({ topo, selectedSite, onSelectSite }: Props)
     //    liaisons : masquer les autres pylônes ferait croire à un réseau réduit.
     placeable.forEach((site) => {
       const isSelected = selectedSite === site.site
+      // Hors du chemin surligné : estompé, jamais retiré — masquer un pylône
+      // ferait croire à un réseau qui n'a pas ce site (même règle que pour les
+      // sites sans position, qui sont NOMMÉS sous la carte).
+      const offRoute = highlightSites != null && !highlightSites.has(site.site)
       // SATURATION — anneau violet AUTOUR de la pastille, le même signal que
       // l'anneau du graphe. ⚠️ Marqueur séparé plutôt qu'une bordure : le
       // `strokeColor` de la pastille encode déjà la sélection, et sa couleur de
@@ -175,9 +191,10 @@ export default function TopologyMap({ topo, selectedSite, onSelectSite }: Props)
           path: g.maps.SymbolPath.CIRCLE,
           scale: isSelected ? 11 : 8,
           fillColor: siteColor(site),
-          fillOpacity: 0.95,
+          fillOpacity: offRoute ? 0.25 : 0.95,
           strokeColor: isSelected ? '#1d4ed8' : '#ffffff',
           strokeWeight: isSelected ? 3 : 2,
+          strokeOpacity: offRoute ? 0.3 : 1,
           // ⚠️ Sans `labelOrigin`, Google dessine l'étiquette CENTRÉE sur le
           // point : le nom du site recouvrirait sa propre pastille et la
           // couleur d'état — la seule information de la carte — deviendrait
@@ -209,7 +226,7 @@ export default function TopologyMap({ topo, selectedSite, onSelectSite }: Props)
       map.fitBounds(bounds, 48)
       fittedRef.current = true
     }
-  }, [ready, topo, placeable, selectedSite, onSelectSite])
+  }, [ready, topo, placeable, selectedSite, onSelectSite, highlightPairs, highlightSites])
 
   if (mapsError === 'missing-key') {
     return (

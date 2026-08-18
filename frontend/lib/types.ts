@@ -793,6 +793,148 @@ export interface TopologySite {
   position_source: 'uisp' | 'manual' | null
 }
 
+// ─── Routes vers Internet ────────────────────────────────────────────────────
+// Puisque le graphe porte des boucles, un site a souvent PLUSIEURS chemins vers
+// la racine. Le backend les énumère, les classe et nomme le goulot de chacun.
+//
+// ⚠️ Ce sont les chemins que le CÂBLAGE PERMET. Ni OSPF ni la table de routage
+// ne sont lus : rien ici n'affirme par où le trafic passe réellement. L'UI doit
+// le dire — sans cette phrase, l'écran se lit comme un diagnostic de routage.
+
+/** Un saut d'un chemin — une liaison logique, parcourue de `from` vers `to`. */
+export interface TopologyRouteHop {
+  // ⚠️ CLÉ DE RÉSOLUTION vers `edges[]` : l'orientation est celle de l'arête
+  // (site_a <= site_b), PAS le sens de la marche. La réorienter ferait rater le
+  // lookup `${site_a}|${site_b}` en silence — plus de surlignage, plus
+  // d'infobulle, et aucune erreur nulle part.
+  site_a: string
+  site_b: string
+  // Le sens de parcours vers la racine, que la paire ne porte pas.
+  from: string
+  to: string
+  // ⚠️ Un saut FIBRE ne se juge PAS comme un saut radio : la seule question est
+  // « up, et du trafic passe ». Il n'a ni occupation ni marge, ne porte jamais
+  // le goulot, et ne compte pas comme un trou de mesure — les trois dorsales du
+  // HQ sont en fibre, et les traiter en « non mesurées » faisait afficher
+  // « départage impossible » sur ARF1, AT1 et CT1.
+  is_fibre: boolean
+  // Fibre dont le port SFP ne passe plus la lumière. ⚠️ Distinct d'un simple
+  // « hors service » : l'équipement RÉPOND (le site reste joignable par sa
+  // radio de secours), c'est le verre qui est coupé — et le geste terrain n'est
+  // pas le même. Sans ce contrôle, une dorsale morte passait pour saine.
+  fibre_cut: boolean
+  // 'idle' sur une dorsale = anormal, à signaler. ⚠️ 'unknown' n'est PAS 'idle' :
+  // un switch n'expose pas toujours son débit.
+  traffic: 'active' | 'idle' | 'unknown' | null
+  // Charge COURANTE du saut (dernière valeur relevée en base, écrasée à chaque
+  // poll) et ce qu'il peut encore prendre, en Mb/s. C'est LE chiffre actionnable
+  // — un pourcentage ne se traduit en rien. ⚠️ Pas un pic d'historique : sur un
+  // lien radio, l'état de maintenant décrit mieux le réseau qu'un pic d'hier.
+  // `null` sur la fibre (par construction) et sous 5 % d'occupation, où la
+  // projection n'extrapolerait que du bruit.
+  peak_traffic_mbps: number | null
+  peak_occupancy_pct: number | null
+  max_rate_mbps: number | null
+  headroom_mbps: number | null
+  // `null` = occupation non mesurée (elle n'existe que sur les AF60). Ce n'est
+  // PAS 0 : n'afficher ni « 0 % » ni une barre vide, qui se liraient « fluide ».
+  occupancy_pct: number | null
+  // Verdict du BACKEND contre le seuil réel de l'alerte — ne recopier aucun
+  // barème ici (surtout pas les bandes 70/90 de DeviceDetailModal).
+  saturated: boolean
+  state: 'down' | 'unmeasured' | 'measured' | null
+  degraded: boolean
+  capacity_mbps: number | null
+  // Deux radios entre les deux mêmes sites = UN saut redondant, jamais deux
+  // chemins : la couche IP ne choisit pas la radio.
+  redundant: boolean
+  links_count: number
+  medium: 'wireless' | 'wired' | null
+  is_bottleneck: boolean
+}
+
+export interface TopologyRoute {
+  id: string
+  // Les sites traversés, du site vers la racine.
+  sites: string[]
+  hop_count: number
+  // Sauts qui portent réellement une contrainte de débit. `0` = chemin tout en
+  // FIBRE : rien ne le bride côté radio, donc c'est le meilleur possible.
+  radio_hop_count: number
+  hops: TopologyRouteHop[]
+  // LE verdict, en Mb/s : ce que le chemin peut encore prendre, et son plafond,
+  // bornés par son maillon le plus juste. `null` sur un chemin tout fibre (rien
+  // ne le borne) comme sans historique — `radio_hop_count` sépare les deux cas.
+  headroom_mbps: number | null
+  max_rate_mbps: number | null
+  max_occupancy_pct: number | null
+  // Le maillon qui plafonne le chemin. ⚠️ C'est celui de plus petite MARGE, pas
+  // le plus occupé en % : un lien à 90 % de 1950 Mb/s laisse 195 Mb/s, un lien à
+  // 50 % de 300 Mb/s n'en laisse que 150 — c'est le second qui bride.
+  bottleneck: {
+    site_a: string
+    site_b: string
+    occupancy_pct: number | null
+    headroom_mbps: number | null
+    max_rate_mbps: number | null
+    peak_traffic_mbps: number | null
+  } | null
+  // Le maillon le plus ÉTROIT — une autre question que le goulot, jamais à
+  // confondre avec lui.
+  min_capacity_mbps: number | null
+  measured_hops: number
+  // Jusqu'où va la mesure, comptée sur les sauts RADIO seuls. Un chemin tout en
+  // fibre est 'full' : il n'a rien à mesurer, ce n'est pas un trou.
+  coverage: 'full' | 'partial' | 'none'
+  // Dorsale fibre debout mais SANS trafic — anormal, donc signalé ; le chemin
+  // reste éligible pour autant.
+  fibre_idle_hops: { site_a: string; site_b: string }[]
+  // Ce chemin cède au MÊME endroit qu'un autre (son id) : il n'est donc pas une
+  // alternative pour ce point de rupture. ⚠️ On l'ANNOTE, on ne le cache pas —
+  // toutes les sorties d'un site doivent être visibles.
+  same_bottleneck_as: string | null
+  // Un saut `unmeasured` n'est PAS un saut `down` : seul un lien tombé rend la
+  // route inutilisable. Elle reste AFFICHÉE — l'opérateur doit voir que sa
+  // seconde route existe et qu'elle est morte.
+  usable: boolean
+  down_hops: { site_a: string; site_b: string; fibre_cut: boolean }[]
+  degraded_hops: { site_a: string; site_b: string }[]
+  // ⚠️ AUCUN champ de « projection après bascule », et c'est délibéré : ajouter
+  // le trafic du lien coupé à la charge du secours serait un DOUBLE COMPTAGE.
+  // Dès que la dorsale tombe, elle ne porte plus rien et le trafic est DÉJÀ
+  // reparti par les liaisons de secours — leur mesure courante le contient donc
+  // déjà. Après une coupure, on LIT ; on ne projette pas.
+  is_best: boolean
+}
+
+export interface TopologySiteRoutes {
+  site: string
+  // ⚠️ Qui DÉCIDE de la direction du trafic. Un site à plusieurs sorties
+  // arbitre ; un site à une seule ne choisit rien et remet son trafic au site
+  // du dessus. Afficher « 3 routes » à un enfant lui prête un choix qu'il n'a
+  // pas — ses chemins sont ceux de son décideur.
+  role: 'root' | 'decider' | 'child' | 'isolated' | null
+  // Ses sorties RÉELLES vers la racine (premiers sauts des chemins). ⚠️ Pas ses
+  // liaisons voisines : un cul-de-sac n'est pas une sortie.
+  exits: string[]
+  // Pour un enfant : le premier site en amont qui a un vrai choix — c'est là
+  // qu'on agit. `null` = sortie unique droit sur la racine (NR1, SNDE) :
+  // personne ne peut le rerouter.
+  decider: string | null
+  // 'racine' | 'aucun chemin vers la racine' | null. Jamais une liste vide
+  // muette : une absence de route se lirait comme un oubli du calcul.
+  reason: string | null
+  best_id: string | null
+  // Renseigné SEULEMENT quand best_id est null, et à afficher tel quel : ne pas
+  // trancher est une réponse, à condition de dire pourquoi.
+  best_reason: string | null
+  found: number
+  kept: number
+  // Bornes de l'énumération, rapportées et jamais silencieuses.
+  truncated: { by_hops: boolean; by_budget: boolean }
+  paths: TopologyRoute[]
+}
+
 export interface NetworkTopology {
   available: boolean
   reason?: string
@@ -806,6 +948,9 @@ export interface NetworkTopology {
   root_source: string
   sites: TopologySite[]
   edges: TopologyEdge[]
+  // Indexé par nom de site. Un site absent du dict n'a pas été calculé (réponse
+  // d'une version antérieure) — traiter comme « pas de routes », pas comme zéro.
+  routes: Record<string, TopologySiteRoutes>
   layout: {
     components: string[][]
     orphan_sites: string[]
@@ -817,6 +962,9 @@ export interface NetworkTopology {
     edges: number
     physical_links: number
     unsupervised_ends: string[]
+    // Sites dont l'énumération a buté sur une borne : leur liste de chemins
+    // n'est pas complète, et le panneau doit le dire.
+    routes_truncated_sites: string[]
   }
 }
 

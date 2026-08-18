@@ -27,7 +27,13 @@ Usage :
     dc exec backend python scripts/dump_site_topology.py
     dc exec backend python scripts/dump_site_topology.py --sync
     dc exec backend python scripts/dump_site_topology.py --root "A2 HQ"
+    dc exec backend python scripts/dump_site_topology.py --site "A2 CT2"
     dc exec backend python scripts/dump_site_topology.py --json > topo.json
+
+⚠️ Les bornes de l'énumération des routes ne sont PAS réglables en ligne de
+commande : le script doit appliquer exactement les mêmes que l'API, sinon les
+deux se contrediraient — c'est toute la raison du « la logique vit dans le
+service ».
 """
 
 from __future__ import annotations
@@ -55,6 +61,40 @@ def _end_label(end: dict) -> str:
     if end["link_potential_pct"] is not None:
         bits.append(f"potentiel {end['link_potential_pct']:.0f}%")
     return f"{end['name']} ({', '.join(bits)})"
+
+
+def _route_line(route: dict) -> str:
+    """Une route en une ligne : la chaîne, le goulot, et ce qu'on n'a pas mesuré."""
+    chain = " → ".join(route["sites"])
+    bits = [f"{route['hop_count']} saut(s)"]
+
+    bottleneck = route["bottleneck"]
+    if bottleneck is not None:
+        bits.append(
+            f"goulot {bottleneck['site_a']}↔{bottleneck['site_b']} "
+            f"{bottleneck['occupancy_pct']:.0f} %"
+        )
+    if route["min_capacity_mbps"] is not None:
+        bits.append(f"capacité min {route['min_capacity_mbps']:.0f} Mb/s")
+
+    marks = []
+    if route["is_best"]:
+        # La couverture est dite AVEC le badge : « meilleure » sur 2 sauts
+        # mesurés sur 3 n'est pas la même affirmation que sur 3 sur 3.
+        marks.append(
+            "MEILLEURE" if route["coverage"] == "full"
+            else f"MEILLEURE · {route['measured_hops']}/{route['hop_count']} mesurés"
+        )
+    if not route["usable"]:
+        cut = ", ".join(f"{h['site_a']}↔{h['site_b']}" for h in route["down_hops"])
+        marks.append(f"COUPÉE : {cut} down")
+    if route["coverage"] == "none":
+        marks.append("NON MESURÉE")
+    if route["degraded_hops"]:
+        marks.append(f"{len(route['degraded_hops'])} saut(s) dégradé(s)")
+
+    suffix = f"   [{' · '.join(marks)}]" if marks else ""
+    return f"{chain}   ({' · '.join(bits)}){suffix}"
 
 
 def _print_branch(
@@ -96,6 +136,11 @@ async def main() -> int:
         "--sync", action="store_true",
         help="Rapatrie d'abord le câblage depuis le contrôleur (ce que fait le "
              "job quotidien). Sans ce drapeau, on lit la base — aucun appel UISP.",
+    )
+    parser.add_argument(
+        "--site",
+        help="Ne détailler les routes vers Internet que pour ce site "
+             "(nom EXACT, double espace compris : « A2  ARF1 »).",
     )
     parser.add_argument("--json", action="store_true", help="Sortie JSON brute.")
     args = parser.parse_args()
@@ -169,8 +214,62 @@ async def main() -> int:
                 children[site["parent"]].append(site["site"])
         _print_branch(topo["root"], children, degrees)
 
+    routes = topo.get("routes") or {}
+    print("\n--- ROUTES VERS LA RACINE " + "-" * 47)
+    print("  ⚠️ Chemins permis par le CÂBLAGE. Ni OSPF ni la table de routage ne")
+    print("     sont lus : rien ici n'affirme par où le trafic passe réellement.\n")
+    shown = (
+        [args.site] if args.site
+        else [s for s in sorted(routes) if s != topo["root"]]
+    )
+    if args.site and args.site not in routes:
+        print(f"  site inconnu : « {args.site} » (nom exact attendu)")
+    for site in shown:
+        group = routes.get(site)
+        if group is None:
+            continue
+        if group["reason"]:
+            print(f"  {site} : {group['reason']}")
+            continue
+        print(f"  {site}  —  {group['found']} chemin(s) trouvé(s), "
+              f"{group['kept']} affiché(s)")
+        if group["best_reason"]:
+            print(f"      (pas de meilleure route : {group['best_reason']})")
+        for route in group["paths"]:
+            print(f"      {_route_line(route)}")
+        if group["truncated"]["by_hops"] or group["truncated"]["by_budget"]:
+            limit = "longueur max" if group["truncated"]["by_hops"] else "budget"
+            print(f"      ⚠️ énumération tronquée ({limit}) — la liste n'est pas complète")
+        print()
+
     print("\n--- CE QUI CLOCHE " + "-" * 55)
     problems = 0
+    real = {s: g for s, g in routes.items() if not g["reason"]}
+    single = sorted(s for s, g in real.items() if g["found"] == 1)
+    if single:
+        problems += 1
+        print(f"  {len(single)} site(s) n'ont qu'UNE seule route vers la racine —")
+        print("  aucune redondance : la liaison coupée, le site tombe :")
+        for site in single:
+            print(f"      {site}")
+    saturated = sorted(
+        site for site, group in real.items()
+        for best in [next((p for p in group["paths"] if p["is_best"]), None)]
+        if best is not None and any(h["saturated"] for h in best["hops"])
+    )
+    if saturated:
+        problems += 1
+        print(f"  {len(saturated)} site(s) dont la MEILLEURE route est déjà saturée —")
+        print("  leur chemin le plus dégagé est au bout du souffle :")
+        for site in saturated:
+            print(f"      {site}")
+    blind = sorted(s for s, g in real.items() if g["best_reason"])
+    if blind:
+        problems += 1
+        print(f"  {len(blind)} site(s) sans meilleure route désignable —")
+        print("  on ne recommande pas un chemin dont on ne sait rien :")
+        for site in blind:
+            print(f"      {site} : {real[site]['best_reason']}")
     if layout["orphan_sites"]:
         problems += 1
         print(f"  {len(layout['orphan_sites'])} site(s) d'infra sans AUCUNE liaison —")

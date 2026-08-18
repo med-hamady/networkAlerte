@@ -64,7 +64,7 @@ _GOLD = (249, 181, 36)      # #f9b524 — l'accent de la marque
 # doivent rester distinguables entre elles ET sur de l'imagerie satellite
 # (sable, toits gris, eau). La marque tient l'identité — cadres, titres, texte
 # des étiquettes — la sémantique tient la lecture.
-_GREEN = (30, 107, 79)      # backhaul radio de dorsale + site en service
+_GREEN = (30, 107, 79)      # backhaul radio actif + site en service
 _BLUE = (26, 95, 208)       # fibre / cuivre
 _AMBER = (224, 138, 30)     # backhaul radio hors arbre = boucle de secours
 _RED = (192, 39, 30)        # site programmé
@@ -183,7 +183,7 @@ _SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
 # l'un des deux : deux légendes du même dessin finiraient par se contredire.
 LEGEND: tuple[dict, ...] = (
     {"color": _BLUE, "shape": "solid", "label": "Liaison fibre / cuivre"},
-    {"color": _GREEN, "shape": "dashed", "label": "Backhaul radio — dorsale"},
+    {"color": _GREEN, "shape": "dashed", "label": "Backhaul radio — active"},
     {"color": _AMBER, "shape": "dashed", "label": "Backhaul radio — boucle de secours"},
     {"color": _GREEN, "shape": "pin", "label": "Site en service"},
     {"color": _RED, "shape": "pin", "label": "Site programmé (extension)"},

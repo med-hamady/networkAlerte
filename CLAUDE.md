@@ -1078,7 +1078,7 @@ l'accent — ce dernier sert précisément à marquer la source Internet.
 
 ⚠️ **Les couleurs FONCTIONNELLES de la carte ne suivent pas la marque.** Elles
 doivent rester distinguables entre elles **et** sur de l'imagerie satellite
-(sable, toits gris, eau) : bleu fibre, vert dorsale, ambre secours, rouge
+(sable, toits gris, eau) : bleu fibre, vert actif, ambre secours, rouge
 programmé. La marque tient l'identité — cadres, titres, texte des étiquettes —
 la sémantique tient la lecture.
 

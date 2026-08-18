@@ -6,7 +6,8 @@ ENV PYTHONPATH=/app
 
 # System dependencies
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc libpq-dev iputils-ping fping curl && \
+    apt-get install -y --no-install-recommends gcc libpq-dev iputils-ping fping curl \
+        fonts-dejavu-core && \
     rm -rf /var/lib/apt/lists/*
 
 # Python dependencies

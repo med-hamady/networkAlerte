@@ -14,6 +14,7 @@
 // `scripts/dump_site_topology.py` continue de les nommer en clair.
 
 import { useMemo, useState } from 'react'
+import { endpoints } from '@/lib/api'
 import type { NetworkTopology } from '@/lib/types'
 import TopologyGraph from '@/components/TopologyGraph'
 import TopologyMap from '@/components/TopologyMap'
@@ -21,9 +22,56 @@ import TopologyRoutesPanel from '@/components/TopologyRoutesPanel'
 
 type ViewMode = 'graph' | 'map'
 
+// Nom de fichier proposé par le backend. On le relit plutôt que de le recomposer
+// ici : c'est lui qui date le document, et deux endroits qui nomment le même
+// fichier finiraient par ne plus s'accorder.
+function filenameFromResponse(res: Response, fallback: string): string {
+  const header = res.headers.get('content-disposition') ?? ''
+  const match = /filename="?([^";]+)"?/i.exec(header)
+  return match?.[1] ?? fallback
+}
+
 export default function TopologyView({ topo }: { topo: NetworkTopology }) {
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
   const [selectedRoute, setSelectedRoute] = useState<string | null>(null)
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
+
+  // Téléchargement de la cartographie en Word.
+  //
+  // ⚠️ On passe par `fetch` + blob et PAS par un simple `<a download>` : la
+  // composition des images prend une seconde ou deux côté serveur, et un lien
+  // nu ne laisse rien voir de cette attente — pire, un échec s'ouvrirait en
+  // JSON brut dans un onglet au lieu d'être affiché ici.
+  const downloadWord = async () => {
+    setExporting(true)
+    setExportError(null)
+    try {
+      const res = await fetch(endpoints.networkTopologyWord)
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`
+        try {
+          detail = (await res.json())?.detail ?? detail
+        } catch {
+          /* réponse non JSON : on garde le code HTTP */
+        }
+        throw new Error(detail)
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filenameFromResponse(res, 'cartographie-sites-a2.docx')
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      setExportError((err as Error).message)
+    } finally {
+      setExporting(false)
+    }
+  }
   // Le GRAPHE reste la vue par défaut, délibérément : il est complet (tous les
   // sites y figurent, même ceux sans position connue) et ne dépend d'aucun
   // service externe. La carte est un complément — elle apporte la distance et
@@ -79,6 +127,23 @@ export default function TopologyView({ topo }: { topo: NetworkTopology }) {
                 Tout afficher
               </button>
             )}
+            {exportError && (
+              <span className="max-w-xs truncate text-xs text-red-600" title={exportError}>
+                {exportError}
+              </span>
+            )}
+            {/* La carte imprimable : sites sur fond de plan, une ville par page.
+                Ce n'est pas une capture de l'écran ci-dessous — c'est la même
+                topologie redessinée en cartographie, coordonnées réelles. */}
+            <button
+              onClick={downloadWord}
+              disabled={exporting}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-xs
+                         font-medium text-slate-700 shadow-sm transition-colors
+                         hover:bg-slate-50 disabled:cursor-wait disabled:text-slate-400"
+            >
+              {exporting ? 'Génération…' : 'Carte Word'}
+            </button>
             {/* Bascule Graphe / Carte. La sélection de site est PARTAGÉE par les
                 deux vues : filtrer sur un site puis basculer garde le filtre —
                 le perdre obligerait à refaire le geste à chaque aller-retour. */}

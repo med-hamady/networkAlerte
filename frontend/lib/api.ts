@@ -78,6 +78,10 @@ export const endpoints = {
   clientsConsumptionRange: (start: string, end: string) => `${API_BASE}/clients/consumption?period=custom&start=${start}&end=${end}`,
   networkCapacity:      `${API_BASE}/network-capacity`,
   networkTopology:      `${API_BASE}/network-topology`,
+  // Cartographie des sites en document Word (une ville par page). Réponse
+  // BINAIRE : le proxy relaie le corps et les en-têtes tels quels, donc ne
+  // JAMAIS passer cette URL à `fetcher` (qui fait `.json()` et échouerait).
+  networkTopologyWord:  `${API_BASE}/network-topology/export/word`,
   // Carte des clients : points plaçables + positions aberrantes à corriger.
   clientMap:            `${API_BASE}/map`,
   uispSync:             `${API_BASE}/uisp/sync`,

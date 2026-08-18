@@ -17,14 +17,21 @@ backhaul installed this morning, which the operator wants on the map now.
 
 from __future__ import annotations
 
+import asyncio
+import datetime
 import logging
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.services import site_topology_service, uisp_service
+from app.services import site_map_service, site_topology_service, uisp_service
+
+_DOCX_MEDIA_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +61,49 @@ async def get_network_topology(
     sans liaisons.
     """
     return await site_topology_service.get_site_topology(db, root=root)
+
+
+@router.get("/export/word")
+async def export_network_topology_word(
+    root: str | None = Query(None, description="Site racine, comme sur le GET."),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Cartographie des sites en document **Word**, une ville par page.
+
+    Même source que la page : le câblage de `site_links` et les positions de
+    `site_locations`, lus à l'instant de l'appel — le document sorti ce matin
+    porte donc le backhaul posé hier.
+
+    ⚠️ Le rendu des images est **synchrone et gourmand** (composition PIL sur
+    un fond de carte de 2000 px). Il part dans un thread : le laisser sur la
+    boucle bloquerait tout le process API pendant la seconde ou deux que dure
+    la composition — les polls et les autres requêtes avec.
+
+    409 tant que le câblage n'a jamais été synchronisé (rien à cartographier) ;
+    503 si les fonds de carte ou une police manquent dans l'image — deux
+    défauts d'installation, à distinguer d'une erreur de données.
+    """
+    topo = await site_topology_service.get_site_topology(db, root=root)
+    if not topo.get("available"):
+        raise HTTPException(
+            status_code=409,
+            detail="Le câblage inter-sites n'a jamais été synchronisé : "
+                   "rien à cartographier. Lancer POST /network-topology/sync.",
+        )
+
+    try:
+        content = await asyncio.to_thread(site_map_service.build_topology_docx, topo)
+    except site_map_service.MapAssetsError as exc:
+        logger.error("Export Word de la carte impossible : %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    stamp = datetime.date.today().isoformat()
+    filename = f"cartographie-sites-a2-{stamp}.docx"
+    return Response(
+        content=content,
+        media_type=_DOCX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/sync")

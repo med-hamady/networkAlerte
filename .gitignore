@@ -57,3 +57,6 @@ yarn-error.log*
 
 # Temporary dumps
 devices_tmp*
+
+# Cache local des tuiles de carte (scripts/build_site_map_basemaps.py)
+backend/scripts/.tilecache/

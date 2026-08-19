@@ -60,3 +60,7 @@ devices_tmp*
 
 # Cache local des tuiles de carte (scripts/build_site_map_basemaps.py)
 backend/scripts/.tilecache/
+
+# Export de topologie de PROD (MAC, coordonnees des pylones) — jamais versionne.
+# Le produire a la demande : scripts/dump_site_topology.py --json > topo-prod.json
+topo-prod.json

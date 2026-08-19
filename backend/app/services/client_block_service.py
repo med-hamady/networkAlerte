@@ -1056,3 +1056,148 @@ async def enforce_content_blocks(session: AsyncSession) -> int:
         await session.commit()
 
     return enforced
+
+
+# ── Platform intent — the per-platform API used by external systems ──────────
+# `set_content_block` above takes the COMPLETE desired set, which suits the
+# dashboard (the operator sees every checkbox). An external caller sends ONE
+# platform and a verb: "tiktok must be blocked on this MAC". Translating that
+# into a complete set is this section's job, and it is not a formality:
+#
+#   ⚠️ The stored set does NOT mean "blocked" — its meaning depends on the
+#   filter DIRECTION. In `denylist` it lists what is cut; in `allowlist` it
+#   lists the ONLY things reachable. So "block tiktok" is `add` in one
+#   direction and `remove` in the other. Appending blindly would, on an
+#   allowlist client, make TikTok the one site he CAN reach — the exact
+#   opposite of the order, silently and durably.
+#
+# We therefore translate INTENT (reachable / not reachable) rather than edit the
+# raw set, and refuse the two cases where the intent cannot be expressed at all
+# (below) instead of guessing.
+
+
+class UnknownPlatformError(ValueError):
+    """Requested platform key is not in the catalogue (caller maps to 400)."""
+
+
+class ContentFilterConflictError(ValueError):
+    """Intent cannot be expressed on this client as configured (caller → 409)."""
+
+
+def validate_platforms(platforms: list[str]) -> list[str]:
+    """Normalise caller-supplied platform keys, refusing anything unknown.
+
+    ⚠️ Deliberately STRICTER than `_normalize_categories`, which drops unknown
+    keys silently. That is right for a re-assert loop replaying a stored set,
+    and wrong here: a caller sending "titkok" would get a 200 saying the filter
+    was applied while nothing was blocked at all. An integration bug must be
+    visible on the first call, not discovered by a subscriber still on TikTok.
+    """
+    cleaned = [p.strip().lower() for p in platforms if p and p.strip()]
+    if not cleaned:
+        raise UnknownPlatformError("Aucune plateforme fournie.")
+    unknown = [p for p in cleaned if p not in VALID_CONTENT_CATEGORIES]
+    if unknown:
+        raise UnknownPlatformError(
+            f"Plateforme(s) inconnue(s) : {', '.join(sorted(set(unknown)))}. "
+            f"Valeurs acceptées : {', '.join(VALID_CONTENT_CATEGORIES)}.",
+        )
+    # Catalogue order, deduplicated — same convention as _normalize_categories.
+    return [key for key in VALID_CONTENT_CATEGORIES if key in set(cleaned)]
+
+
+def effective_blocked_platforms(categories: list[str] | None, mode: str | None) -> list[str]:
+    """Catalogue platforms currently UNREACHABLE, whatever the filter direction.
+
+    What the caller actually asks about ("is TikTok cut on this client?"), as
+    opposed to the stored set, whose meaning flips with the direction. Empty
+    when no filter is active. In `allowlist` this lists the catalogue entries
+    left out — the client is of course also cut off from everything else, which
+    is why the direction itself is reported alongside.
+    """
+    active = _normalize_categories(categories)
+    if not active:
+        return []
+    if _normalize_content_mode(mode) == CONTENT_MODE_ALLOW:
+        return [key for key in VALID_CONTENT_CATEGORIES if key not in active]
+    return active
+
+
+def _ordered(keys: set[str]) -> list[str]:
+    """Catalogue display order — the same convention as `_normalize_categories`."""
+    return [key for key in VALID_CONTENT_CATEGORIES if key in keys]
+
+
+def platform_target_categories(
+    current: list[str] | None,
+    mode: str | None,
+    platforms: list[str],
+    blocked: bool,
+) -> tuple[list[str], str]:
+    """Return the (complete set, direction) that carries out the requested intent.
+
+    ``blocked=True`` → these platforms must become unreachable; ``False`` → they
+    must become reachable. Everything else on the client is left exactly as it
+    is: this is a cumulative edit, never a reset.
+
+    Raises `ContentFilterConflict` in the one case the intent cannot be honoured
+    without doing something bigger than what was asked (see below).
+    """
+    active = _normalize_categories(current)
+    requested = set(platforms)
+
+    # No filter running: the direction is free, so express the intent the plain
+    # way. `content_block_mode` may still read "allowlist" from a filter that
+    # was cleared long ago — honouring that stale direction here would be
+    # absurd (blocking TikTok would have to enumerate the whole internet).
+    if not active:
+        if not blocked:
+            return [], CONTENT_MODE_DENY  # nothing is blocked — nothing to lift
+        return _ordered(requested), CONTENT_MODE_DENY
+
+    direction = _normalize_content_mode(mode)
+    if direction == CONTENT_MODE_ALLOW:
+        # The set lists what is REACHABLE: blocking removes, unblocking adds.
+        target = set(active) - requested if blocked else set(active) | requested
+        if not target:
+            # An empty set clears the filter entirely (see set_content_block),
+            # i.e. would hand this client the FULL internet — the opposite of a
+            # block order. Refuse rather than surprise: the operator has to pick
+            # a direction on the dashboard.
+            raise ContentFilterConflictError(
+                "Ce client est en mode « autoriser uniquement » et la plateforme "
+                "demandée est la dernière encore autorisée : la bloquer effacerait "
+                "le filtre et lui rouvrirait tout l'internet. Repasser le client en "
+                "mode « bloquer sauf » depuis le dashboard, puis réessayer.",
+            )
+    else:
+        # The set lists what is BLOCKED: blocking adds, unblocking removes.
+        target = (set(active) | requested) if blocked else (set(active) - requested)
+
+    return _ordered(target), direction
+
+
+async def set_platform_block(
+    session: AsyncSession, lr: Lr, platforms: list[str], blocked: bool,
+) -> tuple[bool, str]:
+    """Block / unblock named platforms on one client, leaving its other rules alone.
+
+    The per-platform entry point behind the external content-filter API. Resolves
+    the intent against the client's current filter and direction, then hands the
+    complete set to `set_content_block` — so persistence, SSH enforcement, retry
+    and the 120 s re-assert job are exactly those of the dashboard path.
+
+    Returned ``ok`` reflects ENFORCEMENT, not intent (same contract as
+    `set_content_block`): a recorded-but-unapplied filter comes back False and
+    is retried by `enforce_content_blocks`.
+    """
+    target, direction = platform_target_categories(
+        lr.blocked_categories, lr.content_block_mode, platforms, blocked,
+    )
+    # `blocked_categories is None` is the terminal "nothing to manage" marker.
+    # Asking to lift a filter that was never there is a legitimate no-op — and
+    # doing it without SSH keeps a replayed unblock free of a pointless session
+    # on a client that may well be asleep.
+    if lr.blocked_categories is None and not target:
+        return True, f"Aucun filtre de contenu actif sur {lr.name} — rien à retirer."
+    return await set_content_block(session, lr, target, direction)

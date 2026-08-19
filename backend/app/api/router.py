@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from app.api.deps import (
+    require_content_block_client,
     require_fai_client,
     require_uisp_assign_client,
     require_user_or_api_key,
@@ -12,6 +13,7 @@ from app.api.endpoints import (
     auth,
     client_signal,
     clients,
+    content_filter,
     dashboard,
     device_map,
     devices,
@@ -78,6 +80,20 @@ api_router.include_router(
 # du réseau, seulement à demander des coupures.
 api_router.include_router(
     router_rules.router, prefix="/router-rules", tags=["fai"], dependencies=_auth,
+)
+# Filtre de contenu par PLATEFORME, indexé par MAC — consommé par le système
+# tiers qui vend les options de filtrage. AUTH PROPRE : sa clé dédiée
+# CONTENT_BLOCK_API_KEY (require_content_block_client), scellée à ce router.
+# Elle ne retombe délibérément PAS sur l'auth /fai : filtrer TikTok chez un
+# abonné et lui couper la ligne sont deux pouvoirs distincts, tenus par deux
+# systèmes distincts. Les opérateurs continuent d'y accéder par leur session ou
+# la clé maîtresse — la clé dédiée AJOUTE un chemin cloisonné, elle n'en retire
+# aucun. La page /content-block du dashboard, elle, passe toujours par
+# PUT /devices/{id}/content-block (auth normale) : elle envoie l'ensemble
+# complet des cases cochées, là où ces routes sont cumulatives.
+api_router.include_router(
+    content_filter.router, prefix="/content-filter", tags=["content-filter"],
+    dependencies=[Depends(require_content_block_client)],
 )
 api_router.include_router(incidents.router, prefix="/incidents", tags=["incidents"], dependencies=_auth)
 # Bandeau d'anomalies à acquitter à la main — canal PARALLÈLE à /incidents, qui

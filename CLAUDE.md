@@ -218,7 +218,8 @@ backend/app/
 | `TOPOLOGY_ROOT_SITE` | Site racine du graphe inter-sites de `/topology` (défaut `A2 HQ`). **Ne se déduit pas** : le lien Internet→HQ n'est pas un data-link, le contrôleur ignore quel site fait face à l'amont. Site absent du graphe ⇒ repli sur le site de plus haut degré, **annoncé** dans `root_source` (un repli silencieux se lirait comme une déduction) |
 | `UISP_IGNORED_SITES` | Sites UISP à exclure du sync (ni créés ni màj). **Séparateur `;`** (les noms de sites contiennent des virgules, ex. `Bureau, A2`), insensible à la casse. Pour les sites bureautiques dont un switch LAN serait vu comme infra |
 | `UISP_STATION_SYNC_ENABLED` | Active l'import des **stations clientes** (LR abonnés) depuis `GET /nms/api/v2.1/devices?role=station` dans la table `lrs`, sur le même `uisp_sync_job` (après l'infra). Apporte le **mode (routeur/bridge)** + le **statut « dernier état connu »** UISP de chaque client → `/access` reste complet/exact même quand un Rocket/LR est down. Écrit les colonnes `uisp_*`, **jamais** `topology_mode` ni l'état de blocage. ⚠️ **`rocket_id`/`location`/`ip_address` sont PARTAGÉS** avec `discovery_service` depuis le 2026-07-22, sous une règle d'arbitrage unique : **la source qui a vu la station le plus récemment gagne** (`_adopt_uisp_attribution`, compare `uisp_last_seen` à `last_discovered_at`). Raison : le rattachement radio lit la liste des stations d'un AP, donc ne corrige QUE les clients **allumés** — un client qui déménage puis tombe restait figé sur son ancien AP, son ancien site et son ancienne IP (morte → « hors ligne » pour toujours), alors que son propre `uisp_ap_name` portait déjà la bonne réponse. ⚠️ **L'AP se reprend, l'IP presque jamais** : pour une station **déconnectée**, l'IP annoncée par UISP n'est qu'un **dernier état connu** que le DHCP a pu réattribuer (au 1er passage réel, UISP a rendu `10.135.3.159` pour **trois** abonnés déconnectés). L'IP n'est donc reprise que si UISP voit la station **active** **ou** l'a vue depuis moins de **`UISP_IP_TRUST_HOURS`** (défaut 24 h — une **fenêtre**, pas un booléen : une panne d'1 h ne périme pas un bail DHCP, 3 semaines si), qu'elle est dans `MANAGEMENT_IP_CIDRS`, et qu'elle est **libre** — jamais volée à un autre détenteur (ni en base, ni à une station déjà servie dans le même passage : `claimed_ips`). Un conflit incrémente `ip_conflict` et laisse les deux lignes intactes : seul le radio voit le terrain. Identité = **MAC** (converge avec la découverte radio). AF60 (backhaul) exclus. Importe le **roster complet** (UISP ne retourne que les stations provisionnées). ⚠️ **SUPPRESSION pour rester synchro** : à la fin du passage, tout LR **déjà vu par UISP** (`uisp_synced_at` renseigné — colonne écrite nulle part ailleurs) dont la MAC n'est plus dans le roster est **déprovisionné dans UISP** → **`session.delete`** (cascade métriques/incidents/historique ; le journal FAI est un fichier par MAC, préservé). Supprimé **même si `client_blocked`** (déprovisionné = plus servi). Un client **découvert par radio seul** (`uisp_synced_at` NULL) n'est **jamais** supprimé (propriété de `discovery_service` — l'effacer déclencherait une recréation en boucle). **Garde-fou anti-catastrophe** : la passe de suppression est **entièrement sautée si le roster revient vide** (`fetch_devices` lève sur erreur transport, mais un payload vide/malformé serait sinon lu comme « tout le monde déprovisionné » et purgerait tout le parc). Défaut `false` |
-| `UISP_ASSIGN_API_KEY` | **Clé API cloisonnée à la seule route `POST /uisp/assign`**, tenue par le système de paiement qui adopte les équipements installés. ⚠️ Raison d'être : `/uisp/assign` est servie sur la **VIP publique `.229`**, qui fronte l'**API ENTIÈRE** (contrairement au listener `.233`, restreint à `/fai`) — sans clé dédiée, faire consommer cette route par un tiers oblige à lui confier `API_KEY`, donc `DELETE /devices/{id}` et `/uisp/sync` par la même occasion (situation constatée le **2026-08-11** : l'équipe paiement détenait la clé maîtresse). Ne **retombe pas** sur l'auth `/fai` : bloquer un abonné et écrire dans le contrôleur sont deux pouvoirs distincts. Vide = repli sur l'auth normale (`API_KEY`/session), c.-à-d. ce qu'on veut éviter. Router séparé `endpoints/uisp_assign.py` — une dépendance de router étant **additive et non surchargeable par route**, c'est la seule façon de cloisonner sans ouvrir `/uisp/sync`. ⚠️ **Les 4 clés doivent porter des valeurs DISTINCTES** : `_validate_production_secrets` **refuse de démarrer** si deux d'entre elles partagent une valeur — une duplication annulerait le cloisonnement en silence (qui tient l'une tient l'autre) et aucun test d'isolation ne la verrait, ces tests comparant des comparateurs et non les valeurs déployées. Verrouillé par `tests/test_uisp_assign_scoped_key.py` |
+| `UISP_ASSIGN_API_KEY` | **Clé API cloisonnée à la seule route `POST /uisp/assign`**, tenue par le système de paiement qui adopte les équipements installés. ⚠️ Raison d'être : `/uisp/assign` est servie sur la **VIP publique `.229`**, qui fronte l'**API ENTIÈRE** (contrairement au listener `.233`, restreint à `/fai`) — sans clé dédiée, faire consommer cette route par un tiers oblige à lui confier `API_KEY`, donc `DELETE /devices/{id}` et `/uisp/sync` par la même occasion (situation constatée le **2026-08-11** : l'équipe paiement détenait la clé maîtresse). Ne **retombe pas** sur l'auth `/fai` : bloquer un abonné et écrire dans le contrôleur sont deux pouvoirs distincts. Vide = repli sur l'auth normale (`API_KEY`/session), c.-à-d. ce qu'on veut éviter. Router séparé `endpoints/uisp_assign.py` — une dépendance de router étant **additive et non surchargeable par route**, c'est la seule façon de cloisonner sans ouvrir `/uisp/sync`. ⚠️ **Les 5 clés doivent porter des valeurs DISTINCTES** : `_validate_production_secrets` **refuse de démarrer** si deux d'entre elles partagent une valeur — une duplication annulerait le cloisonnement en silence (qui tient l'une tient l'autre) et aucun test d'isolation ne la verrait, ces tests comparant des comparateurs et non les valeurs déployées. Verrouillé par `tests/test_uisp_assign_scoped_key.py` |
+| `CONTENT_BLOCK_API_KEY` | **Clé API cloisonnée aux seules routes `/content-filter`** (filtre de contenu par plateforme, indexé par MAC), tenue par le système tiers qui pilote les options de filtrage vendues à l'abonné. ⚠️ Ne **retombe pas** sur l'auth `/fai` : filtrer TikTok chez un abonné et lui **couper la ligne** sont deux pouvoirs distincts, tenus par deux systèmes distincts — partager une clé rendrait chacun capable du travail de l'autre. Vide = repli sur l'auth normale (`API_KEY`/session), c.-à-d. ce qu'on veut éviter. ⚠️ **Les 5 clés doivent porter des valeurs DISTINCTES** (cf. `UISP_ASSIGN_API_KEY`). Verrouillé par `tests/test_content_filter_api.py` |
 | `UISP_WRITE_API_TOKEN` | Token UISP **séparé, en écriture**, réservé à l'association équipement ↔ client CRM (`POST /uisp/assign`). Tout le reste — dont le `uisp_sync_job`, qui parcourt ~1300 équipements **sans surveillance** — garde `UISP_API_TOKEN` en **lecture seule** : aucun job de fond ne peut alors modifier le contrôleur, quoi qu'il arrive, et le token d'écriture est révocable sans interrompre la supervision. Vide = repli sur `UISP_API_TOKEN` |
 | `UISP_DEVICE_KEY` | **Clé d'enrôlement du contrôleur** (UISP → Paramètres → Équipements), forme `wss://<hôte>:443+<jeton>+<option TLS>`. **UNE seule valeur pour tout le parc** — c'est un identifiant du contrôleur, pas de l'équipement. Posée sur un CPE par `ssh_service.set_uisp_key` pour le faire apparaître dans l'inventaire (cf. **Enrôlement UISP** ci-dessous). Vide = enrôlement indisponible (l'API répond 409 au lieu d'écrire une config vide) |
 | `UISP_ROCKET_SSH_USERNAME` / `UISP_ROCKET_SSH_PASSWORD_TEMPLATE` | Creds posés sur un Rocket créé par le sync. `{site}` = code extrait du nom de site UISP (`A2 SNDE`→`SNDE`). Défaut `ubnt` / `A2{site}@4321$A2` |
@@ -1402,6 +1403,57 @@ alors aucune trace) ; puis, si l'équipement est absent du contrôleur, lui pose
 la clé (sans elle il ne se déclare jamais → rien à associer). L'enregistrement
 n'étant pas instantané, la réponse porte `pending_registration`.
 
+#### Filtre de contenu par plateforme — l'API tierce (2026-08-19)
+
+`endpoints/content_filter.py` + `client_block_service.set_platform_block`. Un
+système tiers nous envoie une **MAC** et un **nom de plateforme** (`tiktok`) et
+demande de la bloquer ou de la rétablir. Tout le mécanisme est celui de la page
+`/content-block` : SSH sur le LR, empoisonnement DNS dnsmasq, intention
+persistée, ré-appliquée toutes les 120 s. **Aucune logique de filtrage n'est
+réécrite** — la route traduit une intention puis appelle `set_content_block`.
+
+⚠️ **L'ensemble stocké ne veut PAS dire « bloqué » — son sens dépend de la
+DIRECTION.** `Lr.blocked_categories` liste ce qui est coupé en `denylist`, et
+ce qui est **le seul joignable** en `allowlist`. Un `append` naïf sur un client
+en allowlist ferait donc de TikTok le seul site accessible à l'abonné à qui on
+demandait de le **bloquer** — silencieusement et durablement. D'où
+`platform_target_categories`, qui traduit l'**intention** (joignable / pas
+joignable) au lieu d'éditer l'ensemble brut : bloquer **ajoute** en denylist et
+**retire** en allowlist. La réponse expose les deux (`blocked_platforms` =
+l'effectif, `categories` = le brut) parce que le brut est ininterprétable sans
+`mode`.
+
+⚠️ **Un seul cas est REFUSÉ (409)** : bloquer la dernière plateforme encore
+autorisée d'un client en allowlist. L'ensemble deviendrait vide, or un ensemble
+vide **efface le filtre** (contrat de `set_content_block`) — c.-à-d. rouvrirait
+**tout l'internet** à cet abonné, l'inverse exact de l'ordre reçu. On refuse
+plutôt que de surprendre.
+
+⚠️ **Sans filtre actif, la direction stockée est un vestige** et est ignorée :
+`content_block_mode` garde la dernière direction employée même après un
+effacement, et l'honorer obligerait, pour bloquer TikTok, à énumérer tout
+l'internet comme « autorisé ». On repart alors en `denylist`.
+
+⚠️ **CUMULATIF, contrairement à `PUT /devices/{id}/content-block`** qui prend
+l'ensemble complet (juste pour la page, où l'opérateur voit toutes les cases).
+Un tiers qui n'envoie qu'une plateforme n'a pas à connaître — ni à réémettre —
+l'état complet du client, qu'un opérateur a pu changer entre-temps.
+
+⚠️ **Une plateforme inconnue est refusée (400)**, là où `_normalize_categories`
+les ignore silencieusement. Ce silence est juste pour un **rejeu** d'un ensemble
+déjà stocké, et faux pour une API : un `titkok` mal orthographié rendrait `200`
+en n'ayant rien bloqué, et le défaut se découvrirait sur un abonné toujours sur
+TikTok. `validate_platforms` est donc délibérément plus stricte que le chemin
+interne.
+
+⚠️ **Rien n'est écrit dans le journal FAI** : celui-ci recense les **coupures
+d'accès**, et y mêler du filtrage de contenu changerait le sens de ses lignes —
+et le format d'un fichier **déjà écrit** (cf. **Agent d'une action FAI**). Le
+`user` transmis est journalisé dans le log applicatif à côté de l'action.
+
+Doc d'intégration : `docs/api-content-filter.md`. Verrouillé par
+`tests/test_content_filter_api.py`.
+
 #### Agent d'une action FAI — le champ `user` (2026-08-06)
 
 Le système de paiement transmet désormais **qui** déclenche chaque coupure :
@@ -1810,6 +1862,10 @@ visibles sur `/incidents`.
 | POST | `/api/v1/devices/{id}/enroll-uisp` | Oui | **Enrôle un LR dans UISP** en posant la clé du contrôleur par SSH (sans reboot ni coupure). `ok` = contrôleur ayant **adopté** l'équipement, constaté sur l'équipement. Sans effet sur un LR déjà provisionné pour ce contrôleur ; body `force` passe outre (clé orpheline seulement — sur un équipement sain, forcer le dé-enrôle). 409 si `UISP_DEVICE_KEY` absente. Cf. **Enrôlement UISP** |
 | POST | `/api/v1/access-diagnostics/enroll-uisp` | Oui | Même chose **en lot** sur les LR vus par radio mais absents de UISP. Body `lr_ids` (vide = toute la population) + `force`. Séquentiel, concurrence SSH bornée : compter jusqu'à 45 s par équipement |
 | GET | `/api/v1/access-diagnostics` | Oui | **Deux anomalies d'accès abonné** : `ssh_refused` (LR encore `up` dont `lrs.ssh_status` ∈ {`auth_failed`,`ssh_disabled`,`host_key_mismatch`}) + `radio_not_in_uisp` (LR `last_discovered_at`≠NULL **et** `uisp_synced_at`=NULL = vu par radio mais non provisionné dans UISP) + `counts`. `access_diagnostics_service` |
+| POST | `/api/v1/content-filter/block` | **Content** | **Rend une ou plusieurs plateformes INACCESSIBLES à un abonné**, par **MAC** de son LR — l'API du filtre de contenu pour un système tiers. Body `mac` + `platform` (une clé `"tiktok"` **ou** une liste) + `user` (agent, facultatif). Clé **dédiée `CONTENT_BLOCK_API_KEY`** (router `content_filter.py` séparé) : ne retombe **pas** sur l'auth `/fai` — filtrer et couper sont deux pouvoirs distincts. ⚠️ **CUMULATIF** (contrairement à `PUT /devices/{id}/content-block`, qui prend l'ensemble complet) : l'appelant n'a pas à connaître ni réémettre l'état courant, qu'un opérateur a pu changer depuis le dashboard. ⚠️ Une plateforme **inconnue est refusée (400)**, jamais ignorée. Réutilise `set_content_block` (donc SSH sur le LR, intention persistée, ré-appliquée à 120 s). `ok` reflète l'**application**, pas la prise en compte. 400 MAC/plateforme invalide · 404 MAC inconnue · 409 LR en bridge **ou** dernière plateforme autorisée d'un client en `allowlist`. ⚠️ **Location nginx dédiée** (`location ^~ /api/v1/content-filter/`) : `proxy_read_timeout` **120 s** au lieu des 30 s généraux — poser un filtre ouvre une session SSH, et sous batch attend son tour dans la file (10 en parallèle) ; à 30 s l'appelant reçoit un 504 sur un filtre RÉELLEMENT appliqué (piège déjà corrigé sur `/fai` puis `/uisp/assign`). Zone de débit `content_filter` 120 r/min. Servie sur la VIP `.229`, **pas** sur le listener public `.233` (restreint à `/fai`). Voir **Filtre de contenu par plateforme** |
+| POST | `/api/v1/content-filter/unblock` | **Content** | Rend les plateformes de nouveau accessibles. Cumulatif lui aussi : les autres filtres du client ne bougent pas. Aucun filtre actif = succès **sans session SSH** |
+| GET | `/api/v1/content-filter/status` | **Content** | Filtre actuel d'un abonné par `?mac=` (lecture seule, ne touche pas au LR). `blocked_platforms` = ce qui est **effectivement injoignable**, quelle que soit la direction |
+| GET | `/api/v1/content-filter/platforms` | **Content** | Catalogue des plateformes filtrables (clé, libellé, domaines) — **à lire plutôt qu'à coder en dur** côté appelant : les jeux de domaines sont ajustables par env, et une clé ajoutée devient utilisable sans changement chez le tiers |
 | POST | `/api/v1/fai/block` | FAI | Bloque un client par **MAC** de son LR (système de paiement). Body `mac` + `reason` + `mode` (`full`/`whatsapp_only`) + **`user`** (l'**agent** à l'origine de l'ordre — cf. **Agent d'une action FAI**). Même mécanisme que `/devices/{id}/block-client`, indexé par MAC. 409 si LR en bridge |
 | POST | `/api/v1/fai/unblock` | FAI | Débloque un client par **MAC** de son LR. Body `mac` + **`user`** (idem) |
 | GET | `/api/v1/fai/status` | FAI | État de blocage actuel d'un client par **MAC** (lecture seule, ne touche pas au LR) |

@@ -82,6 +82,14 @@ def _uisp_assign_api_key_matches(x_api_key: str | None) -> bool:
     return hmac.compare_digest(x_api_key or "", settings.uisp_assign_api_key)
 
 
+def _content_block_api_key_matches(x_api_key: str | None) -> bool:
+    """True if the header equals the dedicated /content-filter key (timing-safe)."""
+    settings = get_settings()
+    if not settings.content_block_api_key:
+        return False  # no dedicated key — /content-filter falls back to normal auth
+    return hmac.compare_digest(x_api_key or "", settings.content_block_api_key)
+
+
 async def require_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -178,5 +186,25 @@ async def require_uisp_assign_client(
     over `api_key` — and with it `DELETE /devices/{id}` and `/uisp/sync`.
     """
     if _uisp_assign_api_key_matches(x_api_key):
+        return None
+    return await require_user_or_api_key(request, x_api_key, db)
+
+
+async def require_content_block_client(
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """Auth for the /content-filter routes: their own key, or the normal auth.
+
+    The third party driving per-platform filtering holds `content_block_api_key`,
+    which unlocks ONLY these routes. It deliberately does NOT fall back to
+    `require_fai_client`: filtering TikTok on a subscriber and cutting his line
+    entirely are two different powers, and the two callers are two different
+    systems — sharing a key would make each able to do the other's job. Falling
+    back to `require_user_or_api_key` keeps the master key and operator sessions
+    working: the dedicated key ADDS a scoped path, it never removes one.
+    """
+    if _content_block_api_key_matches(x_api_key):
         return None
     return await require_user_or_api_key(request, x_api_key, db)

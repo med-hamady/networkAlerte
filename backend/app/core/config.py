@@ -81,6 +81,17 @@ class Settings(BaseSettings):
     # (master api_key ou session), donc sur exactement ce qu'on veut éviter.
     uisp_assign_api_key: str = ""
 
+    # Clé dédiée aux SEULES routes /content-filter (filtre de contenu par
+    # plateforme, indexé par MAC), tenue par le système tiers qui pilote les
+    # options de filtrage vendues à l'abonné. Scellée à ces routes : elle
+    # n'ouvre ni /fai/block (couper l'accès entier d'un abonné est un autre
+    # pouvoir), ni /devices, ni le reste de l'API.
+    #
+    # Vide = pas de clé dédiée ; /content-filter retombe alors sur l'auth
+    # normale (master api_key ou session), donc sur exactement ce qu'on évite
+    # en confiant une clé à un tiers.
+    content_block_api_key: str = ""
+
     # Journal d'audit des blocages / déblocages (une ligne par action). Fichier
     # texte, dans un volume bind-monté → survit aux redéploiements.
     fai_log_path: str = "/app/logs/fai_actions.log"
@@ -1023,6 +1034,7 @@ class Settings(BaseSettings):
             "FAI_API_KEY": self.fai_api_key,
             "LR_VERIFY_API_KEY": self.lr_verify_api_key,
             "UISP_ASSIGN_API_KEY": self.uisp_assign_api_key,
+            "CONTENT_BLOCK_API_KEY": self.content_block_api_key,
         }
         seen: dict[str, str] = {}
         for name, value in scoped.items():

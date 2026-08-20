@@ -808,6 +808,8 @@ class ContentBlockRequest(BaseModel):
     # Direction: "denylist" = allow all but these; "allowlist" = block all but
     # these. Omitted keeps the LR's current direction.
     mode: Literal["denylist", "allowlist"] | None = None
+    # Toggle the 18+ family-resolver filter. Omitted keeps the current setting.
+    block_adult: bool | None = None
 
 
 class ContentBlockResult(BaseModel):
@@ -815,6 +817,7 @@ class ContentBlockResult(BaseModel):
     message: str
     blocked_categories: list[str]
     content_block_mode: str
+    block_adult_content: bool
     content_block_enforced_at: datetime.datetime | None
 
 
@@ -848,9 +851,11 @@ async def set_content_block(
       - ``allowlist``: nothing except the selected services (e.g. WhatsApp
         only). Best-effort — see the service docstring: blocking "everything
         else" by DNS cannot stop raw-IP or DoH access.
-    ``categories`` is the complete desired set; an empty list clears the filter
-    in either direction. Persisted and re-asserted by the enforcement job
-    (survives an LR reboot). Only valid on LR devices in router mode.
+    ``categories`` is the complete desired set. ``block_adult`` toggles the 18+
+    filter (forwards the client's DNS to a family-safe resolver). The filter is
+    cleared only when there are no categories AND adult is off. Persisted and
+    re-asserted by the enforcement job (survives an LR reboot). Only valid on LR
+    devices in router mode.
     """
     device = await device_service.get_device(db, device_id)
     if not isinstance(device, Lr):
@@ -869,13 +874,14 @@ async def set_content_block(
             ),
         )
     ok, message = await client_block_service.set_content_block(
-        db, device, body.categories, body.mode
+        db, device, body.categories, body.mode, body.block_adult
     )
     return ContentBlockResult(
         ok=ok,
         message=message,
         blocked_categories=device.blocked_categories or [],
         content_block_mode=device.content_block_mode,
+        block_adult_content=device.block_adult_content,
         content_block_enforced_at=device.content_block_enforced_at,
     )
 

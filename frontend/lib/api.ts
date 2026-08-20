@@ -279,20 +279,22 @@ export interface ContentBlockResult {
   message: string
   blocked_categories: string[]
   content_block_mode: ContentBlockMode
+  block_adult_content: boolean
   content_block_enforced_at: string | null
 }
 
-// Set a client's full set of categories + direction on its LR. An empty
-// `categories` clears the filter whatever the mode.
+// Set a client's full set of categories + direction + adult filter on its LR.
+// The filter is cleared only when categories is empty AND blockAdult is false.
 export async function setContentBlock(
   lrId: number,
   categories: string[],
   mode: ContentBlockMode = 'denylist',
+  blockAdult = false,
 ): Promise<ContentBlockResult> {
   const res = await fetch(endpoints.contentBlock(lrId), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ categories, mode }),
+    body: JSON.stringify({ categories, mode, block_adult: blockAdult }),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))

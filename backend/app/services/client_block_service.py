@@ -910,8 +910,17 @@ def _keep_dnat(lr: Lr) -> bool:
     return bool(lr.client_blocked and lr.block_mode == MODE_WHATSAPP)
 
 
+def _content_active(lr: Lr, categories: list[str]) -> bool:
+    """True when the LR should carry a content-block (categories OR adult filter)."""
+    return bool(categories) or lr.block_adult_content
+
+
 async def _apply_content_block(lr: Lr, categories: list[str]) -> tuple[bool, str]:
-    """Push the current content filter (or its removal) to the LR over SSH."""
+    """Push the current content filter (or its removal) to the LR over SSH.
+
+    Carries both dimensions: the per-category domain poisoning AND the adult
+    filter (``block_adult_content`` → forward upstream to the family resolvers).
+    """
     settings = get_settings()
     domains = settings.content_block_domains_for(categories)
     primary_pw = lr.ssh_password
@@ -928,6 +937,8 @@ async def _apply_content_block(lr: Lr, categories: list[str]) -> tuple[bool, str
             mode=_normalize_content_mode(lr.content_block_mode),
             allow_resolver=settings.content_block_allow_resolver,
             expected_mac=lr.mac_address,
+            block_adult=lr.block_adult_content,
+            family_resolvers=settings.content_block_family_resolver_list,
         )
     _pin_fp(lr, ok, observed_fp)
     _promote_password(lr, primary_pw, used_pw)
@@ -936,18 +947,17 @@ async def _apply_content_block(lr: Lr, categories: list[str]) -> tuple[bool, str
 
 async def set_content_block(
     session: AsyncSession, lr: Lr, categories: list[str] | None,
-    mode: str | None = None,
+    mode: str | None = None, block_adult: bool | None = None,
 ) -> tuple[bool, str]:
-    """Set a client's per-category content filter and enforce it immediately.
+    """Set a client's content filter (categories + adult) and enforce it now.
 
-    ``categories`` is the full desired set (an empty list clears the filter,
-    whatever the mode). ``mode`` is the direction — ``denylist`` (block those
-    services, allow the rest) or ``allowlist`` (block everything, allow only
-    those); omitted keeps the LR's current direction. Records the desired state,
-    then tries to enforce it over SSH; if the LR is unreachable the intent
-    persists and ``enforce_content_blocks`` retries — so the returned ``ok``
-    reflects *enforcement*, not intent. Refuses when the LR has no SSH
-    credentials (an unenforceable filter is the trap we avoid).
+    ``categories`` is the full desired set of blocked services. ``mode`` is the
+    direction — ``denylist`` / ``allowlist`` (omitted keeps the LR's current).
+    ``block_adult`` toggles the 18+ family-resolver filter (None keeps current).
+    The filter is cleared only when there are no categories AND adult is off.
+    Records the desired state, then enforces over SSH; if the LR is unreachable
+    the intent persists and ``enforce_content_blocks`` retries — so ``ok``
+    reflects *enforcement*, not intent. Refuses without SSH credentials.
     """
     if not _has_ssh(lr):
         return (
@@ -958,22 +968,25 @@ async def set_content_block(
         )
 
     normalized = _normalize_categories(categories)
-    # [] signals "ensure cleared" so the enforce loop retries a failed removal;
-    # it becomes None once the clear is confirmed.
-    lr.blocked_categories = normalized if normalized else []
     if mode is not None:
         lr.content_block_mode = _normalize_content_mode(mode)
+    if block_adult is not None:
+        lr.block_adult_content = bool(block_adult)
+    active = _content_active(lr, normalized)
+    # When active, store the category list (None if adult-only); when nothing is
+    # active, [] signals "ensure cleared" so the enforce loop retries a failed
+    # removal, and it becomes None once the clear is confirmed.
+    lr.blocked_categories = (normalized or None) if active else []
     await session.commit()  # acquit intent + release DB conn before the SSH round-trip
 
     ok, msg = await _apply_content_block(lr, normalized)
-    label = (
-        ", ".join(get_settings().content_block_label(c) for c in normalized)
-        if normalized
-        else "aucun"
-    )
+    bits = [get_settings().content_block_label(c) for c in normalized]
+    if lr.block_adult_content:
+        bits.append("contenu adulte (18+)")
+    label = ", ".join(bits) if bits else "aucun"
     if ok:
-        lr.blocked_categories = normalized if normalized else None
-        lr.content_block_enforced_at = _now() if normalized else None
+        lr.blocked_categories = normalized or None
+        lr.content_block_enforced_at = _now() if active else None
         _set_unenforceable(lr, None)
         await session.commit()
         logger.warning(
@@ -1019,7 +1032,9 @@ async def enforce_content_blocks(session: AsyncSession) -> int:
     Skips LRs abandoned for a structural SSH failure. Returns the count applied.
     """
     result = await session.execute(
-        select(Lr).where(Lr.blocked_categories.isnot(None))
+        select(Lr).where(
+            or_(Lr.blocked_categories.isnot(None), Lr.block_adult_content.is_(True))
+        )
     )
     pending = list(result.scalars().all())
     if not pending:
@@ -1032,11 +1047,13 @@ async def enforce_content_blocks(session: AsyncSession) -> int:
         if not _has_ssh(lr):
             continue
         categories = _normalize_categories(lr.blocked_categories)
+        active = _content_active(lr, categories)
         ok, msg = await _apply_content_block(lr, categories)
         if ok:
             enforced += 1
             _set_unenforceable(lr, None)  # SSH réussi → l'abandon éventuel est levé
-            if categories:
+            if active:
+                lr.blocked_categories = categories or None  # collapse [] sentinel
                 lr.content_block_enforced_at = _now()
             else:
                 lr.blocked_categories = None  # clear confirmed → drop out of the loop

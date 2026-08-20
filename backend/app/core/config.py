@@ -594,6 +594,19 @@ class Settings(BaseSettings):
     # a catch-all, so the exceptions need a real resolver to answer them).
     content_block_allow_resolver: str = "8.8.8.8"
 
+    # Family-safe resolvers used by the per-client "block adult content (18+)"
+    # option: the LR's dnsmasq forwards upstream to these (in order), which
+    # maintain the adult-domain categorisation themselves. Default = Cloudflare
+    # for Families (field-verified reachable from an LTU LR, 2026-07-27). The
+    # LR's own resolver is added automatically after these as an availability
+    # fallback (read live from its resolv.conf). Comma-separated.
+    content_block_family_resolvers: str = "1.1.1.3,1.0.0.3"
+
+    @property
+    def content_block_family_resolver_list(self) -> list[str]:
+        """Parse content_block_family_resolvers into a clean list of IPs."""
+        return [r.strip() for r in self.content_block_family_resolvers.split(",") if r.strip()]
+
     def content_block_catalog(self) -> dict[str, list[str]]:
         """Return {category_key: [domains]} for every known content-block service."""
         return {

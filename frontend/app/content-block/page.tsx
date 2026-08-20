@@ -68,6 +68,13 @@ export default function ContentBlockPage() {
     setMode(deviceMode === 'allowlist' ? 'allowlist' : 'denylist')
   }, [lr?.id, deviceMode])
 
+  // 18+ adult filter, seeded the same way. Independent of the categories.
+  const [adult, setAdult] = React.useState(false)
+  const deviceAdult = lr?.block_adult_content ?? false
+  React.useEffect(() => {
+    setAdult(deviceAdult)
+  }, [lr?.id, deviceAdult])
+
   const [applying, setApplying] = React.useState(false)
   const [result, setResult] = React.useState<{ ok: boolean; message: string } | null>(null)
 
@@ -79,6 +86,7 @@ export default function ContentBlockPage() {
   const initial = new Set(lr?.blocked_categories ?? [])
   const dirty =
     mode !== deviceMode ||
+    adult !== deviceAdult ||
     selected.size !== initial.size ||
     [...selected].some((c) => !initial.has(c))
 
@@ -94,12 +102,14 @@ export default function ContentBlockPage() {
 
   // Single write path for both "Appliquer" and "Tout retirer" — the backend
   // takes the complete desired set, so removal is just applying an empty one.
-  const push = async (categories: string[], pushMode: ContentBlockMode = mode) => {
+  const push = async (
+    categories: string[], pushMode: ContentBlockMode, pushAdult: boolean,
+  ) => {
     if (!lr) return
     setApplying(true)
     setResult(null)
     try {
-      const r = await setContentBlock(lr.id, categories, pushMode)
+      const r = await setContentBlock(lr.id, categories, pushMode, pushAdult)
       setResult({ ok: r.ok, message: r.message })
       await mutateDevice()
     } catch (e) {
@@ -109,8 +119,10 @@ export default function ContentBlockPage() {
     }
   }
 
-  const onApply = () => push([...selected])
-  const onRemoveAll = () => push([])
+  const onApply = () => push([...selected], mode, adult)
+  const onRemoveAll = () => push([], mode, false)
+  const hasAnythingApplied =
+    (lr?.blocked_categories.length ?? 0) > 0 || (lr?.block_adult_content ?? false)
 
   const pickClient = (id: number) => {
     setSelectedId(id)
@@ -289,6 +301,30 @@ export default function ContentBlockPage() {
             </div>
           </fieldset>
 
+          {/* 18+ adult filter — a different mechanism (family-safe upstream
+              resolver), so it gets its own block, visually separated. */}
+          <div className={`rounded-lg border p-3 ${adult ? 'border-purple-300 bg-purple-50' : 'border-blue-100'} ${isBridge || noSsh ? 'opacity-60' : ''}`}>
+            <label className={`flex items-start gap-3 ${isBridge || noSsh ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+              <input
+                type="checkbox"
+                checked={adult}
+                disabled={isBridge || noSsh}
+                onChange={() => { setAdult((v) => !v); setResult(null) }}
+                className="w-4 h-4 mt-0.5 shrink-0 accent-purple-600"
+              />
+              <span className="min-w-0">
+                <span className="block text-sm text-slate-800 font-medium leading-tight">
+                  Bloquer le contenu adulte (18+)
+                </span>
+                <span className="block text-[11px] text-blue-400 mt-0.5 leading-snug">
+                  Redirige le DNS de ce client vers un résolveur familial (Cloudflare for Families)
+                  qui bloque automatiquement les sites pour adultes — liste maintenue et mise à jour
+                  côté fournisseur. N'affecte que ce client.
+                </span>
+              </span>
+            </label>
+          </div>
+
           <div className="flex items-center gap-3 pt-1">
             <button
               onClick={onApply}
@@ -303,7 +339,7 @@ export default function ContentBlockPage() {
             {/* One-click removal of every rule on this LR. Only shown when
                 something is actually applied — it acts on the LR's real state,
                 not on the checkboxes, so it works even mid-edit. */}
-            {lr.blocked_categories.length > 0 && (
+            {hasAnythingApplied && (
               <button
                 onClick={onRemoveAll}
                 disabled={!canApply}
@@ -317,12 +353,12 @@ export default function ContentBlockPage() {
               </button>
             )}
 
-            {selected.size === 0 && lr.blocked_categories.length > 0 && (
-              <span className="text-xs text-blue-400">Aucun service coché → le filtre sera retiré.</span>
+            {selected.size === 0 && !adult && hasAnythingApplied && (
+              <span className="text-xs text-blue-400">Rien de coché → le filtre sera retiré.</span>
             )}
           </div>
 
-          <div>
+          <div className="space-y-1">
             {/* Plain-language recap of what will actually happen. */}
             {selected.size > 0 && (
               <p className="text-xs text-slate-600">
@@ -331,6 +367,11 @@ export default function ContentBlockPage() {
                 ) : (
                   <>Ce client aura accès à tout <strong>sauf</strong> : {labelsOf(selected, categories)}.</>
                 )}
+              </p>
+            )}
+            {adult && (
+              <p className="text-xs text-purple-700">
+                Le <strong>contenu adulte (18+)</strong> sera bloqué pour ce client.
               </p>
             )}
           </div>

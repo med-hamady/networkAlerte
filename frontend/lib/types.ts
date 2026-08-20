@@ -65,6 +65,7 @@ export interface Lr extends DeviceBase {
   block_mode: BlockMode
   blocked_categories: string[]
   content_block_mode: 'denylist' | 'allowlist'
+  block_adult_content: boolean
   content_block_enforced_at: string | null
   topology_mode: TopologyMode
   /** Sans IP (hors du sweep de ping) ET non vu par UISP depuis

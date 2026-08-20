@@ -1000,7 +1000,7 @@ _CONTENT_MODE_ALLOW = "allowlist"  # block everything except the listed services
 # Bump whenever the emitted directives change so already-deployed blocks are
 # rewritten on the next enforcement pass even if their (mode, domains) are
 # unchanged. v2 = added IPv6 (`::`) poisoning alongside IPv4 `0.0.0.0`.
-_CONTENT_FILTER_FORMAT = "v2"
+_CONTENT_FILTER_FORMAT = "v3"
 
 def _detect_client_context(
     transport: paramiko.Transport,
@@ -1049,6 +1049,35 @@ def _detect_client_context(
         if net.ip.is_private and not net.ip.is_loopback:
             return str(net.network), str(net.ip)
     return None, None
+
+
+def _detect_internal_resolver(
+    transport: paramiko.Transport, default: str = "10.135.0.1"
+) -> str:
+    """Return the LR's own upstream DNS (first private IPv4 nameserver).
+
+    Used as the availability fallback when the adult-filter family resolver is
+    unreachable. Read live from ``/etc/resolv.conf`` rather than hardcoded, so it
+    adapts per LR; falls back to ``default`` if nothing usable is found.
+    """
+    try:
+        code, out = _exec_capture(
+            transport, "cat /etc/resolv.conf 2>/dev/null", timeout=8
+        )
+    except Exception:
+        return default
+    if code != 0 or not out:
+        return default
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == "nameserver":
+            try:
+                addr = ipaddress.ip_address(parts[1].strip())
+            except ValueError:
+                continue
+            if addr.version == 4 and addr.is_private and not addr.is_loopback:
+                return str(addr)
+    return default
 
 
 def _set_whatsapp_only_sync(
@@ -1285,8 +1314,21 @@ def _set_content_block_sync(
     mode: str = _CONTENT_MODE_DENY,
     allow_resolver: str = "8.8.8.8",
     expected_mac: str | None = None,
+    block_adult: bool = False,
+    family_resolvers: list[str] | None = None,
 ) -> tuple[bool, str, str | None, str | None]:
     """Apply a per-category content filter on the LR — DNS-only, declarative.
+
+    ``block_adult`` adds a third, orthogonal mechanism: forcing this client's
+    dnsmasq to forward upstream to a *family-safe resolver* (Cloudflare for
+    Families 1.1.1.3 by default) which maintains and updates the adult-domain
+    categorisation itself — the only tractable way to block "all 18+ sites"
+    (there are millions, un-listable). Implemented as ``no-resolv`` +
+    ``strict-order`` + the family servers, then the LR's own resolver last as an
+    availability fallback (a blocked domain is a *valid* answer, so dnsmasq never
+    falls through to the unfiltered resolver unless the family one is down).
+    Field-verified 2026-07-27 on an LTU LR: `ping pornhub.com` via 1.1.1.3 → 0.0.0.0
+    while google.com resolved normally.
 
     Two directions, both driven by the same ``domains`` union:
 
@@ -1359,6 +1401,28 @@ def _set_content_block_sync(
         valid_domains: list[str] = [
             d.strip() for d in domains if d and _DOMAIN_RE.match(d.strip())
         ]
+        # Validate the family resolver IPs before shelling out.
+        valid_family: list[str] = []
+        for r in (family_resolvers or []):
+            r = r.strip()
+            try:
+                ipaddress.ip_address(r)
+            except ValueError:
+                continue
+            valid_family.append(r)
+        if block_adult and not valid_family:
+            return (
+                False,
+                "Aucun résolveur de filtrage adulte valide configuré "
+                "(content_block_family_resolvers).",
+                observed,
+                used_pw,
+            )
+        # Availability fallback (used only if the family resolvers are down):
+        # the LR's own upstream, read live from its resolv.conf.
+        fallback_resolver = (
+            _detect_internal_resolver(transport) if block_adult else ""
+        )
 
         net_q = shlex.quote(subnet)
         lr_q = shlex.quote(lr_ip)
@@ -1366,7 +1430,7 @@ def _set_content_block_sync(
         begin = _CONTENT_DNS_BEGIN
         end = _CONTENT_DNS_END
         conf = shlex.quote(_DNSMASQ_CONF)
-        enable = bool(valid_domains)
+        enable = bool(valid_domains) or block_adult
 
         # Fingerprint of the desired domain set, stamped into the BEGIN marker.
         # The enforcement job runs every 120s: without this, every cycle would
@@ -1386,12 +1450,39 @@ def _set_content_block_sync(
         # only answers A records, so on a dual-stack client WhatsApp/TikTok just
         # connected over the still-valid AAAA record — field-confirmed on an LTU
         # LR (nslookup returned 0.0.0.0 for IPv4 AND a live IPv6).
+        # `adult=` (the flag, the family resolvers AND the resolved fallback) is
+        # folded into the stamp too: turning the adult filter on/off, or the
+        # upstream changing, must force a rewrite like any other content change.
+        adult_stamp = (
+            f"adult={int(block_adult)}:{','.join(valid_family)}:{fallback_resolver}"
+        )
         digest = hashlib.sha1(
-            f"{_CONTENT_FILTER_FORMAT}|{mode}|{','.join(sorted(valid_domains))}".encode()
+            f"{_CONTENT_FILTER_FORMAT}|{mode}|{adult_stamp}|"
+            f"{','.join(sorted(valid_domains))}".encode()
         ).hexdigest()[:12]
         begin_tag = f"{begin} {digest}"
         tag_q = shlex.quote(begin_tag)
         marker_q = shlex.quote(begin)
+
+        # Upstream switch for the adult filter — global dnsmasq directives, so
+        # they sit at the top of the block. no-resolv makes dnsmasq ignore the
+        # LR's resolv.conf (which lists unfiltered resolvers), strict-order makes
+        # it try our servers in order (family first, fallback last).
+        adult_lines = ""
+        if block_adult:
+            servers = "".join(
+                f"  echo 'server={r}' >> {conf}; " for r in valid_family
+            )
+            fb = (
+                f"  echo 'server={fallback_resolver}' >> {conf}; "
+                if fallback_resolver
+                else ""
+            )
+            adult_lines = (
+                f"  echo 'no-resolv' >> {conf}; "
+                f"  echo 'strict-order' >> {conf}; "
+                f"{servers}{fb}"
+            )
 
         if enable:
             # The only difference between the two directions is what we write
@@ -1435,7 +1526,7 @@ def _set_content_block_sync(
                 f"  sed -i '/{begin}/,/{end}/d' {conf} 2>/dev/null; "
                 f"  echo '' >> {conf}; "
                 f"  echo '# >>> {begin_tag} (auto) >>>' >> {conf}; "
-                f"{dns_lines}"
+                f"{adult_lines}{dns_lines}"
                 f"  echo '# <<< {end} <<<' >> {conf}; "
                 # killall (NOT SIGHUP) — field-verified necessity on airOS 8
                 f"  killall dnsmasq 2>/dev/null || true; "
@@ -1488,16 +1579,24 @@ def _set_content_block_sync(
                 observed,
                 used_pw,
             )
+        adult_suffix = (
+            f" + filtrage adulte via {valid_family[0]}" if block_adult else ""
+        )
         if enable and mode == _CONTENT_MODE_ALLOW:
             msg = (
                 f"Filtre « autoriser uniquement » appliqué sur {subnet} : tout est "
                 f"résolu en 0.0.0.0 sauf {len(valid_domains)} domaine(s) autorisé(s), "
-                f"DNS redirigé vers {lr_ip}."
+                f"DNS redirigé vers {lr_ip}{adult_suffix}."
             )
         elif enable:
+            parts = []
+            if valid_domains:
+                parts.append(f"{len(valid_domains)} domaine(s) bloqué(s)")
+            if block_adult:
+                parts.append(f"filtrage adulte via {valid_family[0]}")
             msg = (
-                f"Filtre de contenu appliqué sur {subnet} : {len(valid_domains)} "
-                f"domaine(s) résolus en 0.0.0.0, DNS redirigé vers {lr_ip}."
+                f"Filtre de contenu appliqué sur {subnet} : {', '.join(parts)}, "
+                f"DNS redirigé vers {lr_ip}."
             )
         else:
             msg = f"Filtre de contenu retiré sur {subnet}."
@@ -1518,15 +1617,19 @@ async def set_content_block(
     mode: str = _CONTENT_MODE_DENY,
     allow_resolver: str = "8.8.8.8",
     expected_mac: str | None = None,
+    block_adult: bool = False,
+    family_resolvers: list[str] | None = None,
 ) -> tuple[bool, str, str | None, str | None]:
     """SSH into the LR and apply/remove a per-category DNS content filter.
 
-    ``domains`` is the union of the selected categories' domains (empty = clear
-    the filter, whatever the mode). ``mode`` picks the direction: ``denylist``
-    (block those domains, allow the rest) or ``allowlist`` (block everything,
-    allow only those). ``keep_dnat`` should be True when a ``whatsapp_only``
-    block is also active on the LR, so clearing the content filter doesn't tear
-    down the shared DNS-redirect rule. See ``_set_content_block_sync``.
+    ``domains`` is the union of the selected categories' domains. ``block_adult``
+    additionally forwards this client's DNS to a family-safe resolver
+    (``family_resolvers``) to block adult content network-category-wide. The
+    filter is cleared only when there are no domains AND ``block_adult`` is off.
+    ``mode`` picks the direction: ``denylist`` (block those domains, allow the
+    rest) or ``allowlist`` (block everything, allow only those). ``keep_dnat``
+    should be True when a ``whatsapp_only`` block is also active on the LR, so
+    clearing doesn't tear down the shared DNS-redirect rule.
 
     Returns (ok, message, observed_fp, used_password).
     """
@@ -1535,6 +1638,7 @@ async def set_content_block(
         host, port, username, password,
         domains, keep_dnat, expected_fingerprint,
         fallback_passwords, mode, allow_resolver, expected_mac,
+        block_adult, family_resolvers,
     )
 
 

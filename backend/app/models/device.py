@@ -312,6 +312,14 @@ class Lr(Device):
     content_block_mode: Mapped[str] = mapped_column(
         String(10), default="denylist", nullable=False, server_default="denylist",
     )
+    # Per-client "block adult content (18+)" — orthogonal to the category list
+    # above. When true, the LR's dnsmasq forwards upstream to a family-safe
+    # resolver (Cloudflare for Families) that maintains the adult categorisation
+    # itself (the only tractable way to block millions of un-listable sites).
+    # Part of the same enforced content-block block; survives reboots the same way.
+    block_adult_content: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false",
+    )
     # Router vs bridge mode — read from each LR's HTTP poll (airMAX: airOS
     # status.cgi host.netrole; LTU: Rocket API peer.remote.netMode), no SSH.
     # The client-block feature only works in router mode (the LR must be in

@@ -168,17 +168,50 @@ curl -k -H "X-API-Key: $KEY" https://102.215.95.229/api/v1/content-filter/platfo
     "label": "TikTok",
     "description": "TikTok et ses serveurs vidéo",
     "domains": ["tiktok.com", "tiktokcdn.com", "…"],
-    "domain_count": 7
+    "domain_count": 7,
+    "mechanism": "domains"
+  },
+  {
+    "key": "adult",
+    "label": "Contenu adulte (18+)",
+    "description": "Sites pour adultes, catégorisés en continu par un résolveur DNS familial en amont (pas une liste de domaines figée)",
+    "domains": [],
+    "domain_count": 0,
+    "mechanism": "upstream_resolver"
   }
 ]
 ```
 
 Clés actuelles : `facebook` (inclut Instagram, Messenger, Threads), `whatsapp`,
-`tiktok`, `snapchat`, `youtube`, `google`, `telegram`.
+`tiktok`, `snapchat`, `youtube`, `google`, `telegram`, **`adult`**.
 
 **À lire plutôt qu'à coder en dur** : les jeux de domaines sont ajustables sans
 redéploiement, et une plateforme ajoutée au catalogue devient utilisable sans
 aucun changement de votre côté.
+
+### `adult` — le contenu 18+
+
+S'utilise **exactement comme les autres** :
+
+```bash
+curl -k -X POST https://102.215.95.229/api/v1/content-filter/block   -H "Content-Type: application/json" -H "X-API-Key: $KEY"   -d '{"mac": "d0:21:f9:f6:07:c2", "platform": "adult", "user": "ali@a2ict.com"}'
+```
+
+Cumulable avec les autres dans le même appel :
+`"platform": ["adult", "tiktok"]`.
+
+Deux particularités, qui ne changent rien à votre intégration mais expliquent la
+réponse :
+
+- **`domains` est vide et `domain_count` vaut 0** — ce n'est pas une erreur de
+  configuration. « Tous les sites adultes » représente des millions de domaines,
+  impossibles à lister et à tenir sur la radio d'un abonné. Le blocage bascule
+  donc le résolveur DNS de l'abonné vers un **résolveur familial**
+  (Cloudflare for Families) qui maintient lui-même la catégorisation et la met à
+  jour en continu. C'est ce que dit `"mechanism": "upstream_resolver"`.
+- **`categories` ne contient jamais `adult`** — il est stocké à part. C'est
+  `blocked_platforms` qui le fait apparaître, comme pour les autres : c'est
+  toujours **le champ à lire**.
 
 ## Limites connues
 

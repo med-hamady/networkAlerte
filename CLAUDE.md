@@ -1439,6 +1439,48 @@ l'ensemble complet (juste pour la page, où l'opérateur voit toutes les cases).
 Un tiers qui n'envoie qu'une plateforme n'a pas à connaître — ni à réémettre —
 l'état complet du client, qu'un opérateur a pu changer entre-temps.
 
+⚠️ **`adult` (contenu 18+) est une PSEUDO-plateforme** (2026-08-24) : même verbe
+pour l'appelant, tout autre mécanisme derrière. Il n'a **pas** de liste de
+domaines — « tous les sites adultes » se compte en millions, intenable sur une
+radio — donc il bascule le résolveur amont du dnsmasq du LR vers un résolveur
+familial (cf. `content_block_family_resolvers`), et son état vit dans la colonne
+booléenne **`lrs.block_adult_content`**, jamais dans `blocked_categories`.
+
+**Ne JAMAIS l'ajouter à `CONTENT_BLOCK_LABELS`** pour « simplifier » : ce dict
+pilote `content_block_catalog()`, qui ferait un `getattr` sur un
+`content_block_domains_adult` inexistant — et s'il existait vide, l'API rendrait
+`200 « filtre appliqué »` en n'ayant **rien** bloqué, exactement la panne que la
+stricte `validate_platforms` existe pour rendre impossible. D'où deux tuples
+séparés : `VALID_CONTENT_CATEGORIES` (les domaines, ce que voient
+`_normalize_categories` et `content_block_domains_for`) et
+`VALID_CONTENT_PLATFORMS` (= + `adult`, ce que voit l'API tierce seule). La
+séparation est **structurelle**, pas un filtre.
+
+Quatre conséquences, chacune vérifiée par `tests/test_content_filter_api.py` :
+
+- ⚠️ **Le court-circuit sans-SSH de `set_platform_block`** (`blocked_categories
+  is None and not target` → « rien à retirer ») attrapait de plein fouet une
+  demande de blocage 18+ sur un client vierge : aucune catégorie cible, donc
+  `ok=True` annoncé **sans qu'aucune session SSH ne s'ouvre**. Il teste
+  désormais aussi le booléen et le sens de la demande.
+- **Une demande 18+ SEULE ne repasse pas par `platform_target_categories`** :
+  sur un client sans catégorie active, celle-ci rend « denylist » — donc
+  renverserait au passage la direction d'un client en `allowlist` que personne
+  n'a demandé de changer. Catégories et direction restent alors intactes
+  (`mode=None`).
+- **Le 409 « dernière plateforme autorisée » ne le concerne pas** : un booléen
+  ne vide aucun ensemble, il ne peut pas rouvrir tout l'internet à l'abonné.
+- **`effective_blocked_platforms` prend le booléen en 3e argument** — sans quoi
+  `GET /status` répondrait « aucune plateforme bloquée » juste après un
+  `POST /block` réussi.
+
+⚠️ **En mode `allowlist`, poser le 18+ n'ajoute rien** : le catch-all
+`address=/#/0.0.0.0` abat déjà tout ce qui n'est pas explicitement autorisé, et
+les domaines autorisés partent vers `content_block_allow_resolver` par une
+directive **par domaine** qui court-circuite le résolveur familial. L'intention
+est quand même enregistrée (elle redevient effective si le client repasse en
+`denylist`) et rapportée dans `blocked_platforms`.
+
 ⚠️ **Une plateforme inconnue est refusée (400)**, là où `_normalize_categories`
 les ignore silencieusement. Ce silence est juste pour un **rejeu** d'un ensemble
 déjà stocké, et faux pour une API : un `titkok` mal orthographié rendrait `200`
@@ -1862,10 +1904,10 @@ visibles sur `/incidents`.
 | POST | `/api/v1/devices/{id}/enroll-uisp` | Oui | **Enrôle un LR dans UISP** en posant la clé du contrôleur par SSH (sans reboot ni coupure). `ok` = contrôleur ayant **adopté** l'équipement, constaté sur l'équipement. Sans effet sur un LR déjà provisionné pour ce contrôleur ; body `force` passe outre (clé orpheline seulement — sur un équipement sain, forcer le dé-enrôle). 409 si `UISP_DEVICE_KEY` absente. Cf. **Enrôlement UISP** |
 | POST | `/api/v1/access-diagnostics/enroll-uisp` | Oui | Même chose **en lot** sur les LR vus par radio mais absents de UISP. Body `lr_ids` (vide = toute la population) + `force`. Séquentiel, concurrence SSH bornée : compter jusqu'à 45 s par équipement |
 | GET | `/api/v1/access-diagnostics` | Oui | **Deux anomalies d'accès abonné** : `ssh_refused` (LR encore `up` dont `lrs.ssh_status` ∈ {`auth_failed`,`ssh_disabled`,`host_key_mismatch`}) + `radio_not_in_uisp` (LR `last_discovered_at`≠NULL **et** `uisp_synced_at`=NULL = vu par radio mais non provisionné dans UISP) + `counts`. `access_diagnostics_service` |
-| POST | `/api/v1/content-filter/block` | **Content** | **Rend une ou plusieurs plateformes INACCESSIBLES à un abonné**, par **MAC** de son LR — l'API du filtre de contenu pour un système tiers. Body `mac` + `platform` (une clé `"tiktok"` **ou** une liste) + `user` (agent, facultatif). Clé **dédiée `CONTENT_BLOCK_API_KEY`** (router `content_filter.py` séparé) : ne retombe **pas** sur l'auth `/fai` — filtrer et couper sont deux pouvoirs distincts. ⚠️ **CUMULATIF** (contrairement à `PUT /devices/{id}/content-block`, qui prend l'ensemble complet) : l'appelant n'a pas à connaître ni réémettre l'état courant, qu'un opérateur a pu changer depuis le dashboard. ⚠️ Une plateforme **inconnue est refusée (400)**, jamais ignorée. Réutilise `set_content_block` (donc SSH sur le LR, intention persistée, ré-appliquée à 120 s). `ok` reflète l'**application**, pas la prise en compte. 400 MAC/plateforme invalide · 404 MAC inconnue · 409 LR en bridge **ou** dernière plateforme autorisée d'un client en `allowlist`. ⚠️ **Location nginx dédiée** (`location ^~ /api/v1/content-filter/`) : `proxy_read_timeout` **120 s** au lieu des 30 s généraux — poser un filtre ouvre une session SSH, et sous batch attend son tour dans la file (10 en parallèle) ; à 30 s l'appelant reçoit un 504 sur un filtre RÉELLEMENT appliqué (piège déjà corrigé sur `/fai` puis `/uisp/assign`). Zone de débit `content_filter` 120 r/min. Servie sur la VIP `.229`, **pas** sur le listener public `.233` (restreint à `/fai`). Voir **Filtre de contenu par plateforme** |
+| POST | `/api/v1/content-filter/block` | **Content** | **Rend une ou plusieurs plateformes INACCESSIBLES à un abonné**, par **MAC** de son LR — l'API du filtre de contenu pour un système tiers. Body `mac` + `platform` (une clé `"tiktok"` **ou** une liste) + `user` (agent, facultatif). Accepte **`adult`** (contenu 18+), cumulable avec les autres dans le même appel — pseudo-plateforme routée vers `block_adult`, jamais vers les catégories (voir **Filtre de contenu par plateforme**). Clé **dédiée `CONTENT_BLOCK_API_KEY`** (router `content_filter.py` séparé) : ne retombe **pas** sur l'auth `/fai` — filtrer et couper sont deux pouvoirs distincts. ⚠️ **CUMULATIF** (contrairement à `PUT /devices/{id}/content-block`, qui prend l'ensemble complet) : l'appelant n'a pas à connaître ni réémettre l'état courant, qu'un opérateur a pu changer depuis le dashboard. ⚠️ Une plateforme **inconnue est refusée (400)**, jamais ignorée. Réutilise `set_content_block` (donc SSH sur le LR, intention persistée, ré-appliquée à 120 s). `ok` reflète l'**application**, pas la prise en compte. 400 MAC/plateforme invalide · 404 MAC inconnue · 409 LR en bridge **ou** dernière plateforme autorisée d'un client en `allowlist`. ⚠️ **Location nginx dédiée** (`location ^~ /api/v1/content-filter/`) : `proxy_read_timeout` **120 s** au lieu des 30 s généraux — poser un filtre ouvre une session SSH, et sous batch attend son tour dans la file (10 en parallèle) ; à 30 s l'appelant reçoit un 504 sur un filtre RÉELLEMENT appliqué (piège déjà corrigé sur `/fai` puis `/uisp/assign`). Zone de débit `content_filter` 120 r/min. Servie sur la VIP `.229`, **pas** sur le listener public `.233` (restreint à `/fai`). Voir **Filtre de contenu par plateforme** |
 | POST | `/api/v1/content-filter/unblock` | **Content** | Rend les plateformes de nouveau accessibles. Cumulatif lui aussi : les autres filtres du client ne bougent pas. Aucun filtre actif = succès **sans session SSH** |
 | GET | `/api/v1/content-filter/status` | **Content** | Filtre actuel d'un abonné par `?mac=` (lecture seule, ne touche pas au LR). `blocked_platforms` = ce qui est **effectivement injoignable**, quelle que soit la direction |
-| GET | `/api/v1/content-filter/platforms` | **Content** | Catalogue des plateformes filtrables (clé, libellé, domaines) — **à lire plutôt qu'à coder en dur** côté appelant : les jeux de domaines sont ajustables par env, et une clé ajoutée devient utilisable sans changement chez le tiers |
+| GET | `/api/v1/content-filter/platforms` | **Content** | Catalogue des plateformes filtrables (clé, libellé, domaines, **`mechanism`**) — **à lire plutôt qu'à coder en dur** côté appelant : les jeux de domaines sont ajustables par env, et une clé ajoutée devient utilisable sans changement chez le tiers. `mechanism` vaut `domains` (empoisonnement DNS des domaines listés) ou **`upstream_resolver`** (bascule du résolveur amont) — il existe pour **`adult`**, dont `domains` est vide **par nature** : sans ce champ, un `domain_count: 0` se lit comme une clé inerte et l'appelant conclut à un défaut de configuration chez nous |
 | POST | `/api/v1/fai/block` | FAI | Bloque un client par **MAC** de son LR (système de paiement). Body `mac` + `reason` + `mode` (`full`/`whatsapp_only`) + **`user`** (l'**agent** à l'origine de l'ordre — cf. **Agent d'une action FAI**). Même mécanisme que `/devices/{id}/block-client`, indexé par MAC. 409 si LR en bridge |
 | POST | `/api/v1/fai/unblock` | FAI | Débloque un client par **MAC** de son LR. Body `mac` + **`user`** (idem) |
 | GET | `/api/v1/fai/status` | FAI | État de blocage actuel d'un client par **MAC** (lecture seule, ne touche pas au LR) |

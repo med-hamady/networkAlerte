@@ -21,6 +21,13 @@ Deux différences avec la page, et elles sont volontaires :
     « titkok » mal orthographié doit échouer au premier appel, pas se découvrir
     sur un abonné toujours sur TikTok.
 
+La clé ``adult`` (contenu 18+) est une **pseudo-plateforme** : même verbe pour
+l'appelant, mais aucune liste de domaines derrière — elle bascule le résolveur
+amont du LR vers un résolveur familial et vit dans ``lrs.block_adult_content``,
+pas dans ``blocked_categories``. Le routage est fait par
+``client_block_service.split_adult`` ; cf. **Filtre de contenu par plateforme**
+dans CLAUDE.md pour les pièges que cette séparation évite.
+
 Routes montées derrière `require_content_block_client` : clé dédiée
 ``CONTENT_BLOCK_API_KEY``, qui n'ouvre QUE ce router — ni /fai (couper l'accès
 entier d'un abonné), ni /devices, ni le reste de l'API.
@@ -97,6 +104,14 @@ class ContentFilterPlatform(BaseModel):
     description: str
     domains: list[str]
     domain_count: int
+    # Comment la clé agit sur l'équipement. « domains » = empoisonnement DNS des
+    # domaines listés ; « upstream_resolver » = bascule du résolveur amont du LR
+    # vers un résolveur familial qui maintient lui-même la catégorisation.
+    #
+    # ⚠️ Champ ajouté pour le 18+, dont la liste `domains` est VIDE par nature :
+    # sans lui, un `domain_count: 0` se lit comme une clé inerte et l'appelant
+    # conclut à une erreur de configuration de notre côté.
+    mechanism: str
 
 
 class ContentFilterResult(BaseModel):
@@ -139,7 +154,7 @@ def _result(lr: Lr, ok: bool, message: str) -> ContentFilterResult:
         name=lr.name,
         mode=lr.content_block_mode,
         blocked_platforms=client_block_service.effective_blocked_platforms(
-            categories, lr.content_block_mode,
+            categories, lr.content_block_mode, lr.block_adult_content,
         ),
         categories=categories,
         content_block_enforced_at=lr.content_block_enforced_at,
@@ -212,16 +227,31 @@ async def list_platforms() -> list[ContentFilterPlatform]:
     changement côté appelant.
     """
     settings = get_settings()
-    return [
+    platforms = [
         ContentFilterPlatform(
             key=key,
             label=settings.content_block_label(key),
             description=settings.content_block_description(key),
             domains=domains,
             domain_count=len(domains),
+            mechanism="domains",
         )
         for key, domains in settings.content_block_catalog().items()
     ]
+    # Le 18+ ferme la liste : même verbe pour l'appelant, autre mécanisme sur
+    # l'équipement — et aucune liste de domaines, par construction.
+    adult = client_block_service.ADULT_PLATFORM
+    platforms.append(
+        ContentFilterPlatform(
+            key=adult,
+            label=settings.content_block_label(adult),
+            description=settings.content_block_description(adult),
+            domains=[],
+            domain_count=0,
+            mechanism="upstream_resolver",
+        ),
+    )
+    return platforms
 
 
 @router.post("/block", response_model=ContentFilterResult)
@@ -281,7 +311,7 @@ async def platform_status(
     """
     lr = await _lookup_lr(db, mac)
     blocked = client_block_service.effective_blocked_platforms(
-        lr.blocked_categories, lr.content_block_mode,
+        lr.blocked_categories, lr.content_block_mode, lr.block_adult_content,
     )
     message = (
         f"{len(blocked)} plateforme(s) bloquée(s)." if blocked

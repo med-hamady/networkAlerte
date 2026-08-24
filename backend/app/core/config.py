@@ -32,6 +32,29 @@ CONTENT_BLOCK_DESCRIPTIONS: dict[str, str] = {
     "telegram": "Telegram (messages et médias)",
 }
 
+# ---------------------------------------------------------------------------
+# Contenu adulte (18+) — une PSEUDO-plateforme, délibérément hors du catalogue
+# ci-dessus.
+#
+# Le catalogue est « clé → liste de domaines » (cf. content_block_catalog) ; le
+# 18+ n'en a pas et ne peut pas en avoir : « tous les sites adultes » se compte
+# en millions de domaines, intenable sur une petite radio. On délègue donc la
+# catégorisation à un résolveur familial en amont du dnsmasq du LR
+# (`content_block_family_resolvers`, Cloudflare for Families par défaut), et
+# l'état vit dans la colonne booléenne `lrs.block_adult_content` — jamais dans
+# `blocked_categories`.
+#
+# ⚠️ NE PAS l'ajouter à CONTENT_BLOCK_LABELS pour « simplifier » : ce dict pilote
+# content_block_catalog(), qui ferait un getattr sur un `content_block_domains_adult`
+# inexistant — et, s'il existait vide, l'API répondrait 200 « filtre appliqué »
+# en n'ayant rien bloqué du tout.
+ADULT_CONTENT_KEY = "adult"
+ADULT_CONTENT_LABEL = "Contenu adulte (18+)"
+ADULT_CONTENT_DESCRIPTION = (
+    "Sites pour adultes, catégorisés en continu par un résolveur DNS familial "
+    "en amont (pas une liste de domaines figée)"
+)
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
@@ -619,11 +642,19 @@ class Settings(BaseSettings):
         }
 
     def content_block_label(self, key: str) -> str:
-        """Human label for a content-block category key (key itself if unknown)."""
+        """Human label for a content-block key (key itself if unknown).
+
+        Couvre aussi la pseudo-plateforme `adult`, absente du catalogue de
+        domaines mais exposée comme une plateforme par l'API tierce.
+        """
+        if key == ADULT_CONTENT_KEY:
+            return ADULT_CONTENT_LABEL
         return CONTENT_BLOCK_LABELS.get(key, key)
 
     def content_block_description(self, key: str) -> str:
-        """One-line description of what a content-block category covers."""
+        """One-line description of what a content-block key covers."""
+        if key == ADULT_CONTENT_KEY:
+            return ADULT_CONTENT_DESCRIPTION
         return CONTENT_BLOCK_DESCRIPTIONS.get(key, "")
 
     def content_block_domains_for(self, keys: list[str]) -> list[str]:

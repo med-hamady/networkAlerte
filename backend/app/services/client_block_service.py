@@ -39,7 +39,7 @@ import logging
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import CONTENT_BLOCK_LABELS, get_settings
+from app.core.config import ADULT_CONTENT_KEY, CONTENT_BLOCK_LABELS, get_settings
 from app.models.device import Lr
 from app.schemas.device import normalize_mac
 from app.services import fai_audit, mikrotik_service, ssh_service
@@ -54,6 +54,19 @@ VALID_MODES = (MODE_FULL, MODE_WHATSAPP)
 # Content-block categories the operator can toggle per client (keys of the
 # config catalogue). Independent of the block_mode above.
 VALID_CONTENT_CATEGORIES = tuple(CONTENT_BLOCK_LABELS)
+
+# Le 18+ est une PSEUDO-plateforme : même verbe pour l'appelant (« bloque-moi
+# ça chez cet abonné »), tout autre mécanisme derrière. Il n'a pas de domaines
+# (résolveur familial en amont, cf. config.ADULT_CONTENT_KEY) et vit dans la
+# colonne booléenne `Lr.block_adult_content`, PAS dans `blocked_categories`.
+#
+# ⚠️ La séparation des deux tuples est la garantie structurelle du projet :
+# `_normalize_categories` et `content_block_domains_for` ne voient QUE
+# VALID_CONTENT_CATEGORIES, donc « adult » ne peut pas se retrouver par accident
+# dans un ensemble de catégories, où il serait silencieusement jeté — un 200
+# « filtre appliqué » sans rien de bloqué.
+ADULT_PLATFORM = ADULT_CONTENT_KEY
+VALID_CONTENT_PLATFORMS = (*VALID_CONTENT_CATEGORIES, ADULT_PLATFORM)
 
 # Direction of the content filter, persisted on Lr.content_block_mode.
 CONTENT_MODE_DENY = "denylist"    # allow everything EXCEPT the selected services
@@ -1113,17 +1126,35 @@ def validate_platforms(platforms: list[str]) -> list[str]:
     cleaned = [p.strip().lower() for p in platforms if p and p.strip()]
     if not cleaned:
         raise UnknownPlatformError("Aucune plateforme fournie.")
-    unknown = [p for p in cleaned if p not in VALID_CONTENT_CATEGORIES]
+    unknown = [p for p in cleaned if p not in VALID_CONTENT_PLATFORMS]
     if unknown:
         raise UnknownPlatformError(
             f"Plateforme(s) inconnue(s) : {', '.join(sorted(set(unknown)))}. "
-            f"Valeurs acceptées : {', '.join(VALID_CONTENT_CATEGORIES)}.",
+            f"Valeurs acceptées : {', '.join(VALID_CONTENT_PLATFORMS)}.",
         )
     # Catalogue order, deduplicated — same convention as _normalize_categories.
-    return [key for key in VALID_CONTENT_CATEGORIES if key in set(cleaned)]
+    # `adult` ferme la marche : c'est un mécanisme à part, pas une catégorie.
+    return [key for key in VALID_CONTENT_PLATFORMS if key in set(cleaned)]
 
 
-def effective_blocked_platforms(categories: list[str] | None, mode: str | None) -> list[str]:
+def split_adult(platforms: list[str]) -> tuple[list[str], bool]:
+    """Sépare les catégories de domaines de la pseudo-plateforme `adult`.
+
+    Les deux dimensions du filtre suivent des chemins distincts jusqu'au LR
+    (empoisonnement DNS par domaine d'un côté, bascule du résolveur amont de
+    l'autre) : les mélanger dans un même ensemble est le seul vrai moyen de se
+    tromper ici.
+    """
+    keys = set(platforms)
+    return (
+        [key for key in VALID_CONTENT_CATEGORIES if key in keys],
+        ADULT_PLATFORM in keys,
+    )
+
+
+def effective_blocked_platforms(
+    categories: list[str] | None, mode: str | None, block_adult: bool = False,
+) -> list[str]:
     """Catalogue platforms currently UNREACHABLE, whatever the filter direction.
 
     What the caller actually asks about ("is TikTok cut on this client?"), as
@@ -1131,13 +1162,21 @@ def effective_blocked_platforms(categories: list[str] | None, mode: str | None) 
     when no filter is active. In `allowlist` this lists the catalogue entries
     left out — the client is of course also cut off from everything else, which
     is why the direction itself is reported alongside.
+
+    ⚠️ `block_adult` vient de la colonne booléenne, JAMAIS de `categories` : sans
+    lui, un client dont on vient de couper le 18+ se verrait répondre « aucune
+    plateforme bloquée » au GET /status juste après un POST /block réussi.
     """
     active = _normalize_categories(categories)
+    adult = [ADULT_PLATFORM] if block_adult else []
     if not active:
-        return []
+        return adult
     if _normalize_content_mode(mode) == CONTENT_MODE_ALLOW:
-        return [key for key in VALID_CONTENT_CATEGORIES if key not in active]
-    return active
+        # En allowlist, le 18+ est de toute façon inclus dans « tout le reste »
+        # que le catch-all abat déjà ; on le rapporte quand même s'il est posé,
+        # l'appelant demandant l'état de SON intention.
+        return [k for k in VALID_CONTENT_CATEGORIES if k not in active] + adult
+    return active + adult
 
 
 def _ordered(keys: set[str]) -> list[str]:
@@ -1208,13 +1247,37 @@ async def set_platform_block(
     `set_content_block`): a recorded-but-unapplied filter comes back False and
     is retried by `enforce_content_blocks`.
     """
-    target, direction = platform_target_categories(
-        lr.blocked_categories, lr.content_block_mode, platforms, blocked,
-    )
+    categories, adult = split_adult(platforms)
+
+    # Les deux dimensions sont résolues SÉPARÉMENT (cf. `split_adult`).
+    if categories:
+        target, direction = platform_target_categories(
+            lr.blocked_categories, lr.content_block_mode, categories, blocked,
+        )
+    else:
+        # Demande 18+ seule : les catégories du client ne bougent pas d'un iota,
+        # et surtout on ne re-soumet PAS sa direction à `platform_target_categories`
+        # — sur un client sans catégorie active elle rendrait « denylist », donc
+        # réécrirait au passage un mode allowlist que personne n'a demandé de changer.
+        target, direction = _normalize_categories(lr.blocked_categories), None
+
+    # None = « ne touche pas au 18+ » (contrat de set_content_block).
+    block_adult = blocked if adult else None
+
     # `blocked_categories is None` is the terminal "nothing to manage" marker.
     # Asking to lift a filter that was never there is a legitimate no-op — and
     # doing it without SSH keeps a replayed unblock free of a pointless session
     # on a client that may well be asleep.
-    if lr.blocked_categories is None and not target:
+    #
+    # ⚠️ `not block_adult` (donc None ou False) est la moitié qui compte : une
+    # demande de BLOCAGE du 18+ sur un client vierge tombe exactement dans ce
+    # cas de figure, et le court-circuit lui répondrait « rien à retirer » avec
+    # ok=True — succès annoncé, aucune session SSH, aucun filtre posé.
+    if (
+        lr.blocked_categories is None
+        and not lr.block_adult_content
+        and not target
+        and not block_adult
+    ):
         return True, f"Aucun filtre de contenu actif sur {lr.name} — rien à retirer."
-    return await set_content_block(session, lr, target, direction)
+    return await set_content_block(session, lr, target, direction, block_adult)

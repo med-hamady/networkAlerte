@@ -45,8 +45,14 @@ export const config = {
      *   - /api/proxy/...   (the proxy passes through to the backend)
      *   - /_next/...       (Next.js static & internal)
      *   - /devices/...     (photos produit dans public/ — assets non sensibles)
+     *   - /platforms/...   (logos des plateformes filtrables — idem)
      *   - /favicon.ico, /robots.txt, ...
+     *
+     * ⚠️ Un asset servi depuis public/ mais ABSENT de cette liste est happe
+     * par le matcher et redirige vers /login : le navigateur recoit du HTML a
+     * la place du PNG, et l'image casse sans la moindre erreur cote serveur.
+     * Tout nouveau dossier d'assets publics doit donc etre ajoute ICI.
      */
-    '/((?!api/proxy|_next/static|_next/image|devices/|favicon\\.ico|robots\\.txt).*)',
+    '/((?!api/proxy|_next/static|_next/image|devices/|platforms/|favicon\\.ico|robots\\.txt).*)',
   ],
 }

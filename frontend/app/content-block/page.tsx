@@ -11,6 +11,7 @@ import {
 } from '@/lib/api'
 import type { Device, Lr } from '@/lib/types'
 import IpLink from '@/components/IpLink'
+import { platformIcon } from '@/lib/platformIcons'
 
 interface SearchResult {
   id: number
@@ -269,6 +270,7 @@ export default function ContentBlockPage() {
                           isAllow ? 'accent-green-600' : 'accent-red-600'
                         }`}
                       />
+                      <PlatformIcon pkey={cat.key} label={cat.label} />
                       <span className="min-w-0">
                         <span className="block text-sm text-slate-800 font-medium leading-tight">
                           {cat.label}
@@ -312,6 +314,7 @@ export default function ContentBlockPage() {
                 onChange={() => { setAdult((v) => !v); setResult(null) }}
                 className="w-4 h-4 mt-0.5 shrink-0 accent-purple-600"
               />
+              <PlatformIcon pkey="adult" label="18+" />
               <span className="min-w-0">
                 <span className="block text-sm text-slate-800 font-medium leading-tight">
                   Bloquer le contenu adulte (18+)
@@ -405,6 +408,33 @@ function labelsOf(keys: Set<string>, categories?: ContentBlockCategory[]): strin
     .filter((c) => keys.has(c.key))
     .map((c) => c.label)
     .join(', ')
+}
+
+/**
+ * Logo d'une plateforme, ou pastille neutre a l'initiale quand nous n'avons pas
+ * son icone (cf. lib/platformIcons — Google et YouTube n'en ont pas).
+ *
+ * Meme gabarit dans les deux cas : c'est ce qui garde l'alignement de la
+ * grille. Une case sans logo ne doit pas se distinguer d'une case illustree
+ * autrement que par le dessin lui-meme.
+ */
+function PlatformIcon({ pkey, label }: { pkey: string; label: string }) {
+  const src = platformIcon(pkey)
+  if (!src) {
+    return (
+      <span
+        aria-hidden="true"
+        className="w-7 h-7 shrink-0 rounded-md bg-blue-100 text-blue-500 grid place-items-center text-xs font-bold"
+      >
+        {label.charAt(0).toUpperCase()}
+      </span>
+    )
+  }
+  // <img> plutot que next/image : ces PNG sont servis tels quels depuis
+  // public/, l'optimiseur n'a rien a gagner sur un rendu de 28 px.
+  // Purement decoratif — le nom du service est juste a cote, d'ou alt="".
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={src} alt="" aria-hidden="true" className="w-7 h-7 shrink-0 object-contain" />
 }
 
 function ModeCard({ active, disabled, onClick, title, desc }: {

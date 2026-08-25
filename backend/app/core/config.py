@@ -14,21 +14,19 @@ CONTENT_BLOCK_LABELS: dict[str, str] = {
     "tiktok": "TikTok",
     "snapchat": "Snapchat",
     "youtube": "YouTube",
-    "google": "Google",
     "telegram": "Telegram",
 }
 
 # One-line "what this actually covers", shown under each label in the UI. The
-# operator cannot be expected to know that YouTube and Google are separable but
-# Snapchat and Google Cloud are not — so each caveat is stated where it is acted
-# upon rather than left in the docs.
+# operator cannot be expected to know that blocking YouTube leaves Google search
+# standing — so each caveat is stated where it is acted upon rather than left in
+# the docs.
 CONTENT_BLOCK_DESCRIPTIONS: dict[str, str] = {
     "facebook": "Facebook, Instagram, Messenger, Threads",
     "whatsapp": "Messages, appels et médias WhatsApp",
     "tiktok": "TikTok et ses serveurs vidéo",
     "snapchat": "Snapchat",
-    "youtube": "Vidéos, appli mobile, vignettes — laisse Google intact",
-    "google": "Recherche, Drive, Maps — YouTube NON inclus",
+    "youtube": "Vidéos, appli mobile, vignettes — la recherche Google reste accessible",
     "telegram": "Telegram (messages et médias)",
 }
 
@@ -580,9 +578,13 @@ class Settings(BaseSettings):
     # services to DNS-poison per client (client stays online for everything
     # else). One CSV of domains per category; a client's `blocked_categories`
     # (JSON list of the keys below) selects which sets to apply on its LR.
-    # Tune the domain sets here without a redeploy (env override). Blocking
-    # `google` also breaks YouTube/reCAPTCHA and other Google services — the UI
-    # warns about it; it is an accepted operator choice.
+    # Tune the domain sets here without a redeploy (env override).
+    #
+    # ⚠️ Il n'y a PAS de categorie « google » (retiree le 2026-08-25, decision
+    # operateur) : couper google.com emporte gstatic/googleapis, donc reCAPTCHA,
+    # les cartes integrees et les polices — soit une grande partie du web pour
+    # l'abonne, bien au-dela de ce que l'operateur croyait cocher. Ne pas la
+    # reintroduire sans cette conversation.
     content_block_domains_facebook: str = (
         "facebook.com,fbcdn.net,fbsbx.com,fb.com,fb.gg,fb.watch,"
         "messenger.com,instagram.com,cdninstagram.com,threads.net"
@@ -593,9 +595,9 @@ class Settings(BaseSettings):
         "byteoversea.com,musical.ly,tiktokcdn-us.com"
     )
     content_block_domains_snapchat: str = "snapchat.com,sc-cdn.net,snap.com,snapkit.com"
-    # YouTube is deliberately SEPARATE from Google: they share Google's IP space
-    # (youtube.com and google.com both resolve into AS15169), so only DNS can
-    # tell them apart — blocking YouTube must not take search/Drive/Maps down.
+    # YouTube ne peut se distinguer de Google QUE par le DNS : les deux resolvent
+    # dans AS15169, donc aucun filtre par IP ne les separerait. Bloquer YouTube
+    # ne doit pas emporter la recherche, Drive ou Maps — d'ou cette liste etroite.
     #   googlevideo.com = the video CDN (kills playback), ytimg/ggpht = thumbs
     #   and avatars, youtubei.googleapis.com = the mobile app's API. That last
     #   one is a *subdomain* of googleapis.com and dnsmasq honours the most
@@ -603,12 +605,6 @@ class Settings(BaseSettings):
     content_block_domains_youtube: str = (
         "youtube.com,youtu.be,ytimg.com,googlevideo.com,ggpht.com,"
         "youtubei.googleapis.com"
-    )
-    # Google proper — search, Drive, Maps, and the shared JS/API hosts. Blocking
-    # this breaks a great many third-party sites (reCAPTCHA, embedded Maps,
-    # fonts): it is a heavy hammer, hence the warning in the UI.
-    content_block_domains_google: str = (
-        "google.com,gstatic.com,googleapis.com,googleusercontent.com"
     )
     content_block_domains_telegram: str = "telegram.org,telegram.me,t.me,telesco.pe,tdesktop.com"
 

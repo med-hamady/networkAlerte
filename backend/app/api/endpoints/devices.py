@@ -795,8 +795,8 @@ class ContentBlockCategory(BaseModel):
     key: str
     label: str
     # What the category actually covers, and the exact domains behind it — the
-    # UI shows both so the operator can tell e.g. YouTube from Google without
-    # having to trust the label.
+    # UI shows both so the operator can see exactly what a label covers
+    # without having to trust it.
     description: str
     domains: list[str]
     domain_count: int

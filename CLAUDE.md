@@ -1439,6 +1439,20 @@ l'ensemble complet (juste pour la page, où l'opérateur voit toutes les cases).
 Un tiers qui n'envoie qu'une plateforme n'a pas à connaître — ni à réémettre —
 l'état complet du client, qu'un opérateur a pu changer entre-temps.
 
+⚠️ **Il n'y a plus de catégorie `google`** (retirée le 2026-08-25, décision
+opérateur) : couper `google.com` emportait `gstatic`/`googleapis`/
+`googleusercontent`, donc reCAPTCHA, les cartes intégrées et les polices — une
+part énorme du web pour l'abonné, très au-delà de ce que l'opérateur croyait
+cocher. **`youtube` reste** et ne l'a jamais incluse (les deux ne se séparent
+que par le DNS, ils partagent AS15169). Migration `b1c2d3e4f5a6` = **ménage de
+données seul** : sans elle la clé dormirait dans `blocked_categories` alors que
+`_normalize_categories` la jette à chaque lecture — même comportement, mais la
+colonne mentirait. ⚠️ **Le retrait n'est PAS symétrique** : en `denylist` il
+**rend** Google accessible (l'intention), en `allowlist` il le **coupe** (la clé
+y listait le joignable) et, si c'était la seule entrée, l'ensemble devient vide
+donc **le filtre entier s'efface** — la migration nomme ces lignes dans le
+journal, elle ne peut pas deviner la politique à leur place.
+
 ⚠️ **`adult` (contenu 18+) est une PSEUDO-plateforme** (2026-08-24) : même verbe
 pour l'appelant, tout autre mécanisme derrière. Il n'a **pas** de liste de
 domaines — « tous les sites adultes » se compte en millions, intenable sur une

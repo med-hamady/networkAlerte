@@ -289,7 +289,7 @@ class Lr(Device):
     )
     # ── Content block (per-category destination filter) ──────────────────────
     # Independent of `block_mode`: the client stays fully online EXCEPT toward
-    # the selected services (e.g. ["tiktok","google"]). Enforced DNS-only on the
+    # the selected services (e.g. ["tiktok","facebook"]). Enforced DNS-only on the
     # LR — dnsmasq `address=/<domain>/0.0.0.0` for the union of the categories'
     # domains (catalogue in config), under its OWN dnsmasq marker so it coexists
     # with a `whatsapp_only` block. NULL/[] = no content filtering. Re-asserted

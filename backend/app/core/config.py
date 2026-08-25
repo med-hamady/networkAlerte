@@ -24,9 +24,9 @@ CONTENT_BLOCK_LABELS: dict[str, str] = {
 CONTENT_BLOCK_DESCRIPTIONS: dict[str, str] = {
     "facebook": "Facebook, Instagram, Messenger, Threads",
     "whatsapp": "Messages, appels et médias WhatsApp",
-    "tiktok": "TikTok et ses serveurs vidéo",
-    "snapchat": "Snapchat",
-    "youtube": "Vidéos, appli mobile, vignettes — la recherche Google reste accessible",
+    "tiktok": "TikTok : appli, web, CDN vidéo et télémétrie ByteDance",
+    "snapchat": "Snapchat : appli, web, CDN médias et Snap Kit",
+    "youtube": "Vidéos, applis mobile et Kids, lecteurs embarqués — la recherche Google reste accessible",
     "telegram": "Telegram (messages et médias)",
 }
 
@@ -590,21 +590,118 @@ class Settings(BaseSettings):
         "messenger.com,instagram.com,cdninstagram.com,threads.net"
     )
     content_block_domains_whatsapp: str = "whatsapp.com,whatsapp.net,wa.me"
+    # TikTok — l'appli ne tient pas dans `tiktok.com`. Elle ouvre son flux vidéo
+    # sur les CDN ByteDance, son API sur `tiktokv.*` (une zone par région de
+    # résidence des données : .com / .us / .eu) et sa télémétrie sur `*snssdk`
+    # et `byteoversea` : couper le seul domaine de marque laisse l'appli tourner.
+    #
+    # AUDIT DES ZONES du 2026-08-25 — chaque entrée est rattachée à ByteDance
+    # par une PREUVE, jamais par la ressemblance du nom :
+    #   • serveurs de noms IDENTIQUES à ceux de tiktok.com (grappes Akamai
+    #     a1-97/a12-66/a13-67/a18-64/a6-65 et a1-156/a12-65/a16-66/a2-67/a3-64,
+    #     `hostmaster.<zone>` dans le SOA) : tiktokv.{com,us,eu},
+    #     tiktokcdn{,-us,-eu,-in}.com, ttwstatic.com, ttlivecdn.com,
+    #     ibyteimg.com, byteintlapi.com, tiktokw.us, tiktokd.org,
+    #     tiktok{,global}shop.com, tiktokmusic.app (SPF Larksuite = ByteDance) ;
+    #   • hostmaster.akamai.com + google-site-verification ByteDance :
+    #     ibytedtos.com, byteoversea.{com,net} ;
+    #   • famille statique/télémétrie historique (AliDNS hichina ou AWS, jeton
+    #     globalsign commun) : snssdk.com, isnssdk.com, pstatp.com, ipstatp.com.
+    #
+    # ⚠️ ZONES ÉCARTÉES, et pourquoi — ne pas les rajouter sans refaire l'audit :
+    #   • `tiktokcdn.us` : NS Cloudflare, AUCUN lien avec les grappes ByteDance
+    #     → un tiers qui a déposé un nom ressemblant. La bloquer couperait un
+    #     site sans rapport chez l'abonné.
+    #   • `bytedance.com`, `capcut.com`, `lemon8-app.com` : ByteDance, mais
+    #     d'AUTRES produits que l'abonné peut légitimement utiliser — même
+    #     raisonnement que le retrait de la catégorie « google ».
+    #   • `bytecdn.cn` : CDN Chine, hors du chemin de TikTok international.
+    #   • `sgpstatp.com`, `muscdn.com` : AWS générique, aucune preuve de
+    #     rattachement, et rien qui y réponde — on ne bloque pas sur une
+    #     ressemblance de nom.
+    #   • `akamaized.net`, `appspot.com` et tout CDN MUTUALISÉ : on couperait
+    #     des milliers de services tiers.
     content_block_domains_tiktok: str = (
-        "tiktok.com,tiktokcdn.com,tiktokv.com,ibytedtos.com,"
-        "byteoversea.com,musical.ly,tiktokcdn-us.com"
+        "tiktok.com,tiktokv.com,tiktokv.us,tiktokv.eu,"
+        "tiktokcdn.com,tiktokcdn-us.com,tiktokcdn-eu.com,tiktokcdn-in.com,"
+        "ttwstatic.com,ttlivecdn.com,ibytedtos.com,ibyteimg.com,"
+        "byteoversea.com,byteoversea.net,byteintlapi.com,"
+        "tiktokw.us,tiktokd.org,tiktokshop.com,tiktokglobalshop.com,"
+        "snssdk.com,isnssdk.com,pstatp.com,ipstatp.com,"
+        "musical.ly,tiktokmusic.app"
     )
-    content_block_domains_snapchat: str = "snapchat.com,sc-cdn.net,snap.com,snapkit.com"
-    # YouTube ne peut se distinguer de Google QUE par le DNS : les deux resolvent
-    # dans AS15169, donc aucun filtre par IP ne les separerait. Bloquer YouTube
-    # ne doit pas emporter la recherche, Drive ou Maps — d'ou cette liste etroite.
-    #   googlevideo.com = the video CDN (kills playback), ytimg/ggpht = thumbs
-    #   and avatars, youtubei.googleapis.com = the mobile app's API. That last
-    #   one is a *subdomain* of googleapis.com and dnsmasq honours the most
-    #   specific rule, so it dies without touching maps.googleapis.com & co.
+    # Snapchat — l'API et le web vivent sous `snapchat.com`, mais les médias
+    # (photos, Stories, Spotlight) partent des CDN `sc-cdn.net` / `sc-jpl.com`,
+    # les statiques de `sc-static.net`, et les avatars de `bitmoji.com`
+    # (Snap Inc.). AUDIT DU 2026-08-25 — toutes ces zones existent et sont
+    # tenues par Snap : AWS Route 53 + `v=spf1 -all` + jetons de vérification
+    # Snap pour les zones techniques, MarkMonitor (registrar de marque) pour
+    # `snapchat.net` / `snapchat.co`. `feelinsonice.com` est l'ancien domaine
+    # d'API de Snapchat, toujours déposé par Snap : dormant, gardé parce qu'une
+    # zone dormante ne coûte que deux lignes et couvre sa réactivation.
+    #
+    # ⚠️ ZONES ÉCARTÉES : `snapchat.dev` (NS Cloudflare, hors infrastructure
+    # Snap — un tiers), `sc-gw.com` et `sc-corp.net` (AWS générique / domaine
+    # interne d'entreprise : aucune preuve d'usage par l'appli), `spectacles.com`
+    # (les lunettes Snap, un autre produit — on bloque Snapchat, pas Snap Inc.).
+    content_block_domains_snapchat: str = (
+        "snapchat.com,snapchat.net,snapchat.co,"
+        "sc-cdn.net,sc-jpl.com,sc-static.net,"
+        "snap.com,snapkit.com,snap-dev.net,snapads.com,"
+        "bitmoji.com,feelinsonice.com"
+    )
+    # YouTube ne peut se distinguer de Google QUE par le DNS : les deux résolvent
+    # dans AS15169, donc aucun filtre par IP ne les séparerait. Bloquer YouTube
+    # ne doit pas emporter la recherche, Drive ou Maps — d'où cette liste étroite.
+    #
+    # AUDIT DES ZONES du 2026-08-25. ⚠️ Ici la preuve de PROPRIÉTÉ ne sert à
+    # rien (tout est `ns1..4.google.com`, y compris `gstatic.com` et
+    # `googleapis.com`) : la question n'est pas « à qui » mais « à QUOI SERT »
+    # la zone. Deux contrôles ont donc été faits sur chaque candidate.
+    #
+    # 1) La zone SERT-ELLE du contenu, ou ne fait-elle que REDIRIGER ? Une zone
+    #    qui répond 301 vers `youtube.com` est déjà morte une fois `youtube.com`
+    #    empoisonné — l'ajouter n'apporte rien et coûte deux lignes dnsmasq par
+    #    abonné. Vérifié en HTTP :
+    #      youtubekids.com            200 — SERT (appli YouTube Kids)  → bloqué
+    #      youtube-nocookie.com/embed 200 — SERT (lecteur embarqué)    → bloqué
+    #      yt.be / withyoutube.com / youtubegaming.com / youtube.tv /
+    #      youtubego.com              301/302 → youtube.com            → inutile
+    #      youtubeeducation.com       404, rien de servi                → inutile
+    #    ⚠️ MÊME RAISON pour les dizaines de ccTLD (`youtube.fr`, `youtube.ma`…) :
+    #    vérifié, ce sont des 301 vers `youtube.com`. Les énumérer serait sans fin
+    #    ET sans effet. (`youtu.be` est gardé bien qu'il redirige : c'est le lien
+    #    de partage que les gens cliquent, autant qu'il meure au premier saut.)
+    #
+    # 2) La zone est-elle EXCLUSIVEMENT YouTube ? C'est ce qui interdit
+    #    `gstatic.com`, `googleusercontent.com`, `gvt1/gvt2.com` et surtout
+    #    `googleapis.com` en entier. Les quatre sous-domaines `*.googleapis.com`
+    #    listés ci-dessous sont eux SPÉCIFIQUES à YouTube, et dnsmasq honore la
+    #    règle la plus précise : ils meurent sans toucher `maps.googleapis.com`.
+    #      youtubei.…                 API de l'appli mobile
+    #      youtube.…                  API Data v3 (clients tiers type NewPipe)
+    #      youtubeembeddedplayer.…    lecteur embarqué dans les applis
+    #      youtubekids.…              API de l'appli Kids
+    #
+    # ⚠️ COLLATÉRAL ASSUMÉ : `googlevideo.com` est le CDN qui sert les octets de
+    # la vidéo — sans lui la lecture continue, donc il est indispensable. Il
+    # porte aussi, croit-on, l'aperçu vidéo de Drive/Photos (NON vérifié chez
+    # nous) ; idem `ggpht.com`, hérité de Picasa. Le contraire — laisser la
+    # vidéo passer pour préserver un aperçu Drive — n'aurait aucun sens.
+    #
+    # ⚠️ Bloquer YouTube emporte NÉCESSAIREMENT YouTube Kids : l'appli enfants
+    # tire ses vidéos du même `googlevideo.com`. On ne peut donc pas « couper
+    # YouTube en laissant Kids » — inutile d'essayer, c'est physique.
+    #
+    # ⚠️ ZONES ÉCARTÉES qui ressemblent : `yt3.com` (parking Parklogic),
+    # `ytstatic.com` (share-dns), `youtubecreators.com` (en vente sur Afternic)
+    # n'appartiennent PAS à Google. `yt3` n'existe que comme nom d'hôte sous
+    # `ggpht.com`, déjà couvert.
     content_block_domains_youtube: str = (
-        "youtube.com,youtu.be,ytimg.com,googlevideo.com,ggpht.com,"
-        "youtubei.googleapis.com"
+        "youtube.com,youtu.be,youtubekids.com,youtube-nocookie.com,"
+        "ytimg.com,googlevideo.com,ggpht.com,"
+        "youtubei.googleapis.com,youtube.googleapis.com,"
+        "youtubeembeddedplayer.googleapis.com,youtubekids.googleapis.com"
     )
     content_block_domains_telegram: str = "telegram.org,telegram.me,t.me,telesco.pe,tdesktop.com"
 

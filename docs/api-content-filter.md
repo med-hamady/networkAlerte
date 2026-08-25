@@ -166,9 +166,9 @@ curl -k -H "X-API-Key: $KEY" https://102.215.95.229/api/v1/content-filter/platfo
   {
     "key": "tiktok",
     "label": "TikTok",
-    "description": "TikTok et ses serveurs vidéo",
-    "domains": ["tiktok.com", "tiktokcdn.com", "…"],
-    "domain_count": 7,
+    "description": "TikTok : appli, web, CDN vidéo et télémétrie ByteDance",
+    "domains": ["tiktok.com", "tiktokv.com", "…"],
+    "domain_count": 25,
     "mechanism": "domains"
   },
   {
@@ -183,7 +183,8 @@ curl -k -H "X-API-Key: $KEY" https://102.215.95.229/api/v1/content-filter/platfo
 ```
 
 Clés actuelles : `facebook` (inclut Instagram, Messenger, Threads), `whatsapp`,
-`tiktok`, `snapchat`, `youtube`, `google`, `telegram`, **`adult`**.
+`tiktok`, `snapchat`, `youtube`, `telegram`, **`adult`**.
+(Il n'y a plus de clé `google` depuis le 2026-08-25 — l'envoyer répond 400.)
 
 **À lire plutôt qu'à coder en dur** : les jeux de domaines sont ajustables sans
 redéploiement, et une plateforme ajoutée au catalogue devient utilisable sans

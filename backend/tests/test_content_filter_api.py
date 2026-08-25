@@ -360,3 +360,118 @@ def test_catalogue_advertises_adult_and_its_mechanism(settings):
     assert by_key[ADULT].mechanism == "upstream_resolver"
     assert by_key["tiktok"].mechanism == "domains"
     assert by_key[ADULT].label and by_key[ADULT].description
+
+
+# ── Couverture réelle d'une plateforme ───────────────────────────────────────
+#
+# Une case cochée qui ne coupe rien est pire que pas de case : l'opérateur
+# facture une option, l'abonné continue de scroller. Or bloquer le seul domaine
+# de marque laisse l'appli tourner — TikTok sert sa vidéo depuis les CDN
+# ByteDance et parle à son API sur `tiktokv.*` ; Snapchat sert ses médias depuis
+# `sc-cdn.net`, qui ne porte pas le nom de la marque. Ces tests ne fixent aucun
+# barème et surtout aucun COMPTE (les listes restent ajustables par env) : ils
+# verrouillent le fait que chaque FONCTION de l'appli a un domaine en face,
+# c'est-à-dire ce qui se perd silencieusement au premier « ménage » de liste.
+
+
+def test_tiktok_covers_app_video_and_telemetry(settings):
+    """Chaque FONCTION de l'appli doit avoir une zone en face, pas seulement la marque.
+
+    ⚠️ Les zones d'API et de CDN sont déclinées par RÉGION de résidence des
+    données (`.com` / `.us` / `.eu` / `-in`) : n'en garder qu'une laisse l'appli
+    basculer sur les autres, et le défaut ne se verrait que chez l'abonné.
+    """
+    doms = set(settings.content_block_catalog()["tiktok"])
+    assert "tiktok.com" in doms
+    # API — les trois régions, pas une seule
+    assert {"tiktokv.com", "tiktokv.us", "tiktokv.eu"} <= doms
+    # CDN vidéo — les quatre régions
+    cdns = ("tiktokcdn.com", "tiktokcdn-us.com", "tiktokcdn-eu.com", "tiktokcdn-in.com")
+    assert set(cdns) <= doms
+    # web, LIVE, images, télémétrie
+    assert {"ttwstatic.com", "ttlivecdn.com", "ibyteimg.com"} <= doms
+    assert {"byteoversea.com", "byteoversea.net", "snssdk.com", "isnssdk.com"} <= doms
+    assert {"pstatp.com", "ipstatp.com"} <= doms
+
+
+def test_snapchat_covers_the_media_cdn_not_just_the_brand(settings):
+    """Les médias ne passent pas par un domaine qui porte le nom de la marque."""
+    doms = set(settings.content_block_catalog()["snapchat"])
+    assert "snapchat.com" in doms
+    assert {"sc-cdn.net", "sc-jpl.com"} <= doms, "photos et Stories passent encore"
+    assert {"sc-static.net", "snap.com", "snapkit.com"} <= doms
+    assert "bitmoji.com" in doms, "les avatars Snapchat se chargent encore"
+
+
+def test_no_category_ever_poisons_a_shared_cdn(settings):
+    """Un CDN mutualisé couperait une partie du web sans rapport avec la case.
+
+    `akamaized.net` et `appspot.com` hébergent des milliers de services tiers ;
+    les poser en `address=/…/0.0.0.0` chez un abonné casserait des sites qu'on
+    n'a jamais voulu toucher, sans que personne fasse le lien avec le filtre.
+    """
+    shared = {"akamaized.net", "appspot.com", "cloudfront.net", "googleapis.com",
+              "gstatic.com", "amazonaws.com", "fastly.net"}
+    for key, doms in settings.content_block_catalog().items():
+        assert not shared & set(doms), f"CDN partagé dans la catégorie {key}"
+
+
+def test_every_catalog_domain_survives_the_ssh_filter(settings):
+    """Un domaine mal formé est jeté EN SILENCE au moment de poser le filtre.
+
+    `_set_content_block_sync` ne garde que ce qui passe `_DOMAIN_RE` (pas de
+    schéma, pas de slash, pas d'espace). Un `https://tiktok.com/` recopié dans
+    une variable d'env produirait donc une catégorie qui a l'air configurée et
+    ne bloque rien — exactement le défaut que `validate_platforms` existe pour
+    rendre impossible côté API.
+    """
+    from app.services.ssh_service import _DOMAIN_RE
+
+    for key, doms in settings.content_block_catalog().items():
+        assert doms, f"catégorie {key} sans aucun domaine"
+        for d in doms:
+            assert _DOMAIN_RE.match(d), f"{key}: domaine rejeté par le LR — {d!r}"
+
+
+def test_youtube_kills_playback_without_taking_google_down(settings):
+    """Les deux moitiés de la promesse, chacune vérifiable séparément.
+
+    Couper la vidéo tient à `googlevideo.com` (le CDN qui sert les octets) et
+    aux API de l'appli ; garder Google debout tient au fait qu'on ne poisonne
+    JAMAIS `googleapis.com` en entier, seulement ses sous-domaines YouTube —
+    dnsmasq honorant la règle la plus précise, `maps.googleapis.com` survit.
+    Une seule de ces deux assertions qui saute, et la case ne tient plus sa
+    promesse : soit la vidéo passe encore, soit on a cassé la moitié du web.
+    """
+    doms = set(settings.content_block_catalog()["youtube"])
+    assert {"youtube.com", "youtu.be", "googlevideo.com", "ytimg.com"} <= doms
+    # applis : mobile, Kids, lecteurs embarqués, clients tiers (API Data v3)
+    assert "youtubekids.com" in doms
+    assert "youtube-nocookie.com" in doms, "les lecteurs embarqués lisent encore"
+    apis = ("youtubei", "youtube", "youtubeembeddedplayer", "youtubekids")
+    assert {f"{a}.googleapis.com" for a in apis} <= doms
+    # … et jamais l'infrastructure Google mutualisée
+    assert not {
+        "googleapis.com", "gstatic.com", "googleusercontent.com",
+        "google.com", "gvt1.com", "gvt2.com",
+    } & doms
+
+
+def test_lookalike_and_sibling_zones_stay_out(settings):
+    """Le nom ne prouve rien — deux familles de faux positifs, écartées à l'audit.
+
+    `tiktokcdn.us` et `snapchat.dev` ne sont PAS sur l'infrastructure de leur
+    homonyme (NS Cloudflare, aucun lien avec les grappes Akamai de ByteDance ni
+    avec le Route 53 de Snap) : les bloquer couperait le site d'un tiers chez
+    l'abonné, sans que personne fasse le lien avec la case cochée. Et
+    `bytedance.com` / `capcut.com` / `spectacles.com` appartiennent bien à la
+    maison mère, mais portent d'AUTRES produits — même raisonnement que le
+    retrait de la catégorie « google ».
+    """
+    catalog = settings.content_block_catalog()
+    tiktok, snapchat = set(catalog["tiktok"]), set(catalog["snapchat"])
+    assert not {"tiktokcdn.us", "tiktoken.com"} & tiktok
+    assert not {"bytedance.com", "capcut.com", "lemon8-app.com", "bytecdn.cn"} & tiktok
+    assert not {"snapchat.dev", "spectacles.com"} & snapchat
+    youtube = set(catalog["youtube"])
+    assert not {"yt3.com", "ytstatic.com", "youtubecreators.com"} & youtube

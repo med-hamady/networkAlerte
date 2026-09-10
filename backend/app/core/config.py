@@ -113,6 +113,24 @@ class Settings(BaseSettings):
     # en confiant une clé à un tiers.
     content_block_api_key: str = ""
 
+    # Clé dédiée à la SEULE route GET /client-signal (qualité du signal et de la
+    # latence d'un abonné, par MAC de son LR), tenue par le système tiers qui
+    # interroge la qualité de service d'un client. Scellée à cette route : elle
+    # n'ouvre ni /devices (donc pas `DELETE /devices/{id}`), ni /uisp/sync, ni
+    # block/unblock — LIRE la qualité d'un lien et AGIR sur l'abonné sont deux
+    # pouvoirs distincts, et c'est tout l'objet du cloisonnement.
+    #
+    # ⚠️ Elle n'a délibérément aucun repli sur `fai_api_key` ni sur
+    # `content_block_api_key` : le consommateur de la qualité de service est un
+    # système différent de celui qui coupe et de celui qui filtre. Le repli est
+    # sur l'auth normale seulement, pour que le dashboard et les scripts
+    # d'exploitation continuent de passer.
+    #
+    # Vide = pas de clé dédiée ; /client-signal retombe alors sur l'auth normale
+    # (master api_key ou session) — c.-à-d. confier la clé maîtresse au tiers,
+    # exactement ce qu'on veut éviter.
+    client_signal_api_key: str = ""
+
     # Journal d'audit des blocages / déblocages (une ligne par action). Fichier
     # texte, dans un volume bind-monté → survit aux redéploiements.
     fai_log_path: str = "/app/logs/fai_actions.log"
@@ -1172,6 +1190,7 @@ class Settings(BaseSettings):
             "LR_VERIFY_API_KEY": self.lr_verify_api_key,
             "UISP_ASSIGN_API_KEY": self.uisp_assign_api_key,
             "CONTENT_BLOCK_API_KEY": self.content_block_api_key,
+            "CLIENT_SIGNAL_API_KEY": self.client_signal_api_key,
         }
         seen: dict[str, str] = {}
         for name, value in scoped.items():

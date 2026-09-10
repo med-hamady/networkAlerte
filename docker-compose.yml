@@ -91,7 +91,12 @@ services:
       - "3000:3000"
     environment:
       - BACKEND_URL=http://backend:8000
-      - API_KEY=${API_KEY}
+      # ⚠️ Pas d'API_KEY ici : le proxy Next (app/api/proxy/[...path]/route.ts)
+      # ne transmet QUE le cookie de session — il refuse explicitement les
+      # en-têtes d'auth venus du navigateur et n'injecte aucune clé. La lui
+      # passer exposait la clé maîtresse dans l'environnement d'un conteneur
+      # qui ne s'en sert pas, et allongeait sans raison la liste des endroits
+      # à toucher lors d'une rotation.
       # Dev only: no nginx, Next dev (:3000) does not proxy /api/v1, so the
       # modem-shell WebSocket reaches the backend directly. In prod this is
       # unset → same-origin via nginx (see docker-compose.prod.yml).

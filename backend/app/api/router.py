@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from app.api.deps import (
+    require_client_signal_client,
     require_content_block_client,
     require_fai_client,
     require_uisp_assign_client,
@@ -102,7 +103,27 @@ api_router.include_router(
     manual_alerts.router, prefix="/manual-alerts", tags=["incidents"], dependencies=_auth,
 )
 api_router.include_router(lr_health.router, prefix="/lr-health", tags=["lr-health"], dependencies=_auth)
-api_router.include_router(client_signal.router, prefix="/client-signal", tags=["client-signal"], dependencies=_auth)
+# Qualité du signal + latence d'un abonné par MAC — consommé par le système tiers
+# qui interroge la qualité de service. AUTH PROPRE : sa clé dédiée
+# CLIENT_SIGNAL_API_KEY (require_client_signal_client), scellée à ce router.
+#
+# Elle ne retombe délibérément PAS sur l'auth /fai ni sur celle du filtre de
+# contenu : LIRE la qualité d'un lien et AGIR sur l'abonné (le couper, filtrer
+# son trafic) sont des pouvoirs distincts, tenus par des systèmes distincts. Les
+# opérateurs y accèdent toujours par leur session ou la clé maîtresse — la clé
+# dédiée AJOUTE un chemin cloisonné, elle n'en retire aucun.
+#
+# ⚠️ Pas de fichier de router séparé ici (contrairement à /fai/verify et
+# /uisp/assign) parce que /client-signal a son PROPRE préfixe et ne porte qu'une
+# route : il n'y a aucune route voisine dont la clé du tiers hériterait. Le
+# corollaire est le piège à éviter : une dépendance de router étant ADDITIVE,
+# ajouter une seconde route dans client_signal.py l'ouvrirait automatiquement à
+# cette clé. Une telle route doit aller dans un autre router — verrouillé par
+# tests/test_client_signal_scoped_key.py.
+api_router.include_router(
+    client_signal.router, prefix="/client-signal", tags=["client-signal"],
+    dependencies=[Depends(require_client_signal_client)],
+)
 api_router.include_router(clients.router, prefix="/clients", tags=["clients"], dependencies=_auth)
 api_router.include_router(network_capacity.router, prefix="/network-capacity", tags=["network-capacity"], dependencies=_auth)
 api_router.include_router(network_uptime.router, prefix="/network-uptime", tags=["network-uptime"], dependencies=_auth)

@@ -90,6 +90,45 @@ def _content_block_api_key_matches(x_api_key: str | None) -> bool:
     return hmac.compare_digest(x_api_key or "", settings.content_block_api_key)
 
 
+def _client_signal_api_key_matches(x_api_key: str | None) -> bool:
+    """True if the header equals the dedicated /client-signal key (timing-safe)."""
+    settings = get_settings()
+    if not settings.client_signal_api_key:
+        return False  # no dedicated key — /client-signal falls back to normal auth
+    return hmac.compare_digest(x_api_key or "", settings.client_signal_api_key)
+
+
+def _log_master_key_use(request: Request) -> None:
+    """Trace toute authentification par la clé MAÎTRESSE (jamais la clé elle-même).
+
+    Sans ça, « qui dépend encore d'`API_KEY` ? » est une question SANS RÉPONSE :
+    le `log_format main` de nginx n'enregistre aucun en-tête, donc un appel porté
+    par la clé maîtresse et un appel porté par une clé cloisonnée y sont
+    rigoureusement identiques. C'est exactement ce qui bloquait la rotation
+    décidée le 2026-08-11 — impossible de savoir ce qu'on casserait en tournant.
+
+    WARNING et non INFO, pour deux raisons : l'usage d'un secret qui ouvre
+    l'API ENTIÈRE est un événement de sécurité, et le volume produit est
+    précisément la grandeur qu'on cherche à mesurer avant de tourner. Un log
+    bruyant n'est pas un défaut ici, c'est le résultat.
+
+    ⚠️ On journalise le CHEMIN, jamais la query string ni l'en-tête : le premier
+    dit quel consommateur dépend de quoi (le seul renseignement utile), les
+    seconds ajouteraient des identifiants d'abonné et le secret lui-même dans un
+    fichier de log.
+    """
+    client = request.client.host if request.client else "?"
+    forwarded = request.headers.get("x-forwarded-for")
+    logger.warning(
+        "master API_KEY used on %s %s from %s (xff=%s) — ce consommateur devrait "
+        "porter une cle cloisonnee ; cf. rotation d'API_KEY",
+        request.method,
+        request.url.path,
+        client,
+        forwarded or "-",
+    )
+
+
 async def require_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -115,8 +154,13 @@ async def require_user_or_api_key(
 
     Returns the User on cookie auth, None on API key auth (no user identity).
     Raises 401 if neither path is valid.
+
+    C'est le CHOKEPOINT de la clé maîtresse : toutes les dépendances cloisonnées
+    retombent ici quand leur propre clé n'est pas présentée. Y journaliser son
+    usage couvre donc l'API entière en un seul point (cf. `_log_master_key_use`).
     """
     if _api_key_matches(x_api_key):
+        _log_master_key_use(request)
         return None
     raw = request.cookies.get(SESSION_COOKIE_NAME)
     user = await auth_service.get_user_from_token(db, raw)
@@ -206,5 +250,30 @@ async def require_content_block_client(
     working: the dedicated key ADDS a scoped path, it never removes one.
     """
     if _content_block_api_key_matches(x_api_key):
+        return None
+    return await require_user_or_api_key(request, x_api_key, db)
+
+
+async def require_client_signal_client(
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """Auth for GET /client-signal: its own dedicated key, or the normal auth.
+
+    The third party polling a subscriber's link quality holds
+    `client_signal_api_key`, which unlocks ONLY this route. Without it, letting
+    that consumer read a signal means handing over the master `api_key` — and
+    with it `DELETE /devices/{id}`, `/uisp/sync` and every other route, since
+    `/client-signal` is served on the .229 VIP which fronts the WHOLE API.
+
+    It deliberately does NOT fall back to `require_fai_client` nor to the
+    content-filter key: READING the quality of a subscriber's link and ACTING on
+    that subscriber (cutting his line, filtering his traffic) are distinct
+    powers held by distinct systems. Falling back to `require_user_or_api_key`
+    keeps the master key and operator sessions working — the dedicated key ADDS
+    a scoped path, it never removes one.
+    """
+    if _client_signal_api_key_matches(x_api_key):
         return None
     return await require_user_or_api_key(request, x_api_key, db)

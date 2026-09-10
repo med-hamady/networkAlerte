@@ -16,8 +16,10 @@ import type {
 } from './types'
 
 // All requests go through the same-origin Next.js route handler at /api/proxy.
-// That handler injects the X-API-Key header server-side, so the secret never
-// lands in the browser bundle. See app/api/proxy/[...path]/route.ts.
+// That handler authenticates by SESSION COOKIE — it forwards the browser's
+// cookie upstream and deliberately drops any auth header the page supplied. No
+// API key is involved anywhere in the frontend: le dashboard s'authentifie comme
+// un utilisateur, pas comme une machine. See app/api/proxy/[...path]/route.ts.
 const API_BASE = '/api/proxy'
 
 export const fetcher = (url: string) =>

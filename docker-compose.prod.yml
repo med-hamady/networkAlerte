@@ -12,7 +12,8 @@
 #   - Frontend port bound to 127.0.0.1 only (nginx is the public entry point)
 #   - nginx reverse proxy in front, terminating TLS on 443 (redirects 80 -> 443)
 #   - Resource limits prevent runaway jobs from OOM-killing the host
-#   - Postgres tuned for the 31 GB server (shared_buffers, work_mem, shm_size)
+#   - Postgres tuned for the 31 GB server (shared_buffers, work_mem, shm_size,
+#     pg_stat_statements preloaded)
 
 services:
   # Postgres réglé pour le serveur de prod (31 Go de RAM, 8 cœurs). Sans ce bloc,
@@ -44,6 +45,12 @@ services:
       # (4 Mo par défaut ; 1,2 Go de fichiers temporaires relevés).
       - -c
       - work_mem=32MB
+      # Classement des requêtes coûteuses (temps cumulé, appels, moyenne) — lu
+      # par scripts/diag-perf.sh. Doit être chargé AU DÉMARRAGE du serveur : sans
+      # cette ligne, l'extension créée par migration existe mais ne mesure rien.
+      # Surcoût négligeable (quelques % sur des requêtes très courtes).
+      - -c
+      - shared_preload_libraries=pg_stat_statements
     # Les requêtes parallèles échangent via /dev/shm, que Docker limite à 64 Mo :
     # au-delà, « could not resize shared memory segment » en pleine requête.
     shm_size: 1g

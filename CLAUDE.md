@@ -335,6 +335,36 @@ de poll couvre un Rocket ET ses LR, dont les id ne sont pas contigus). L'isolati
 par équipement de la phase 2 reste donc indispensable — elle transforme un
 conflit en une ligne de log au lieu d'une perte de cycle.
 
+##### Attendre un verrou coûte autant qu'un interblocage (2026-09-15)
+
+Mesuré par `scripts/diag-perf.sh` le 2026-09-11 : **27 échantillons Postgres sur
+49 attendaient un verrou `advisory`**, alors que la machine avait 80 % de CPU libre
+et que les tours de `ltu_api_poll`/`airos_api_poll` frôlaient leur intervalle
+(moyenne ~58 s pour 60 s, pointes à ~290 s). Deux causes, deux correctifs :
+
+1. **Des tâches parallèles qui visaient le même verrou.** La file de la phase 2
+   concurrente était construite **Rocket par Rocket** ; les 8 tâches simultanées
+   tiraient donc presque toujours des LR du **même** Rocket et se sérialisaient
+   sur sa clé. `jobs._interleave_by_parent` sert désormais la file en
+   **tourniquet par clé de verrou** (LTU et airOS). ⚠️ Réservé aux files
+   **concurrentes** : une boucle séquentielle reste tenue à l'ordre par id.
+2. **Trop d'allers-retours sous verrou.** Par LR et par poll, le moteur d'alertes
+   faisait ~20 requêtes : 1 SELECT d'`AlertState` **par règle**, et 1 SELECT
+   d'incident « à résoudre » par règle saine — même quand rien n'était ouvert,
+   c.-à-d. **toujours** sur un LR, dont les incidents ne sont jamais stockés.
+   S'y ajoutaient un upsert par courbe (jusqu'à 8). Désormais :
+   - les `AlertState` d'un device sont chargés **en une requête** au début de
+     `evaluate_device_metrics` (`alert_engine._STATE_CACHE`, ContextVar limitée à
+     l'évaluation — une fonction de remplacement de même signature, dans les
+     tests, reste compatible) ;
+   - on ne **résout** que les types réellement ouverts (liste déjà chargée pour
+     l'hystérésis, suivie au fil des règles) ;
+   - les courbes d'un relevé partent en **une instruction multi-lignes**
+     (`lr_metric_history_service.record_samples`, lignes triées par nom de
+     métrique : deux écrivains du même device verrouillent dans le même ordre).
+
+Verrouillé par `tests/test_poll_db_roundtrips.py` et `tests/test_alert_engine.py`.
+
 #### Fiabilité du ping (les deux sweeps) — `_ping_sweep` dans `jobs.py`
 Le sweep se fait en **un seul process `fping`** (`poller.ping_hosts_bulk` → `{ip: reachable}`) plutôt qu'un sous-process `ping` par device : à 600+ devices, le `gather` de N `ping` spawnait des centaines de process qui se starvaient → faux « down » de masse + cycle qui débordait. Coût **plat** quelle que soit la taille du parc. Requiert `fping` dans l'image (Dockerfile) ; fallback `ping` par hôte borné s'il manque.
 
@@ -1960,6 +1990,8 @@ Le système est prévu pour être déployé sur un serveur physique après valid
 - **Collecteur NetFlow isolé** : un container dédié `netflow-collector` (`RUN_MODE=collector`, entrée `app/tasks/collector_runner.py`) écoute le NetFlow exporté par le MikroTik (UDP) — un listener permanent, pas un job APScheduler. Off par défaut (`NETFLOW_COLLECTOR_ENABLED=false` → idle). Le port UDP n'est publié que sur l'IP LAN via `docker-compose.lan.yml` (`${LAN_BIND_IP}:2055/udp`), **jamais 0.0.0.0** ; **verrouiller la source au MikroTik au firewall** (NetFlow non authentifié). Déposer `backend/data/GeoLite2-ASN.mmdb` (cf. `backend/data/README.md`) pour les noms d'opérateurs.
 - Séparer les volumes Docker pour les données PostgreSQL sur un stockage persistant.
 - **Postgres réglé pour le serveur** (2026-09-15, `docker-compose.prod.yml`, service `postgres`) : `shared_buffers=8GB`, `effective_cache_size=20GB`, `maintenance_work_mem=1GB`, `work_mem=32MB`, `shm_size: 1g`. Il tournait sur les valeurs par défaut de l’image (128 Mo de cache sur 31 Go) : 52 % de lectures servies par le cache Postgres et 8,7 M pages écrites par les requêtes elles-mêmes (`scripts/diag-perf.sh`, 2026-09-11). ⚠️ **Prod seulement** (tailles calées sur 31 Go). ⚠️ Changer ce bloc exige de **recréer** le conteneur (`dc up -d postgres`) : un `restart` relance l’ancienne commande.
+- **`pg_stat_statements` chargé** (2026-09-15) : `shared_preload_libraries` dans `docker-compose.prod.yml` + extension créée par la migration `d9e8f7a6b5c4`. ⚠️ Création **conditionnelle** (extension disponible ET rôle superutilisateur), jamais bloquante : un outil de diagnostic ne doit pas pouvoir empêcher l'API de démarrer. Sans le préchargement, la vue existe mais ne mesure rien. Lue par la section Postgres de `scripts/diag-perf.sh`.
+- **Durée de chaque requête dans le log nginx** (2026-09-15) : `rt=$request_time urt=$upstream_response_time`, ajoutés **en fin** du `log_format main` pour qu'un lecteur existant garde ses champs à la même place. Classement des appels les plus lents (temps cumulé, identifiants ramenés à `{id}`) : section 5 de `scripts/diag-perf.sh`. ⚠️ `nginx.conf` est monté **fichier par fichier** : après un `git pull`, un `nginx -s reload` relit l'ANCIEN contenu (le montage pointe l'inode d'origine) → `dc restart nginx`.
 - Mettre en place un reverse proxy (nginx ou Caddy) devant uvicorn.
 - Remplacer les mots de passe et l'`API_KEY` par des valeurs fortes dans `.env`.
 - Logs : rediriger stdout vers un aggregateur (Loki, ELK, ou simple fichier rotatif).

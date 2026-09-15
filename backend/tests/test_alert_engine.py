@@ -86,7 +86,7 @@ def make_alert_state(failure_count=0, last_metric_value=None):
 # Helper: create a mock DB that returns a controllable AlertState
 # ---------------------------------------------------------------------------
 
-def _make_execute(state=None):
+def _make_execute(state=None, open_types=()):
     """Mock d'`execute` couvrant les DEUX requêtes du moteur.
 
     ⚠️ Un `AsyncMock()` nu ne suffit pas : `evaluate_device_metrics` lit aussi
@@ -97,18 +97,21 @@ def _make_execute(state=None):
     async def mock_execute(query):
         result = MagicMock()
         result.scalar_one_or_none.return_value = state
-        result.scalars.return_value.all.return_value = []
+        # Incidents OUVERTS → leurs types. Toute autre liste (préchargement des
+        # AlertState) → vide, ce qui renvoie chaque règle vers `scalar_one_or_none`.
+        opened = list(open_types) if "incidents" in str(query) else []
+        result.scalars.return_value.all.return_value = opened
         return result
 
     return mock_execute
 
 
-def make_mock_db(failure_count=0, last_metric_value=None):
+def make_mock_db(failure_count=0, last_metric_value=None, open_types=()):
     """Return an AsyncMock db that yields a given AlertState on _get_or_create_state."""
     db = AsyncMock()
     state = make_alert_state(failure_count=failure_count, last_metric_value=last_metric_value)
 
-    db.execute = _make_execute(state)
+    db.execute = _make_execute(state, open_types)
     db.flush = AsyncMock()
     db.add = MagicMock()
     return db, state
@@ -211,7 +214,8 @@ async def test_signal_bad_third_cycle_opens_incident():
 @pytest.mark.asyncio
 async def test_signal_recovers_resolves_incident():
     """Good signal after bad cycles → resolve called, counter reset."""
-    db, state = make_mock_db(failure_count=3)  # was in alert state
+    # L'incident est OUVERT : le moteur ne résout désormais que ce qui l'est.
+    db, state = make_mock_db(failure_count=3, open_types=["signal_low"])
     # ⚠️ `rule_category="lr"` et non le Rocket par défaut : la qualité radio
     # (signal / CCQ / CINR) est évaluée PAR LIAISON depuis 2026, donc sur le LR.
     # Sur un Rocket, `SignalLowRule` n'est plus dans le jeu de règles et le test
@@ -320,3 +324,74 @@ async def test_uisp_power_no_rules_no_calls():
         await evaluate_device_metrics(db, device, {}, settings)
 
         mock_svc.open_incident.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Allers-retours base par évaluation (2026-09-15)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_rien_a_resoudre_sans_incident_ouvert():
+    """Règle saine et AUCUN incident ouvert : aucune requête de résolution.
+
+    Le SELECT de `resolve_incidents` partait pour chaque règle saine à chaque
+    poll — presque toujours pour rien, et toujours pour rien sur un LR.
+    """
+    db, _state = make_mock_db(failure_count=0)
+
+    with patch("app.services.alert_engine.incident_service") as mock_svc, \
+         patch("app.services.alert_engine.notification_service"):
+        mock_svc.open_incident = AsyncMock(return_value=(MagicMock(), False))
+        mock_svc.resolve_incidents = AsyncMock(return_value=[])
+
+        await evaluate_device_metrics(
+            db, make_device("lr"), {"signal_dbm": -60.0}, make_settings(),
+        )
+
+        mock_svc.resolve_incidents.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_alert_states_charges_en_une_seule_requete():
+    """Tous les AlertState du device en UNE requête — plus un SELECT par règle."""
+    from app.core import alert_constants
+
+    known = {
+        value for name, value in vars(alert_constants).items()
+        if name.startswith("AT_") and isinstance(value, str)
+    }
+    known |= {"_cnt_in_errors", "_cnt_out_errors", "_cnt_rx_bytes", "_cnt_tx_bytes"}
+    states = []
+    for alert_type in sorted(known):
+        s = make_alert_state(failure_count=0)
+        s.alert_type = alert_type
+        states.append(s)
+
+    queries: list[str] = []
+
+    async def mock_execute(query):
+        sql = str(query)
+        queries.append(sql)
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = None
+        result.scalars.return_value.all.return_value = states if "alert_states" in sql else []
+        return result
+
+    db = AsyncMock()
+    db.execute = mock_execute
+    db.flush = AsyncMock()
+    db.add = MagicMock()
+
+    with patch("app.services.alert_engine.incident_service") as mock_svc, \
+         patch("app.services.alert_engine.notification_service"):
+        mock_svc.open_incident = AsyncMock(return_value=(MagicMock(), False))
+        mock_svc.resolve_incidents = AsyncMock(return_value=[])
+
+        await evaluate_device_metrics(
+            db, make_device("lr"),
+            {"signal_dbm": -60.0, "radio_in_errors": 3.0, "radio_rx_bytes": 1000.0},
+            make_settings(),
+        )
+
+    assert sum("alert_states" in q for q in queries) == 1
+    db.add.assert_not_called()  # aucun état recréé : tous venaient du préchargement

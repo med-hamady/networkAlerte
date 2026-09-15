@@ -18,7 +18,7 @@ import functools
 import logging
 import random
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -342,6 +342,7 @@ async def persist_device_metrics(
             )
         )
 
+    graph_values: dict[str, float] = {}
     for metric_name, value in metrics.items():
         if value is None:
             continue
@@ -362,9 +363,47 @@ async def persist_device_metrics(
         # wstalist des M5) sont couverts d'un coup, sans toucher un seul job — et
         # une métrique ajoutée à GRAPH_METRICS devient traçable sans code neuf.
         if metric_name in lr_metric_history_service.GRAPH_METRICS:
-            await lr_metric_history_service.record_sample(
-                session, device_id, metric_name, float(value), now=now,
-            )
+            graph_values[metric_name] = float(value)
+
+    # Toutes les courbes de ce relevé en UNE instruction, et non un upsert par
+    # métrique : ces écritures partent sous le verrou advisory du Rocket parent,
+    # que les autres jobs attendent pendant ce temps.
+    if graph_values:
+        await lr_metric_history_service.record_samples(
+            session, device_id, graph_values, now=now,
+        )
+
+
+def _interleave_by_parent(items: Sequence, parent_of: Callable[..., object]) -> list:
+    """Réordonne une file de travail CONCURRENTE en tourniquet par verrou.
+
+    Les phases 2 concurrentes des polls prennent, pour chaque LR, le verrou
+    advisory de son ROCKET PARENT (cf. :func:`persist_device_metrics`). Or leur
+    file était construite Rocket par Rocket : les N tâches simultanées tiraient
+    donc presque toujours des LR du MÊME Rocket, se sérialisaient sur son verrou
+    et restaient à l'attendre — 27 échantillons Postgres sur 49 en
+    `Lock:advisory` (diagnostic du 2026-09-11). En tourniquet, deux tâches
+    voisines visent des Rockets différents et avancent vraiment en parallèle.
+
+    ⚠️ Ne s'applique qu'aux files CONCURRENTES (une session par tâche, donc aucun
+    cycle de verrous possible). Une boucle SÉQUENTIELLE qui écrit des lignes
+    `devices` reste tenue de les parcourir par id croissant.
+
+    Déterministe : les groupes sont servis dans leur ordre de première apparition.
+    """
+    groups: dict[object, collections.deque] = {}
+    for item in items:
+        groups.setdefault(parent_of(item), collections.deque()).append(item)
+    queues = list(groups.values())
+    out: list = []
+    while queues:
+        remaining = []
+        for queue in queues:
+            out.append(queue.popleft())
+            if queue:
+                remaining.append(queue)
+        queues = remaining
+    return out
 
 
 # rule_category buckets used to pick SNMP poll variants.
@@ -1812,6 +1851,9 @@ async def ltu_api_poll_job() -> None:
     # travail par LR (nombreux, ~14 allers-retours DB chacun) pour la phase 2b
     # concurrente. (lr_id, peer_metrics, net_mode) — jamais l'ORM détaché.
     lr_work: list[tuple[int, dict, str | None]] = []
+    # Rocket parent de chaque LR de la file (= la clé de son verrou) : sert à
+    # entrelacer la phase 2b, cf. `_interleave_by_parent`.
+    lr_rocket: dict[int, int] = {}
     # Ordre DÉTERMINISTE (par id) : discipline de verrouillage partagée avec
     # le sweep de ping et les autres polls — cf. `_ping_sweep`. L'ordre de
     # `fetched` suit l'ACHÈVEMENT des requêtes réseau, donc varie à chaque
@@ -1906,6 +1948,7 @@ async def ltu_api_poll_job() -> None:
                 if lr is None:
                     continue
                 lr_work.append((lr.id, dict(peer_metrics), net_mode_by_mac.get(peer_mac)))
+                lr_rocket[lr.id] = dev.id
 
             await session.commit()
 
@@ -1948,7 +1991,10 @@ async def ltu_api_poll_job() -> None:
         except Exception as exc:  # noqa: BLE001 — un LR ne doit pas casser le tour
             logger.warning("LTU LR persist KO (lr_id=%s): %s", lr_id, exc)
 
-    await asyncio.gather(*(_persist_lr(*w) for w in lr_work))
+    await asyncio.gather(*(
+        _persist_lr(*w)
+        for w in _interleave_by_parent(lr_work, lambda w: lr_rocket[w[0]])
+    ))
 
 
 _AIRMAX_PLATFORM_VARIANTS = (
@@ -2204,6 +2250,12 @@ async def airos_api_poll_job() -> None:
             d.id: (d.name, d.ip_address, d.ssh_username, d.ssh_password)
             for d in [*lr_rows, *ptp_rows]
         }
+        # Clé de verrou de chaque cible (cf. `_persist_one`) : le Rocket parent
+        # pour un LR, l'équipement lui-même sinon. Sert à entrelacer la phase 2.
+        lock_parent = {
+            d.id: (d.rocket_id if isinstance(d, Lr) and d.rocket_id else d.id)
+            for d in [*lr_rows, *ptp_rows]
+        }
 
     if not direct_targets and not ap_targets:
         logger.debug("airOS API poll — no eligible devices")
@@ -2373,9 +2425,12 @@ async def airos_api_poll_job() -> None:
         except Exception as exc:  # noqa: BLE001 — un LR ne doit pas casser le tour
             logger.warning("airOS persist KO (device_id=%s): %s", dev_id, exc)
 
-    await asyncio.gather(
-        *(_persist_one(dev_id, payload) for dev_id, payload in fetched.items())
-    )
+    await asyncio.gather(*(
+        _persist_one(dev_id, payload)
+        for dev_id, payload in _interleave_by_parent(
+            list(fetched.items()), lambda item: lock_parent.get(item[0], item[0]),
+        )
+    ))
 
 
 @_timed_job

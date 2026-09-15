@@ -255,37 +255,67 @@ async def record_sample(
 ) -> None:
     """Fold one reading into its time bucket. Caller owns the transaction.
 
+    Thin wrapper over :func:`record_samples` for a single metric.
+    """
+    await record_samples(session, device_id, {metric_name: value}, now=now)
+
+
+async def record_samples(
+    session: AsyncSession,
+    device_id: int,
+    values: dict[str, float],
+    *,
+    now: datetime.datetime | None = None,
+) -> None:
+    """Fold several readings of ONE device into their buckets, in ONE statement.
+
     First reading of a bucket inserts it; later ones update in place, recomputing
     the mean incrementally as ``(avg*n + value) / (n+1)`` and widening min/max.
-    The arithmetic runs in SQL against the existing row, so concurrent writers on
-    the same device can't lose an update the way a read-modify-write in Python
-    would.
+    The arithmetic runs in SQL against the existing row (the proposed value is
+    read from ``EXCLUDED``), so concurrent writers on the same device can't lose
+    an update the way a read-modify-write in Python would.
+
+    ⚠️ Une instruction multi-lignes, et non un upsert par métrique : un poll écrit
+    jusqu'à 8 courbes par équipement, sous le verrou advisory du Rocket parent —
+    autant d'allers-retours tenus pendant que les autres jobs attendent ce verrou
+    (diagnostic du 2026-09-11 : 27 échantillons Postgres sur 49 en
+    `Lock:advisory`).
+    ⚠️ Lignes TRIÉES par nom de métrique : deux écrivains concurrents du même
+    équipement verrouillent alors ses lignes dans le même ordre et ne peuvent pas
+    s'interbloquer. Une clé ne peut pas figurer deux fois (dict) — ce qui ferait
+    échouer un ON CONFLICT multi-lignes.
     """
+    if not values:
+        return
     moment = now or datetime.datetime.now(datetime.UTC)
     bucket = floor_bucket(moment)
-    val = float(value)
 
-    stmt = pg_insert(LrMetricSample).values(
-        device_id=device_id,
-        metric_name=metric_name,
-        bucket_start=bucket,
-        avg_value=val,
-        min_value=val,
-        max_value=val,
-        sample_count=1,
-        created_at=moment,
-        updated_at=moment,
-    )
+    rows = [
+        {
+            "device_id": device_id,
+            "metric_name": metric_name,
+            "bucket_start": bucket,
+            "avg_value": float(value),
+            "min_value": float(value),
+            "max_value": float(value),
+            "sample_count": 1,
+            "created_at": moment,
+            "updated_at": moment,
+        }
+        for metric_name, value in sorted(values.items())
+    ]
+    stmt = pg_insert(LrMetricSample).values(rows)
+    proposed = stmt.excluded
     n = LrMetricSample.sample_count
     await session.execute(
         stmt.on_conflict_do_update(
             constraint="uq_lr_metric_device_name_bucket",
             set_={
-                "avg_value": (LrMetricSample.avg_value * n + val) / (n + 1),
-                "min_value": func.least(LrMetricSample.min_value, val),
-                "max_value": func.greatest(LrMetricSample.max_value, val),
+                "avg_value": (LrMetricSample.avg_value * n + proposed.avg_value) / (n + 1),
+                "min_value": func.least(LrMetricSample.min_value, proposed.min_value),
+                "max_value": func.greatest(LrMetricSample.max_value, proposed.max_value),
                 "sample_count": n + 1,
-                "updated_at": moment,
+                "updated_at": proposed.updated_at,
             },
         )
     )

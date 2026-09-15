@@ -15,6 +15,7 @@ The engine:
 
 from __future__ import annotations
 
+import contextvars
 import datetime
 import logging
 
@@ -35,12 +36,29 @@ logger = logging.getLogger(__name__)
 # AlertState helpers (DB-backed failure counters)
 # ---------------------------------------------------------------------------
 
+# AlertState d'UNE évaluation, chargés en une seule requête par
+# `evaluate_device_metrics` (clé `(device_id, alert_type)`). Sans ce cache, chaque
+# règle faisait son propre SELECT — une quinzaine d'allers-retours par LR et par
+# poll, tenus sous le verrou advisory du Rocket parent pendant que les autres jobs
+# l'attendent (27 échantillons Postgres sur 49 en `Lock:advisory`, 2026-09-11).
+# ContextVar et non paramètre : des tests remplacent `_get_or_create_state` par une
+# fonction de même signature. Portée = la tâche asyncio en cours, donc deux
+# évaluations concurrentes ne partagent jamais leur cache. Hors d'une évaluation
+# (sonde LR, jobs), il vaut None → comportement d'origine.
+_STATE_CACHE: contextvars.ContextVar[dict[tuple[int, str], AlertState] | None] = (
+    contextvars.ContextVar("alert_state_cache", default=None)
+)
+
+
 async def _get_or_create_state(
     db: AsyncSession,
     device_id: int,
     alert_type: str,
 ) -> AlertState:
     """Fetch the AlertState row for (device_id, alert_type), creating it if absent."""
+    cache = _STATE_CACHE.get()
+    if cache is not None and (device_id, alert_type) in cache:
+        return cache[(device_id, alert_type)]
     result = await db.execute(
         select(AlertState).where(
             AlertState.device_id == device_id,
@@ -52,6 +70,8 @@ async def _get_or_create_state(
         state = AlertState(device_id=device_id, alert_type=alert_type, failure_count=0)
         db.add(state)
         await db.flush()
+    if cache is not None:
+        cache[(device_id, alert_type)] = state
     return state
 
 
@@ -207,6 +227,24 @@ async def evaluate_device_metrics(
     if not rules:
         return
 
+    # Tous les compteurs anti-flapping de ce device en UNE requête — cf. _STATE_CACHE.
+    rows = await db.execute(select(AlertState).where(AlertState.device_id == device.id))
+    cache = {(device.id, s.alert_type): s for s in rows.scalars().all()}
+    token = _STATE_CACHE.set(cache)
+    try:
+        await _evaluate_rules(db, device, metrics, settings, rules)
+    finally:
+        _STATE_CACHE.reset(token)
+
+
+async def _evaluate_rules(
+    db: AsyncSession,
+    device: Device,
+    metrics: dict,
+    settings: Settings,
+    rules: list,
+) -> None:
+    """Corps de :func:`evaluate_device_metrics`, exécuté sous le cache d'AlertState."""
     # Inject delta counters for error-based rules
     metrics = await _inject_error_deltas(db, device.id, metrics)
     # Inject open-incident set for hysteresis-aware rules (signal_low)
@@ -227,6 +265,11 @@ async def evaluate_device_metrics(
         metrics = dict(metrics)
         metrics["max_clients_override"] = device.max_clients_override
 
+    # Types ayant un incident OUVERT pour ce device. Copie SUIVIE au fil des
+    # règles ; celle injectée dans `metrics` reste l'instantané que lisent les
+    # règles à hystérésis, comme avant.
+    open_types = set(metrics["_open_alert_types"])
+
     for rule in rules:
         eval_result: AlertEvalResult = rule.evaluate(device.name, metrics, settings)
         if eval_result.skip:
@@ -243,7 +286,8 @@ async def evaluate_device_metrics(
                 # Threshold reached (count is 1-based, threshold is 0-based minimum)
                 # threshold=0 → opens on first bad cycle (count=1 > 0)
                 # threshold=2 → opens on third bad cycle (count=3 > 2)
-                await _open_alert(db, device, eval_result)
+                if await _open_alert(db, device, eval_result) is not None:
+                    open_types.add(alert_type)
             else:
                 logger.debug(
                     "ALERT pending %s/%s — %d/%d cycles",
@@ -254,4 +298,10 @@ async def evaluate_device_metrics(
             state = await _get_or_create_state(db, device.id, alert_type)
             if state.failure_count > 0:
                 await _reset_failure(db, state)
-            await _resolve_alert(db, device, alert_type, eval_result.message)
+            # Ne « résoudre » que ce qui est OUVERT. Le SELECT de resolve_incidents
+            # partait sinon pour CHAQUE règle saine à CHAQUE poll : presque toujours
+            # pour rien, et toujours pour rien sur un LR, dont les incidents ne
+            # sont jamais stockés (cf. incident_service.is_suppressed_incident).
+            if alert_type in open_types:
+                await _resolve_alert(db, device, alert_type, eval_result.message)
+                open_types.discard(alert_type)

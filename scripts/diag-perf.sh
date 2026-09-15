@@ -228,7 +228,27 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-section "5. VERDICT"
+section "5. APPELS LES PLUS LENTS (nginx, ${HOURS} h)"
+# Lit rt= (duree totale vue par nginx), ajoute au log_format le 2026-09-15.
+# Les identifiants numeriques sont ramenes a {id} pour regrouper une meme route.
+NGINX_ROWS="$(dc logs --since "${HOURS}h" --no-color nginx 2>/dev/null \
+    | sed -nE 's/.*"(GET|POST|PUT|PATCH|DELETE) ([^ ?"]*)[^"]*" ([0-9]{3}) .* rt=([0-9.]+).*/\1 \2 \4/p' \
+    | sed -E 's#/[0-9]+#/{id}#g')"
+if [ -z "$NGINX_ROWS" ]; then
+    echo "(aucune ligne avec rt= : format de log nginx pas encore deploye, ou aucun trafic)"
+else
+    echo "Classement par temps CUMULE (appels x duree moyenne) :"
+    printf "  %-7s %-58s %7s %8s %8s %6s\n" "methode" "chemin" "appels" "moy (s)" "max (s)" ">1 s"
+    echo "$NGINX_ROWS" | awk '
+        { k = $1 " " $2; n[k]++; s[k] += $3; if ($3 > m[k]) m[k] = $3; if ($3 > 1) slow[k]++ }
+        END { for (k in n) { split(k, a, " ");
+                printf "%.3f %s %s %d %.3f %.3f %d\n", s[k], a[1], a[2], n[k], s[k] / n[k], m[k], slow[k] } }' \
+        | sort -rn | head -20 \
+        | awk '{ printf "  %-7s %-58s %7d %8.3f %8.3f %6d\n", $2, $3, $4, $5, $6, $7 }'
+fi
+
+# ---------------------------------------------------------------------------
+section "6. VERDICT"
 gt() { awk -v a="$1" -v b="$2" 'BEGIN { exit !(a + 0 > b + 0) }'; }
 lt() { awk -v a="$1" -v b="$2" 'BEGIN { exit !(a + 0 < b + 0) }'; }
 

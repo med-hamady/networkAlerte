@@ -142,7 +142,11 @@ echo "Tours SAUTES (le precedent n'etait pas fini)  : $SKIPPED"
 echo "Tours RATES  (le scheduler etait en retard)   : $MISSED"
 if [ "${SKIPPED:-0}" -gt 0 ]; then
     echo "  detail par job :"
-    grep -oE 'Execution of job "[a-z0-9_]+' "$LOGS" | sort | uniq -c | sort -rn | head -10
+    # Les jobs portent un `name=` lisible ("airOS HTTP API poll (airMAX LR)") :
+    # on prend tout jusqu'a " (trigger", pas un identifiant.
+    grep -E 'maximum number of running instances reached' "$LOGS" \
+        | sed -nE 's/.*Execution of job "(.+) \(trigger.*/\1/p' \
+        | sort | uniq -c | sort -rn | head -10 | sed 's/^/    /'
 fi
 
 # La sonde LR separe deja le temps passe a attendre les RADIOS (phase 1, SSH)

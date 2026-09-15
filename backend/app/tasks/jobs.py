@@ -3206,26 +3206,21 @@ async def client_block_enforcement_job() -> None:
     at click time. It also re-asserts the independent per-category content
     filter (blocked_categories) the same way. Idempotent: a no-op when nothing
     changed.
+
+    Chaque passe gère ses propres sessions — une par LR, plusieurs LR à la fois
+    (cf. ``client_block_service._fan_out``) : le job ne tient plus une session
+    unique ouverte pendant tout un tour de SSH.
     """
-    async with async_session_factory() as session:
-        try:
-            n = await client_block_service.enforce_blocked_clients(session)
-            if n:
-                logger.info("Client-block enforcement — %d LR(s) renforcé(s)", n)
-            else:
-                logger.debug("Client-block enforcement — rien à renforcer")
-        except Exception:
-            await session.rollback()
-            raise
-        try:
-            c = await client_block_service.enforce_content_blocks(session)
-            if c:
-                logger.info("Content-block enforcement — %d LR(s) renforcé(s)", c)
-            else:
-                logger.debug("Content-block enforcement — rien à renforcer")
-        except Exception:
-            await session.rollback()
-            raise
+    n = await client_block_service.enforce_blocked_clients()
+    if n:
+        logger.info("Client-block enforcement — %d LR(s) renforcé(s)", n)
+    else:
+        logger.debug("Client-block enforcement — rien à renforcer")
+    c = await client_block_service.enforce_content_blocks()
+    if c:
+        logger.info("Content-block enforcement — %d LR(s) renforcé(s)", c)
+    else:
+        logger.debug("Content-block enforcement — rien à renforcer")
 
 
 # ---------------------------------------------------------------------------

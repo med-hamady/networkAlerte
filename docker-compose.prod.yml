@@ -12,8 +12,42 @@
 #   - Frontend port bound to 127.0.0.1 only (nginx is the public entry point)
 #   - nginx reverse proxy in front, terminating TLS on 443 (redirects 80 -> 443)
 #   - Resource limits prevent runaway jobs from OOM-killing the host
+#   - Postgres tuned for the 31 GB server (shared_buffers, work_mem, shm_size)
 
 services:
+  # Postgres réglé pour le serveur de prod (31 Go de RAM, 8 cœurs). Sans ce bloc,
+  # il tournait sur les valeurs PAR DÉFAUT de l'image — 128 Mo de cache. Mesuré le
+  # 2026-09-11 (scripts/diag-perf.sh) : 52 % des lectures servies par le cache
+  # Postgres (> 99 % attendu), et 8,7 M pages écrites par les requêtes elles-mêmes
+  # contre 221 k par les checkpoints, faute de place pour les garder en mémoire.
+  # ⚠️ PROD SEULEMENT : ces tailles supposent les 31 Go du serveur. Un poste de dev
+  #    qui les recevrait refuserait de démarrer Postgres ou swapperait.
+  # ⚠️ Toute modification ici exige de RECRÉER le conteneur — `restart` relance
+  #    l'ancienne commande : `dc up -d postgres`. Vérifier ensuite avec
+  #    `dc exec postgres psql -U supervisor -d network_supervisor -c 'SHOW shared_buffers;'`.
+  postgres:
+    command:
+      - postgres
+      # ~25 % de la RAM : le cache propre de Postgres. Plus haut, il doublonne le
+      # cache du système au lieu de s'y ajouter.
+      - -c
+      - shared_buffers=8GB
+      # Ce que l'optimiseur peut compter en cache (Postgres + système). N'alloue
+      # RIEN : sert seulement à préférer un index quand ses pages sont en mémoire.
+      - -c
+      - effective_cache_size=20GB
+      # VACUUM, CREATE INDEX, REFRESH MATERIALIZED VIEW. Plafond PAR worker
+      # d'autovacuum (3 par défaut) → 3 Go au pire.
+      - -c
+      - maintenance_work_mem=1GB
+      # Mémoire de tri / hachage par nœud de requête avant de déborder sur disque
+      # (4 Mo par défaut ; 1,2 Go de fichiers temporaires relevés).
+      - -c
+      - work_mem=32MB
+    # Les requêtes parallèles échangent via /dev/shm, que Docker limite à 64 Mo :
+    # au-delà, « could not resize shared memory segment » en pleine requête.
+    shm_size: 1g
+
   backend:
     # Bind-mount du code (Python interprété) : un changement de code ne demande
     # qu'un `restart`, pas un `--build`. Rebuild de l'image seulement si

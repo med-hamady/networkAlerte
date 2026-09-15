@@ -35,6 +35,7 @@ flag: a stored boolean with nothing enforcing it was useless.
 import asyncio
 import datetime
 import logging
+from collections.abc import Awaitable, Callable
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -157,6 +158,63 @@ def _promote_password(lr: Lr, primary: str, used: str | None) -> None:
 # connectent en <1,5 s isolément. Les appels au-delà attendent leur tour — ils ne
 # sont jamais rejetés, l'intention étant déjà commitée.
 _SSH_CONCURRENCY = asyncio.Semaphore(10)
+
+# Nombre de LR traités EN MÊME TEMPS par une passe du job de renforcement. La
+# boucle était SÉRIE : tour moyen de 309 s, maximum 3833 s (64 min), pour un
+# cycle de 120 s — mesuré en prod le 2026-09-11 (scripts/diag-perf.sh). Un client
+# bloqué dont le LR reboote retrouvait donc Internet jusqu'à une heure au lieu de
+# deux minutes. Le plafond `_SSH_CONCURRENCY` existait déjà, la boucle n'en
+# occupait qu'une place.
+#
+# ⚠️ 8 et pas 10 : paramiko tourne dans le pool de threads PAR DÉFAUT d'asyncio
+# (`ssh_service` → `asyncio.to_thread`), soit min(32, cœurs + 4) = 12 threads sur
+# le serveur de prod, partagés par tout le process `scheduler-heavy`. Le remplir
+# affamerait les autres jobs du groupe.
+# ⚠️ Sémaphore DISTINCT de `_SSH_CONCURRENCY` : une tâche qui y prendrait une place
+# puis en redemanderait une pour son SSH se bloquerait elle-même dès que toutes
+# les places sont occupées.
+_ENFORCE_FANOUT = 8
+
+
+def _default_session_factory() -> Callable[[], AsyncSession]:
+    # Import tardif : `app.db.session` crée le moteur à l'import, ce que les tests
+    # de ce module (sans base) n'ont pas à subir.
+    from app.db.session import async_session_factory
+
+    return async_session_factory
+
+
+async def _fan_out(
+    lr_ids: list[int],
+    worker: Callable[[AsyncSession, int], Awaitable[int]],
+    session_factory: Callable[[], AsyncSession],
+    label: str,
+) -> int:
+    """Applique ``worker`` à chaque LR, en parallèle borné, UNE session par LR.
+
+    Une session par LR plutôt qu'une session partagée : chaque transaction ne
+    tient que les lignes d'UN LR, donc ne peut former seule un cycle de verrous —
+    même protection structurelle que la phase 2 concurrente des polls (cf.
+    CLAUDE.md, « Interblocages device_metrics »).
+
+    Un LR qui lève est journalisé et compte zéro. En série, une exception
+    abandonnait tout le reste du tour : des clients restaient en ligne à cause de
+    l'erreur d'un autre.
+    """
+    fanout = asyncio.Semaphore(_ENFORCE_FANOUT)
+
+    async def _one(lr_id: int) -> int:
+        async with fanout:
+            try:
+                async with session_factory() as session:
+                    return await worker(session, lr_id)
+            except Exception:  # noqa: BLE001 — un LR ne doit pas casser le tour
+                logger.exception(
+                    "%s: LR id=%d — échec inattendu, ignoré pour ce cycle", label, lr_id,
+                )
+                return 0
+
+    return sum(await asyncio.gather(*(_one(lr_id) for lr_id in lr_ids)))
 
 
 async def _set_full(
@@ -748,7 +806,9 @@ async def _abandon(
         )
 
 
-async def enforce_blocked_clients(session: AsyncSession) -> int:
+async def enforce_blocked_clients(
+    session_factory: Callable[[], AsyncSession] | None = None,
+) -> int:
     """Re-assert the pending intent on every LR — block AND unblock.
 
     Idempotent per mode: re-shutting a down port / re-applying the same
@@ -777,119 +837,141 @@ async def enforce_blocked_clients(session: AsyncSession) -> int:
     Le `router_blocked` dans la requête rattrape le cas d'une règle restée en place
     après un déblocage dont le retrait avait échoué. Returns the count of orders
     successfully applied this pass.
+
+    Les LR sont traités **plusieurs à la fois** (``_ENFORCE_FANOUT``), chacun
+    dans SA session, relu au moment de le traiter — cf. :func:`_fan_out`.
+    ``session_factory`` n'existe que pour les tests (défaut : celle de l'app).
     """
-    result = await session.execute(
-        select(Lr).where(
-            or_(
-                Lr.client_blocked.is_(True),
-                Lr.unblock_pending.is_(True),
-                Lr.router_blocked.is_(True),
-            ),
+    factory = session_factory or _default_session_factory()
+    async with factory() as session:
+        result = await session.execute(
+            select(Lr.id)
+            .where(
+                or_(
+                    Lr.client_blocked.is_(True),
+                    Lr.unblock_pending.is_(True),
+                    Lr.router_blocked.is_(True),
+                ),
+            )
+            .order_by(Lr.id)
         )
+        lr_ids = list(result.scalars().all())
+    if not lr_ids:
+        return 0
+    return await _fan_out(
+        lr_ids, _enforce_one_block, factory, "enforce_blocked_clients",
     )
-    pending = list(result.scalars().all())
-    if not pending:
+
+
+async def _enforce_one_block(session: AsyncSession, lr_id: int) -> int:
+    """Une itération de :func:`enforce_blocked_clients` — 1 si l'ordre a abouti."""
+    lr = await session.get(Lr, lr_id)
+    # Relu au moment de le traiter, pas au début du tour : l'intention a pu
+    # changer entre-temps (déblocage par le système de paiement, déprovisionnement).
+    if lr is None or not (lr.client_blocked or lr.unblock_pending or lr.router_blocked):
+        return 0
+    # Fermer la transaction de lecture AVANT tout aller-retour réseau (routeur,
+    # SSH) : sinon la connexion reste « idle in transaction » pendant toute la
+    # session SSH et retient l'horizon du vacuum. Les attributs restent chargés
+    # (`expire_on_commit=False`) ; les mutations qui suivent partent au commit.
+    await session.commit()
+
+    # Plan routeur d'abord : il ne dépend ni du SSH ni de l'état d'abandon,
+    # et c'est lui qui garantit la coupure quand le LR ne répond pas.
+    await _reconcile_router(lr)
+
+    if lr.block_unenforceable_reason is not None and not _abandon_retry_due(lr):
+        await session.commit()  # persiste l'éventuel changement côté routeur
+        return 0  # LR abandonné (récemment) : pas de SSH, le routeur couvre
+
+    if not _has_ssh(lr):
+        logger.warning(
+            "enforce_blocked_clients: LR '%s' (id=%d) sans identifiants SSH "
+            "— ordre non garanti",
+            lr.name, lr.id,
+        )
+        await session.commit()
         return 0
 
-    enforced = 0
-    for lr in pending:
-        # Plan routeur d'abord : il ne dépend ni du SSH ni de l'état d'abandon,
-        # et c'est lui qui garantit la coupure quand le LR ne répond pas.
-        await _reconcile_router(lr)
+    if not lr.ip_address:
+        # Sans IP, le LR est hors du sweep de ping et injoignable en SSH : rien
+        # à tenter localement. Le routeur (réconcilié ci-dessus) le couvre. Cas
+        # des clients « hors supervision » bloqués en masse sur le routeur.
+        await session.commit()
+        return 0
 
-        if lr.block_unenforceable_reason is not None and not _abandon_retry_due(lr):
-            await session.commit()  # persiste l'éventuel changement côté routeur
-            continue  # LR abandonné (récemment) : pas de SSH, le routeur couvre
+    if not lr.client_blocked and not lr.unblock_pending:
+        await session.commit()  # visité pour le seul nettoyage routeur
+        return 0
 
-        if not _has_ssh(lr):
-            logger.warning(
-                "enforce_blocked_clients: LR '%s' (id=%d) sans identifiants SSH "
-                "— ordre non garanti",
-                lr.name, lr.id,
+    blocking = lr.client_blocked
+    action = "BLOCK" if blocking else "UNBLOCK"
+    # Capturer la preuve UNIQUEMENT sur une transition — c.-à-d. exactement
+    # quand une ligne de journal sera écrite (`first_time` ci-dessous, et
+    # tout déblocage en attente). Les ré-affirmations de routine, qui
+    # repassent sur chaque client bloqué toutes les 120 s sans rien
+    # journaliser, n'ont rien à prouver : capturer y ajouterait une lecture
+    # de canal et un `ip addr show` par client et par cycle, pour des
+    # fichiers que personne n'ouvrirait.
+    capture = lr.client_block_enforced_at is None if blocking else True
+    ok, msg, evidence = await (
+        _assert_block(lr, capture_evidence=capture)
+        if blocking
+        else _clear_block(lr, capture_evidence=capture)
+    )
+
+    if ok:
+        # Un ré-essai réussi lève l'abandon : sans ça la raison resterait
+        # posée et le LR traînerait dans « À traiter » alors qu'il est réglé
+        # (le nettoyage n'existait que dans les endpoints block/unblock, pas
+        # dans la boucle — invisible tant que les abandonnés étaient sautés).
+        _set_unenforceable(lr, None)
+        if blocking:
+            first_time = lr.client_block_enforced_at is None
+            lr.client_block_enforced_at = _now()
+            logger.info(
+                "enforce: LR '%s' (id=%d) blocage maintenu (mode=%s)",
+                lr.name, lr.id, lr.block_mode,
             )
-            await session.commit()
-            continue
-
-        if not lr.ip_address:
-            # Sans IP, le LR est hors du sweep de ping et injoignable en SSH : rien
-            # à tenter localement. Le routeur (réconcilié ci-dessus) le couvre. Cas
-            # des clients « hors supervision » bloqués en masse sur le routeur.
-            await session.commit()
-            continue
-
-        if not lr.client_blocked and not lr.unblock_pending:
-            await session.commit()  # visité pour le seul nettoyage routeur
-            continue
-
-        blocking = lr.client_blocked
-        action = "BLOCK" if blocking else "UNBLOCK"
-        # Capturer la preuve UNIQUEMENT sur une transition — c.-à-d. exactement
-        # quand une ligne de journal sera écrite (`first_time` ci-dessous, et
-        # tout déblocage en attente). Les ré-affirmations de routine, qui
-        # repassent sur chaque client bloqué toutes les 120 s sans rien
-        # journaliser, n'ont rien à prouver : capturer y ajouterait une lecture
-        # de canal et un `ip addr show` par client et par cycle, pour des
-        # fichiers que personne n'ouvrirait.
-        capture = lr.client_block_enforced_at is None if blocking else True
-        ok, msg, evidence = await (
-            _assert_block(lr, capture_evidence=capture)
-            if blocking
-            else _clear_block(lr, capture_evidence=capture)
-        )
-
-        if ok:
-            enforced += 1
-            # Un ré-essai réussi lève l'abandon : sans ça la raison resterait
-            # posée et le LR traînerait dans « À traiter » alors qu'il est réglé
-            # (le nettoyage n'existait que dans les endpoints block/unblock, pas
-            # dans la boucle — invisible tant que les abandonnés étaient sautés).
-            _set_unenforceable(lr, None)
-            if blocking:
-                first_time = lr.client_block_enforced_at is None
-                lr.client_block_enforced_at = _now()
-                logger.info(
-                    "enforce: LR '%s' (id=%d) blocage maintenu (mode=%s)",
-                    lr.name, lr.id, lr.block_mode,
-                )
-                # Un blocage en attente vient d'être appliqué : le journaliser pour
-                # qu'il passe de « Non appliqué » à « Appliqué » (sinon aucune ligne
-                # de succès n'est jamais écrite pour ce rattrapage SSH).
-                if first_time:
-                    fai_audit.log_action(
-                        "RETRY_OK", ok=True, mac=lr.mac_address, name=lr.name,
-                        mode=lr.block_mode, source="enforce",
-                        message="Blocage en attente appliqué sur le LR.",
-                        evidence=evidence,
-                    )
-            else:
-                lr.unblock_pending = False
-                logger.warning(
-                    "enforce: LR '%s' (id=%d) accès rétabli (déblocage en "
-                    "attente rejoué avec succès)",
-                    lr.name, lr.id,
-                )
+            # Un blocage en attente vient d'être appliqué : le journaliser pour
+            # qu'il passe de « Non appliqué » à « Appliqué » (sinon aucune ligne
+            # de succès n'est jamais écrite pour ce rattrapage SSH).
+            if first_time:
                 fai_audit.log_action(
                     "RETRY_OK", ok=True, mac=lr.mac_address, name=lr.name,
                     mode=lr.block_mode, source="enforce",
-                    message="Déblocage en attente appliqué sur le LR.",
+                    message="Blocage en attente appliqué sur le LR.",
                     evidence=evidence,
                 )
-        elif structural := _structural_failure(msg):
-            await _abandon(lr, action, structural, evidence)
         else:
+            lr.unblock_pending = False
             logger.warning(
-                "enforce: LR '%s' (id=%d) %s non appliqué : %s — nouvelle "
-                "tentative au prochain cycle",
-                lr.name, lr.id, action, msg,
+                "enforce: LR '%s' (id=%d) accès rétabli (déblocage en "
+                "attente rejoué avec succès)",
+                lr.name, lr.id,
             )
+            fai_audit.log_action(
+                "RETRY_OK", ok=True, mac=lr.mac_address, name=lr.name,
+                mode=lr.block_mode, source="enforce",
+                message="Déblocage en attente appliqué sur le LR.",
+                evidence=evidence,
+            )
+    elif structural := _structural_failure(msg):
+        await _abandon(lr, action, structural, evidence)
+    else:
+        logger.warning(
+            "enforce: LR '%s' (id=%d) %s non appliqué : %s — nouvelle "
+            "tentative au prochain cycle",
+            lr.name, lr.id, action, msg,
+        )
 
-        # Le SSH vient peut-être de changer l'état désiré (coupure confirmée → la
-        # règle routeur devient inutile ; abandon → elle devient nécessaire). On
-        # réaligne tout de suite plutôt que d'attendre le cycle suivant.
-        await _reconcile_router(lr)
-        await session.commit()
+    # Le SSH vient peut-être de changer l'état désiré (coupure confirmée → la
+    # règle routeur devient inutile ; abandon → elle devient nécessaire). On
+    # réaligne tout de suite plutôt que d'attendre le cycle suivant.
+    await _reconcile_router(lr)
+    await session.commit()
 
-    return enforced
+    return 1 if ok else 0
 
 
 # ── Content block (per-category destination filter) ─────────────────────────
@@ -1035,7 +1117,9 @@ async def set_content_block(
     )
 
 
-async def enforce_content_blocks(session: AsyncSession) -> int:
+async def enforce_content_blocks(
+    session_factory: Callable[[], AsyncSession] | None = None,
+) -> int:
     """Re-assert the desired content filter on every LR that has one pending.
 
     Declarative and idempotent: re-writing the same dnsmasq block is a no-op,
@@ -1043,49 +1127,65 @@ async def enforce_content_blocks(session: AsyncSession) -> int:
     one cycle. Also retries removals recorded while the LR was unreachable —
     those carry ``blocked_categories == []`` and flip to None once confirmed.
     Skips LRs abandoned for a structural SSH failure. Returns the count applied.
+
+    Concurrent, une session par LR, comme :func:`enforce_blocked_clients`.
     """
-    result = await session.execute(
-        select(Lr).where(
-            or_(Lr.blocked_categories.isnot(None), Lr.block_adult_content.is_(True))
+    factory = session_factory or _default_session_factory()
+    async with factory() as session:
+        result = await session.execute(
+            select(Lr.id)
+            .where(
+                or_(Lr.blocked_categories.isnot(None), Lr.block_adult_content.is_(True))
+            )
+            .order_by(Lr.id)
         )
-    )
-    pending = list(result.scalars().all())
-    if not pending:
+        lr_ids = list(result.scalars().all())
+    if not lr_ids:
         return 0
+    return await _fan_out(
+        lr_ids, _enforce_one_content, factory, "enforce_content_blocks",
+    )
 
-    enforced = 0
-    for lr in pending:
-        if lr.block_unenforceable_reason is not None and not _abandon_retry_due(lr):
-            continue
-        if not _has_ssh(lr):
-            continue
-        categories = _normalize_categories(lr.blocked_categories)
-        active = _content_active(lr, categories)
-        ok, msg = await _apply_content_block(lr, categories)
-        if ok:
-            enforced += 1
-            _set_unenforceable(lr, None)  # SSH réussi → l'abandon éventuel est levé
-            if active:
-                lr.blocked_categories = categories or None  # collapse [] sentinel
-                lr.content_block_enforced_at = _now()
-            else:
-                lr.blocked_categories = None  # clear confirmed → drop out of the loop
-                lr.content_block_enforced_at = None
-        elif structural := _structural_failure(msg):
-            _set_unenforceable(lr, structural)
-            logger.error(
-                "enforce content: LR '%s' (id=%d, %s) ABANDONNÉ : %s",
-                lr.name, lr.id, lr.ip_address, structural,
-            )
+
+async def _enforce_one_content(session: AsyncSession, lr_id: int) -> int:
+    """Une itération de :func:`enforce_content_blocks` — 1 si le filtre a abouti."""
+    lr = await session.get(Lr, lr_id)
+    # Relu à l'instant (cf. _enforce_one_block) : un filtre effacé entre-temps
+    # ne doit pas déclencher une session SSH de retrait pour rien.
+    if lr is None or (lr.blocked_categories is None and not lr.block_adult_content):
+        return 0
+    await session.commit()  # aucune transaction ouverte pendant le SSH
+
+    if lr.block_unenforceable_reason is not None and not _abandon_retry_due(lr):
+        return 0
+    if not _has_ssh(lr):
+        return 0
+    categories = _normalize_categories(lr.blocked_categories)
+    active = _content_active(lr, categories)
+    ok, msg = await _apply_content_block(lr, categories)
+    if ok:
+        _set_unenforceable(lr, None)  # SSH réussi → l'abandon éventuel est levé
+        if active:
+            lr.blocked_categories = categories or None  # collapse [] sentinel
+            lr.content_block_enforced_at = _now()
         else:
-            logger.warning(
-                "enforce content: LR '%s' (id=%d) non appliqué : %s — nouvelle "
-                "tentative au prochain cycle",
-                lr.name, lr.id, msg,
-            )
-        await session.commit()
+            lr.blocked_categories = None  # clear confirmed → drop out of the loop
+            lr.content_block_enforced_at = None
+    elif structural := _structural_failure(msg):
+        _set_unenforceable(lr, structural)
+        logger.error(
+            "enforce content: LR '%s' (id=%d, %s) ABANDONNÉ : %s",
+            lr.name, lr.id, lr.ip_address, structural,
+        )
+    else:
+        logger.warning(
+            "enforce content: LR '%s' (id=%d) non appliqué : %s — nouvelle "
+            "tentative au prochain cycle",
+            lr.name, lr.id, msg,
+        )
+    await session.commit()
 
-    return enforced
+    return 1 if ok else 0
 
 
 # ── Platform intent — the per-platform API used by external systems ──────────

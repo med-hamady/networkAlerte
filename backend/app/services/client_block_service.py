@@ -447,6 +447,64 @@ def desired_router_block(lr: Lr) -> bool:
     return lr.client_block_enforced_at is None or lr.block_unenforceable_reason is not None
 
 
+# ── Par quel mécanisme un client est-il coupé, MAINTENANT ? ─────────────────
+# À ne pas confondre avec `desired_router_block`, juste au-dessus, qui dit ce
+# que le routeur DEVRAIT porter. Celle-ci décrit ce qui EST — et la nuance
+# entre ses deux derniers cas est celle qui coûte de l'argent : « coupé par le
+# routeur » veut dire que le client est bel et bien hors ligne, « ordre pris »
+# veut dire qu'il NAVIGUE malgré son impayé.
+ENFORCED_BY_LR = "lr"
+ENFORCED_BY_ROUTER = "router"
+
+
+def enforcement_state(
+    *,
+    client_blocked: bool,
+    enforced_at: datetime.datetime | None,
+    unenforceable_reason: str | None,
+    router_blocked: bool,
+) -> str | None:
+    """Par quel mécanisme ce client est-il EFFECTIVEMENT coupé ?
+
+    - ``"lr"``     → la coupure est posée sur son propre équipement (nominal).
+    - ``"router"`` → repli : c'est le routeur de cœur qui coupe, parce que le LR
+      ne répondait pas ou refusait la connexion.
+    - ``None``     → personne ne le coupe. Soit il n'y a pas d'ordre
+      (``client_blocked`` faux), soit l'ordre est enregistré mais n'a **jamais
+      été appliqué nulle part** — et dans ce second cas le client est en ligne.
+
+    ⚠️ ``unenforceable_reason`` DISQUALIFIE l'équipement même quand il porte un
+    ``enforced_at`` : on a ABANDONNÉ ce LR, sa dernière coupure est donc
+    antérieure à l'abandon et un reboot a pu l'effacer. C'est exactement le
+    raisonnement de :func:`desired_router_block`, qui laisse le routeur couvrir
+    ces clients-là précisément pour ça — et la raison pour laquelle
+    ``router_rules_service.is_redundant`` refuse de conclure sur le seul
+    ``enforced_at``.
+
+    ⚠️ Prend des primitives plutôt qu'un ``Lr`` pour que les appelants qui ne
+    chargent que quelques colonnes (le journal en croise ~1000 par affichage)
+    n'aient pas à hydrater l'ORM entier. :func:`enforcement_state_of` est le
+    raccourci quand on a déjà l'objet.
+    """
+    if not client_blocked:
+        return None
+    if enforced_at is not None and unenforceable_reason is None:
+        return ENFORCED_BY_LR
+    if router_blocked:
+        return ENFORCED_BY_ROUTER
+    return None
+
+
+def enforcement_state_of(lr: Lr) -> str | None:
+    """:func:`enforcement_state` pour un ``Lr`` déjà chargé."""
+    return enforcement_state(
+        client_blocked=lr.client_blocked,
+        enforced_at=lr.client_block_enforced_at,
+        unenforceable_reason=lr.block_unenforceable_reason,
+        router_blocked=lr.router_blocked,
+    )
+
+
 async def _reconcile_router(lr: Lr) -> str | None:
     """Aligne le routeur sur l'état désiré. Retourne un message si on a agi.
 

@@ -1581,6 +1581,53 @@ d'enforcement pour le même ordre (`RETRY_OK`, `ABANDON`, `IDENT_KO`,
 aux rejeux demanderait une colonne sur `lrs` (donc une migration) — non fait,
 délibérément.
 
+#### Demandes de coupure — la demande ET l'état réel (2026-09-16)
+
+Page `/fai-requests` : ce que le système de paiement a **demandé**, croisé avec
+l'état **du jour** de chaque client. Répond à la question que ni le journal ni la
+base ne savaient traiter seuls — « la campagne du 12 a-t-elle vraiment coupé tout
+le monde ? ».
+
+⚠️ **Deux fraîcheurs dans la même ligne, et c'est tout l'intérêt** : les champs
+du journal sont **figés à l'instant de l'action**, la clé **`current`** est
+**relue en base à chaque affichage**. Lire `ok` comme statut courant ferait
+afficher « non appliqué » sur un client parfaitement coupé — une demande ratée à
+11 h 02 est régulièrement rattrapée à 11 h 04 par `RETRY_OK`, ou couverte par
+`ROUTER_BLOCK`. C'est leur **DÉSACCORD** qui porte l'information, dans les deux
+sens : « échec » + « coupé par le routeur » = rien à faire ; « appliquée » +
+« NON COUPÉ » = le client a redémarré son LR et la coupure est tombée.
+
+⚠️ **Le verdict « sur le LR ou sur le routeur » a UNE seule implémentation** —
+`client_block_service.enforcement_state`, extraite de `endpoints/fai.py` où elle
+était inline. `/fai/block`, `/fai/status` et cette page rendent donc le même
+verdict pour le même client. Son cas piégeux : un LR **abandonné** porte un
+`client_block_enforced_at` **antérieur à l'abandon** (qu'un reboot a pu effacer),
+donc `unenforceable_reason` **disqualifie** l'équipement et la coupure est
+attribuée au routeur — exactement le raisonnement de `desired_router_block`, qui
+laisse le routeur couvrir ces clients-là.
+
+⚠️ **`known=false` n'est PAS « pas coupé »** : le sync UISP **supprime** les
+stations déprovisionnées alors que le journal, append-only, leur survit. Une MAC
+hors inventaire est donc un cas **normal**, rendu « Fiche supprimée » — on ne
+sait rien de ce client, et le dire est la seule réponse honnête.
+
+⚠️ **L'attribution à `Block_all.php` repose sur une CHAÎNE** (le préfixe de
+`reason`, cf. `_REASON_SOURCES`). Si le script change sa formulation, ses
+demandes retombent en `payment` — donc un écran vide ne prouve rien, et la page
+propose « Voir toutes les origines » précisément là où l'opérateur conclurait à
+tort que rien n'a été demandé. Corollaire non corrigé : `POST /fai/unblock` ne
+calcule **aucune** origine, les déblocages du script sont indistinguables.
+
+⚠️ **`stats` reste le compte de TOUT le fichier**, jamais de la sélection (son
+contrat d'origine) : les tuiles de cette page comptent donc sur `entries`.
+
+Filtres : origine, plage de jours (`start`/`end` UTC, **fin incluse**, 422 si
+dépareillées — la convention de `/clients/consumption`, pas une seconde à
+retenir), recherche, et l'état courant côté client. Le barème de rendu est dans
+**`lib/faiActions.ts`**, partagé avec `/fai-journal` : deux copies des libellés
+finiraient par se contredire (même raison que `lib/topologyColors`). Verrouillé
+par `tests/test_fai_requests_view.py`.
+
 #### DÉBIT vs CAPACITÉ — deux mesures distinctes (2026-07-20)
 
 Piège corrigé le 2026-07-20 : le « débit » de la fiche équipement était lu dans
@@ -1974,6 +2021,7 @@ visibles sur `/incidents`.
 | Topologie du réseau | `/topology` | **Graphe inter-sites** — sites rendus par l'icône de pylône (`public/devices/antenne.png` ; ⚠️ **dans `devices/`** car le middleware d'auth intercepte tout sauf ce dossier — ailleurs l'image serait redirigée vers `/login`). **`refreshInterval` 60 s** depuis le 2026-08-17 (elle n'en avait délibérément pas tant qu'elle n'affichait que du câblage — les **Routes vers Internet** y ont mis de la charge live, sur laquelle on décide ; 60 s = la cadence du poll AF60, pas plus vite). Affiche la date du dernier rapatriement du câblage, distincte de l'état des équipements qui est de maintenant. **Écran dépouillé** : le graphe seul (ni tuiles, ni légende, ni liste des liaisons — le détail d'un lien est au survol). **Pleine largeur + menu replié à l'arrivée** (`FULL_WIDTH_ROUTES` dans `AppShell` : la colonne perd son `max-w-6xl` et la barre latérale se masque). Le repli se commande par un bouton dans l'en-tête du menu, et un bouton flottant le ramène quand il est masqué — **jamais un clic n'importe où** : le graphe est lui-même cliquable (sélection d'un site), un basculement au moindre clic ferait disparaître le menu par accident. L'effet est clé sur `pathname` seul, donc un repli/dépli manuel n'est pas écrasé tant qu'on reste sur la page. Sous chaque site, le compteur **« 14/1 »** (équipements d'infra / en panne, la part rouge) et, si une de ses liaisons est pleine, un **anneau violet** autour de son icône + le pourcentage d'occupation (cf. **Le SITE saturé sur `/topology`** — canal visuel séparé, la saturation étant orthogonale à la panne). ⚠️ **Aucun bloc d'anomalies sous la carte** : sites sans liaison, composantes séparées et extrémités non supervisées restent **exacts dans la réponse d'API** (`layout.orphan_sites`, `layout.components`, `stats.unsupervised_ends`) et **visibles sur le dessin** (un site orphelin y est dessiné, simplement flottant) ; `scripts/dump_site_topology.py` continue de les nommer en clair. Rendu SVG **en couches** (jamais en arbre — le graphe porte de vraies boucles), nœuds cliquables pour filtrer les liaisons d'un site, liaisons colorées par **notre** mesure (vert au-dessus du plancher / ambre dégradée / rouge hors service / **gris non mesurée**), boucles de redondance en pointillé. Sous le graphe : la liste des liaisons avec leurs liens physiques et l'état de chaque bout, puis la section **« Ce que la carte ne montre pas »** (sites sans liaison, composantes séparées, liaisons sans mesure, extrémités non supervisées). Complète `SiteTopology` (intra-site, sur `/sites`). **Bascule Graphe / Carte** dans l'en-tête → voir **Vue carte de la topologie**. Bouton **« Carte Word »** dans le même en-tête : télécharge la cartographie imprimable (`/network-topology/export/word`). Passe par `fetch` + blob et **pas** un `<a download>` nu — la composition prend une seconde ou deux côté serveur, et un échec s'ouvrirait en JSON brut dans un onglet au lieu de s'afficher dans l'en-tête. **Panneau latéral `TopologyRoutesPanel`** à la sélection d'un site : **toutes** ses sorties vers Internet (repliées au-delà de 3, jamais filtrées), la meilleure en tête, chaque saut en **jauge `porté / plafond`** et le **point de saturation** — celui où il RESTE le moins, pas le plus rempli. Dit d'abord la NATURE du site : « point de décision » (plusieurs sorties) ou « site enfant » avec renvoi vers son décideur. Cliquer une route la **surligne** (le graphe estompe le reste, la carte filtre — `highlightPairs`/`highlightSites`, les deux vues ne peuvent pas se contredire). ⚠️ Une route non mesurée n'affiche **aucune barre** et jamais « 0 % ». Voir **Routes vers Internet**. Source : `/network-topology` |
 | Destinations Internet | `/traffic` | 3 sections : **Débit en direct** (descendant/montant Gb/s + partage par opérateur, `/traffic/throughput`, refresh 30 s), **Débit descendant par opérateur** (graphe d'aires empilées SVG sur 1h/6h/24h, `/traffic/throughput-history`) et **Volume** (par opérateur sur 24h/7j/30j, down/up/total + part, `/traffic/top-destinations`). Repère les candidats à un serveur de cache. **Vide tant que `NETFLOW_COLLECTOR_ENABLED=false` ou que le routeur n'exporte pas vers le collecteur** |
 | Règles du routeur | `/router-rules` | Sous **FAI** dans la barre latérale (à côté du Journal des blocages). Les coupures d'abonnés **réellement posées sur le routeur de cœur**, lues en direct à l'ouverture. Complète les deux autres vues du blocage : le **journal** dit ce qui s'est passé, la **base** ce qu'on croit avoir posé, celle-ci ce que le routeur porte **maintenant** — la seule qui réponde à « ce client a payé, pourquoi est-il coupé ? ». Tuiles (règles, coupés à tort, MAC inconnues, coupures manquantes, posées par nous), bloc rouge des **coupures absentes du routeur**, table filtrable (client/MAC/site/état/origine/trafic jeté/commentaire). ⚠️ **Pas de `refreshInterval`** (⚠️ `/topology` en a repris un depuis : ici la raison est plus forte) : chaque chargement ouvre une session API RouterOS — le clic dans le menu **est** la demande, et le bouton « Actualiser » rejoue la lecture. Une règle **désactivée** est listée mais marquée « ne coupe pas » (elle explique un client bloqué toujours en ligne). Source : `/router-rules` |
+| Demandes de coupure | `/fai-requests` | Sous **FAI**. Les demandes reçues du système de paiement (`Block_all.php` par défaut), **une ligne par demande**, avec l'état RÉEL du client aujourd'hui : coupé / **NON COUPÉ ⚠** / rétabli / fiche supprimée, et **par quel mécanisme** (son LR ou le repli routeur). Filtres origine + **plage de dates** + recherche. ⚠️ Les colonnes du journal sont figées à l'instant de l'action, la colonne « Maintenant » est relue en base à chaque affichage — c'est leur **désaccord** qui est l'information. Bandeau rouge dès qu'un client sous ordre de coupure est toujours en ligne. Source : `/fai-journal` (clé `current`). Voir **Demandes de coupure** |
 | Diagnostics d'accès | `/access-diagnostics` | 2 sections d'anomalies de gestion du parc abonné (sidebar **Anomalies**) : **LR qui refusent le SSH** (mot de passe invalide / SSH désactivé / clé d'hôte incompatible — les **offline sont exclus**, ce n'est pas un refus) et **découverts par radio mais absents de UISP** (non provisionnés, potentiellement non facturés). Source : `/access-diagnostics`. La 1re remplace côté UI l'ancien diag SSH par grep de logs. La 2e porte l'**action d'enrôlement** : bouton par ligne + « Tout enrôler dans UISP », avec un interrupteur **Forcer** décoché par défaut (il écrase une clé existante — cf. **Enrôlement UISP**). Une ligne déjà enrôlée affiche la date au lieu du bouton : elle attend le sync quotidien |
 
 ### À implémenter (prochaines phases)

@@ -1198,6 +1198,30 @@ export interface SiteOutageSummary {
 // --- Journal FAI (blocages / déblocages) -----------------------------------
 // Historique lu du fichier d'audit (backend/logs/fai_actions.log), et LR encore
 // en souffrance lus de la base. Voir backend/app/api/endpoints/fai_journal.py.
+/** L'état du client AUJOURD'HUI, joint par MAC au moment de l'affichage.
+ *
+ *  La ligne de journal est figée à l'instant de l'action ; ceci dit où en est
+ *  ce client maintenant. Les deux sont volontairement côte à côte : c'est leur
+ *  DÉSACCORD qui porte l'information (« demande échouée » + « coupé par le
+ *  routeur » = rien à faire ; « demande appliquée » + « non coupé » = le client
+ *  a rebooté son LR et la coupure est tombée).
+ *
+ *  ⚠️ `known: false` = plus aucune fiche pour cette MAC — le sync UISP supprime
+ *  les stations déprovisionnées alors que le journal, append-only, leur survit.
+ *  À NE PAS rendre comme « pas coupé » : on ne sait rien de ce client. */
+export interface FaiEntryCurrent {
+  known: boolean
+  client_blocked: boolean
+  /** 'lr' = coupé sur son équipement · 'router' = repli sur le routeur de cœur
+   *  · null = personne ne le coupe (donc il est en ligne s'il y a un ordre). */
+  enforced_by: 'lr' | 'router' | null
+  unenforceable_reason: string | null
+  site: string | null
+  /** Motif du blocage EN COURS — distingue un impayé d'un balayage
+   *  « hors supervision », qui produisent des coupures identiques. */
+  blocked_reason: string | null
+}
+
 export interface FaiJournalEntry {
   timestamp: string
   /** IDENT_KO = rien n'a été tenté : l'équipement joint à l'adresse de la
@@ -1227,6 +1251,8 @@ export interface FaiJournalEntry {
    *  que l'équipement a reçu et répondu. Faux sur les actions antérieures à la
    *  fonctionnalité, en mode whatsapp_only, et sur les ordres purement routeur. */
   has_evidence: boolean
+  /** Où en est CE client maintenant (cf. FaiEntryCurrent). */
+  current: FaiEntryCurrent
 }
 /** Preuve d'exécution d'une action : la transcription brute de la session SSH. */
 export interface FaiEvidence {

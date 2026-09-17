@@ -109,8 +109,29 @@ export const endpoints = {
   // l'historique, pas une fenêtre récente. Un plafond bas faisait répondre
   // « aucun événement » sur une MAC dont les lignes étaient simplement plus
   // anciennes — un négatif faux, le pire défaut possible pour un audit.
-  faiJournal:           (status: string, search: string) =>
-    `${API_BASE}/fai-journal?limit=50000&status=${encodeURIComponent(status)}&search=${encodeURIComponent(search)}`,
+  // Objet d'options et non des positionnels : à cinq filtres, un appel
+  // `faiJournal(a, b, '', '', c)` ne se relit plus.
+  faiJournal:           (opts: {
+    status?: string
+    search?: string
+    /** Origine exacte : 'Block_all.php', 'payment', 'enforce', 'script'. */
+    source?: string
+    /** Bornes de jours UTC (YYYY-MM-DD), fin INCLUSE. */
+    start?: string
+    end?: string
+  } = {}) => {
+    const p = new URLSearchParams({ limit: '50000' })
+    if (opts.status) p.set('status', opts.status)
+    if (opts.search) p.set('search', opts.search)
+    if (opts.source) p.set('source', opts.source)
+    // ⚠️ Les deux bornes ou aucune — l'API répond 422 sur une seule, et un
+    // champ de date à moitié rempli ne doit pas faire clignoter une erreur.
+    if (opts.start && opts.end) {
+      p.set('start', opts.start)
+      p.set('end', opts.end)
+    }
+    return `${API_BASE}/fai-journal?${p.toString()}`
+  },
   // Preuve d'exécution d'une entrée du journal : la transcription de la session
   // SSH. L'entrée est désignée par (horodatage, action, MAC) — les trois champs
   // qui l'identifient dans le fichier d'audit.

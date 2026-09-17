@@ -284,6 +284,9 @@ def read_entries(
     action: str | None = None,
     status: str | None = None,
     search: str | None = None,
+    source: str | None = None,
+    start: datetime.date | None = None,
+    end: datetime.date | None = None,
     resolved_block_macs: set[str] | None = None,
     resolved_unblock_macs: set[str] | None = None,
 ) -> tuple[list[dict], dict]:
@@ -292,6 +295,15 @@ def read_entries(
     ``status`` : ``ok`` | ``failed`` | ``abandoned``. ``search`` filtre sur la MAC,
     le nom du client ou l'**agent** (``user``) — « toutes les coupures ordonnées
     par untel » est précisément la question qu'on pose à une piste d'audit.
+
+    ``source`` : l'origine exacte, insensible à la casse (``Block_all.php``,
+    ``enforce``, ``payment``…). Sert la page « Demandes de coupure », qui ne
+    regarde qu'un script appelant à la fois.
+
+    ``start`` / ``end`` : fenêtre de jours **UTC, fin INCLUSE** — la convention
+    déjà en vigueur sur ``/clients/consumption`` et ``/metric-history``. Les deux
+    sont indépendants (un ``start`` seul = « depuis »), le rapprochement des deux
+    est imposé par l'endpoint, pas ici.
 
     ⚠️ Le fichier est lu **EN ENTIER**, jamais sur une fenêtre. Un journal d'audit
     ne répond à sa question (« pourquoi ce client était coupé le 14 ? ») que s'il
@@ -315,6 +327,13 @@ def read_entries(
     path = get_settings().fai_log_path
     want_action = action.upper() if action else None
     needle = search.strip().lower() if search else None
+    want_source = source.strip().lower() if source else None
+    # Le journal horodate en ISO UTC (`YYYY-MM-DDTHH:MM:SSZ`) : les 10 premiers
+    # caractères SONT le jour, et l'ordre lexicographique de ce format EST
+    # l'ordre chronologique. Comparer des chaînes suffit donc, et évite de
+    # parser une date par ligne sur un fichier lu en entier.
+    start_day = start.isoformat() if start else None
+    end_day = end.isoformat() if end else None
 
     stats = {"total": 0, "ok": 0, "failed": 0, "abandoned": 0}
     # Les `limit` DERNIÈRES entrées retenues en ordre de fichier = les plus
@@ -340,6 +359,14 @@ def read_entries(
                     stats["abandoned"] += 1
 
                 if want_action and entry["action"] != want_action:
+                    continue
+                if want_source and entry["source"].strip().lower() != want_source:
+                    continue
+                # Fenêtre de jours, fin INCLUSE (cf. la note sur le format ISO).
+                day = entry["timestamp"][:10]
+                if start_day and day < start_day:
+                    continue
+                if end_day and day > end_day:
                     continue
                 if status == "ok" and not entry["ok"]:
                     continue

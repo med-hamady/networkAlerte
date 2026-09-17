@@ -4,6 +4,18 @@ const config: Config = {
   content: [
     './app/**/*.{ts,tsx}',
     './components/**/*.{ts,tsx}',
+    // ⚠️ `lib/` est scanné parce que des BARÈMES DE RENDU y vivent
+    // (`lib/faiActions.ts`, `lib/topologyColors.ts`) : ce sont des tables qui
+    // associent un état métier à ses classes Tailwind, partagées entre
+    // plusieurs pages pour qu'elles ne puissent pas se contredire.
+    //
+    // Sans cette ligne, Tailwind ne voit jamais ces classes et ne les génère
+    // pas — mais l'échec est SOURNOIS : les classes courantes (`text-white`,
+    // `bg-red-50`) sont produites grâce à d'autres fichiers, seules les rares
+    // manquent. Cas vécu le 2026-09-16 : `text-white` appliqué, `bg-slate-800`
+    // absent → badge « Coupé » en texte blanc sur fond blanc, donc une pastille
+    // VIDE. Rien n'échoue, rien n'est journalisé, et seul l'œil le voit.
+    './lib/**/*.{ts,tsx}',
   ],
   theme: {
     extend: {

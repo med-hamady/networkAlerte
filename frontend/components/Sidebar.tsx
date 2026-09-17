@@ -33,6 +33,7 @@ const sections: NavSection[] = [
       { href: '/map',        label: 'Carte des clients',   icon: MapIcon      },
       { href: '/traffic',    label: 'Destinations Internet', icon: GlobeIcon  },
       { href: '/access',     label: 'FAI',                 icon: ShieldIcon   },
+      { href: '/fai-requests', label: 'Demandes de coupure', icon: RequestIcon, indent: true },
       { href: '/fai-journal', label: 'Journal blocages',   icon: JournalIcon, indent: true },
       { href: '/router-rules', label: 'Règles du routeur', icon: RouterIcon, indent: true },
       { href: '/content-block', label: 'Filtre de contenu', icon: FilterIcon, indent: true },
@@ -329,6 +330,15 @@ function ShieldIcon({ className }: { className?: string }) {
       <path strokeLinecap="round" strokeLinejoin="round"
         d="M12 3l8 4v5c0 5-3.5 8.5-8 9-4.5-.5-8-4-8-9V7l8-4z" />
       <path strokeLinecap="round" strokeLinejoin="round" d="M9 13l2 2 4-4" />
+    </svg>
+  )
+}
+
+function RequestIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round"
+        d="M3 13h4l2 3h6l2-3h4M4 13l2.2-7.1A2 2 0 018.1 4.5h7.8a2 2 0 011.9 1.4L20 13v4.5a2 2 0 01-2 2H6a2 2 0 01-2-2V13z" />
     </svg>
   )
 }

@@ -7,6 +7,11 @@ import type {
   FaiAttentionRow, FaiEvidence, FaiJournalEntry, FaiJournalResponse,
 } from '@/lib/types'
 import IpLink from '@/components/IpLink'
+// Barème partagé avec /fai-requests : les deux pages rendent les mêmes lignes
+// de journal, deux copies des libellés finiraient par se contredire.
+import {
+  ACTION_STYLE, SOURCE_LABEL, formatTs, readableMessage, userLabel,
+} from '@/lib/faiActions'
 
 type StatusFilter = '' | 'ok' | 'failed' | 'abandoned'
 
@@ -16,54 +21,6 @@ const FILTERS: { value: StatusFilter; label: string }[] = [
   { value: 'failed',    label: 'Non appliqué'        },
   { value: 'abandoned', label: 'Abandonné ⚠'         },
 ]
-
-// Une action = ce qu'on a essayé de faire. La couleur porte le sens métier :
-// rouge = coupure, vert = rétablissement, ambre = échec définitif.
-const ACTION_STYLE: Record<FaiJournalEntry['action'], { label: string; cls: string }> = {
-  BLOCK:    { label: 'Blocage',        cls: 'bg-red-50 text-red-700 border-red-200'       },
-  UNBLOCK:  { label: 'Déblocage',      cls: 'bg-green-50 text-green-700 border-green-200' },
-  RETRY_OK: { label: 'Rattrapé',       cls: 'bg-blue-50 text-blue-700 border-blue-200'    },
-  ABANDON:  { label: 'Abandonné',      cls: 'bg-amber-50 text-amber-800 border-amber-300' },
-  // Rien n'a été tenté sur l'équipement : l'adresse de la fiche répondait, mais
-  // c'était un AUTRE abonné. Violet pour ne pas le confondre avec une panne
-  // (ambre) — ici il n'y a rien à réparer sur le terrain, c'est la fiche qui
-  // est périmée, et elle se corrigera dès que la découverte reverra le client.
-  IDENT_KO: { label: 'Identité refusée', cls: 'bg-purple-50 text-purple-700 border-purple-200' },
-  // Le repli : la coupure n'a pas pu être posée sur l'équipement du client, elle
-  // l'a été sur le routeur de cœur. Teinte ardoise pour marquer « autre plan » —
-  // ce n'est ni un succès nominal (rouge/vert) ni un échec (ambre).
-  ROUTER_BLOCK:   { label: 'Coupé (routeur)',   cls: 'bg-slate-100 text-slate-700 border-slate-300' },
-  ROUTER_UNBLOCK: { label: 'Rétabli (routeur)', cls: 'bg-slate-100 text-slate-700 border-slate-300' },
-}
-
-// Quel SYSTÈME a appelé. `script` = blocage de masse (migration depuis le MikroTik).
-const SOURCE_LABEL: Record<string, string> = {
-  payment: 'Système de paiement',
-  enforce: 'Renforcement auto',
-  script:  'Blocage de masse',
-}
-
-// QUI est derrière l'action — distinct de l'origine : les gestes manuels d'un
-// opérateur et les campagnes automatiques passent par le même système de paiement.
-// Un e-mail est affiché tel quel ; seuls les deux libellés automatiques connus
-// sont traduits, pour qu'on ne les lise pas comme des noms d'agents.
-const USER_LABEL: Record<string, string> = {
-  'auto system': 'Campagne impayés (auto)',
-  'auto retry':  'Rejeu automatique (auto)',
-}
-
-function userLabel(user: string | null): string | null {
-  if (!user) return null
-  return USER_LABEL[user.trim().toLowerCase()] ?? user
-}
-
-function formatTs(ts: string): string {
-  const d = new Date(ts)
-  if (Number.isNaN(d.getTime())) return ts
-  return d.toLocaleString('fr-FR', {
-    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
-  })
-}
 
 export default function FaiJournalPage() {
   // Entrée dont on affiche la preuve d'exécution (null = modale fermée).
@@ -77,7 +34,7 @@ export default function FaiJournalPage() {
   }, [search])
 
   const { data, isLoading } = useSWR<FaiJournalResponse>(
-    endpoints.faiJournal(status, debounced),
+    endpoints.faiJournal({ status, search: debounced }),
     fetcher,
     { refreshInterval: 30_000, keepPreviousData: true },
   )
@@ -216,7 +173,12 @@ export default function FaiJournalPage() {
                     <span className={`font-semibold ${e.ok ? 'text-green-700' : 'text-red-700'}`}>
                       {e.ok ? 'Appliqué' : 'Non appliqué'}
                     </span>
-                    <p className="text-xs text-blue-400 mt-0.5 max-w-xl">{e.message}</p>
+                    {/* Même reformulation que /fai-requests (barème partagé) ;
+                        le message d'origine reste en infobulle. */}
+                    <p className="text-xs text-blue-400 mt-0.5 max-w-xl"
+                       title={readableMessage(e.message).raw}>
+                      {readableMessage(e.message).text}
+                    </p>
                   </Td>
                   <Td className="whitespace-nowrap">
                     {e.has_evidence ? (

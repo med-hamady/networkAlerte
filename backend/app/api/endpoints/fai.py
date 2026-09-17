@@ -147,14 +147,10 @@ class FaiBlockResult(BaseModel):
 def _result(lr: Lr, ok: bool, message: str) -> FaiBlockResult:
     """Snapshot the LR's block state — same payload for block / unblock / status."""
     blocked_reason = lr.block_unenforceable_reason
-    if not lr.client_blocked:
-        enforced_by = None
-    elif lr.client_block_enforced_at is not None and blocked_reason is None:
-        enforced_by = "lr"
-    elif lr.router_blocked:
-        enforced_by = "router"
-    else:
-        enforced_by = None  # ordre pris, pas encore appliqué
+    # Verdict rendu par le service, jamais recopié ici : la page « Demandes de
+    # coupure » l'affiche pour les mêmes clients, et deux copies de cette règle
+    # finiraient par se contredire au premier ajustement.
+    enforced_by = client_block_service.enforcement_state_of(lr)
     return FaiBlockResult(
         ok=ok,
         message=message,

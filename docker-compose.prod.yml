@@ -13,7 +13,8 @@
 #   - nginx reverse proxy in front, terminating TLS on 443 (redirects 80 -> 443)
 #   - Resource limits prevent runaway jobs from OOM-killing the host
 #   - Postgres tuned for the 31 GB server (shared_buffers, work_mem, shm_size,
-#     pg_stat_statements preloaded)
+#     pg_stat_statements preloaded, max_connections=200)
+#   - Per-process DB pools sized against max_connections (see postgres)
 
 services:
   # Postgres réglé pour le serveur de prod (31 Go de RAM, 8 cœurs). Sans ce bloc,
@@ -51,6 +52,16 @@ services:
       # Surcoût négligeable (quelques % sur des requêtes très courtes).
       - -c
       - shared_preload_libraries=pg_stat_statements
+      # 200 connexions (100 par défaut). BUDGET, au pire, avec les réservoirs
+      # SQLAlchemy posés ci-dessous (pool + overflow par process) :
+      #   backend 4 workers × 15 = 60 · scheduler 15 · heavy 15
+      #   poll-ltu 25 · poll-airos 25 · ping-lr/switch/af60/netflow 4 × 8 = 32
+      #   = 172, sous 200 − 3 réservées au superutilisateur, avec de la marge
+      #   pour psql et les scripts. Vérifié par tests/test_db_connection_budget.py :
+      #   relever un réservoir ou un nombre de workers sans relever ceci échoue.
+      # ~10 Mo par connexion réellement ouverte : négligeable sur 31 Go.
+      - -c
+      - max_connections=200
     # Les requêtes parallèles échangent via /dev/shm, que Docker limite à 64 Mo :
     # au-delà, « could not resize shared memory segment » en pleine requête.
     shm_size: 1g
@@ -70,12 +81,16 @@ services:
       # Activer ici dupliquerait chaque job → SSH/alertes en double.
       SCHEDULER_ENABLED: "false"
       # API stateless : on peut scaler les workers en toute sécurité maintenant
-      # que le scheduler est isolé. Ajuster selon les CPU dispo.
-      UVICORN_WORKERS: "${UVICORN_WORKERS:-2}"
+      # que le scheduler est isolé. 4 sur 8 cœurs (2 avant le 2026-09-17) : le
+      # serveur tourne à ~80 % de CPU libre. ⚠️ Chaque worker a SON réservoir de
+      # connexions (15) : cf. le budget sous `max_connections`.
+      UVICORN_WORKERS: "${UVICORN_WORKERS:-4}"
     deploy:
       resources:
         limits:
-          memory: 512m
+          # 1,5 Go : ~336 Mo mesurés à 2 workers (66 % de l'ancienne limite de
+          # 512 Mo) — à 4 workers la limite aurait été dépassée (OOM).
+          memory: 1536m
 
   # Scheduler "fast" : disponibilité (device_ping) + maintenance, tout async
   # léger. Isolé du container "heavy" ci-dessous pour que le heartbeat de
@@ -133,6 +148,10 @@ services:
       SCHEDULER_ENABLED: "true"
       RUN_MODE: "scheduler"
       SCHEDULER_GROUP: "ping-lr"
+      # Petit consommateur de base : réservoir réduit, cf. le budget de
+      # connexions sous `max_connections` (service postgres).
+      DB_POOL_SIZE: "3"
+      DB_MAX_OVERFLOW: "5"
     depends_on:
       postgres:
         condition: service_healthy
@@ -178,7 +197,9 @@ services:
         limits:
           # Plus de RAM que le "fast" : pool de threads SSH (lr_probe_concurrency)
           # + fan-outs API sur tout le parc.
-          memory: 1g
+          # 1,5 Go depuis le 2026-09-17 : le renforcement des blocages tient
+          # désormais 8 sessions SSH en parallèle (296 Mo mesurés avant).
+          memory: 1536m
     logging:
       driver: json-file
       options:
@@ -212,6 +233,10 @@ services:
       SCHEDULER_ENABLED: "true"
       RUN_MODE: "scheduler"
       SCHEDULER_GROUP: "poll-switch"
+      # Petit consommateur de base : réservoir réduit, cf. le budget de
+      # connexions sous `max_connections` (service postgres).
+      DB_POOL_SIZE: "3"
+      DB_MAX_OVERFLOW: "5"
     depends_on:
       postgres:
         condition: service_healthy
@@ -221,7 +246,8 @@ services:
       resources:
         limits:
           # ~17 switches, SNMP async, phase 2 courte.
-          memory: 384m
+          # 512 Mo (384 avant le 2026-09-17) : marge sur ~100 Mo mesurés.
+          memory: 512m
     logging:
       driver: json-file
       options:
@@ -241,6 +267,10 @@ services:
       SCHEDULER_ENABLED: "true"
       RUN_MODE: "scheduler"
       SCHEDULER_GROUP: "poll-af60"
+      # Petit consommateur de base : réservoir réduit, cf. le budget de
+      # connexions sous `max_connections` (service postgres).
+      DB_POOL_SIZE: "3"
+      DB_MAX_OVERFLOW: "5"
     depends_on:
       postgres:
         condition: service_healthy
@@ -250,7 +280,8 @@ services:
       resources:
         limits:
           # ~30 backhauls, HTTP async, phase 2 minuscule.
-          memory: 384m
+          # 512 Mo (384 avant le 2026-09-17) : marge sur ~100 Mo mesurés.
+          memory: 512m
     logging:
       driver: json-file
       options:
@@ -273,6 +304,14 @@ services:
       SCHEDULER_ENABLED: "true"
       RUN_MODE: "scheduler"
       SCHEDULER_GROUP: "poll-ltu"
+      # 16 LR persistés en parallèle (8 avant le 2026-09-17) : possible depuis
+      # que la file est entrelacée par Rocket (`_interleave_by_parent`) — avant,
+      # les tâches se sérialisaient de toute façon sur le même verrou. Le
+      # réservoir DOIT suivre (chaque tâche tient une connexion) : 5 + 20 = 25,
+      # sinon les tâches attendent le réservoir au lieu du verrou.
+      POLL_PERSIST_CONCURRENCY: "16"
+      DB_POOL_SIZE: "5"
+      DB_MAX_OVERFLOW: "20"
     depends_on:
       postgres:
         condition: service_healthy
@@ -281,7 +320,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: 768m
+          # 1 Go (768 avant le 2026-09-17) : deux fois plus de LR en vol.
+          memory: 1g
     logging:
       driver: json-file
       options:
@@ -303,6 +343,14 @@ services:
       SCHEDULER_ENABLED: "true"
       RUN_MODE: "scheduler"
       SCHEDULER_GROUP: "poll-airos"
+      # 16 LR persistés en parallèle (8 avant le 2026-09-17) : possible depuis
+      # que la file est entrelacée par Rocket (`_interleave_by_parent`) — avant,
+      # les tâches se sérialisaient de toute façon sur le même verrou. Le
+      # réservoir DOIT suivre (chaque tâche tient une connexion) : 5 + 20 = 25,
+      # sinon les tâches attendent le réservoir au lieu du verrou.
+      POLL_PERSIST_CONCURRENCY: "16"
+      DB_POOL_SIZE: "5"
+      DB_MAX_OVERFLOW: "20"
     depends_on:
       postgres:
         condition: service_healthy
@@ -311,7 +359,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: 768m
+          # 1 Go (768 avant le 2026-09-17) : deux fois plus de LR en vol.
+          memory: 1g
     logging:
       driver: json-file
       options:
@@ -326,12 +375,19 @@ services:
   # unauthenticated UDP).
   netflow-collector:
     ports: !reset []
+    environment:
+      # Petit consommateur de base : réservoir réduit, cf. le budget de
+      # connexions sous `max_connections` (service postgres).
+      DB_POOL_SIZE: "3"
+      DB_MAX_OVERFLOW: "5"
     deploy:
       resources:
         limits:
           # 512m: the iptoasn v4+v6 BGP tables (~700k prefixes) are held in memory
           # for O(log n) ASN lookups. Was 256m before that source was added.
-          memory: 512m
+          # 1 Go (512 avant le 2026-09-17) : 225 Mo mesurés au repos, et le
+          # collecteur agrège en mémoire entre deux écritures.
+          memory: 1g
 
   frontend:
     build:

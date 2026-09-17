@@ -1,8 +1,8 @@
 'use client'
 
 import React from 'react'
-import useSWR from 'swr'
-import { endpoints, fetcher, runDiag } from '@/lib/api'
+import useSWR, { useSWRConfig } from 'swr'
+import { deleteDevice, endpoints, fetcher, runDiag } from '@/lib/api'
 import type { DiagResult } from '@/lib/api'
 import type { Device, DeviceMetrics, NetworkCapacity, RocketCapacity } from '@/lib/types'
 import { deviceLabel, formatDate, timeAgo, formatBytes, formatUptime, parentRocketId } from '@/lib/types'
@@ -614,12 +614,93 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
             <p className="text-slate-600 text-sm">{device.notes}</p>
           </Section>
         )}
+
+        <DeleteDeviceControl device={device} onDeleted={onClose} />
       </div>
 
       {showHistory && (
         <MetricHistoryModal device={device} onClose={() => setShowHistory(false)} />
       )}
     </>
+  )
+}
+
+/* ─── Suppression définitive ─── */
+
+// Confirmation en deux temps : le clic sur « Supprimer » ne fait qu'armer.
+// La cascade DB emporte métriques, incidents (journal des coupures compris) et
+// historique des courbes ; les LR d'un Rocket sont seulement détachés (SET NULL).
+function DeleteDeviceControl({ device, onDeleted }: { device: Device; onDeleted: () => void }) {
+  const { mutate } = useSWRConfig()
+  const [confirming, setConfirming] = React.useState(false)
+  const [busy, setBusy] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+
+  // Changer d'équipement (onNavigate) ne doit pas garder la confirmation armée.
+  React.useEffect(() => {
+    setConfirming(false)
+    setError(null)
+  }, [device.id])
+
+  const handleDelete = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await deleteDevice(device.id)
+      // Fermer d'abord : les requêtes de la fiche (métriques de l'équipement
+      // supprimé) sont démontées et ne partent pas en 404 à la revalidation.
+      onDeleted()
+      // Toutes les listes montées (sites, santé des liens…) contiennent
+      // potentiellement l'équipement : on les revalide toutes.
+      mutate(() => true)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Erreur inattendue')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Section title="Zone de danger">
+      {!confirming ? (
+        <button
+          onClick={() => setConfirming(true)}
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 text-xs font-semibold transition-colors"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3M4 7h16" />
+          </svg>
+          Supprimer l&apos;équipement
+        </button>
+      ) : (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-3 space-y-2">
+          <p className="text-xs text-red-800">
+            Supprimer <span className="font-semibold">{device.name}</span> définitivement ?
+            Ses métriques, incidents et historiques seront effacés. Action irréversible.
+          </p>
+          <p className="text-xs text-red-700/80">
+            S&apos;il est toujours présent dans UISP ou rapporté par un AP, il sera
+            réimporté automatiquement (sans son historique).
+          </p>
+          <div className="flex gap-2 justify-end">
+            <button
+              onClick={() => setConfirming(false)}
+              disabled={busy}
+              className="text-xs px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+            >
+              Annuler
+            </button>
+            <button
+              onClick={handleDelete}
+              disabled={busy}
+              className="text-xs px-3 py-1.5 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-50"
+            >
+              {busy ? 'Suppression…' : 'Supprimer définitivement'}
+            </button>
+          </div>
+        </div>
+      )}
+      {error && <p className="text-xs text-red-600 mt-2">{error}</p>}
+    </Section>
   )
 }
 

@@ -71,20 +71,6 @@ class Permission:
     # au frontend à savoir quelle entrée de menu masquer, et à rediriger un
     # utilisateur qui arrive sur une page qu'il n'a pas le droit de voir.
     route: str | None = None
-    # ⚠️ MASQUAGE D'AFFICHAGE SEULEMENT — la donnée continue de voyager dans la
-    # réponse, elle est simplement retirée de l'écran.
-    #
-    # Ce drapeau existe pour que la différence soit ÉCRITE plutôt que supposée.
-    # Un droit `DATA` ordinaire est applique côté serveur (la donnée est retirée
-    # de la réponse) ; un droit `ui_only` ne l'est pas, donc il reste lisible
-    # dans l'onglet réseau du navigateur par qui va le chercher.
-    #
-    # C'est un choix d'exploitation légitime quand la donnée n'est pas
-    # confidentielle mais encombre l'écran d'un profil qui n'en a pas l'usage.
-    # Ce qui ne serait PAS légitime, c'est de ne pas pouvoir distinguer les deux
-    # d'un coup d'œil : sans ce drapeau, on finirait par croire cloisonné ce qui
-    # ne l'est pas — et on cesserait de chercher.
-    ui_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -107,24 +93,22 @@ def _action(key: str, label: str, description: str) -> Permission:
                       kind=PermissionKind.ACTION)
 
 
-def _ui(key: str, label: str, description: str) -> Permission:
-    """Un bloc d'information RETIRÉ DE L'ÉCRAN, mais pas de la réponse.
-
-    ⚠️ À ne pas confondre avec `_data` : ici rien n'est applique côté serveur.
-    À réserver aux chiffres qu'on retire par confort de lecture, jamais à une
-    donnée dont la divulgation compte.
-    """
-    return Permission(key=key, label=label, description=description,
-                      kind=PermissionKind.DATA, ui_only=True)
-
-
 def _data(key: str, label: str, description: str) -> Permission:
     """Un bloc d'information À L'INTÉRIEUR d'une page déjà autorisée.
 
-    ⚠️ Un droit de ce type doit être appliqué **côté serveur** : la donnée
-    voyage dans la même réponse que le reste de la page, donc la masquer dans
-    le navigateur la laisserait parfaitement lisible dans l'onglet réseau.
-    C'est `deps.caller_has_permission` qui sert à la retirer de la réponse.
+    ⚠️ Un droit de ce type est TOUJOURS appliqué **côté serveur**, sans
+    exception : la donnée voyage dans la même réponse que le reste de la page,
+    donc la masquer dans le navigateur la laisserait parfaitement lisible dans
+    l'onglet réseau. C'est `deps.caller_has_permission` qui la retire de la
+    réponse, et `test_data_permissions_are_enforced_server_side` échoue tant
+    qu'une clé `DATA` n'est appliquée nulle part.
+
+    ⚠️ Un mécanisme de masquage « écran seulement » a existé ici du 2026-09-18
+    au 2026-09-18 (drapeau `ui_only`) et a été RETIRÉ à la demande de
+    l'opérateur : tout ce qui est retiré de l'écran doit l'être de la réponse.
+    Ne pas le réintroduire — sa seule fonction serait d'offrir un chemin facile
+    vers une protection de façade, c.-à-d. la situation où l'on croit cloisonné
+    ce qui ne l'est pas et où l'on cesse de chercher.
     """
     return Permission(key=key, label=label, description=description,
                       kind=PermissionKind.DATA)
@@ -145,12 +129,10 @@ PERMISSION_GROUPS: tuple[PermissionGroup, ...] = (
         permissions=(
             _page("dashboard.view", "Tableau de bord",
                   "Vue d'ensemble : santé du réseau, journal des coupures.", "/"),
-            _ui("dashboard.stats", "Compteurs du tableau de bord",
-                "La barre de chiffres en haut du tableau de bord : total "
-                "d'équipements, en ligne, hors ligne, incidents ouverts, sites, "
-                "pannes et clients. ⚠️ Masquage d'affichage seulement — ces "
-                "chiffres restent lisibles par qui les cherche dans son "
-                "navigateur."),
+            _data("dashboard.stats", "Compteurs du tableau de bord",
+                  "La barre de chiffres en haut du tableau de bord : total "
+                  "d'équipements, en ligne, hors ligne, incidents ouverts, "
+                  "sites, pannes et clients."),
             _page("sites.view", "Sites",
                   "Les sites et les équipements qu'ils portent, avec leurs fiches.",
                   "/sites"),

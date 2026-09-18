@@ -9,10 +9,11 @@ from __future__ import annotations
 import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import caller_has_permission
 from app.api.rpc import scalar_json
 from app.db.session import get_db
 
@@ -20,10 +21,25 @@ router = APIRouter()
 
 
 @router.get("/summary")
-async def get_dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+async def get_dashboard_summary(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """KPI counts for the dashboard header (computed entirely in SQL)."""
     result = await db.execute(text("SELECT fn_dashboard_summary()"))
-    return scalar_json(result)
+    summary = scalar_json(result)
+
+    # ⚠️ Retrait CÔTÉ SERVEUR : ces chiffres ne partent plus au navigateur.
+    # Ils étaient masqués à l'écran seulement jusqu'au 2026-09-18 — donc
+    # lisibles dans l'onglet réseau par qui allait les chercher.
+    #
+    # ⚠️ Les clés sont mises à **None**, pas retirées du dictionnaire, et
+    # surtout pas à 0 : la réponse garde une FORME stable (un consommateur qui
+    # lit `summary["total"]` ne lève pas de KeyError), et « 0 équipement » sur
+    # un parc de 1300 se lirait comme un réseau entièrement effondré.
+    if not caller_has_permission(request, "dashboard.stats"):
+        summary = dict.fromkeys(summary, None)
+    return summary
 
 
 @router.get("/network-health")

@@ -1068,14 +1068,21 @@ export interface DowntimeLogResponse {
 // frontend ne fait QUE les rendre (aucun calcul / groupement / tri).
 
 // Dashboard — fn_dashboard_summary()
+/**
+ * ⚠️ Tous les champs sont `null` quand le profil n'a pas `dashboard.stats` :
+ * le backend RETIRE les compteurs de la réponse. La forme est conservée (les
+ * clés restent présentes) pour qu'un consommateur ne lève pas d'erreur, mais
+ * aucune valeur n'est inventée — surtout pas 0, qui se lirait comme un réseau
+ * entièrement effondré.
+ */
 export interface DashboardSummary {
-  total: number
-  up: number
-  down: number
-  sites: number
-  pannes: number
-  clients: number
-  open_incidents: number
+  total: number | null
+  up: number | null
+  down: number | null
+  sites: number | null
+  pannes: number | null
+  clients: number | null
+  open_incidents: number | null
 }
 
 // /dashboard/network-health — fn_network_health(start, end, gap)

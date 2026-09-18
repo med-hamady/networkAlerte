@@ -8,7 +8,6 @@ import StatsBar from '@/components/StatsBar'
 import SiteOutageCharts from '@/components/SiteOutageCharts'
 import NetworkHealthBadge from '@/components/NetworkHealthBadge'
 import CpuBadge from '@/components/CpuBadge'
-import { PERM, usePermissions } from '@/lib/permissions'
 
 const REFRESH = 15_000
 const WINDOW_DAYS = 7
@@ -26,7 +25,6 @@ function dayEndIso(d: string): string {
 }
 
 export default function DashboardPage() {
-  const { can } = usePermissions()
   // All counting (total/up/down/sites/pannes/clients/open incidents) is done in
   // SQL — fn_dashboard_summary(). This page only renders the returned values.
   const { data: summary } = useSWR<DashboardSummary>(
@@ -64,21 +62,22 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* KPI bar — retiree pour un profil sans `dashboard.stats`.
-            ⚠️ Masquage d'AFFICHAGE seulement : /dashboard/summary continue de
-            renvoyer ces chiffres, qui restent lisibles dans l'onglet reseau.
-            Choix assume (cf. `ui_only` dans core/permissions.py) ; le passage a
-            un retrait cote serveur se ferait dans l'endpoint, avec
-            `caller_has_permission`, comme pour `fai.stats`. */}
-        {can(PERM.dashboardStats) && (
+        {/* KPI bar — le backend RETIRE ces compteurs de la réponse pour un
+            profil sans `dashboard.stats` (ils ne partent plus au navigateur).
+            On teste donc l'absence de la donnée plutôt qu'un droit : la règle
+            vit à un seul endroit, et une copie frontend pourrait se tromper
+            dans les deux sens.
+            ⚠️ `?? 0` n'est PAS un repli sur zéro ici : la barre n'est rendue
+            que si `total` est non nul, donc les autres le sont aussi. */}
+        {summary != null && summary.total !== null && (
         <StatsBar
-          sites={summary?.sites ?? 0}
-          pannes={summary?.pannes ?? 0}
-          clients={summary?.clients ?? 0}
-          total={summary?.total ?? 0}
-          up={summary?.up ?? 0}
-          down={summary?.down ?? 0}
-          openIncidents={summary?.open_incidents ?? 0}
+          sites={summary.sites ?? 0}
+          pannes={summary.pannes ?? 0}
+          clients={summary.clients ?? 0}
+          total={summary.total}
+          up={summary.up ?? 0}
+          down={summary.down ?? 0}
+          openIncidents={summary.open_incidents ?? 0}
         />
         )}
 

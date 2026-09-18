@@ -1275,59 +1275,47 @@ les onglets de filtre restent en place et perdent seulement leur badge. Filtrer,
 chercher et trier continuent de fonctionner — c'est la taille du parc qui est
 retirée, pas la capacité à traiter un abonné.
 
-##### ⚠️ `ui_only` — le masquage qui s'AVOUE
+##### ⚠️ AUCUN masquage de façade — la règle est sans exception
 
-Un droit `DATA` peut être marqué **`ui_only=True`** : la donnée est alors retirée
-de l'**écran** seulement, pas de la réponse — donc elle reste lisible dans
-l'onglet réseau du navigateur par qui va la chercher. Premier cas :
-**`dashboard.stats`**, la barre de compteurs du tableau de bord (décision
-opérateur — ces chiffres encombrent l'écran d'un profil qui n'en a pas l'usage,
-ils ne sont pas confidentiels).
+Tout droit de nature `DATA` est appliqué **côté serveur** : la donnée est retirée
+de la réponse, pas seulement de l'écran. Les trois qui existent le sont —
+`fai.stats`, `sites.client_counts`, `dashboard.stats`.
 
-C'est un choix d'exploitation légitime. Ce qui ne le serait pas, c'est de ne pas
-pouvoir distinguer les deux d'un coup d'œil — on finirait par croire cloisonné ce
-qui ne l'est pas, et on cesserait de chercher. D'où trois garde-fous :
+⚠️ **Un drapeau `ui_only` a existé le 2026-09-18 et a été RETIRÉ le jour même**, à
+la demande de l'opérateur : il permettait de marquer une permission comme
+« masquage d'affichage seulement », et `dashboard.stats` l'a porté quelques
+heures. Décision : ce qui disparaît de l'écran doit disparaître de la réponse.
 
-- le drapeau vit **dans le catalogue**, pas dans une liste d'exceptions au fond
-  d'un test : c'est le catalogue que lit l'administrateur ;
-- il est **publié par l'API** et le formulaire de `/admin` pose un badge ambre
-  **« affichage »** sur la case, avec l'explication au survol ;
-- sa description **doit contenir le mot « affichage »**
-  (`test_ui_only_permissions_say_so_where_the_admin_reads_them`).
+**Ne pas le réintroduire.** Sa seule fonction serait d'offrir un chemin FACILE
+vers une protection de façade — et le défaut qu'il produit est le plus coûteux de
+la famille : on croit cloisonné ce qui ne l'est pas, donc on cesse de chercher.
+Avec la règle sans exception, le chemin sûr est le seul chemin, et
+`test_data_permissions_are_enforced_server_side` échoue tant qu'une clé `DATA`
+n'est appliquée nulle part.
 
-⚠️ **Le défaut reste l'application côté serveur** : `ui_only` vaut `False`, donc
-une permission `DATA` ajoutée sans y penser fait échouer
-`test_data_permissions_are_enforced_server_side` tant qu'elle n'est pas
-appliquée. On n'obtient un masquage de façade **qu'en le demandant**.
+##### Où vit la décision d'affichage
 
-Passer `dashboard.stats` en application serveur plus tard ne demande que trois
-lignes dans `endpoints/dashboard.py` (`caller_has_permission`, comme
-`fai.stats`) et le retrait du drapeau.
+Le composant teste l'**absence de la donnée** (`stats === null`,
+`clients_online === null`, `summary.total === null`), **jamais** un `can()`.
+Corollaire : **un droit `DATA` n'a pas de clé dans `lib/permissions.ts`.**
 
-##### Où vit la décision d'affichage — la symétrie à ne pas casser
+⚠️ Redire un droit déjà appliqué côté serveur avec un `can()` le mettrait à deux
+endroits qui finiraient par diverger — et c'est la version frontend qui serait la
+fausse : elle peut se tromper dans les deux sens, alors que la donnée est ou
+n'est pas là.
 
-| | Appliqué côté serveur (`fai.stats`, `sites.client_counts`) | `ui_only` (`dashboard.stats`) |
-|---|---|---|
-| Clé dans `lib/permissions.ts` | **NON** | **OUI, obligatoire** |
-| Ce que regarde le composant | l'**absence** de la donnée (`stats === null`) | `can(PERM.…)` |
-
-⚠️ Redire un droit **déjà appliqué côté serveur** avec un `can()` le mettrait à
-deux endroits qui finiraient par diverger — et c'est la version frontend qui
-serait la fausse : elle peut se tromper dans les deux sens, alors que la donnée
-est ou n'est pas là.
-
-⚠️ À l'inverse, un droit **`ui_only` sans clé côté dashboard ne fait
-STRICTEMENT RIEN** : rien dans la réponse ne le signale, donc l'administrateur
-coche une case sans effet et n'a aucun moyen de s'en apercevoir autrement qu'en
-comparant deux écrans côte à côte. Verrouillé par
-`test_ui_only_permissions_are_wired_in_the_frontend`.
+⚠️ **`None`, jamais 0, et la forme de la réponse est conservée** : les clés
+restent présentes (un consommateur qui lit `summary["total"]` ne lève pas
+d'erreur) mais aucune valeur n'est inventée. « 0 équipement » sur un parc de 1300,
+« 0 client en ligne » sur un site qui en porte 128 — ce sont des chiffres FAUX,
+qui se lisent comme un effondrement du réseau. L'absence se distingue, un zéro
+non.
 
 ##### `sites.client_counts` — pourquoi celui-là est appliqué côté serveur
 
-« Clients en ligne » et « Clients bloqués » des cartes de `/sites`. Il aurait pu
-être un `ui_only` de plus ; il ne l'est pas, pour une raison précise : **sommés
-sur les sites, ces deux compteurs reconstituent exactement ce que `fai.stats`
-retire de `/access`** (total d'abonnés, part bloquée). Les laisser partir au
+« Clients en ligne » et « Clients bloqués » des cartes de `/sites`. Il mérite une note à
+lui pour une raison précise : **sommés sur les sites, ces deux compteurs
+reconstituent exactement ce que `fai.stats` retire de `/access`** (total d'abonnés, part bloquée). Les laisser partir au
 navigateur ouvrirait une porte dérobée sur le chiffre qu'on vient de fermer à
 côté, et `fai.stats` ne vaudrait plus rien.
 

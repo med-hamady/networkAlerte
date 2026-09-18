@@ -245,22 +245,7 @@ function PermissionBlock({
                            focus:ring-blue-500"
               />
               <span className="min-w-0">
-                <span className="block text-sm font-medium text-slate-900">
-                  {perm.label}
-                  {/* ⚠️ Le seul endroit où l'administrateur peut apprendre qu'une
-                      case ne masque qu'à l'écran. Sans cette mention il croirait
-                      cloisonné ce qui ne l'est pas — et cesserait de chercher. */}
-                  {perm.ui_only && (
-                    <span
-                      title="La donnée reste envoyée au navigateur : elle est retirée de l'écran, pas de la réponse."
-                      className="ml-1.5 align-middle rounded px-1.5 py-0.5 text-[10px]
-                                 font-semibold uppercase tracking-wide
-                                 bg-amber-100 text-amber-800"
-                    >
-                      affichage
-                    </span>
-                  )}
-                </span>
+                <span className="block text-sm font-medium text-slate-900">{perm.label}</span>
                 <span className="block text-xs text-slate-500 leading-snug">
                   {perm.description}
                 </span>

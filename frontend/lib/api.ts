@@ -204,12 +204,6 @@ export interface PermissionItem {
    */
   kind: 'page' | 'data' | 'action'
   route: string | null
-  /**
-   * ⚠️ Masquage d'AFFICHAGE seulement : la donnee continue de voyager dans la
-   * reponse et reste lisible dans l'onglet reseau. Le formulaire doit le DIRE —
-   * un administrateur qui coche la case doit savoir ce qu'elle garantit.
-   */
-  ui_only: boolean
 }
 
 export interface PermissionGroup {

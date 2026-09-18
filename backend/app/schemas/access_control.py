@@ -18,10 +18,6 @@ class PermissionRead(BaseModel):
     description: str
     kind: str          # "page" (une interface), "data" (un bloc d'info), "action" (un geste)
     route: str | None = None
-    # ⚠️ Masquage d'AFFICHAGE seulement : la donnée continue de voyager dans la
-    # réponse. Publié pour que l'écran d'administration puisse le DIRE — un
-    # administrateur qui coche une case doit savoir ce qu'elle garantit.
-    ui_only: bool = False
 
 
 class PermissionGroupRead(BaseModel):

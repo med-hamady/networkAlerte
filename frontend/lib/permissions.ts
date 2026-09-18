@@ -36,13 +36,13 @@ import { endpoints, fetcher, type CurrentUser } from '@/lib/api'
  * fausse : elle peut se tromper dans les deux sens, alors que la donnée, elle,
  * est ou n'est pas là.
  *
- * L'exception est exactement l'inverse : un droit **`ui_only`**
- * (`dashboard.stats`) DOIT figurer ici, puisque rien dans la réponse ne le
- * signale — sans sa clé, la case cochée ne ferait strictement rien.
+ * Il n'y a AUCUNE exception : tout droit portant sur une donnée est appliqué
+ * côté serveur. Un mécanisme de masquage « écran seulement » a existé puis a
+ * été retiré le 2026-09-18 — ce qui disparaît de l'écran doit disparaître de
+ * la réponse.
  */
 export const PERM = {
   dashboard: 'dashboard.view',
-  dashboardStats: 'dashboard.stats',
   sites: 'sites.view',
   lrHealth: 'lr_health.view',
   clients: 'clients.view',

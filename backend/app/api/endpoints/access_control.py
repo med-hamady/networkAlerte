@@ -152,7 +152,6 @@ async def get_permission_catalog() -> PermissionCatalog:
                         description=perm.description,
                         kind=str(perm.kind),
                         route=perm.route,
-                        ui_only=perm.ui_only,
                     )
                     for perm in group.permissions
                 ],

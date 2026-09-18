@@ -91,18 +91,18 @@ def test_data_permissions_are_enforced_server_side():
     retrait est correct, mais il attrape le cas où quelqu'un ajoute une case à
     cocher en ne l'appliquant QUE côté frontend.
 
-    ⚠️ Les permissions marquées `ui_only` sont EXEMPTÉES — ce sont celles dont
-    on assume qu'elles ne masquent qu'à l'écran. L'exemption passe par le
-    drapeau et non par une liste dans ce fichier : c'est le catalogue qui doit
-    porter l'aveu, puisque c'est lui que lit l'administrateur au moment de
-    cocher la case.
+    ⚠️ **AUCUNE exemption.** Un drapeau `ui_only` a permis d'y échapper le
+    temps d'une journée (2026-09-18) et a été retiré à la demande de
+    l'opérateur : ce qui disparaît de l'écran doit disparaître de la réponse.
+    Ne pas réintroduire d'échappatoire ici — sa seule fonction serait de rendre
+    facile une protection de façade.
     """
     endpoints_dir = Path(__file__).resolve().parents[1] / "app" / "api" / "endpoints"
     sources = "\n".join(
         f.read_text(encoding="utf-8") for f in endpoints_dir.glob("*.py")
     )
     for perm in ALL_PERMISSIONS:
-        if perm.kind is not permissions.PermissionKind.DATA or perm.ui_only:
+        if perm.kind is not permissions.PermissionKind.DATA:
             continue
         assert f'"{perm.key}"' in sources, (
             f"{perm.key} est de nature DATA mais n'est appliquée dans aucun "
@@ -500,68 +500,3 @@ def test_the_scoped_auth_runs_before_the_permission_guard():
         )
         checked += 1
     assert checked > 20, f"trop peu de routes vérifiées ({checked}) — le test ne prouve rien"
-
-
-def test_ui_only_permissions_say_so_where_the_admin_reads_them():
-    """Un masquage d'affichage doit s'AVOUER dans sa propre description.
-
-    ⚠️ C'est le seul endroit où l'administrateur peut apprendre la différence.
-    Il coche une case au milieu de trente autres, et rien à l'écran ne distingue
-    un droit applique côté serveur d'un simple retrait d'affichage. Une case qui
-    ne le dirait pas ferait croire cloisonné ce qui ne l'est pas — et on
-    cesserait de chercher.
-
-    Le drapeau `ui_only` est publié par l'API pour que le formulaire puisse le
-    signaler ; ce test verrouille la mention dans le texte lui-même, qui reste
-    lisible meme si le rendu change.
-    """
-    for perm in ALL_PERMISSIONS:
-        if not perm.ui_only:
-            continue
-        assert "affichage" in perm.description.lower(), (
-            f"{perm.key} masque seulement à l'écran mais sa description ne le "
-            "dit pas : l'administrateur la croira appliquée côté serveur."
-        )
-
-
-def test_a_data_permission_is_enforced_unless_it_declares_otherwise():
-    """Le défaut est l'application SERVEUR ; l'exception doit être explicite.
-
-    `ui_only` vaut False par défaut, donc une nouvelle permission `DATA` ajoutée
-    sans y penser tombe dans `test_data_permissions_are_enforced_server_side` et
-    fait échouer la suite tant qu'elle n'est pas appliquée. C'est le bon sens de
-    l'oubli : on n'obtient un masquage de façade qu'en le demandant.
-    """
-    from app.core.permissions import Permission, PermissionKind
-
-    sample = Permission(key="x.y", label="X", description="d", kind=PermissionKind.DATA)
-    assert sample.ui_only is False
-
-
-def test_ui_only_permissions_are_wired_in_the_frontend():
-    """⚠️ Une case `ui_only` sans clé côté dashboard ne ferait STRICTEMENT RIEN.
-
-    C'est le pendant exact de `test_data_permissions_are_enforced_server_side`,
-    et la symétrie n'est pas décorative :
-
-      - un droit DATA **applique côté serveur** ne doit PAS être cité dans le
-        frontend — le composant réagit à l'ABSENCE de la donnée (`stats === null`).
-        Redire la règle la mettrait à deux endroits qui divergeraient, et c'est
-        la version frontend qui serait la fausse ;
-      - un droit **`ui_only`** DOIT l'être, puisque rien dans la réponse ne le
-        signale. Sans sa clé dans `lib/permissions.ts`, l'administrateur coche
-        une case qui n'a aucun effet — et il n'a AUCUN moyen de s'en apercevoir
-        autrement qu'en comparant deux écrans côte à côte.
-    """
-    path = Path(__file__).resolve().parents[2] / "frontend" / "lib" / "permissions.ts"
-    if not path.exists():
-        pytest.skip("frontend absent de cette copie de travail")
-
-    text_ = path.read_text(encoding="utf-8")
-    for perm in ALL_PERMISSIONS:
-        if not perm.ui_only:
-            continue
-        assert f"'{perm.key}'" in text_, (
-            f"{perm.key} masque seulement à l'écran mais n'est cité nulle part "
-            "dans lib/permissions.ts : la case cochée n'aurait aucun effet."
-        )

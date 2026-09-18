@@ -29,11 +29,13 @@ Il faut etre sur le reseau 10.135.x (le serveur l'est). Les fichiers de sortie
 sont ecrits dans le repertoire de travail courant.
 """
 import sys
+import os
 import json
 import time
 import socket
 import ssl
 import csv
+import tempfile
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -203,15 +205,43 @@ def survey_one(ip):
     return res
 
 
+def _writable(d):
+    try:
+        t = os.path.join(d, ".wtest")
+        with open(t, "w"):
+            pass
+        os.remove(t)
+        return True
+    except OSError:
+        return False
+
+
+def pick_out_dir(preferred=None):
+    """Dossier de sortie inscriptible : --out si donne, sinon CWD, sinon /tmp.
+
+    Le conteneur backend tourne en utilisateur non-root et /app ne lui est pas
+    ouvert en ecriture -> repli automatique sur le repertoire temporaire.
+    """
+    for d in (preferred, os.getcwd(), tempfile.gettempdir()):
+        if d and _writable(d):
+            return d
+    return tempfile.gettempdir()
+
+
 def main():
     args = list(sys.argv[1:])
     rocket = ROCKET_DEFAULT
     only = set()
+    out_pref = None
     if args and not args[0].startswith("--"):
         rocket = args.pop(0)
     if "--only" in args:
         i = args.index("--only")
-        only = set(args[i + 1:])
+        only = set(a for a in args[i + 1:] if not a.startswith("--"))
+    if "--out" in args:
+        i = args.index("--out")
+        if i + 1 < len(args):
+            out_pref = args[i + 1]
 
     print(f"== Rocket {rocket} : recherche des LiteBeam ==", flush=True)
     lbs = list_litebeams(rocket)
@@ -239,10 +269,13 @@ def main():
             print(f"      (retabli: {'oui' if back else 'NON - a verifier'})\n",
                   flush=True)
 
-    # --- ecriture des resultats ---
-    with open("resultat_scan.json", "w", encoding="utf-8") as f:
+    # --- ecriture des resultats (dans un dossier inscriptible) ---
+    out_dir = pick_out_dir(out_pref)
+    json_path = os.path.join(out_dir, "resultat_scan.json")
+    csv_path = os.path.join(out_dir, "resultat_scan.csv")
+    with open(json_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=1, ensure_ascii=False)
-    with open("resultat_scan.csv", "w", newline="", encoding="utf-8-sig") as f:
+    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(["ip", "abonne", "essid_vu", "bssid", "freq_ghz", "canal",
                     "signal_dbm", "noise_dbm", "snr_db"])
@@ -268,7 +301,7 @@ def main():
             seen[a.get("essid")] += 1
     for essid, n in sorted(seen.items(), key=lambda kv: -kv[1]):
         print(f"  {essid:20} vu par {n} LiteBeam", flush=True)
-    print("\nFichiers ecrits : resultat_scan.csv + resultat_scan.json", flush=True)
+    print(f"\nFichiers ecrits :\n  {csv_path}\n  {json_path}", flush=True)
 
 
 if __name__ == "__main__":

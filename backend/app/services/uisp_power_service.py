@@ -14,18 +14,55 @@ API protocol (UISP Power Pro firmware, served over HTTPS):
        header: X-Auth-Token: <token>
        -> JSON [{ "device": { "outputPower": {...}, "power": [...], ... } }]
 
+  GET  https://<ip>/api/v1.0/system/edgepower/configuration/power
+       -> {"dcOutput": [{"id": 0, "enabled": true, ...}], "battery": {...}}
+  PUT  https://<ip>/api/v1.0/system/edgepower/configuration/power
+       body: le MEME objet, `dcOutput[].enabled` muté -> coupure DURABLE
+  POST https://<ip>/api/v1.0/system/edgepower/power-cycle
+       body: {"type": "dc"}  (+ {"dc": {"id": N}} sur un Pro multi-ports)
+       -> coupure TEMPORAIRE : le firmware rallume seul au bout de ~5 s
+
+Les trois derniers chemins ne sont documentés nulle part chez Ubiquiti : ils
+ont été relevés dans le bundle JS de l'interface web du boîtier (relevé du
+2026-09-07 sur un UISP-P fw 1.3.0), qui est l'autorité sur ce firmware.
+
 The legacy /api/v1.0/login/ + /api/v1.0/sensors/ endpoints used by older
 mFi/UISP Power firmware return 401/404 on this firmware revision, so the
 service targets the modern path exclusively.
 """
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import httpx
 
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Chemins de PILOTAGE de la sortie DC. Relevés dans le bundle JS de
+# l'interface web du boîtier — Ubiquiti ne les documente nulle part, et ils ne
+# répondent pas aux noms « évidents » (/outputs, /power… rendent tous un 404
+# « Entity is not supported »). Ne pas les deviner : les relire dans
+# `/static/scripts/bundle-*.js` si un firmware futur les déplace.
+_POWER_CONFIG_PATH = "/api/v1.0/system/edgepower/configuration/power"
+_POWER_CYCLE_PATH = "/api/v1.0/system/edgepower/power-cycle"
+
+# Durée de la coupure d'un power-cycle, annoncée par l'interface web du
+# boîtier (« will be turned off for 5s »). Le firmware la tient seul : on ne
+# la pilote pas, on ne fait que la rapporter à l'opérateur.
+_POWER_CYCLE_OFF_SECONDS = 5
+
+
+class PowerControlError(Exception):
+    """Échec d'une commande d'alimentation, avec un motif présentable.
+
+    Distincte du silence de la lecture (`get_statistics` renvoie None et le
+    poller passe au tour suivant) : ici l'opérateur attend devant son écran de
+    savoir si le courant est coupé ou non. Un échec muet le laisserait
+    supposer que c'est fait.
+    """
 
 
 class UISPPowerClient:
@@ -83,6 +120,206 @@ class UISPPowerClient:
         except Exception as exc:
             logger.error("UISP Power unexpected error (%s): %s", self._base, exc)
         return None
+
+
+    # ─────────────────────────────────────────────────────────────────
+    # Pilotage de la sortie DC (écriture)
+    #
+    # Tout ce qui précède est de la LECTURE, appelée par le poller toutes les
+    # 30 s : une panne y est bénigne (on renvoie None, le tour suivant
+    # réessaie). Ce qui suit COUPE physiquement le courant d'un site, sur un
+    # geste explicite d'un opérateur. D'où deux différences de contrat :
+    #
+    #   - on lève `PowerControlError` au lieu de renvoyer None : un échec doit
+    #     être NOMMÉ à l'opérateur, jamais avalé ("rien ne s'est passé" et "je
+    #     ne sais pas ce qui s'est passé" appellent des gestes différents) ;
+    #   - une seule session (un seul login) porte lire-modifier-écrire-relire,
+    #     pour que la vérification finale ne puisse pas tomber sur un autre
+    #     état que celui qu'on vient d'écrire.
+    # ─────────────────────────────────────────────────────────────────
+
+    @asynccontextmanager
+    async def _session(self) -> AsyncIterator[tuple[httpx.AsyncClient, dict[str, str]]]:
+        """Ouvre UNE session authentifiée réutilisable pour plusieurs requêtes."""
+        try:
+            async with httpx.AsyncClient(
+                timeout=15, verify=get_settings().tls_verify_devices
+            ) as client:
+                try:
+                    token = await self._login(client)
+                except httpx.HTTPStatusError as exc:
+                    raise PowerControlError(
+                        f"Authentification refusée par le boîtier "
+                        f"(HTTP {exc.response.status_code})."
+                    ) from exc
+                if not token:
+                    raise PowerControlError(
+                        "Le boîtier a accepté le login mais n'a pas renvoyé de jeton."
+                    )
+                yield client, {"x-auth-token": token}
+        except httpx.RequestError as exc:
+            # httpx laisse str(exc) VIDE sur certains échecs de connexion — un
+            # message qui s'arrête sur « injoignable : » se lit comme un bug de
+            # l'application plutôt que comme un boîtier qui ne répond pas.
+            reason = str(exc) or type(exc).__name__
+            raise PowerControlError(f"Boîtier injoignable : {reason}") from exc
+
+    async def _get_power_config(
+        self, client: httpx.AsyncClient, headers: dict[str, str]
+    ) -> dict:
+        resp = await client.get(f"{self._base}{_POWER_CONFIG_PATH}", headers=headers)
+        resp.raise_for_status()
+        config = resp.json()
+        if not isinstance(config, dict) or not isinstance(config.get("dcOutput"), list):
+            raise PowerControlError(
+                "Configuration d'alimentation illisible (pas de liste 'dcOutput')."
+            )
+        return config
+
+    async def get_power_control_state(self) -> dict:
+        """État courant de la sortie DC : activée ou non, et ce qu'elle débite.
+
+        Sert à décider si la fiche affiche « Couper » ou « Rallumer ». La
+        charge en watts vient de /statistics et non de la config : c'est elle
+        qui dit ce qu'on s'apprête à éteindre.
+        """
+        async with self._session() as (client, headers):
+            try:
+                config = await self._get_power_config(client, headers)
+                stats = await client.get(f"{self._base}/api/v1.0/statistics", headers=headers)
+                stats.raise_for_status()
+                payload = stats.json()
+            except httpx.HTTPStatusError as exc:
+                raise PowerControlError(
+                    f"Lecture refusée par le boîtier (HTTP {exc.response.status_code})."
+                ) from exc
+
+        outputs = config["dcOutput"]
+        device = payload[0].get("device") if isinstance(payload, list) and payload else {}
+        readings = parse_power_readings(device or {})
+        return {
+            "outputs": [
+                {"id": o.get("id"), "enabled": bool(o.get("enabled"))} for o in outputs
+            ],
+            # `enabled` = TOUT est allumé. Sur un boîtier à sortie unique les
+            # deux drapeaux coïncident ; sur un Pro partiellement coupé ils
+            # divergent, et la fiche doit pouvoir proposer « Rallumer » sans
+            # avoir à interpréter la liste elle-même.
+            "enabled": all(bool(o.get("enabled")) for o in outputs) if outputs else None,
+            "any_enabled": any(bool(o.get("enabled")) for o in outputs),
+            "power_w": readings.get("power"),
+            "voltage_v": readings.get("voltage"),
+            "current_a": readings.get("current"),
+        }
+
+    async def set_dc_outputs_enabled(self, enabled: bool) -> dict:
+        """Coupure DURABLE (ou rétablissement) : `dcOutput[].enabled`.
+
+        ⚠️ On renvoie au boîtier l'objet de configuration ENTIER tel qu'il l'a
+        rendu, avec le seul `enabled` muté. Ne jamais reconstruire un corps
+        minimal : le même objet porte `autoPowerOff`, le `pingWatchdog` et
+        surtout `battery.capacity` (60 Ah déclarés sur le parc) — un PUT
+        partiel reposerait ces réglages à leur défaut, et une capacité de
+        batterie fausse dérègle l'estimation d'autonomie de tout le site.
+        """
+        async with self._session() as (client, headers):
+            try:
+                config = await self._get_power_config(client, headers)
+                for output in config["dcOutput"]:
+                    output["enabled"] = enabled
+                applied: dict | None = None
+                unanswered = False
+                try:
+                    resp = await client.put(
+                        f"{self._base}{_POWER_CONFIG_PATH}", headers=headers, json=config
+                    )
+                    resp.raise_for_status()
+                    # Relecture sur la MÊME session : le boîtier accuse
+                    # réception du PUT avant d'avoir basculé le relais, donc un
+                    # 200 ne prouve pas que le courant est coupé.
+                    applied = await self._get_power_config(client, headers)
+                except (httpx.TimeoutException, httpx.TransportError):
+                    # Même cause que pour le power-cycle : en coupant, le
+                    # boîtier se coupe du réseau. Ici la conséquence est plus
+                    # lourde — on ne peut RIEN relire, donc on ne peut pas
+                    # affirmer l'état obtenu. On le dit, plutôt que de deviner
+                    # dans un sens ou dans l'autre.
+                    unanswered = True
+            except httpx.HTTPStatusError as exc:
+                raise PowerControlError(
+                    f"Écriture refusée par le boîtier (HTTP {exc.response.status_code})."
+                ) from exc
+
+        if unanswered or applied is None:
+            return {"outputs": [], "verified": False}
+
+        states = [bool(o.get("enabled")) for o in applied["dcOutput"]]
+        if any(state is not enabled for state in states):
+            raise PowerControlError(
+                "Le boîtier a accepté la commande mais la sortie n'a pas changé d'état."
+            )
+        return {
+            "verified": True,
+            "outputs": [
+                {"id": o.get("id"), "enabled": bool(o.get("enabled"))}
+                for o in applied["dcOutput"]
+            ],
+        }
+
+    async def power_cycle_dc_outputs(self) -> dict:
+        """Coupure TEMPORAIRE : le firmware coupe ~5 s puis rallume seul.
+
+        ⚠️ Le corps dépend du nombre de sorties, et ce n'est pas une
+        commodité : l'interface web envoie `{"type": "dc"}` sur un boîtier à
+        sortie unique et `{"type": "dc", "dc": {"id": N}}` sur un Pro, où il
+        FAUT désigner le port. Envoyer la forme courte à un Pro le laisserait
+        choisir à notre place ; envoyer la forme longue à un UISP-P nommerait
+        un port qui n'a pas à l'être. On suit donc la règle de l'UI, calée sur
+        ce que le boîtier déclare posséder.
+        """
+        async with self._session() as (client, headers):
+            try:
+                config = await self._get_power_config(client, headers)
+                outputs = config["dcOutput"]
+                if not outputs:
+                    raise PowerControlError("Le boîtier ne déclare aucune sortie DC.")
+                if len(outputs) == 1:
+                    bodies: list[dict] = [{"type": "dc"}]
+                else:
+                    bodies = [{"type": "dc", "dc": {"id": o.get("id")}} for o in outputs]
+                # Vrai = le boîtier s'est tu au lieu d'accuser réception.
+                unanswered = False
+                for body in bodies:
+                    try:
+                        resp = await client.post(
+                            f"{self._base}{_POWER_CYCLE_PATH}", headers=headers, json=body
+                        )
+                        resp.raise_for_status()
+                    except (httpx.TimeoutException, httpx.TransportError):
+                        # ⚠️ LE CAS NORMAL, PAS UN ÉCHEC — vérifié sur AT1 le
+                        # 2026-09-07. Le boîtier alimente le switch qui porte
+                        # SON PROPRE lien de management : en coupant, il se
+                        # coupe du réseau et ne peut plus répondre. Le POST
+                        # meurt donc en ReadTimeout sur une commande qui a
+                        # parfaitement abouti (preuve : le switch a redémarré,
+                        # sysUpTime remis à zéro à la seconde près).
+                        #
+                        # Traiter ce silence comme une panne rendrait 502 à
+                        # l'opérateur sur une coupure RÉUSSIE — il rejouerait
+                        # la commande, et couperait le site une seconde fois.
+                        # Même piège que les 504 de /fai et /uisp/assign.
+                        unanswered = True
+                        break
+            except httpx.HTTPStatusError as exc:
+                raise PowerControlError(
+                    f"Commande refusée par le boîtier (HTTP {exc.response.status_code})."
+                ) from exc
+
+        return {
+            "outputs_cycled": len(bodies),
+            "off_seconds": _POWER_CYCLE_OFF_SECONDS,
+            "unanswered": unanswered,
+        }
 
 
 def battery_type_slug(battery_type: str | None) -> str:
@@ -239,3 +476,49 @@ async def poll_uisp_power(
     if device is None:
         return None
     return parse_power_readings(device)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Façade de pilotage — ce que l'API appelle
+#
+# Même forme que `poll_uisp_power` (host + credentials, pas d'objet ORM) :
+# le service ne connaît pas la base, l'endpoint lui passe ce qu'il a lu sur
+# la fiche de l'équipement.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+async def get_power_output_state(
+    host: str,
+    username: str,
+    password: str,
+    port: int = 443,
+) -> dict:
+    """Lit l'état de la sortie DC. Lève `PowerControlError` en cas d'échec."""
+    client = UISPPowerClient(host, username, password, port)
+    return await client.get_power_control_state()
+
+
+async def control_power_output(
+    host: str,
+    username: str,
+    password: str,
+    port: int = 443,
+    action: str = "cycle",
+) -> dict:
+    """Applique une action d'alimentation : `cycle`, `off` ou `on`.
+
+    ⚠️ `cycle` et `off` ne sont pas deux intensités du même geste : `cycle`
+    est rendu à son état initial par le firmware au bout de quelques
+    secondes, `off` ne l'est par personne. C'est pourquoi l'action est un
+    verbe explicite et non un booléen `enabled` — un appelant qui hésite
+    entre true et false ne peut pas tomber par accident sur la coupure dont
+    on ne revient pas tout seul.
+    """
+    client = UISPPowerClient(host, username, password, port)
+    if action == "cycle":
+        return await client.power_cycle_dc_outputs()
+    if action == "off":
+        return await client.set_dc_outputs_enabled(False)
+    if action == "on":
+        return await client.set_dc_outputs_enabled(True)
+    raise PowerControlError(f"Action d'alimentation inconnue : {action!r}")

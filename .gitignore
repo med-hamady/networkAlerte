@@ -64,3 +64,7 @@ backend/scripts/.tilecache/
 # Export de topologie de PROD (MAC, coordonnees des pylones) — jamais versionne.
 # Le produire a la demande : scripts/dump_site_topology.py --json > topo-prod.json
 topo-prod.json
+
+# Sauvegardes de la base (scripts/backup-db.sh). Le dump porte les mots de
+# passe SSH de TOUT le parc radio en clair : ne JAMAIS versionner ce dossier.
+backups/

@@ -102,15 +102,6 @@ export default function RouterRulesPage() {
       <div className="flex items-start gap-4">
         <div>
           <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Règles du routeur</h1>
-          <p className="text-blue-400 text-sm mt-1 max-w-3xl">
-            Les coupures d'abonnés réellement posées sur le routeur de cœur
-            (<span className="font-mono text-xs">chain=forward · action=drop</span>), lues{' '}
-            <strong>en direct</strong> à l'ouverture de cette page. Le journal dit ce qui s'est
-            passé, la base ce qu'on croit avoir posé — ici c'est ce que le routeur porte
-            maintenant. Une règle n'est pas forcément un impayé : le balayage{' '}
-            <strong>hors supervision</strong> coupe aussi des abonnés qu'on a perdus de vue. Le
-            motif de chaque coupure est affiché.
-          </p>
         </div>
         <button
           onClick={() => mutate()}

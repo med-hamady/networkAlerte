@@ -46,11 +46,6 @@ export default function TrafficPage() {
     <div className="space-y-6">
       <div className="min-w-0">
         <h1 className="font-bold text-blue-900 text-2xl tracking-tight">Destinations Internet</h1>
-        <p className="text-blue-400 text-sm mt-1">
-          Opérateurs / CDN les plus consultés par les clients. Le débit montre comment la bande
-          passante WAN se partage en temps réel ; le volume, ce qui a le plus consommé.
-          Repère les candidats à un serveur de cache (Google&nbsp;GGC, Facebook&nbsp;FNA, Netflix&nbsp;OCA).
-        </p>
       </div>
 
       <ThroughputSection />

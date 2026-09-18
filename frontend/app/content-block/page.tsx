@@ -138,12 +138,6 @@ export default function ContentBlockPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Filtre de contenu</h1>
-        <p className="text-blue-400 text-sm mt-1 max-w-3xl">
-          Filtre les services accessibles à un client, dans les deux sens : <strong>autoriser tout
-          sauf</strong> certains services, ou <strong>tout bloquer sauf</strong> certains services.
-          Le filtrage est appliqué directement sur le LR du client (au niveau DNS) et ré-appliqué
-          automatiquement toutes les 120 s (survit au reboot du LR).
-        </p>
       </div>
 
       {/* Search */}

@@ -325,15 +325,13 @@ export default function ClientsPage() {
         <SitesTable sites={sites} onSelect={s => setSelectedSite(s.site)} />
       )}
 
-      <p className="text-[11px] text-blue-400">
-        {isLifetime
-          ? <>Le compteur radio du firmware se remet à zéro à chaque réassociation du CPE. Le superviseur compense
-            en sommant les deltas positifs entre chaque relevé — le total reste donc valide même après plusieurs
-            redémarrages du Rocket ou du CPE. La colonne « Supervisé depuis » donne la date du tout premier relevé en base.</>
-          : <>Volumes mesurés sur le lien radio entre le Rocket et chaque CPE (≠ trafic Internet effectif si NAT/local).
-            Les CPE sans au moins deux relevés sur la fenêtre apparaissent sans valeur — il faut ~2 min après leur (re)connexion.</>
-        }
-      </p>
+      {isLifetime && (
+        <p className="text-[11px] text-blue-400">
+          Le compteur radio du firmware se remet à zéro à chaque réassociation du CPE. Le superviseur compense
+          en sommant les deltas positifs entre chaque relevé — le total reste donc valide même après plusieurs
+          redémarrages du Rocket ou du CPE. La colonne « Supervisé depuis » donne la date du tout premier relevé en base.
+        </p>
+      )}
     </div>
   )
 }

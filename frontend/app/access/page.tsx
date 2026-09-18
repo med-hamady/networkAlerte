@@ -98,11 +98,6 @@ export default function AccessPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-blue-900 tracking-tight">FAI</h1>
-        <p className="text-blue-400 text-sm mt-1">
-          Gère l'accès internet de chaque client en coupant ou rétablissant depuis son LR.
-          Deux modes au choix : <strong>coupure totale</strong> (shutdown du port LAN) ou
-          <strong> WhatsApp autorisé</strong> (filtre laissant DNS + WhatsApp, FB/Insta bloqués).
-        </p>
       </div>
 
       {/* Compteurs du parc — absents (et non mis à zéro) si le profil n'a pas

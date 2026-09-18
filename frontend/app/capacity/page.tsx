@@ -78,11 +78,11 @@ export default function CapacityPage() {
             </>
           )}
         </div>
-        <p className="text-blue-400 text-sm">
-          {siteObj != null
-            ? <>Rockets de ce site — clients installés vs maximum avant saturation.</>
-            : <>Clients installés vs disponibles par famille radio et par site — clique un site pour voir ses Rockets.</>}
-        </p>
+        {siteObj != null && (
+          <p className="text-blue-400 text-sm">
+            Rockets de ce site — clients installés vs maximum avant saturation.
+          </p>
+        )}
       </div>
         <SyncButton onSynced={mutate} />
       </div>

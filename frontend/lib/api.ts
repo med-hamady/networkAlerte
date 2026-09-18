@@ -197,8 +197,12 @@ export interface PermissionItem {
   key: string
   label: string
   description: string
-  /** "page" = voir une interface ; "action" = poser un geste. */
-  kind: 'page' | 'action'
+  /**
+   * "page"   = voir une interface
+   * "data"   = voir un bloc d'information À L'INTÉRIEUR d'une page autorisée
+   * "action" = poser un geste
+   */
+  kind: 'page' | 'data' | 'action'
   route: string | null
 }
 

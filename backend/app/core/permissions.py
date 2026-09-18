@@ -40,10 +40,23 @@ from enum import StrEnum
 
 
 class PermissionKind(StrEnum):
-    """Nature d'une permission — voir une interface, ou poser un geste."""
+    """Nature d'une permission — trois, et la distinction porte l'écran.
+
+    ⚠️ `DATA` n'est pas un raffinement cosmétique de `PAGE` : il répond à une
+    question que `PAGE` ne sait pas poser — « il a le droit d'ouvrir cet écran,
+    mais a-t-il le droit d'en voir TOUS les chiffres ? ». Le premier cas est
+    les compteurs d'abonnés de la page FAI : un profil de supervision doit
+    pouvoir traiter la ligne d'un client sans lire le nombre total d'abonnés,
+    d'actifs et de bloqués — c'est-à-dire la taille commerciale du parc.
+
+    Le ranger dans `ACTION` aurait marché techniquement et menti à l'écran :
+    le bloc s'intitule « les gestes que ce profil peut poser », et voir un
+    chiffre n'est pas un geste.
+    """
 
     PAGE = "page"
     ACTION = "action"
+    DATA = "data"
 
 
 @dataclass(frozen=True)
@@ -78,6 +91,18 @@ def _page(key: str, label: str, description: str, route: str) -> Permission:
 def _action(key: str, label: str, description: str) -> Permission:
     return Permission(key=key, label=label, description=description,
                       kind=PermissionKind.ACTION)
+
+
+def _data(key: str, label: str, description: str) -> Permission:
+    """Un bloc d'information À L'INTÉRIEUR d'une page déjà autorisée.
+
+    ⚠️ Un droit de ce type doit être appliqué **côté serveur** : la donnée
+    voyage dans la même réponse que le reste de la page, donc la masquer dans
+    le navigateur la laisserait parfaitement lisible dans l'onglet réseau.
+    C'est `deps.caller_has_permission` qui sert à la retirer de la réponse.
+    """
+    return Permission(key=key, label=label, description=description,
+                      kind=PermissionKind.DATA)
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +194,10 @@ PERMISSION_GROUPS: tuple[PermissionGroup, ...] = (
                   "/router-rules"),
             _page("fai.content_filter.view", "Filtre de contenu",
                   "Les plateformes filtrées chez chaque abonné.", "/content-block"),
+            _data("fai.stats", "Compteurs d'abonnés",
+                  "Les chiffres en haut de la page FAI : nombre total de clients, "
+                  "accès actifs, bloqués, et les badges des onglets. Sans ce droit, "
+                  "le profil traite les lignes une par une sans voir la taille du parc."),
             _action("fai.block", "Couper / rétablir un abonné",
                     "Bloquer l'accès Internet d'un client, ou le lui rendre."),
             _action("fai.content_filter.edit", "Modifier le filtre de contenu",

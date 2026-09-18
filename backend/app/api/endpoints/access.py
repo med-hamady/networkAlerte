@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import caller_has_permission
 from app.api.rpc import scalar_json
 from app.core.config import get_settings
 from app.db.session import get_db
@@ -27,6 +28,7 @@ AccessFilter = Literal[
 
 @router.get("/clients")
 async def get_access_clients(
+    request: Request,
     search: str = Query("", description="Match on LR name or IP (case-insensitive)"),
     filter: AccessFilter = Query("all", description="State filter"),
     db: AsyncSession = Depends(get_db),
@@ -43,4 +45,20 @@ async def get_access_clients(
             "out_of_supervision_days": get_settings().out_of_supervision_days,
         },
     )
-    return scalar_json(result)
+    payload = scalar_json(result)
+
+    # ⚠️ Les compteurs sont RETIRÉS DE LA RÉPONSE, pas seulement cachés à
+    # l'écran. Ils voyagent dans la même réponse que la liste : les masquer
+    # côté navigateur les laisserait parfaitement lisibles dans l'onglet
+    # réseau, donc le droit ne vaudrait rien.
+    #
+    # ⚠️ `stats` est mis à **None**, jamais à un objet de zéros : un profil
+    # sans ce droit verrait alors « 0 client » — un chiffre FAUX, pire que pas
+    # de chiffre du tout (le frontend afficherait en plus sa bannière « parc
+    # vide »). L'absence se distingue, un zéro non.
+    #
+    # Le filtrage et le tri, eux, restent entiers : ce droit porte sur la
+    # TAILLE DU PARC, pas sur la capacité à traiter un abonné.
+    if not caller_has_permission(request, "fai.stats"):
+        payload["stats"] = None
+    return payload

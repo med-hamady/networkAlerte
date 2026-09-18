@@ -1235,13 +1235,45 @@ Trois briques, dans l'ordre où l'administrateur les emploie :
    profil. « Untel est Agent » se lit d'un coup d'œil, ce qu'un cumul de profils
    rendrait impossible ; un cas particulier se traite en créant un profil de plus.
 
-##### PAGE et ACTION sont deux natures distinctes
+##### PAGE, DATA et ACTION sont trois natures distinctes
 
 C'est ce qui porte tout l'intérêt du système : un agent voit la page FAI **sans**
 pouvoir couper un abonné. Les fondre en une seule case rendrait ce cas
 impossible — or c'est exactement celui qui a motivé le travail. `PermissionKind`
-sépare les deux, et le formulaire de `/admin` les rend en deux blocs séparés
-(« Interfaces visibles » / « Actions autorisées »).
+sépare les trois, et le formulaire de `/admin` les rend en trois blocs
+(« Interfaces visibles » / « Informations visibles » / « Actions autorisées »).
+
+**`DATA` répond à une question que `PAGE` ne sait pas poser** : « il a le droit
+d'ouvrir cet écran, mais a-t-il le droit d'en voir TOUS les chiffres ? ». Premier
+cas : `fai.stats`, les compteurs en haut de `/access` (total, actifs, bloqués, et
+les badges des onglets) — un profil de supervision doit pouvoir traiter la ligne
+d'un abonné sans lire la **taille commerciale du parc**.
+
+⚠️ **Un droit `DATA` s'applique CÔTÉ SERVEUR, obligatoirement.** C'est toute sa
+difficulté : contrairement à une page ou à une action, qu'on refuse, la donnée
+voyage dans la **même réponse** que le reste de l'écran. La masquer dans le
+navigateur la laisserait parfaitement lisible dans l'onglet réseau — le droit ne
+vaudrait rien tout en donnant l'impression du contraire, c.-à-d. le pire des deux
+mondes. `deps.caller_has_permission(request, clé)` sert à retirer le bloc de la
+réponse ; `test_data_permissions_are_enforced_server_side` échoue si une clé
+`DATA` n'est appliquée dans aucun endpoint.
+
+⚠️ **On retire, on ne met pas à zéro.** `stats` passe à **`null`**, jamais à un
+objet de compteurs à 0 : « 0 client » est un chiffre **faux**, pire que pas de
+chiffre (et il déclencherait la bannière « parc vide » sur un réseau d'un millier
+d'abonnés). L'absence se distingue, un zéro non — même règle que les trous de
+`lr_metric_samples` et que les liaisons « non mesurées » de `/topology`.
+
+⚠️ **Une clé d'API reçoit toujours la réponse ENTIÈRE** (`caller_has_permission`
+rend vrai sur le drapeau `auth_via_api_key`) : une clé est une identité de
+machine, sans profil. La traiter comme « aucun droit » amputerait silencieusement
+les réponses servies à l'outillage d'exploitation, sans la moindre erreur pour le
+dire.
+
+⚠️ **Le droit porte sur les CHIFFRES, pas sur la navigation** : sans `fai.stats`,
+les onglets de filtre restent en place et perdent seulement leur badge. Filtrer,
+chercher et trier continuent de fonctionner — c'est la taille du parc qui est
+retirée, pas la capacité à traiter un abonné.
 
 ##### ⚠️ Le contrôle est sur les ROUTES, pas sur l'écran
 
@@ -2139,7 +2171,7 @@ visibles sur `/incidents`.
 | GET | `/api/v1/manual-alerts` | Oui | **Anomalies en attente d'acquittement** — le contenu du bandeau du dashboard, la plus récente d'abord (`alerts[]` + `count`). Liste **vide** = pas de bandeau du tout. Voir **Bandeau d'anomalies à acquitter** |
 | POST | `/api/v1/manual-alerts/{id}/acknowledge` | Oui | **Retire une anomalie du bandeau, pour TOUTE l'équipe** (l'acquittement est partagé, pas personnel). Idempotent : le premier clic est celui qui compte, deux onglets ne se disputent pas la paternité. ⚠️ **Ne résout AUCUN incident** — le cycle de vie de l'incident correspondant est inchangé (ouverture, résolution automatique au retour à la normale, purge, notification WhatsApp). 404 si l'id n'existe pas |
 | GET | `/api/v1/system` | Oui | Infos système (version, uptime scheduler) |
-| GET | `/api/v1/access-control/permissions` | **admin.access** | **Le catalogue de TOUT ce que le système sait faire** — groupes, libellés, descriptions, et la nature de chaque droit (`page` = voir une interface / `action` = poser un geste). C'est la liste que l'administrateur coche pour définir un profil, et le frontend n'en garde **aucune copie en dur** : ajouter une permission à `core/permissions.py` la rend cochable sans toucher au dashboard |
+| GET | `/api/v1/access-control/permissions` | **admin.access** | **Le catalogue de TOUT ce que le système sait faire** — groupes, libellés, descriptions, et la nature de chaque droit (`page` = voir une interface / `data` = voir un bloc d'information à l'intérieur d'une page autorisée / `action` = poser un geste). C'est la liste que l'administrateur coche pour définir un profil, et le frontend n'en garde **aucune copie en dur** : ajouter une permission à `core/permissions.py` la rend cochable sans toucher au dashboard |
 | GET | `/api/v1/access-control/profiles` | **admin.access** | Les profils et leurs droits. ⚠️ Le profil **système** rend le catalogue ENTIER, pas sa colonne (vide) — sinon l'écran afficherait l'administrateur comme n'ayant aucun droit |
 | POST | `/api/v1/access-control/profiles` | **admin.profiles** | Créer un profil. **422** sur une clé de permission inconnue (délibérément plus strict que la relecture, qui ignore en silence : un `fai.blok` mal orthographié rendrait « enregistré » sans avoir donné le droit) · **409** nom déjà pris |
 | PUT | `/api/v1/access-control/profiles/{id}` | **admin.profiles** | Modifier un profil. **409** sur le profil système (verrouillé : il détient tout par construction) |
@@ -2177,7 +2209,7 @@ visibles sur `/incidents`.
 | Page | Chemin | Contenu |
 |---|---|---|
 | Devices | `/devices` | Liste avec statut, dernière vue, métriques, modal détail. Sur un **LR**, un **AF60** et un **switch** (courbe de son port fibre), la fiche expose un bouton **« Plus d'infos — graphes d'historique »** (`MetricHistoryModal`) : courbes SVG sur 24h/7j/30j ou une plage de dates, avec **onglets** pilotés par `available_metrics` (latence Internet, capacité du lien, potentiel du lien, capacités DL/UL, débits DL/UL, **occupation du lien** sur un AF60). Bande min/max (garde visible un pic court noyé par la moyenne du bucket), ligne de seuil (au-dessus ou en dessous selon `threshold_direction`), survol détaillé, chiffres clés, et la **cadence réelle** du relevé affichée (elle est dictée par la durée d'un tour de poll, pas par le graphe). **Les trous = périodes sans mesure**, pas des 0. Source : `/devices/{id}/metric-history` |
-| Accès clients | `/access` | Table des LR abonnés (source UISP). Filtres dont **« Hors supervision »** : LR sans IP **et** non vu par UISP depuis `OUT_OF_SUPERVISION_DAYS` — badge ambre, **exclu du compteur « Accès actif »** (la tuile indique combien sont exclus). Distinct de « Hors ligne > 1 mois » (`long_offline`, absence prolongée vue par UISP) : ici c'est une absence de **mesure**, pas une absence constatée |
+| Accès clients | `/access` | Table des LR abonnés (source UISP). ⚠️ Les **compteurs du parc** (total / actifs / bloqués / bridge, et les badges des onglets) sont soumis au droit `fai.stats` et **retirés de la réponse** quand il manque — `stats` vaut alors `null`, jamais des zéros. Le filtrage, la recherche et le tri restent entiers. Voir **Profils d'accès — qui voit quoi**. Filtres dont **« Hors supervision »** : LR sans IP **et** non vu par UISP depuis `OUT_OF_SUPERVISION_DAYS` — badge ambre, **exclu du compteur « Accès actif »** (la tuile indique combien sont exclus). Distinct de « Hors ligne > 1 mois » (`long_offline`, absence prolongée vue par UISP) : ici c'est une absence de **mesure**, pas une absence constatée |
 | Anomalies détectées | `/incidents` | Anomalies actuellement détectées (lecture seule, résolution automatique) |
 | _(bandeau, toutes pages)_ | `AlertBanner` dans `AppShell` | **Anomalies à acquitter à la main** — F60 dégradée / vitesse de port dégradée / équipement instable, dans l'en-tête collant, avec un bouton **Résoudre** par ligne. Ne rend **rien** quand il n'y a rien à acquitter. ⚠️ Une ligne peut désigner une anomalie **déjà rétablie** : elle atteste que c'est arrivé, `/incidents` dit ce qui se passe maintenant. Rafraîchi toutes les 30 s. Source : `/manual-alerts`. Voir **Bandeau d'anomalies à acquitter** |
 | Capacité du réseau | `/capacity` | 2 cercles (LTU/airMAX) consommé vs disponible sur tout le réseau + barres par site (LTU/airMAX séparés) ; clic site → table Rockets (connectés/max + largeur). Donut SVG custom (pas de lib de charts). Inclut la section **« Capacité infra par site »** (table Site/Équip. infra/Max/Marge, marge +N vert / -N rouge) alimentée par la clé `infra` de `/network-capacity` |

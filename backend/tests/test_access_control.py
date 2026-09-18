@@ -63,17 +63,62 @@ def test_every_permission_has_a_label_and_a_description():
         assert perm.description.strip(), f"{perm.key} sans description"
 
 
-def test_page_permissions_carry_a_route_and_actions_do_not():
-    """La distinction page / action porte l'écran ET le contrôle d'arrivée.
+def test_page_permissions_carry_a_route_and_the_others_do_not():
+    """La nature d'une permission porte l'écran ET le contrôle d'arrivée.
 
     Une PAGE sans route ne pourrait pas être rattachée à un écran ; une ACTION
-    avec route se ferait passer pour une page dans le formulaire.
+    ou une DATA avec route se ferait passer pour une page dans le formulaire et
+    dans le contrôle d'arrivée d'`AppShell`.
     """
     for perm in ALL_PERMISSIONS:
         if perm.kind is permissions.PermissionKind.PAGE:
             assert perm.route, f"{perm.key} est une page sans route"
         else:
-            assert perm.route is None, f"{perm.key} est une action avec une route"
+            assert perm.route is None, f"{perm.key} ({perm.kind}) porte une route"
+
+
+def test_data_permissions_are_enforced_server_side():
+    """⚠️ Une permission de nature DATA doit RETIRER la donnée de la réponse.
+
+    C'est toute sa difficulté : contrairement à une page (qu'on refuse) ou à une
+    action (qu'on refuse), la donnée voyage dans la MÊME réponse que le reste de
+    l'écran. La masquer dans le navigateur la laisserait parfaitement lisible
+    dans l'onglet réseau — le droit ne vaudrait alors rien, tout en donnant
+    l'impression du contraire.
+
+    Ce test vérifie que chaque clé de nature DATA est bien citée quelque part
+    dans les endpoints, via `caller_has_permission`. Il ne prouve pas que le
+    retrait est correct, mais il attrape le cas où quelqu'un ajoute une case à
+    cocher en ne l'appliquant QUE côté frontend.
+    """
+    endpoints_dir = Path(__file__).resolve().parents[1] / "app" / "api" / "endpoints"
+    sources = "\n".join(
+        f.read_text(encoding="utf-8") for f in endpoints_dir.glob("*.py")
+    )
+    for perm in ALL_PERMISSIONS:
+        if perm.kind is not permissions.PermissionKind.DATA:
+            continue
+        assert f'"{perm.key}"' in sources, (
+            f"{perm.key} est de nature DATA mais n'est appliquée dans aucun "
+            "endpoint : la donnée partirait quand même au navigateur."
+        )
+        assert "caller_has_permission" in sources, (
+            "aucun endpoint n'utilise caller_has_permission"
+        )
+
+
+def test_caller_has_permission_never_strips_data_from_an_api_key():
+    """Une clé d'API doit continuer de recevoir la réponse ENTIÈRE.
+
+    Une clé est une identité de machine, sans profil. La traiter comme « aucun
+    droit » amputerait silencieusement les réponses servies à l'outillage
+    d'exploitation et aux intégrations — sans la moindre erreur pour le dire.
+    """
+    source = textwrap.dedent(inspect.getsource(deps.caller_has_permission))
+    assert "auth_via_api_key" in source, (
+        "caller_has_permission ne consulte pas le drapeau d'authentification "
+        "par clé : les intégrations recevraient des réponses tronquées."
+    )
 
 
 def test_normalize_drops_unknown_keys_but_reject_reports_them():

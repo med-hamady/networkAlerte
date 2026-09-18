@@ -77,13 +77,13 @@ export default function AccessPage() {
     { refreshInterval: 30_000, keepPreviousData: true },
   )
 
-  const stats: AccessStats = data?.stats ?? {
-    total: 0, active: 0, blocked_full: 0, blocked_whatsapp: 0, bridge: 0, disconnected: 0,
-    out_of_supervision: 0, out_of_supervision_30d: 0, out_of_supervision_90d: 0,
-    blocked: 0, blocked_ssh: 0, blocked_router: 0, blocked_pending: 0,
-  }
+  // ⚠️ `stats` vaut null quand le profil n'a pas `fai.stats` : le backend a
+  // RETIRÉ les compteurs de la réponse. Ne jamais retomber sur un objet de
+  // zéros — « 0 client » est un chiffre faux, et il déclencherait en plus la
+  // bannière « parc vide » sur un réseau qui compte un millier d'abonnés.
+  const stats: AccessStats | null = data?.stats ?? null
   const sorted = data?.items ?? []
-  const isEmptyFleet = stats.total === 0
+  const isEmptyFleet = stats !== null && stats.total === 0
 
   // Modal state
   const [modalLr, setModalLr] = React.useState<AccessClientRow | null>(null)
@@ -105,7 +105,10 @@ export default function AccessPage() {
         </p>
       </div>
 
-      {/* Stats */}
+      {/* Compteurs du parc — absents (et non mis à zéro) si le profil n'a pas
+          le droit `fai.stats`. Le reste de la page reste entier : ce droit
+          porte sur la TAILLE DU PARC, pas sur la capacité à traiter un abonné. */}
+      {stats && (
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard
           label="Clients (total)"
@@ -136,12 +139,16 @@ export default function AccessPage() {
           sub={stats.bridge > 0 ? 'à reconfigurer' : undefined}
         />
       </div>
+      )}
 
       {/* Filters + search */}
       <div className="flex flex-wrap gap-3 items-center justify-between">
         <div className="flex flex-wrap gap-1 rounded-lg bg-white border border-blue-100 p-1 shadow-sm">
           {FILTERS.map(({ value, label, count }) => {
-            const badge = count ? stats[count] : undefined
+            // Pas de compteurs autorisés ⇒ pas de badge du tout. Le libellé de
+            // l'onglet reste, donc le filtrage continue de fonctionner
+            // normalement : c'est le CHIFFRE qui est retiré, pas la navigation.
+            const badge = count && stats ? stats[count] : undefined
             // Un onglet parent reste actif quand un de ses sous-filtres l'est.
             const active =
               value === 'out_of_supervision' ? OOS_FILTERS.has(filter)
@@ -193,11 +200,13 @@ export default function AccessPage() {
                 }`}
               >
                 {label}
-                <span className={`ml-1 tabular-nums rounded px-1 ${
-                  active ? 'bg-white/25' : 'bg-red-100 text-red-700'
-                }`}>
-                  {stats[count]}
-                </span>
+                {stats && (
+                  <span className={`ml-1 tabular-nums rounded px-1 ${
+                    active ? 'bg-white/25' : 'bg-red-100 text-red-700'
+                  }`}>
+                    {stats[count]}
+                  </span>
+                )}
               </button>
             )
           })}
@@ -221,11 +230,13 @@ export default function AccessPage() {
                 }`}
               >
                 {label}
-                <span className={`ml-1 tabular-nums rounded px-1 ${
-                  active ? 'bg-white/25' : 'bg-amber-100 text-amber-700'
-                }`}>
-                  {stats[count]}
-                </span>
+                {stats && (
+                  <span className={`ml-1 tabular-nums rounded px-1 ${
+                    active ? 'bg-white/25' : 'bg-amber-100 text-amber-700'
+                  }`}>
+                    {stats[count]}
+                  </span>
+                )}
               </button>
             )
           })}

@@ -1159,7 +1159,13 @@ export interface AccessStats {
   blocked_pending: number  // ni l'un ni l'autre — le job rattrapera
 }
 export interface AccessClientsResponse {
-  stats: AccessStats
+  /**
+   * ⚠️ `null` quand le profil n'a pas le droit `fai.stats` : le backend RETIRE
+   * les compteurs de la réponse (ils voyageraient sinon jusqu'au navigateur).
+   * Ne jamais le remplacer par un objet de zéros — « 0 client » est un chiffre
+   * faux, et la page afficherait sa bannière « parc vide ».
+   */
+  stats: AccessStats | null
   items: AccessClientRow[]
 }
 

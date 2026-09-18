@@ -50,6 +50,7 @@ export const PERM = {
   uispSync: 'uisp.sync',
 
   fai: 'fai.view',
+  faiStats: 'fai.stats',
   faiRequests: 'fai.requests.view',
   faiJournal: 'fai.journal.view',
   routerRules: 'fai.router_rules.view',

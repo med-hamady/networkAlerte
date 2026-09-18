@@ -108,6 +108,11 @@ export default function ProfileEditor({ groups, profile, saving, onCancel, onSav
       <div className="px-6 py-5 space-y-6 max-h-[55vh] overflow-y-auto">
         {groups.map((group) => {
           const pages = group.permissions.filter((p) => p.kind === 'page')
+          // ⚠️ Troisième bloc, et non une variante des deux autres : `data`
+          // répond à « il peut ouvrir l'écran, mais peut-il en voir TOUS les
+          // chiffres ? ». Le ranger avec les actions mentirait à l'écran —
+          // voir un chiffre n'est pas un geste.
+          const infos = group.permissions.filter((p) => p.kind === 'data')
           const actions = group.permissions.filter((p) => p.kind === 'action')
           const onCount = group.permissions.filter((p) => checked.has(p.key)).length
           const allOn = onCount === group.permissions.length
@@ -137,6 +142,15 @@ export default function ProfileEditor({ groups, profile, saving, onCancel, onSav
                   title="Interfaces visibles"
                   hint="Les écrans que ce profil peut ouvrir."
                   items={pages}
+                  checked={checked}
+                  onToggle={toggle}
+                />
+              )}
+              {infos.length > 0 && (
+                <PermissionBlock
+                  title="Informations visibles"
+                  hint="Les chiffres et détails que ce profil peut consulter dans une page."
+                  items={infos}
                   checked={checked}
                   onToggle={toggle}
                 />

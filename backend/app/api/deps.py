@@ -394,3 +394,30 @@ def require_permission(
         return user
 
     return permission_guard
+
+
+def caller_has_permission(request: Request, *keys: str) -> bool:
+    """Le porteur de CETTE requête détient-il l'un de ces droits ?
+
+    À utiliser dans un endpoint qui doit RETIRER une partie de sa réponse
+    (un bloc de chiffres, un champ sensible) plutôt que refuser l'appel entier.
+    C'est la contrepartie serveur des permissions de nature `DATA` : la donnée
+    voyage dans la même réponse que le reste de la page, donc la masquer dans le
+    navigateur la laisserait parfaitement lisible dans l'onglet réseau.
+
+    ⚠️ Une authentification par CLÉ répond TOUJOURS vrai. Une clé est une
+    identité de machine, sans profil : la traiter comme « aucun droit » ferait
+    disparaître ces blocs des réponses servies à l'outillage d'exploitation et
+    aux intégrations, silencieusement — un appelant recevrait une réponse
+    amputée sans la moindre erreur pour le lui dire.
+
+    ⚠️ Ne lit QUE l'état déjà résolu par la dépendance d'authentification du
+    router ; il n'authentifie rien lui-même. Un endpoint qui l'appellerait sans
+    dépendance d'auth en amont verrait `auth_user` absent, donc « aucun droit » —
+    le sens sûr, mais le symptôme serait un bloc qui manque sans raison.
+    """
+    if getattr(request.state, "auth_via_api_key", False):
+        return True
+    return profile_service.has_permission(
+        getattr(request.state, "auth_user", None), *keys,
+    )

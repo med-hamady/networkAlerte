@@ -5,6 +5,7 @@ import useSWR, { type KeyedMutator } from 'swr'
 import { endpoints, fetcher, runUispSync, updateDevice } from '@/lib/api'
 import type { CapacityBucket, NetworkCapacity, RocketCapacity, SiteCapacity, SiteInfra } from '@/lib/types'
 import CapacityDonut from '@/components/CapacityDonut'
+import { PERM, usePermissions } from '@/lib/permissions'
 
 // Un Rocket saturé = la même ligne que dans le drill-down, + le site auquel il
 // appartient (perdu dans le nesting par site, ré-attaché ici pour la liste plate).
@@ -174,6 +175,9 @@ export default function CapacityPage() {
 // Bouton « Synchroniser » : déclenche à la demande le même import UISP que le
 // cron quotidien de 7h (infra puis stations clientes), puis rafraîchit la page.
 function SyncButton({ onSynced }: { onSynced: KeyedMutator<NetworkCapacity> }) {
+  // Réécrire l'inventaire depuis le contrôleur est un geste d'exploitation,
+  // pas de consultation : la page reste lisible sans lui.
+  const { can } = usePermissions()
   const [syncing, setSyncing] = useState(false)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
@@ -195,6 +199,8 @@ function SyncButton({ onSynced }: { onSynced: KeyedMutator<NetworkCapacity> }) {
       setSyncing(false)
     }
   }
+
+  if (!can(PERM.uispSync)) return null
 
   return (
     <div className="shrink-0 flex flex-col items-end gap-1">
@@ -567,6 +573,10 @@ function SiteRocketsTable({
 function MaxClientsCell({
   rocket, onSaved,
 }: { rocket: RocketCapacity; onSaved: KeyedMutator<NetworkCapacity> }) {
+  // L'override de capacité max est une ÉCRITURE sur la fiche du Rocket, donc
+  // le même droit que modifier un équipement ailleurs dans l'application.
+  const { can } = usePermissions()
+  const canEditDevice = can(PERM.deviceEdit)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [saving, setSaving] = useState(false)
@@ -666,12 +676,14 @@ function MaxClientsCell({
       ) : (
         <span className="shrink-0 text-[10px] text-slate-400">auto</span>
       )}
-      <button
-        onClick={startEdit}
-        className="shrink-0 text-[11px] font-medium text-blue-500 hover:text-blue-700 hover:underline"
-      >
-        modifier
-      </button>
+      {canEditDevice && (
+        <button
+          onClick={startEdit}
+          className="shrink-0 text-[11px] font-medium text-blue-500 hover:text-blue-700 hover:underline"
+        >
+          modifier
+        </button>
+      )}
     </div>
   )
 }

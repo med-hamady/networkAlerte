@@ -15,7 +15,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_user_or_api_key
+from app.api.deps import require_permission, require_user_or_api_key
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.manual_alert import ManualAlertList, ManualAlertRead
@@ -36,7 +36,9 @@ async def list_manual_alerts(
     return ManualAlertList(alerts=alerts, count=len(alerts))
 
 
-@router.post("/{alert_id}/acknowledge", response_model=ManualAlertRead)
+@router.post("/{alert_id}/acknowledge", response_model=ManualAlertRead,
+    dependencies=[Depends(require_permission("manual_alerts.acknowledge"))],
+)
 async def acknowledge_manual_alert(
     alert_id: int,
     db: AsyncSession = Depends(get_db),

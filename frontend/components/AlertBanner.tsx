@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import useSWR from 'swr'
 import { acknowledgeManualAlert, endpoints, fetcher } from '@/lib/api'
+import { PERM, usePermissions } from '@/lib/permissions'
 import type { ManualAlert, ManualAlertList } from '@/lib/types'
 import { alertTypeLabel, formatDate, timeAgo } from '@/lib/types'
 
@@ -52,6 +53,11 @@ function styleFor(severity: string) {
 }
 
 export default function AlertBanner() {
+  const { can } = usePermissions()
+  // Le bandeau reste VISIBLE pour tout le monde — être au courant d'une
+  // anomalie n'est pas un privilège. Seul l'acquittement l'est : il retire la
+  // ligne pour TOUTE l'équipe, donc c'est un geste, pas une préférence.
+  const canAcknowledge = can(PERM.manualAlertAck)
   const { data, mutate } = useSWR<ManualAlertList>(
     endpoints.manualAlerts,
     fetcher,
@@ -129,6 +135,7 @@ export default function AlertBanner() {
 
             <button
               onClick={() => resolve(alert)}
+              hidden={!canAcknowledge}
               disabled={busy}
               className="shrink-0 px-3 py-1 text-xs font-semibold rounded-md
                          border border-slate-300 bg-white text-slate-700 shadow-sm

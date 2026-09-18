@@ -2,8 +2,9 @@
 
 import React from 'react'
 import useSWR, { useSWRConfig } from 'swr'
-import { deleteDevice, endpoints, fetcher, runDiag } from '@/lib/api'
-import type { DiagResult } from '@/lib/api'
+import { controlPowerOutput, deleteDevice, endpoints, fetcher, runDiag } from '@/lib/api'
+import { PERM, usePermissions } from '@/lib/permissions'
+import type { DiagResult, PowerOutputAction, PowerOutputState } from '@/lib/api'
 import type { Device, DeviceMetrics, NetworkCapacity, RocketCapacity } from '@/lib/types'
 import { deviceLabel, formatDate, timeAgo, formatBytes, formatUptime, parentRocketId } from '@/lib/types'
 import { useThresholds } from '@/lib/useThresholds'
@@ -62,6 +63,15 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
   onClose: () => void
   onNavigate?: (device: Device) => void
 }) {
+  // Droits de l'opérateur sur CETTE fiche. Trois gestes, trois droits : les
+  // diagnostics ouvrent une session SSH chez le client, la sortie DC coupe une
+  // alimentation, la suppression est irréversible. Les fondre en un seul
+  // « peut modifier » donnerait les trois à qui n'en demandait qu'un.
+  const { can } = usePermissions()
+  const canDiagnostics = can(PERM.deviceDiagnostics)
+  const canPowerOutput = can(PERM.devicePowerOutput)
+  const canDelete = can(PERM.deviceDelete)
+
   const isRadio  = RADIO_TYPES.has(device.device_type)
   const isSwitch = device.device_type === 'uisp_switch'
   const isPower  = device.device_type === 'uisp_power'
@@ -591,19 +601,24 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
           })()
         )}
 
+        {/* ⚠️ Couper une sortie DC coupe PHYSIQUEMENT l'alimentation du
+            matériel branché dessus : son droit est distinct de la simple
+            consultation de la fiche, et distinct des diagnostics. */}
+        {isPower && canPowerOutput && <PowerOutputControl device={device} />}
+
         {isPower && !metrics && isUp && (
           <p className="text-blue-300 text-sm italic">Métriques UISP Power en attente de collecte…</p>
         )}
 
-        {/* Diagnostics */}
-        {device.device_type === 'lr' && (
+        {/* Diagnostics — ouvrent une session SSH sur l'équipement du client. */}
+        {canDiagnostics && device.device_type === 'lr' && (
           <Section title="Diagnostics">
             <DiagRow label="SSH"          url={endpoints.checkSsh(device.id)} />
             <DiagRow label="Ping 8.8.8.8" url={endpoints.checkPing(device.id)} />
           </Section>
         )}
 
-        {device.device_type === 'client_modem' && (
+        {canDiagnostics && device.device_type === 'client_modem' && (
           <Section title="Diagnostics">
             <DiagRow label="Ping depuis le LR" url={endpoints.pingFromLr(device.id)} />
           </Section>
@@ -615,7 +630,7 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
           </Section>
         )}
 
-        <DeleteDeviceControl device={device} onDeleted={onClose} />
+        {canDelete && <DeleteDeviceControl device={device} onDeleted={onClose} />}
       </div>
 
       {showHistory && (
@@ -844,6 +859,220 @@ function RocketCapacityContent({ cap }: { cap: RocketCapacity }) {
 }
 
 /* ─── Sub-components ─── */
+
+/* ─── Alimentation d'un UISP Power ─── */
+
+// Le seul endroit du dashboard qui éteint physiquement du matériel. Deux
+// gestes que tout sépare, et c'est ce que l'écran doit rendre évident :
+//   - « temporaire » : le firmware du boîtier rallume seul en ~5 s ;
+//   - « durable »    : personne ne la relève, il faut revenir cliquer.
+//
+// ⚠️ Sur un UISP-P il n'y a QU'UNE sortie DC : couper, c'est couper tout ce
+// que le boîtier alimente — pas un port isolé. D'où la charge en watts
+// affichée avant d'agir : c'est la mesure de ce qu'on s'apprête à éteindre.
+function PowerOutputControl({ device }: { device: Device }) {
+  const { data, error, isLoading, mutate } = useSWR<PowerOutputState>(
+    endpoints.powerOutput(device.id),
+    fetcher,
+    // Pas de refreshInterval : chaque lecture ouvre une session HTTPS sur le
+    // boîtier, et cet état ne change que lorsqu'on le change soi-même.
+    { revalidateOnFocus: false },
+  )
+
+  const [expanded, setExpanded] = React.useState(false)
+  // La coupure durable demande un second clic : voir le bloc d'avertissement.
+  const [confirmDurable, setConfirmDurable] = React.useState(false)
+  const [busy, setBusy] = React.useState<PowerOutputAction | null>(null)
+  const [outcome, setOutcome] = React.useState<{ ok: boolean; message: string } | null>(null)
+
+  const run = async (action: PowerOutputAction) => {
+    setBusy(action)
+    setOutcome(null)
+    try {
+      const result = await controlPowerOutput(device.id, action)
+      setOutcome({ ok: result.ok, message: result.message })
+      setExpanded(false)
+      setConfirmDurable(false)
+      // ⚠️ Relecture tardive, et pas seulement parce que la sortie est coupée
+      // 5 s : le boîtier alimente le switch qui porte son propre lien de
+      // management (constaté sur AT1 le 2026-09-07), donc il disparaît du
+      // réseau et n'en revient qu'une fois ce switch redémarré — une bonne
+      // minute. Relire à 8 s ne ramenait qu'une erreur, affichée comme une
+      // panne alors que tout se déroule normalement.
+      if (action === 'cycle') setTimeout(() => mutate(), 90_000)
+      else mutate()
+    } catch (e) {
+      setOutcome({ ok: false, message: e instanceof Error ? e.message : 'Erreur réseau' })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <Section title="Alimentation">
+        <p className="text-blue-300 text-sm italic animate-pulse">
+          Lecture de l'état de la sortie DC…
+        </p>
+      </Section>
+    )
+  }
+
+  // Boîtier injoignable ou identifiants absents : on ne propose AUCUN bouton.
+  // Un bouton qui échouera à coup sûr laisse croire que la coupure a peut-être
+  // eu lieu — sur ce geste-là, c'est le doute le plus coûteux.
+  if (error || !data) {
+    return (
+      <Section title="Alimentation">
+        <p className="text-sm text-amber-600">
+          État de l'alimentation indisponible — le boîtier ne répond pas, ou ses
+          identifiants API manquent sur sa fiche.
+        </p>
+      </Section>
+    )
+  }
+
+  const isOff = data.any_enabled === false
+  const load = data.power_w
+
+  return (
+    <Section title="Alimentation">
+      {outcome && (
+        <p className={`text-sm font-medium ${outcome.ok ? 'text-green-600' : 'text-red-500'}`}>
+          {outcome.ok ? '● ' : '✗ '}{outcome.message}
+        </p>
+      )}
+
+      {isOff ? (
+        <>
+          <div className="rounded-lg bg-red-50 border border-red-200 p-3">
+            <p className="text-sm font-semibold text-red-700">Sortie DC coupée</p>
+            <p className="text-xs text-red-600 mt-1">
+              Ce boîtier ne délivre plus de courant. Les équipements qu'il alimente
+              resteront hors service tant que l'alimentation n'est pas rétablie.
+            </p>
+          </div>
+          <button
+            onClick={() => run('on')}
+            disabled={busy != null}
+            className="w-full rounded-lg bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm font-semibold py-2.5 transition-colors"
+          >
+            {busy === 'on' ? 'Rétablissement…' : 'Rallumer l\'alimentation'}
+          </button>
+        </>
+      ) : !expanded ? (
+        <>
+          <MetricRow
+            label="Sortie DC"
+            value={
+              <span className="text-green-600 font-semibold">
+                Active{load != null ? ` — ${load.toFixed(1)} W` : ''}
+              </span>
+            }
+          />
+          <button
+            onClick={() => { setExpanded(true); setConfirmDurable(false); setOutcome(null) }}
+            className="w-full rounded-lg border border-red-300 text-red-600 hover:bg-red-50 text-sm font-semibold py-2.5 transition-colors"
+          >
+            Couper l'alimentation
+          </button>
+        </>
+      ) : (
+        <div className="space-y-3">
+          {/* Ce qu'on s'apprête à éteindre, nommé — pas un « Êtes-vous sûr ? ». */}
+          <div className="rounded-lg bg-red-50 border border-red-200 p-3 space-y-1.5">
+            <p className="text-sm font-semibold text-red-700">
+              {device.name}
+              {device.site ? ` — site ${device.site}` : ''}
+            </p>
+            <p className="text-xs text-red-600">
+              {load != null
+                ? `${load.toFixed(1)} W actuellement délivrés, soit tout ce que ce boîtier alimente : `
+                : 'La coupure porte sur tout ce que ce boîtier alimente : '}
+              il n'y a qu'une sortie DC, ce n'est pas un port isolé.
+            </p>
+            <p className="text-xs text-red-600">
+              Les équipements alimentés vont tomber : les incidents
+              <span className="font-semibold"> device_unreachable </span>
+              partiront sur WhatsApp comme pour une panne réelle.
+            </p>
+          </div>
+
+          <button
+            onClick={() => run('cycle')}
+            disabled={busy != null}
+            className="w-full text-left rounded-lg border border-amber-300 hover:bg-amber-50 disabled:opacity-50 p-3 transition-colors"
+          >
+            <span className="block text-sm font-semibold text-amber-700">
+              {busy === 'cycle' ? 'Coupure en cours…' : 'Coupure temporaire'}
+            </span>
+            <span className="block text-xs text-amber-600 mt-0.5">
+              5 secondes de coupure, puis le boîtier rallume tout seul — mais
+              les équipements alimentés redémarrent : compter 1 à 2 min avant
+              le retour du service. Sert à débloquer du matériel figé.
+            </span>
+          </button>
+
+          {!confirmDurable ? (
+            <button
+              onClick={() => setConfirmDurable(true)}
+              disabled={busy != null}
+              className="w-full text-left rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-50 p-3 transition-colors"
+            >
+              <span className="block text-sm font-semibold text-white">Coupure durable</span>
+              <span className="block text-xs text-red-100 mt-0.5">
+                Reste coupé jusqu'à ce que quelqu'un revienne cliquer
+                « Rallumer ». Rien ne le rétablit tout seul.
+              </span>
+            </button>
+          ) : (
+            /* Second clic exigé — et ce n'est pas de la friction décorative :
+               le boîtier alimente le switch qui porte son propre lien de
+               management, donc une fois coupé il n'est plus joignable et le
+               bouton « Rallumer » ne peut plus l'atteindre. Le geste est
+               réversible sur place, pas depuis cet écran. */
+            <div className="rounded-lg bg-red-600 p-3 space-y-2.5">
+              <p className="text-sm font-semibold text-white">
+                Confirmer la coupure durable ?
+              </p>
+              <p className="text-xs text-red-100">
+                Ce boîtier alimente le switch par lequel on le joint. Une fois
+                coupé, il sort du réseau et le bouton « Rallumer » ne pourra
+                plus l'atteindre :
+                <span className="font-semibold"> le rétablissement exigera un
+                déplacement sur site.</span>
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => run('off')}
+                  disabled={busy != null}
+                  className="flex-1 rounded-lg bg-white text-red-700 hover:bg-red-50 disabled:opacity-50 text-sm font-semibold py-2 transition-colors"
+                >
+                  {busy === 'off' ? 'Coupure en cours…' : 'Oui, couper durablement'}
+                </button>
+                <button
+                  onClick={() => setConfirmDurable(false)}
+                  disabled={busy != null}
+                  className="flex-1 rounded-lg border border-red-200 text-white hover:bg-red-700 disabled:opacity-50 text-sm py-2 transition-colors"
+                >
+                  Revenir
+                </button>
+              </div>
+            </div>
+          )}
+
+          <button
+            onClick={() => { setExpanded(false); setConfirmDurable(false) }}
+            disabled={busy != null}
+            className="w-full text-xs text-blue-500 hover:text-blue-700 disabled:opacity-40 underline"
+          >
+            Annuler
+          </button>
+        </div>
+      )}
+    </Section>
+  )
+}
 
 function Section({ title, children }: { title: React.ReactNode; children: React.ReactNode }) {
   return (

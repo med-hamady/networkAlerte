@@ -40,10 +40,11 @@ backend/app/
 │   ├── config.py            # Settings via pydantic-settings + computed fields
 │   ├── logging.py           # Logging structuré vers stdout
 │   ├── exceptions.py        # AppException + handlers globaux
-│   └── alert_constants.py   # Source unique de vérité : Severity, AlertChannel, alert_type keys (20 types)
+│   ├── alert_constants.py   # Source unique de vérité : Severity, AlertChannel, alert_type keys (20 types)
+│   └── permissions.py       # **Catalogue des DROITS** — source unique de vérité des clés de permission (même rôle qu'`alert_constants` pour les alert_type). Chaque entrée porte un libellé, une description et sa NATURE : `page` (voir une interface) ou `action` (poser un geste) — la distinction rend possible le cas qui justifie tout le système : voir la page FAI **sans** pouvoir couper un abonné. ⚠️ **Ajouter une clé ici suffit** à la rendre cochable dans `/admin` (pas de migration, pas de code frontend). ⚠️ Une clé ne se **renomme jamais** à la légère : elle est persistée dans `profiles.permissions`, la renommer retire le droit à tous les profils qui la portaient **sans le moindre message**. ⚠️ Le profil Administrateur ne consomme PAS ce catalogue (il détient tout par construction) — sinon la première permission qu'on oublierait de lui re-cocher pourrait être celle qui ouvre l'administration
 ├── api/
 │   ├── router.py            # Montage des routers avec prefix /api/v1 + auth API key
-│   ├── deps.py              # verify_api_key — authentification par header X-API-Key
+│   ├── deps.py              # verify_api_key (header X-API-Key) + `require_permission(*clés)` = le **contrôle de droits par profil**, posé PAR ROUTE. ⚠️ Une authentification par CLÉ passe outre (identité de machine, sans profil — les 5 clés cloisonnées le sont déjà par leur router) : le drapeau `auth_via_api_key` est posé par chaque dépendance cloisonnée et lu AVANT de chercher un profil, sinon `POST /fai/block` répondrait 401 au système de paiement. La session est résolue **une seule fois par requête** (`_resolve_session_user`, mémoïsé sur `request.state`)
 │   └── endpoints/
 │       ├── health.py              # GET /health (public — test DB inclus)
 │       ├── devices.py             # CRUD + diagnostics SSH/ping sur /devices
@@ -57,6 +58,7 @@ backend/app/
 │   ├── alert_state.py       # Compteurs d'anti-flapping persistés en DB (survit aux redémarrages)
 │   ├── lr_metric_sample.py # Historique des COURBES de la fiche équipement en buckets (largeur `LR_METRIC_HISTORY_BUCKET_SECONDS`, défaut 60 s ; 1 ligne/(device_id, **metric_name**, bucket_start), avg/min/max/sample_count). Une courbe par métrique (latence, capacité du lien, capacités DL/UL, débits DL/UL). Table DÉDIÉE et pas `device_metrics` : empiler les polls ferait ~1M lignes/jour (cf. l'épisode de bloat) — le bucket ramène à 1440 lignes/jour/(device, métrique) à 60 s. **Le coût est ∝ au nombre de métriques de `GRAPH_METRICS`**
 │   ├── manual_alert.py      # **Bandeau d'anomalies à ACQUITTER À LA MAIN** (haut du dashboard). 1 ligne = une détection d'un des 3 `MANUAL_ACK_ALERT_TYPES`, posée à l'ouverture de l'incident, qui ne part QUE sur clic « Résoudre ». ⚠️ Table DÉDIÉE et pas une lecture de `incidents` : un incident non-disponibilité est **hard-delete** à sa résolution automatique — un bandeau bâti dessus verrait la ligne s'évaporer dès le retour à la normale, sans que personne ait cliqué. Aucune FK vers `incidents` (la ligne visée n'existe généralement plus) ; titre/description **copiés**. Lignes acquittées **conservées** (qui a pris acte de quoi). Voir **Bandeau d'anomalies à acquitter**
+│   ├── profile.py           # **Profil d'accès** : un nom + les clés cochées du catalogue (`permissions` JSON). `is_system=True` = le profil **Administrateur**, posé par la migration, ni renommable ni supprimable ni éditable — il détient tout PAR CONSTRUCTION, sans lire sa colonne. ⚠️ JSON et pas table d'association : la liste des clés possibles est définie par le CODE, une jointure n'apporterait ni intégrité réelle ni requête utile (même raisonnement que `devices.policy_overrides`). Rattaché à `users.profile_id` (**un seul** profil par compte, FK `ON DELETE RESTRICT`)
 │   ├── power_status_log.py  # Relevés UISP Power (voltage, current, power)
 │   └── site_link.py         # **Câblage INTER-SITES** (backhauls), rapatrié 1×/jour depuis les data-links UISP. 1 ligne = 1 **lien physique** (2 radios entre les mêmes sites = 2 lignes ; le regroupement par paire est fait à la lecture). Porte les **MAC** des deux bouts (c'est par elles que la lecture rejoint notre inventaire) + les noms UISP (une extrémité peut ne pas être supervisée : le switch UniFi du HQ porte les 3 liaisons fibre de la racine). ⚠️ **La SANTÉ n'y est PAS** : statut/capacité/potentiel sont relus en direct à l'affichage — les figer ici afficherait l'état d'hier
 ├── schemas/                 # Pydantic — validation I/O API
@@ -70,6 +72,7 @@ backend/app/
 │   ├── whatsapp_service.py         # Envoi WhatsApp via Ultramsg (POST /{instance}/messages/chat → groupe WHATSAPP_GROUP_ID). httpx async, jamais raise (False sur échec)
 │   ├── snmp_service.py             # SNMP : LTU radio (ath0/eth0) + Switch (ports 1..N) + `resolve_mac_ports` (FDB BRIDGE-MIB : sur quel port une MAC connue est apprise)
 │   ├── switch_port_service.py      # **Quel équipement supervisé sur quel port de switch** — détecté, jamais saisi à la main. Source PRIMAIRE = les **data-links du contrôleur UISP** (`detect_from_uisp`) : nos switches n'exposent **pas** BRIDGE-MIB et n'émettent **pas** de LLDP (vérifié terrain), mais UISP connaît le câblage. La FDB SNMP (`detect_all`) ne reste qu'en fallback pour un switch qu'UISP ne couvre pas. C'est ce qui rend les règles `switch_port_down`/`switch_port_speed_low` opérantes : elles étaient gated sur `rocket_port_index`, colonne qu'AUCUN code ne renseignait (NULL partout → aucune alerte de port n'a jamais pu partir sur aucun switch). Écrit `devices.uplink_switch_id/_port`. Voir **Surveillance des ports de switch**
+│   ├── profile_service.py          # **Droits d'accès** : `effective_permissions`/`has_permission` (le chemin chaud, lu à chaque requête authentifiée) + l'administration des profils et des comptes. ⚠️ **Les garde-fous d'auto-verrouillage vivent ICI** et pas dans les endpoints : profil système intouchable, dernier administrateur ACTIF ni supprimable ni désactivable ni rétrogradable, profil encore porté non supprimable, et un admin ne peut pas se retirer à LUI-MÊME l'administration. Un second chemin d'écriture qui les contournerait ne serait vu par aucun test d'API. ⚠️ Un compte **sans profil** n'a AUCUN droit, jamais tous — le sens sûr
 │   ├── uisp_power_service.py       # API REST UISP Power (voltage, current, batterie)
 │   ├── ltu_api_service.py          # API HTTP LTU Rocket (signal, CCQ, CINR, CPE peers)
 │   ├── uisp_assignment_service.py  # **Association équipement ↔ client CRM** : reçoit une MAC + un id CRM, rien d'autre (transposition du formulaire UISP « unknown → choisir le client »). Pose la clé d'abord si l'équipement est absent du contrôleur. ⚠️ Le **site** est une plomberie INTERNE jamais exposée : UISP rattache à un site, et c'est le site qui porte `ucrm.client.id` — la traduction id CRM → site est notre travail. **Seul chemin d'ÉCRITURE vers le contrôleur** (token API en écriture requis, sinon 403)
@@ -1214,6 +1217,156 @@ l'étiquette sur le point et le nom recouvre la couleur d'état) ; cadrage
 automatique **une seule fois** (le rejouer annulerait le zoom de l'opérateur).
 La sélection de site est **partagée** avec le graphe : basculer garde le filtre.
 
+#### Profils d'accès — qui voit quoi (2026-09-18)
+
+Jusqu'ici tout compte capable de se connecter avait le **contrôle total** : une
+seule population d'utilisateurs, aucune notion de droits, `require_user_or_api_key`
+sur tous les routers. Un opérateur de support pouvait couper un abonné, supprimer
+un équipement et réécrire l'inventaire.
+
+Trois briques, dans l'ordre où l'administrateur les emploie :
+
+1. **Le catalogue** (`core/permissions.py`) — tout ce que le système sait faire,
+   groupé comme la barre latérale. Source unique de vérité, même rôle que
+   `alert_constants.py` pour les `alert_type`.
+2. **Un profil** (`models/profile.py`) — un nom et les clés cochées dans ce
+   catalogue. Créé depuis `/admin`.
+3. **Un compte** (`users.profile_id`) — identifiant, mot de passe, **un seul**
+   profil. « Untel est Agent » se lit d'un coup d'œil, ce qu'un cumul de profils
+   rendrait impossible ; un cas particulier se traite en créant un profil de plus.
+
+##### PAGE et ACTION sont deux natures distinctes
+
+C'est ce qui porte tout l'intérêt du système : un agent voit la page FAI **sans**
+pouvoir couper un abonné. Les fondre en une seule case rendrait ce cas
+impossible — or c'est exactement celui qui a motivé le travail. `PermissionKind`
+sépare les deux, et le formulaire de `/admin` les rend en deux blocs séparés
+(« Interfaces visibles » / « Actions autorisées »).
+
+##### ⚠️ Le contrôle est sur les ROUTES, pas sur l'écran
+
+Masquer un bouton ne protège rien : le proxy du dashboard relaie les appels avec
+le **cookie de session** de l'utilisateur, donc un compte « agent » peut appeler
+n'importe quelle route à la main depuis l'onglet réseau de son navigateur. Une
+permission qui n'est pas posée sur la route **n'existe pas**. Le frontend
+(`lib/permissions.ts`, `AppShell`) sert seulement à ne pas proposer des écrans
+qui répondraient 403.
+
+⚠️ Le contrôle **ne peut pas** vivre dans `middleware.ts` : celui-ci tourne à
+l'edge, ne parle pas à la base, et ne connaît que la **présence** du cookie —
+jamais les droits qu'il porte. C'est déjà la raison pour laquelle il ne vérifie
+pas la validité de la session.
+
+**`tests/test_access_control.py::test_every_route_is_gated`** refuse toute route
+sans permission qui ne figure pas explicitement dans `_UNGATED_BY_DESIGN` (avec
+sa raison à côté). Sans ce test, une route ajoutée plus tard serait ouverte à
+tout compte connecté pendant que l'écran donnerait l'impression d'un
+cloisonnement en place — rien n'échoue, rien n'est journalisé, personne ne
+cherche.
+
+##### ⚠️ Les cinq clés tierces PASSENT OUTRE — et c'est indispensable
+
+Une clé d'API est une identité de **machine**, sans profil. La clé maîtresse
+ouvre déjà l'API entière par définition, et les cinq clés cloisonnées
+(`/fai`, `/fai/verify`, `/uisp/assign`, `/content-filter`, `/client-signal`) sont
+déjà limitées à leur route par leur propre dépendance de router. Leur imposer un
+profil n'ajouterait aucun cloisonnement — et **casserait le système de paiement**.
+
+Le mécanisme : chaque dépendance cloisonnée pose `request.state.auth_via_api_key`
+(`deps._mark_api_key_auth`), que `require_permission` consulte **avant** de
+chercher un profil. Sans ce drapeau, la dépendance de permission
+re-authentifierait par `require_user_or_api_key` — qui ne connaît que la clé
+maîtresse — et `POST /fai/block` répondrait **401 au système de paiement** :
+aucun impayé ne serait plus coupé, sans que rien d'autre n'échoue.
+Verrouillé par `test_scoped_third_party_keys_bypass_profiles`.
+
+⚠️ La dépendance produite par `require_permission` s'appelle **`permission_guard`**,
+et ce nom est public : les tests de cloisonnement (`test_uisp_assign_scoped_key`,
+`test_client_signal_scoped_key`, `test_content_filter_api`) énumèrent les
+dépendances d'une route pour vérifier qu'elle ne porte **que** son auth
+cloisonnée, et écartent celle-ci **par son nom**. Un filtre large (« ignorer ce
+qu'on ne connaît pas ») laisserait au contraire passer exactement ce que ces
+tests interdisent.
+
+##### Le profil Administrateur détient tout PAR CONSTRUCTION
+
+`is_system=True`, colonne `permissions` **vide**, et
+`profile_service.effective_permissions` teste `is_system` **avant** de lire la
+colonne. Y figer la liste des clés du jour rendrait l'administrateur aveugle à
+toute permission ajoutée plus tard — et la première oubliée pourrait être celle
+qui ouvre l'administration elle-même.
+
+Il est **verrouillé** : ni renommable, ni supprimable, ni éditable. Décocher une
+case sur le profil de l'unique administrateur est le geste d'apparence la plus
+anodine du formulaire, et celui dont la conséquence est la plus lourde.
+
+##### Quatre refus, tous dans le SERVICE
+
+`profile_service` (jamais dans les endpoints — un second chemin d'écriture les
+contournerait sans qu'aucun test d'API ne le voie) :
+
+- le profil système ne se modifie ni ne se supprime ;
+- le **dernier administrateur actif** ne peut être ni supprimé, ni désactivé, ni
+  rétrogradé (`assert_last_admin_survives` — « actif » compte, sinon on pourrait
+  désactiver le dernier admin utilisable tant qu'il en reste un désactivé) ;
+- un profil **encore porté** par des comptes ne se supprime pas (la FK est en
+  `ON DELETE RESTRICT`, mais le service refuse avant, avec le nombre de comptes) ;
+- un administrateur ne peut pas se retirer **à lui-même** l'administration
+  (`assert_not_self_locking`) : le geste reste possible, il faut qu'un AUTRE le
+  fasse — ce qui est aussi la trace de qui l'a décidé.
+
+Un superviseur dont plus personne ne peut administrer les comptes se répare à la
+main en base, sur le serveur de production. Ces quatre refus sont le seul
+obstacle entre un clic et cette situation.
+
+##### ⚠️ Un compte SANS profil n'a AUCUN droit, jamais tous
+
+Le sens sûr : un compte créé de travers, ou orphelin d'un profil effacé à la
+main, ne doit pas se retrouver administrateur. La migration `e1f2a3b4c5d6`
+rattache donc **tous les comptes existants** au profil Administrateur — c'est la
+lecture fidèle de l'existant (jusque-là ils avaient tout), et sans elle ils se
+retrouveraient devant un dashboard vide **sans recours par l'interface**, la
+section qui affecte un profil exigeant elle-même `admin.users`.
+`scripts/create_admin.py` pose le même profil et **refuse de créer un compte**
+si la migration n'a pas tourné.
+
+##### Détails qui ont une raison
+
+- **`profiles.permissions` est une colonne JSON, pas une table d'association** :
+  la liste des clés possibles est définie par le CODE, donc une jointure
+  n'apporterait ni intégrité réelle (il faudrait la resynchroniser à chaque
+  déploiement) ni requête utile, et coûterait une écriture multi-lignes là où un
+  profil s'enregistre en un `UPDATE`. Même raisonnement que
+  `devices.policy_overrides`.
+- **Une clé de permission ne se renomme pas à la légère** : elle est persistée.
+  La renommer retire le droit à tous les profils qui la portaient, sans le
+  moindre message — il faut une migration qui réécrive les lignes.
+- **La session est résolue UNE FOIS par requête** (`deps._resolve_session_user`,
+  mémoïsé sur `request.state`). Les routers portent déjà `require_user_or_api_key`
+  et les permissions s'ajoutent **par route** (une dépendance de router étant
+  additive et non surchargeable) : sans mémoïsation, chaque appel du dashboard
+  paierait deux fois la lecture de session. `User.profile` est en `lazy="joined"`
+  pour la même raison — il est relu à chaque requête authentifiée.
+- **Changer le profil d'un compte révoque ses sessions** : les droits sont relus
+  à chaque requête, donc le changement s'appliquerait sans reconnexion — mais
+  l'interface déjà affichée a été construite sur les anciens droits et
+  continuerait de proposer des boutons qui répondent désormais 403.
+- **Désactiver un compte révoque ses sessions** : sans ça il resterait dans la
+  place jusqu'à l'expiration du cookie (12 h), et le geste ne voudrait rien dire.
+- **Le nom d'utilisateur n'est pas modifiable** après création : c'est la clé qui
+  relie le compte à ses traces (journaux, agent d'une action FAI). Le changer
+  réécrirait le passé à moitié.
+- **`admin.access` / `admin.profiles` / `admin.users` sont trois droits** :
+  le premier seul donne une vue en LECTURE de qui a le droit de quoi, sans
+  permettre d'y toucher.
+- **Le frontend ne recopie pas le catalogue** : `/admin` construit son formulaire
+  depuis `GET /access-control/permissions`. Ajouter une permission au backend la
+  rend cochable sans toucher au dashboard. Les seules chaînes écrites côté
+  frontend sont celles des points de décision d'affichage, groupées dans
+  `lib/permissions.ts` (`PERM`) — et deux tests vérifient que les deux listes ne
+  divergent pas, une faute de frappe y masquant un écran **en silence**, pour
+  tout le monde, administrateur compris.
+
 #### Barre de recherche globale (bandeau de l'application) — 2026-08-10
 
 `AppShell` porte un **bandeau collant** (`sticky top-0`) présent sur toutes les
@@ -1986,6 +2139,16 @@ visibles sur `/incidents`.
 | GET | `/api/v1/manual-alerts` | Oui | **Anomalies en attente d'acquittement** — le contenu du bandeau du dashboard, la plus récente d'abord (`alerts[]` + `count`). Liste **vide** = pas de bandeau du tout. Voir **Bandeau d'anomalies à acquitter** |
 | POST | `/api/v1/manual-alerts/{id}/acknowledge` | Oui | **Retire une anomalie du bandeau, pour TOUTE l'équipe** (l'acquittement est partagé, pas personnel). Idempotent : le premier clic est celui qui compte, deux onglets ne se disputent pas la paternité. ⚠️ **Ne résout AUCUN incident** — le cycle de vie de l'incident correspondant est inchangé (ouverture, résolution automatique au retour à la normale, purge, notification WhatsApp). 404 si l'id n'existe pas |
 | GET | `/api/v1/system` | Oui | Infos système (version, uptime scheduler) |
+| GET | `/api/v1/access-control/permissions` | **admin.access** | **Le catalogue de TOUT ce que le système sait faire** — groupes, libellés, descriptions, et la nature de chaque droit (`page` = voir une interface / `action` = poser un geste). C'est la liste que l'administrateur coche pour définir un profil, et le frontend n'en garde **aucune copie en dur** : ajouter une permission à `core/permissions.py` la rend cochable sans toucher au dashboard |
+| GET | `/api/v1/access-control/profiles` | **admin.access** | Les profils et leurs droits. ⚠️ Le profil **système** rend le catalogue ENTIER, pas sa colonne (vide) — sinon l'écran afficherait l'administrateur comme n'ayant aucun droit |
+| POST | `/api/v1/access-control/profiles` | **admin.profiles** | Créer un profil. **422** sur une clé de permission inconnue (délibérément plus strict que la relecture, qui ignore en silence : un `fai.blok` mal orthographié rendrait « enregistré » sans avoir donné le droit) · **409** nom déjà pris |
+| PUT | `/api/v1/access-control/profiles/{id}` | **admin.profiles** | Modifier un profil. **409** sur le profil système (verrouillé : il détient tout par construction) |
+| DELETE | `/api/v1/access-control/profiles/{id}` | **admin.profiles** | Supprimer un profil. **409** s'il est système, ou **encore porté** par des comptes (le message donne leur nombre) |
+| GET | `/api/v1/access-control/users` | **admin.access** | Les comptes et le profil de chacun |
+| POST | `/api/v1/access-control/users` | **admin.users** | Créer un compte. `profile_id` **obligatoire** : un compte sans profil n'a aucun droit et se connecterait sur un écran vide. **409** identifiant déjà pris |
+| PUT | `/api/v1/access-control/users/{id}` | **admin.users** | Nom affiché, activation, profil. Le `username` n'y figure **pas** (il porte l'historique du compte). Changer le profil ou désactiver **révoque les sessions**. **409** sur le dernier administrateur actif, ou si l'auteur se retire à lui-même l'administration |
+| POST | `/api/v1/access-control/users/{id}/password` | **admin.users** | Réinitialiser un mot de passe (geste d'administrateur). Révoque toutes les sessions du compte — sinon, sur un mot de passe qui a fuité, le geste serait annulé |
+| DELETE | `/api/v1/access-control/users/{id}` | **admin.users** | Supprimer un compte. **409** sur son propre compte ou sur le dernier administrateur actif |
 | POST | `/api/v1/system/test-whatsapp` | Oui | Diagnostic WhatsApp (Ultramsg) — envoie un message de test au groupe `WHATSAPP_GROUP_ID` |
 | POST | `/api/v1/uisp/assign` | **Assign** | Clé **dédiée `UISP_ASSIGN_API_KEY`** (router `uisp_assign.py` séparé, `require_uisp_assign_client`) : scellée à cette seule route — n'ouvre **pas** `/uisp/sync`, ni block/unblock ; repli accepté sur l'auth normale (master `API_KEY` / session). ⚠️ **Consommée en HTTPS** : le port 80 renvoie un `301`, et une redirection **convertit un POST en GET et détruit le corps JSON** → `405` (prouvé en journal le 2026-08-11 : `POST … 301` puis `GET … 405`, même seconde, même client). C'est pourquoi `/fai/verify` (un GET) tolère `http://` et pas cette route. `location ^~ /api/v1/uisp/assign` dédiée dans nginx : `proxy_read_timeout` **120 s** (la pose de la clé UISP passe par SSH ; à 30 s le client reçoit un 504 sur une adoption **réussie**) et zone de débit `uisp_assign` 120 r/min (les adoptions arrivent par lots). Doc d'intégration : `docs/api-uisp-assign.md`. **Associe un équipement à un client CRM** — body `mac` + `crm_client_id`, plus `crm_service_id` **uniquement** si le client a plusieurs services. Équivalent du formulaire UISP (chercher la MAC en « unknown », choisir le client). Si l'équipement est absent du contrôleur, sa clé lui est posée d'abord, puis l'API **attend qu'il se déclare** (sondé toutes les 5 s, **60 s au plus**) et l'**associe dans le même appel** — sinon `pending_registration: true` + `retry_after_seconds` (2026-09-11 : le 10/09, un équipement adopté en 9 s recevait `pending_registration` sans que le rattachement soit tenté). ⚠️ Attente bornée par un **budget GLOBAL** `CALL_BUDGET_S` (100 s depuis le début de l'appel) : la pose de clé attend déjà jusqu'à 45 s l'adoption, et 45 + 60 dépassait les 120 s du proxy → 504 sur une association réussie ; un test relit `nginx.conf` pour que les deux ne divergent pas. **Contrat de réponse STABLE** (2026-09-11) : `assigned`, `pending_registration`, `retry_after_seconds` et `error_code` dans **toutes** les réponses, succès comme erreur ; `error_code` = identifiant stable, table `ERROR_CODES` de `uisp_assign.py` (**source unique** du statut HTTP d'une erreur). **Additif** : le `detail` historique des erreurs et les statuts HTTP sont conservés à l'identique ; les 401/422 levés AVANT l'endpoint passent aussi dans l'enveloppe via `_StableErrorRoute`, **locale** à ce router (le reste de l'API garde le format FastAPI). ⚠️ `pending_registration` n'était présent **que** lorsqu'il valait vrai — il l'est désormais toujours. ⚠️ Une erreur fait un **rollback** explicite : l'ancienne HTTPException le déclenchait via `get_db`, alors que rendre une réponse aurait COMMITTÉ. Rapport étape par étape. 400 `invalid_mac` · 404 `crm_client_not_found` / `crm_service_mismatch` / `device_not_found` · **409 `multiple_services`** (services renvoyés) · **409 `device_already_assigned`** (détenteur renvoyé : `current_crm_client_id` + `current_client_name` ; **`force: true`** pour passer outre, `reassign` reste accepté comme ancien nom) · 502 `device_unreachable` (échec SSH — surtout pas un 404) · 403 `uisp_write_forbidden`. ⚠️ Changer `ERROR_CODES` ou les clés toujours présentes = changer le contrat d'un tiers : verrouillé par `tests/test_uisp_assign_contract.py`, historique dans `docs/api-uisp-assign.md`, **prévenir l'équipe avant de déployer**. Voir **Association client CRM** |
 | POST | `/api/v1/uisp/sync` | Oui | Import des équipements d'infra depuis le contrôleur UISP (`?dry_run=true` = prévisualisation sans écriture). Renvoie un résumé (créés/màj/ignorés + échantillon) |
@@ -2023,6 +2186,7 @@ visibles sur `/incidents`.
 | Règles du routeur | `/router-rules` | Sous **FAI** dans la barre latérale (à côté du Journal des blocages). Les coupures d'abonnés **réellement posées sur le routeur de cœur**, lues en direct à l'ouverture. Complète les deux autres vues du blocage : le **journal** dit ce qui s'est passé, la **base** ce qu'on croit avoir posé, celle-ci ce que le routeur porte **maintenant** — la seule qui réponde à « ce client a payé, pourquoi est-il coupé ? ». Tuiles (règles, coupés à tort, MAC inconnues, coupures manquantes, posées par nous), bloc rouge des **coupures absentes du routeur**, table filtrable (client/MAC/site/état/origine/trafic jeté/commentaire). ⚠️ **Pas de `refreshInterval`** (⚠️ `/topology` en a repris un depuis : ici la raison est plus forte) : chaque chargement ouvre une session API RouterOS — le clic dans le menu **est** la demande, et le bouton « Actualiser » rejoue la lecture. Une règle **désactivée** est listée mais marquée « ne coupe pas » (elle explique un client bloqué toujours en ligne). Source : `/router-rules` |
 | Demandes de coupure | `/fai-requests` | Sous **FAI**. Les demandes reçues du système de paiement (`Block_all.php` par défaut), **une ligne par demande**, avec l'état RÉEL du client aujourd'hui : coupé / **NON COUPÉ ⚠** / rétabli / fiche supprimée, et **par quel mécanisme** (son LR ou le repli routeur). Filtres origine + **plage de dates** + recherche. ⚠️ Les colonnes du journal sont figées à l'instant de l'action, la colonne « Maintenant » est relue en base à chaque affichage — c'est leur **désaccord** qui est l'information. Bandeau rouge dès qu'un client sous ordre de coupure est toujours en ligne. Source : `/fai-journal` (clé `current`). Voir **Demandes de coupure** |
 | Diagnostics d'accès | `/access-diagnostics` | 2 sections d'anomalies de gestion du parc abonné (sidebar **Anomalies**) : **LR qui refusent le SSH** (mot de passe invalide / SSH désactivé / clé d'hôte incompatible — les **offline sont exclus**, ce n'est pas un refus) et **découverts par radio mais absents de UISP** (non provisionnés, potentiellement non facturés). Source : `/access-diagnostics`. La 1re remplace côté UI l'ancien diag SSH par grep de logs. La 2e porte l'**action d'enrôlement** : bouton par ligne + « Tout enrôler dans UISP », avec un interrupteur **Forcer** décoché par défaut (il écrase une clé existante — cf. **Enrôlement UISP**). Une ligne déjà enrôlée affiche la date au lieu du bouton : elle attend le sync quotidien |
+| Profils et accès | `/admin` | **Section Administration** (sidebar **Administration**, visible avec `admin.access`). Deux onglets : **Profils** — le catalogue complet du système à cocher, en deux blocs par groupe (**Interfaces visibles** / **Actions autorisées**), parce qu'un agent peut voir la page FAI sans pouvoir couper un abonné ; **Utilisateurs** — créer un compte, l'affecter à un profil, réinitialiser son mot de passe, l'activer/désactiver. ⚠️ Le formulaire est construit **entièrement** depuis `/access-control/permissions` : aucune fonctionnalité n'y est écrite en dur, donc l'écran ne peut pas oublier une nouveauté. Le profil **Administrateur** y apparaît en lecture seule (verrouillé). Voir **Profils d'accès — qui voit quoi**
 
 ### À implémenter (prochaines phases)
 - [ ] Tests unitaires et d'intégration
@@ -2040,11 +2204,12 @@ Le système est prévu pour être déployé sur un serveur physique après valid
 - **Postgres réglé pour le serveur** (2026-09-15, `docker-compose.prod.yml`, service `postgres`) : `shared_buffers=8GB`, `effective_cache_size=20GB`, `maintenance_work_mem=1GB`, `work_mem=32MB`, `shm_size: 1g`. Il tournait sur les valeurs par défaut de l’image (128 Mo de cache sur 31 Go) : 52 % de lectures servies par le cache Postgres et 8,7 M pages écrites par les requêtes elles-mêmes (`scripts/diag-perf.sh`, 2026-09-11). ⚠️ **Prod seulement** (tailles calées sur 31 Go). ⚠️ Changer ce bloc exige de **recréer** le conteneur (`dc up -d postgres`) : un `restart` relance l’ancienne commande.
 - **`pg_stat_statements` chargé** (2026-09-15) : `shared_preload_libraries` dans `docker-compose.prod.yml` + extension créée par la migration `d9e8f7a6b5c4`. ⚠️ Création **conditionnelle** (extension disponible ET rôle superutilisateur), jamais bloquante : un outil de diagnostic ne doit pas pouvoir empêcher l'API de démarrer. Sans le préchargement, la vue existe mais ne mesure rien. Lue par la section Postgres de `scripts/diag-perf.sh`.
 - **Durée de chaque requête dans le log nginx** (2026-09-15) : `rt=$request_time urt=$upstream_response_time`, ajoutés **en fin** du `log_format main` pour qu'un lecteur existant garde ses champs à la même place. Classement des appels les plus lents (temps cumulé, identifiants ramenés à `{id}`) : section 5 de `scripts/diag-perf.sh`. ⚠️ `nginx.conf` est monté **fichier par fichier** : après un `git pull`, un `nginx -s reload` relit l'ANCIEN contenu (le montage pointe l'inode d'origine) → `dc restart nginx`.
+- **`Upgrade` relayé au frontend pour un WebSocket SEULEMENT** (2026-09-15, `map $http_upgrade $ws_upgrade / $ws_connection` dans `nginx.conf`). `location /` posait `Connection: upgrade` sur **toutes** les requêtes et relayait l’`Upgrade` du client tel quel : un client HTTP/1.1 qui propose `Upgrade: h2c` (outils de surveillance) restait suspendu jusqu’au timeout — **30 s contre 0,03 s** sans l’en-tête. Révélé par le nouveau `rt=` : 233 « GET // » par heure depuis 10.135.1.100 et 10.135.15.5, tous en 499 après ~20 s, donc des sondes qui voyaient le superviseur **en panne** alors qu’un navigateur (HTTP/2) n’avait aucun souci. Verrouillé par `tests/test_nginx_upgrade_relay.py`.
 - **Ressources du serveur utilisées** (2026-09-17, `docker-compose.prod.yml`) : `UVICORN_WORKERS` **4** (défaut prod, 2 avant), `POLL_PERSIST_CONCURRENCY` **16** sur `poll-ltu`/`poll-airos` (8 avant — possible parce que la file est entrelacée par Rocket), `max_connections` **200**, limites mémoire relevées (backend et heavy 1,5 Go, ltu/airos/netflow 1 Go, switch/af60 512 Mo). ⚠️ **Chaque process Python a SON réservoir de connexions** (`DB_POOL_SIZE` + `DB_MAX_OVERFLOW`, et l’API un par worker) : le total au pire (**172**) doit tenir sous `max_connections` moins la réserve — `tests/test_db_connection_budget.py` échoue si on relève un réservoir, un nombre de workers ou une parallélisation sans relever le plafond. Petits consommateurs (ping-lr, switch, af60, netflow) à 3 + 5. ⚠️ Les tâches de phase 2 tiennent une connexion chacune : la parallélisation d’un poll ne doit jamais dépasser son réservoir (sinon elles attendent le réservoir au lieu du verrou). ⚠️ Là où le goulot est la RADIO (SSH, ICMP), ne **pas** paralléliser davantage : au-delà d’environ 150 poignées de main simultanées les LR décrochent.
 - Mettre en place un reverse proxy (nginx ou Caddy) devant uvicorn.
 - Remplacer les mots de passe et l'`API_KEY` par des valeurs fortes dans `.env`.
 - Logs : rediriger stdout vers un aggregateur (Loki, ELK, ou simple fichier rotatif).
-- **Auth UI** : le dashboard est protégé par login + sessions serveur (`auth_service.py`, cookie `supervisor_session` HttpOnly+Secure+SameSite=Lax, toutes les routes derrière `require_user_or_api_key`). Créer le premier compte admin après le 1er déploiement : `LAN_BIND_IP=10.135.3.25 docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.lan.yml exec backend python scripts/create_admin.py` (cf. **Commandes de déploiement type** — toujours les 3 `-f` + `LAN_BIND_IP`).
+- **Auth UI** : le dashboard est protégé par login + sessions serveur (`auth_service.py`, cookie `supervisor_session` HttpOnly+Secure+SameSite=Lax, toutes les routes derrière `require_user_or_api_key`), et chaque route porte en plus son **contrôle de droits par profil** (`require_permission` — voir **Profils d'accès — qui voit quoi**). Créer le premier compte admin après le 1er déploiement : `LAN_BIND_IP=10.135.3.25 docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.lan.yml exec backend python scripts/create_admin.py` (cf. **Commandes de déploiement type** — toujours les 3 `-f` + `LAN_BIND_IP`).
 - **Exposition réseau** : nginx est bindé `127.0.0.1` uniquement → l'IP publique reste accessible **seulement par tunnel SSH** (`ssh -L 8443:127.0.0.1:443 a2@<serveur>` → `https://localhost:8443/`). Pour un **accès LAN direct** (réseau interne d'entreprise, pas de tunnel), composer en plus `docker-compose.lan.yml` avec `LAN_BIND_IP` = l'IP LAN du serveur : nginx ajoute alors un binding sur cette IP **seulement** (jamais `0.0.0.0`), donc l'interface publique reste non-exposée. L'accès LAN se fait en HTTPS (`https://<LAN_BIND_IP>/`, avertissement de certificat à accepter une fois). **Ne jamais binder `0.0.0.0`** (incident 2026-05-17).
 
 ### Commandes de déploiement type

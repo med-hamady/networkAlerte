@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import require_permission
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.services import threshold_service, whatsapp_service
@@ -108,7 +109,9 @@ async def get_system_info() -> SystemInfo:
 # Alert thresholds — GET / PATCH / DELETE per key
 # ---------------------------------------------------------------------------
 
-@router.get("/thresholds")
+@router.get("/thresholds",
+    dependencies=[Depends(require_permission("thresholds.view", "thresholds.edit"))],
+)
 async def get_thresholds(
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
@@ -116,7 +119,9 @@ async def get_thresholds(
     return await threshold_service.get_all_thresholds(db, get_settings())
 
 
-@router.patch("/thresholds")
+@router.patch("/thresholds",
+    dependencies=[Depends(require_permission("thresholds.edit"))],
+)
 async def patch_thresholds(
     updates: dict[str, Any],
     db: AsyncSession = Depends(get_db),
@@ -129,7 +134,9 @@ async def patch_thresholds(
     return await threshold_service.get_all_thresholds(db, get_settings())
 
 
-@router.delete("/thresholds/{key}", status_code=204)
+@router.delete("/thresholds/{key}", status_code=204,
+    dependencies=[Depends(require_permission("thresholds.edit"))],
+)
 async def reset_threshold(
     key: str,
     db: AsyncSession = Depends(get_db),
@@ -145,7 +152,9 @@ async def reset_threshold(
 # WhatsApp diagnostic — send a test message to the configured group (Ultramsg)
 # ---------------------------------------------------------------------------
 
-@router.post("/test-whatsapp", summary="Send a test WhatsApp message to the configured group")
+@router.post("/test-whatsapp", summary="Send a test WhatsApp message to the configured group",
+    dependencies=[Depends(require_permission("system.test_whatsapp"))],
+)
 async def test_whatsapp() -> dict[str, Any]:
     """
     Send a test message to the configured WhatsApp group via Ultramsg.

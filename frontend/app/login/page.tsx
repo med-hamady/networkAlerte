@@ -2,6 +2,7 @@
 
 import { useState, FormEvent, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
+import { firstAllowedRoute } from '@/lib/permissions'
 
 /**
  * Login page — single-screen form, no sidebar.
@@ -38,8 +39,27 @@ function LoginForm() {
         setSubmitting(false)
         return
       }
-      // Cookie now set by the backend — go to the requested page.
-      router.replace(next)
+      // ⚠️ La destination dépend des DROITS du compte, pas d'une valeur fixe.
+      // `/` est lui-même une permission (`dashboard.view`) : un profil qui ne
+      // l'a pas atterrissait sur « Accès refusé » juste après s'être connecté
+      // — l'application paraissait cassée alors qu'elle fonctionnait. La
+      // réponse du login porte déjà les droits (`user.permissions`), donc on
+      // sait tout de suite où l'envoyer, sans requête de plus.
+      const payload = await res.json().catch(() => null)
+      const granted = new Set<string>(payload?.user?.permissions ?? [])
+      const isAdmin = payload?.user?.is_admin === true
+      const can = (...keys: string[]) =>
+        isAdmin || keys.some((k) => granted.has(k))
+
+      // Une destination demandée (`?next=`) n'est honorée que si le compte a
+      // le droit de la voir : sinon un signet partagé renverrait l'agent sur
+      // un refus, au lieu de son écran de travail.
+      const nextPermission = PAGE_PERMISSION_FOR(next)
+      // Clé vide = page non gardée, donc ouverte à tout compte connecté.
+      const nextAllowed = next !== '/'
+        && (nextPermission === '' || can(nextPermission))
+      const target = nextAllowed ? next : firstAllowedRoute(can) ?? '/'
+      router.replace(target)
     } catch (err) {
       setError((err as Error).message || 'Erreur réseau.')
       setSubmitting(false)
@@ -125,4 +145,38 @@ export default function LoginPage() {
       <LoginForm />
     </Suspense>
   )
+}
+
+/**
+ * Le droit qui ouvre une destination `?next=`, ou une chaîne vide si la page
+ * n'est pas gardée (elle est alors ouverte à tout compte connecté).
+ *
+ * ⚠️ Volontairement approximatif — il ne sert qu'à choisir où ATTERRIR. Le
+ * vrai contrôle est celui d'`AppShell` à l'affichage, et celui du backend sur
+ * chaque route. Se tromper ici ne donne accès à rien : au pire l'utilisateur
+ * arrive sur l'écran « Accès refusé », qui lui propose une sortie.
+ */
+function PAGE_PERMISSION_FOR(path: string): string {
+  const route = path.split('?')[0]
+  const key = Object.entries({
+    '/': 'dashboard.view',
+    '/sites': 'sites.view',
+    '/lr-health': 'lr_health.view',
+    '/clients': 'clients.view',
+    '/capacity': 'capacity.view',
+    '/topology': 'topology.view',
+    '/map': 'map.view',
+    '/traffic': 'traffic.view',
+    '/access': 'fai.view',
+    '/fai-requests': 'fai.requests.view',
+    '/fai-journal': 'fai.journal.view',
+    '/router-rules': 'fai.router_rules.view',
+    '/content-block': 'fai.content_filter.view',
+    '/incidents': 'incidents.view',
+    '/access-diagnostics': 'access_diagnostics.view',
+    '/reports': 'reports.view',
+    '/settings': 'thresholds.view',
+    '/admin': 'admin.access',
+  }).find(([r]) => r === route)?.[1]
+  return key ?? ''
 }

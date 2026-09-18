@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import useSWR from 'swr'
 import { endpoints, fetcher, logout, type CurrentUser } from '@/lib/api'
+import { PERM, usePermissions } from '@/lib/permissions'
 import type { HealthResponse } from '@/lib/types'
 
 type NavLink = {
@@ -13,6 +14,13 @@ type NavLink = {
   icon: (props: { className?: string }) => JSX.Element
   exact?: boolean
   indent?: boolean
+  /**
+   * Droit qui ouvre cette entrée. ⚠️ OBLIGATOIRE sur toute nouvelle entrée :
+   * une entrée sans `permission` s'afficherait pour TOUT LE MONDE, y compris
+   * un compte à qui la page répond 403 — il cliquerait sur un écran d'erreur
+   * sans comprendre. Le type l'impose, il n'est pas optionnel.
+   */
+  permission: string
 }
 
 type NavSection = {
@@ -24,33 +32,39 @@ const sections: NavSection[] = [
   {
     title: 'Supervision',
     links: [
-      { href: '/',           label: 'Dashboard',           icon: DashboardIcon },
-      { href: '/sites',      label: 'Sites',               icon: ServerIcon    },
-      { href: '/lr-health',  label: 'Liaisons clients',    icon: LinkIcon      },
-      { href: '/clients',    label: 'Consommation clients', icon: TrafficIcon  },
-      { href: '/capacity',   label: 'Capacité du réseau',  icon: CapacityIcon },
-      { href: '/topology',   label: 'Topologie du réseau', icon: TopologyIcon },
-      { href: '/map',        label: 'Carte des clients',   icon: MapIcon      },
-      { href: '/traffic',    label: 'Destinations Internet', icon: GlobeIcon  },
-      { href: '/access',     label: 'FAI',                 icon: ShieldIcon   },
-      { href: '/fai-requests', label: 'Demandes de coupure', icon: RequestIcon, indent: true },
-      { href: '/fai-journal', label: 'Journal blocages',   icon: JournalIcon, indent: true },
-      { href: '/router-rules', label: 'Règles du routeur', icon: RouterIcon, indent: true },
-      { href: '/content-block', label: 'Filtre de contenu', icon: FilterIcon, indent: true },
+      { href: '/',           label: 'Dashboard',           icon: DashboardIcon, permission: PERM.dashboard },
+      { href: '/sites',      label: 'Sites',               icon: ServerIcon,    permission: PERM.sites },
+      { href: '/lr-health',  label: 'Liaisons clients',    icon: LinkIcon,      permission: PERM.lrHealth },
+      { href: '/clients',    label: 'Consommation clients', icon: TrafficIcon,  permission: PERM.clients },
+      { href: '/capacity',   label: 'Capacité du réseau',  icon: CapacityIcon,  permission: PERM.capacity },
+      { href: '/topology',   label: 'Topologie du réseau', icon: TopologyIcon,  permission: PERM.topology },
+      { href: '/map',        label: 'Carte des clients',   icon: MapIcon,       permission: PERM.map },
+      { href: '/traffic',    label: 'Destinations Internet', icon: GlobeIcon,   permission: PERM.traffic },
+      { href: '/access',     label: 'FAI',                 icon: ShieldIcon,    permission: PERM.fai },
+      { href: '/fai-requests', label: 'Demandes de coupure', icon: RequestIcon, indent: true, permission: PERM.faiRequests },
+      { href: '/fai-journal', label: 'Journal blocages',   icon: JournalIcon, indent: true, permission: PERM.faiJournal },
+      { href: '/router-rules', label: 'Règles du routeur', icon: RouterIcon, indent: true, permission: PERM.routerRules },
+      { href: '/content-block', label: 'Filtre de contenu', icon: FilterIcon, indent: true, permission: PERM.contentFilter },
     ],
   },
   {
     title: 'Anomalies',
     links: [
-      { href: '/incidents',         label: 'Incidents',           icon: WarningIcon, exact: true },
-      { href: '/access-diagnostics', label: "Diagnostics d'accès", icon: PlugIcon },
+      { href: '/incidents',         label: 'Incidents',           icon: WarningIcon, exact: true, permission: PERM.incidents },
+      { href: '/access-diagnostics', label: "Diagnostics d'accès", icon: PlugIcon, permission: PERM.accessDiagnostics },
     ],
   },
   {
     title: 'Configuration',
     links: [
-      { href: '/reports',  label: 'Rapports', icon: ReportIcon   },
-      { href: '/settings', label: 'Seuils',   icon: SettingsIcon },
+      { href: '/reports',  label: 'Rapports', icon: ReportIcon,   permission: PERM.reports },
+      { href: '/settings', label: 'Seuils',   icon: SettingsIcon, permission: PERM.thresholds },
+    ],
+  },
+  {
+    title: 'Administration',
+    links: [
+      { href: '/admin', label: 'Profils et accès', icon: KeyIcon, permission: PERM.adminAccess },
     ],
   },
 ]
@@ -63,6 +77,7 @@ const sections: NavSection[] = [
 export default function Sidebar({ onCollapse }: { onCollapse?: () => void }) {
   const pathname = usePathname()
   const router = useRouter()
+  const { can, loading: permsLoading } = usePermissions()
   const { data: health } = useSWR<HealthResponse>(
     endpoints.health,
     fetcher,
@@ -95,6 +110,21 @@ export default function Sidebar({ onCollapse }: { onCollapse?: () => void }) {
       router.replace('/login')
     }
   }, [userError, router])
+
+  // ⚠️ Pendant le chargement de /auth/me on n'affiche RIEN plutôt qu'un menu
+  // complet : montrer puis retirer des entrées ferait clignoter la moitié du
+  // menu à chaque navigation, et un agent y verrait passer des pages qui ne
+  // lui sont pas ouvertes. Une section dont toutes les entrées sont masquées
+  // disparaît avec son titre — un intitulé « FAI » surmontant le vide se lirait
+  // comme une panne d'affichage.
+  const visibleSections = permsLoading
+    ? []
+    : sections
+        .map(({ title, links }) => ({
+          title,
+          links: links.filter((link) => can(link.permission)),
+        }))
+        .filter((section) => section.links.length > 0)
 
   return (
     <aside className="w-60 min-h-screen bg-blue-900 flex flex-col shrink-0">
@@ -129,7 +159,7 @@ export default function Sidebar({ onCollapse }: { onCollapse?: () => void }) {
 
       {/* Navigation */}
       <nav className="flex-1 px-3 py-4 space-y-5 overflow-y-auto">
-        {sections.map(({ title, links }) => (
+        {visibleSections.map(({ title, links }) => (
           <div key={title} className="space-y-1">
             <p className="px-3 pb-1 text-[10px] font-bold tracking-widest uppercase text-blue-400">
               {title}
@@ -169,9 +199,13 @@ export default function Sidebar({ onCollapse }: { onCollapse?: () => void }) {
             <p className="text-sm text-white font-medium truncate">
               {currentUser?.full_name || currentUser?.username || '—'}
             </p>
-            {currentUser?.full_name && (
-              <p className="text-[10px] text-blue-400 truncate">{currentUser.username}</p>
-            )}
+            <p className="text-[10px] text-blue-400 truncate">
+              {currentUser?.profile_name
+                ? currentUser.profile_name
+                : currentUser?.full_name
+                ? currentUser.username
+                : ''}
+            </p>
           </div>
           <button
             onClick={handleLogout}
@@ -385,6 +419,18 @@ function SettingsIcon({ className }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round"
         d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+    </svg>
+  )
+}
+
+/** Clé — section Administration (profils et comptes). */
+function KeyIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24"
+         stroke="currentColor" strokeWidth={1.9}>
+      <path strokeLinecap="round" strokeLinejoin="round"
+            d="M15 7a4 4 0 11-3.87 5H8v3H5v3H2v-3l6.13-6.13A4 4 0 0115 7z" />
+      <circle cx="16.5" cy="7.5" r="1.1" fill="currentColor" stroke="none" />
     </svg>
   )
 }

@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import require_permission
 from app.db.session import get_db
 from app.services import site_map_service, site_topology_service, uisp_service
 
@@ -63,7 +64,9 @@ async def get_network_topology(
     return await site_topology_service.get_site_topology(db, root=root)
 
 
-@router.get("/export/word")
+@router.get("/export/word",
+    dependencies=[Depends(require_permission("topology.export"))],
+)
 async def export_network_topology_word(
     root: str | None = Query(None, description="Site racine, comme sur le GET."),
     db: AsyncSession = Depends(get_db),
@@ -106,7 +109,9 @@ async def export_network_topology_word(
     )
 
 
-@router.post("/sync")
+@router.post("/sync",
+    dependencies=[Depends(require_permission("topology.sync"))],
+)
 async def sync_network_topology(db: AsyncSession = Depends(get_db)) -> dict:
     """Rapatrie le câblage depuis le contrôleur maintenant, sans attendre le job.
 

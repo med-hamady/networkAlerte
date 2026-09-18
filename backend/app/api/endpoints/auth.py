@@ -30,12 +30,27 @@ from app.schemas.auth import (
     LoginResponse,
     UserRead,
 )
-from app.services import auth_service
+from app.services import auth_service, profile_service
 from app.services.auth_service import SESSION_COOKIE_NAME, SESSION_TTL
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _user_out(user: User) -> UserRead:
+    """Vue publique d'un compte, AVEC ses droits effectifs.
+
+    Les droits sont recalculés à chaque appel plutôt que figés à la connexion :
+    un profil modifié pendant qu'un utilisateur travaille prend effet au
+    rafraîchissement suivant de la page, sans attendre qu'il se reconnecte.
+    """
+    out = UserRead.model_validate(user)
+    out.profile_id = user.profile_id
+    out.profile_name = user.profile.name if user.profile else None
+    out.is_admin = profile_service.is_admin(user)
+    out.permissions = sorted(profile_service.effective_permissions(user))
+    return out
 
 
 def _client_ip(request: Request) -> str | None:
@@ -97,7 +112,7 @@ async def login(
     await db.commit()
     _set_session_cookie(response, raw_token)
     logger.info("Login OK — user=%s ip=%s", user.username, _client_ip(request))
-    return LoginResponse(user=UserRead.model_validate(user))
+    return LoginResponse(user=_user_out(user))
 
 
 @router.post("/logout", status_code=204)
@@ -117,7 +132,7 @@ async def logout(
 @router.get("/me", response_model=UserRead)
 async def me(user: User = Depends(require_user)) -> UserRead:
     """Return the logged-in user — used by the frontend to gate the UI."""
-    return UserRead.model_validate(user)
+    return _user_out(user)
 
 
 @router.post("/change-password", status_code=204)

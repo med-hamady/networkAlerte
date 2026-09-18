@@ -8,9 +8,11 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import require_permission
 from app.core.config import get_settings
+from app.core.permissions import DEVICE_READ_PERMISSIONS
 from app.db.session import get_db
-from app.models.device import ClientModem, Device, Lr, Rocket
+from app.models.device import ClientModem, Device, Lr, Rocket, UispPower
 from app.schemas.device import (
     AirFiberRead,
     ClientModemRead,
@@ -32,6 +34,7 @@ from app.services import (
     ssh_service,
     threshold_service,
     uisp_enrollment_service,
+    uisp_power_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,7 +71,9 @@ def _to_read(device: Device) -> DeviceRead:
     return read_cls.model_validate(device)
 
 
-@router.get("", response_model=list[DeviceRead])
+@router.get("", response_model=list[DeviceRead],
+    dependencies=[Depends(require_permission(*DEVICE_READ_PERMISSIONS))],
+)
 async def list_devices(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
@@ -96,7 +101,9 @@ class DeviceSearchResult(BaseModel):
     status: str
 
 
-@router.get("/search", response_model=list[DeviceSearchResult])
+@router.get("/search", response_model=list[DeviceSearchResult],
+    dependencies=[Depends(require_permission(*DEVICE_READ_PERMISSIONS))],
+)
 async def search_devices(
     q: str = Query(..., min_length=2, description="Match on name or IP (LR name carries the client phone)."),
     limit: int = Query(20, ge=1, le=50),
@@ -117,7 +124,9 @@ async def search_devices(
     ]
 
 
-@router.get("/{device_id}", response_model=DeviceRead)
+@router.get("/{device_id}", response_model=DeviceRead,
+    dependencies=[Depends(require_permission(*DEVICE_READ_PERMISSIONS))],
+)
 async def get_device(
     device_id: int,
     db: AsyncSession = Depends(get_db),
@@ -127,7 +136,9 @@ async def get_device(
     return _to_read(device)
 
 
-@router.post("", response_model=DeviceRead, status_code=201)
+@router.post("", response_model=DeviceRead, status_code=201,
+    dependencies=[Depends(require_permission("devices.create"))],
+)
 async def create_device(
     data: DeviceCreate,
     db: AsyncSession = Depends(get_db),
@@ -137,7 +148,9 @@ async def create_device(
     return _to_read(device)
 
 
-@router.put("/{device_id}", response_model=DeviceRead)
+@router.put("/{device_id}", response_model=DeviceRead,
+    dependencies=[Depends(require_permission("devices.edit"))],
+)
 async def update_device(
     device_id: int,
     data: DeviceUpdate,
@@ -194,7 +207,9 @@ _LATEST_METRICS_SQL = text("""
 """)
 
 
-@router.get("/{device_id}/metrics/latest", response_model=dict[str, MetricPoint])
+@router.get("/{device_id}/metrics/latest", response_model=dict[str, MetricPoint],
+    dependencies=[Depends(require_permission(*DEVICE_READ_PERMISSIONS))],
+)
 async def get_device_metrics_latest(
     device_id: int,
     db: AsyncSession = Depends(get_db),
@@ -249,7 +264,9 @@ class MetricHistory(BaseModel):
     points: list[MetricPointHist]
 
 
-@router.get("/{device_id}/metric-history", response_model=MetricHistory)
+@router.get("/{device_id}/metric-history", response_model=MetricHistory,
+    dependencies=[Depends(require_permission(*DEVICE_READ_PERMISSIONS))],
+)
 async def get_device_metric_history(
     device_id: int,
     metric: str = Query(
@@ -345,7 +362,9 @@ async def get_device_metric_history(
     )
 
 
-@router.delete("/{device_id}", status_code=204)
+@router.delete("/{device_id}", status_code=204,
+    dependencies=[Depends(require_permission("devices.delete"))],
+)
 async def delete_device(
     device_id: int,
     db: AsyncSession = Depends(get_db),
@@ -388,7 +407,9 @@ def _promote_lr_password(
         device.ssh_password = used
 
 
-@router.post("/{device_id}/check-ssh", response_model=DiagResult)
+@router.post("/{device_id}/check-ssh", response_model=DiagResult,
+    dependencies=[Depends(require_permission("devices.diagnostics"))],
+)
 async def check_ssh(
     device_id: int,
     db: AsyncSession = Depends(get_db),
@@ -418,7 +439,9 @@ async def check_ssh(
     return DiagResult(ok=ok, message=msg)
 
 
-@router.post("/{device_id}/ping-from-lr", response_model=DiagResult)
+@router.post("/{device_id}/ping-from-lr", response_model=DiagResult,
+    dependencies=[Depends(require_permission("devices.diagnostics"))],
+)
 async def ping_from_lr(
     device_id: int,
     db: AsyncSession = Depends(get_db),
@@ -472,7 +495,9 @@ class PingTargetRequest(BaseModel):
     target: str
 
 
-@router.post("/{device_id}/ping-target", response_model=DiagResult)
+@router.post("/{device_id}/ping-target", response_model=DiagResult,
+    dependencies=[Depends(require_permission("devices.diagnostics"))],
+)
 async def ping_target(
     device_id: int,
     body: PingTargetRequest,
@@ -538,7 +563,9 @@ class DiscoverModemsResponse(BaseModel):
     candidates: list[LanNeighborOut]
 
 
-@router.post("/{device_id}/discover-modems", response_model=DiscoverModemsResponse)
+@router.post("/{device_id}/discover-modems", response_model=DiscoverModemsResponse,
+    dependencies=[Depends(require_permission("devices.diagnostics"))],
+)
 async def discover_modems(
     device_id: int,
     db: AsyncSession = Depends(get_db),
@@ -604,7 +631,9 @@ def _block_result(lr: Lr, ok: bool, message: str) -> ClientBlockResult:
     )
 
 
-@router.post("/{device_id}/block-client", response_model=ClientBlockResult)
+@router.post("/{device_id}/block-client", response_model=ClientBlockResult,
+    dependencies=[Depends(require_permission("fai.block"))],
+)
 async def block_client(
     device_id: int,
     body: BlockClientRequest,
@@ -672,7 +701,9 @@ class PlanSyncSummary(BaseModel):
     failed: int
 
 
-@router.post("/plans/sync", response_model=PlanSyncSummary)
+@router.post("/plans/sync", response_model=PlanSyncSummary,
+    dependencies=[Depends(require_permission("devices.plan_sync"))],
+)
 async def sync_lr_plans(
     db: AsyncSession = Depends(get_db),
 ) -> PlanSyncSummary:
@@ -688,7 +719,9 @@ async def sync_lr_plans(
     return PlanSyncSummary(**summary)
 
 
-@router.get("/{device_id}/plan", response_model=LrPlanResult)
+@router.get("/{device_id}/plan", response_model=LrPlanResult,
+    dependencies=[Depends(require_permission(*DEVICE_READ_PERMISSIONS))],
+)
 async def get_lr_plan(
     device_id: int,
     db: AsyncSession = Depends(get_db),
@@ -732,7 +765,9 @@ class UispEnrollRequest(BaseModel):
     force: bool = False
 
 
-@router.post("/{device_id}/enroll-uisp", response_model=UispEnrollResult)
+@router.post("/{device_id}/enroll-uisp", response_model=UispEnrollResult,
+    dependencies=[Depends(require_permission("devices.enroll_uisp"))],
+)
 async def enroll_uisp(
     device_id: int,
     body: UispEnrollRequest | None = None,
@@ -773,7 +808,9 @@ async def enroll_uisp(
     )
 
 
-@router.post("/{device_id}/unblock-client", response_model=ClientBlockResult)
+@router.post("/{device_id}/unblock-client", response_model=ClientBlockResult,
+    dependencies=[Depends(require_permission("fai.block"))],
+)
 async def unblock_client(
     device_id: int,
     db: AsyncSession = Depends(get_db),
@@ -821,7 +858,9 @@ class ContentBlockResult(BaseModel):
     content_block_enforced_at: datetime.datetime | None
 
 
-@router.get("/content-block/categories", response_model=list[ContentBlockCategory])
+@router.get("/content-block/categories", response_model=list[ContentBlockCategory],
+    dependencies=[Depends(require_permission("fai.content_filter.view", "fai.content_filter.edit"))],
+)
 async def content_block_categories() -> list[ContentBlockCategory]:
     """List the content-filter categories the operator can toggle per client."""
     settings = get_settings()
@@ -837,7 +876,9 @@ async def content_block_categories() -> list[ContentBlockCategory]:
     ]
 
 
-@router.put("/{device_id}/content-block", response_model=ContentBlockResult)
+@router.put("/{device_id}/content-block", response_model=ContentBlockResult,
+    dependencies=[Depends(require_permission("fai.content_filter.edit"))],
+)
 async def set_content_block(
     device_id: int,
     body: ContentBlockRequest,
@@ -886,7 +927,9 @@ async def set_content_block(
     )
 
 
-@router.post("/{device_id}/check-ping", response_model=DiagResult)
+@router.post("/{device_id}/check-ping", response_model=DiagResult,
+    dependencies=[Depends(require_permission("devices.diagnostics"))],
+)
 async def check_ping(
     device_id: int,
     db: AsyncSession = Depends(get_db),
@@ -914,3 +957,175 @@ async def check_ping(
         await db.flush()
     _promote_lr_password(device, password, used_pw, db)
     return DiagResult(ok=ok, message=msg)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Pilotage de l'alimentation d'un UISP Power
+#
+# Le seul geste du dashboard qui ÉTEINT physiquement du matériel. Deux
+# actions, et la distinction entre elles est tout l'objet de la
+# fonctionnalité : `cycle` se rallume seul, `off` non.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class PowerOutputState(BaseModel):
+    """État courant de la sortie DC d'un UISP Power."""
+
+    enabled: bool | None          # toutes les sorties allumées
+    any_enabled: bool             # au moins une allumée (boîtier Pro partiel)
+    outputs: list[dict] = []
+    power_w: float | None = None
+    voltage_v: float | None = None
+    current_a: float | None = None
+
+
+class PowerOutputRequest(BaseModel):
+    # Verbe explicite plutôt qu'un booléen : voir control_power_output.
+    action: Literal["cycle", "off", "on"]
+
+
+class PowerOutputResult(BaseModel):
+    ok: bool
+    message: str
+    action: str
+    state: PowerOutputState | None = None
+
+
+def _require_uisp_power(device: Device | None, device_id: int) -> UispPower:
+    """Garde d'accès commune aux deux routes d'alimentation."""
+    if not isinstance(device, UispPower):
+        raise HTTPException(
+            status_code=400,
+            detail="Le pilotage de l'alimentation n'est disponible que sur un UISP Power.",
+        )
+    if not device.api_username or not device.api_password:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Les identifiants API du UISP Power '{device.name}' sont absents "
+                f"de sa fiche. Renseigne-les (PUT /api/v1/devices/{device_id}) avant "
+                f"de piloter son alimentation."
+            ),
+        )
+    return device
+
+
+@router.get("/{device_id}/power-output", response_model=PowerOutputState,
+    dependencies=[Depends(require_permission("devices.power_output"))],
+)
+async def get_power_output(
+    device_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> PowerOutputState:
+    """État de la sortie DC d'un UISP Power, lu EN DIRECT sur le boîtier.
+
+    ⚠️ Volontairement pas servi depuis `device_metrics` : le poller n'y écrit
+    que ce que la sortie DÉBITE, jamais si elle est activée — et une sortie
+    coupée débite zéro exactement comme une sortie allumée sans charge. Or
+    c'est ce drapeau qui décide si la fiche propose « Couper » ou
+    « Rallumer » : le lire à côté afficherait le mauvais bouton.
+    """
+    device = _require_uisp_power(await device_service.get_device(db, device_id), device_id)
+    try:
+        state = await uisp_power_service.get_power_output_state(
+            host=device.ip_address,
+            username=device.api_username,
+            password=device.api_password,
+            port=device.api_port or 443,
+        )
+    except uisp_power_service.PowerControlError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return PowerOutputState(**state)
+
+
+@router.post("/{device_id}/power-output", response_model=PowerOutputResult,
+    dependencies=[Depends(require_permission("devices.power_output"))],
+)
+async def control_power_output(
+    device_id: int,
+    body: PowerOutputRequest,
+    db: AsyncSession = Depends(get_db),
+) -> PowerOutputResult:
+    """Coupe ou rétablit la sortie DC d'un UISP Power.
+
+    `cycle` = coupure de quelques secondes, le firmware rallume seul.
+    `off`   = coupure durable, personne ne la lève automatiquement.
+    `on`    = rétablissement après un `off`.
+
+    ⚠️ Aucune alerte n'est mise en sourdine. Les équipements alimentés vont
+    tomber, donc `rocket_down`/`device_unreachable` vont s'ouvrir et partir
+    sur WhatsApp. C'est délibéré : couper le courant d'un site et rendre la
+    coupure invisible à l'équipe d'astreinte sont deux choses, et le silence
+    d'une supervision est plus coûteux qu'une alerte attendue.
+    """
+    device = _require_uisp_power(await device_service.get_device(db, device_id), device_id)
+
+    # Journalisé AVANT l'appel : si le boîtier coupe puis ne répond plus, la
+    # trace de l'intention doit exister quand même. La route est par ailleurs
+    # enregistrée dans `audit_log` par le middleware (qui/quand/depuis où).
+    logger.warning(
+        "Alimentation UISP Power — action=%s sur %s (%s, site=%s, device_id=%d)",
+        body.action, device.name, device.ip_address, device.site, device.id,
+    )
+
+    try:
+        outcome = await uisp_power_service.control_power_output(
+            host=device.ip_address,
+            username=device.api_username,
+            password=device.api_password,
+            port=device.api_port or 443,
+            action=body.action,
+        )
+    except uisp_power_service.PowerControlError as exc:
+        logger.error(
+            "Alimentation UISP Power — ÉCHEC action=%s sur %s : %s",
+            body.action, device.name, exc,
+        )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if body.action == "cycle":
+        seconds = outcome.get("off_seconds")
+        message = (
+            f"Coupure temporaire lancée sur '{device.name}' : la sortie revient "
+            f"seule après ~{seconds} s, puis les équipements alimentés redémarrent "
+            f"(compter 1 à 2 min avant le retour du service)."
+        )
+        if outcome.get("unanswered"):
+            # Vérifié sur AT1 le 2026-09-07 : le boîtier alimente le switch qui
+            # porte son propre lien de management, donc il disparaît du réseau
+            # au moment même où il exécute la commande. Le dire explicitement,
+            # sinon l'opérateur lit le silence comme un échec et rejoue —
+            # coupant le site une deuxième fois.
+            message += (
+                " Le boîtier n'a pas accusé réception : c'est attendu ici, il se "
+                "coupe lui-même du réseau en coupant. Il redevient joignable au "
+                "retour du courant."
+            )
+        # Pas de relecture d'état : à cet instant la sortie est coupée, mais
+        # elle sera revenue dans quelques secondes. Renvoyer cet état
+        # transitoire ferait afficher « Rallumer » sur un boîtier qui se
+        # rallume déjà tout seul.
+        state = None
+    else:
+        verbe = "coupée" if body.action == "off" else "rétablie"
+        outputs = outcome.get("outputs", [])
+        if not outcome.get("verified", True):
+            # Écriture partie, mais aucune relecture possible : on ne PEUT pas
+            # affirmer l'état obtenu. Le dire, plutôt que de choisir un sens.
+            message = (
+                f"Commande de {'coupure' if body.action == 'off' else 'rétablissement'} "
+                f"envoyée à '{device.name}', mais le boîtier s'est tu avant de "
+                f"confirmer — état réel non vérifié. Recharger la fiche quand il "
+                f"redevient joignable."
+            )
+            state = None
+        else:
+            message = f"Alimentation {verbe} sur '{device.name}'."
+            state = PowerOutputState(
+                enabled=all(o["enabled"] for o in outputs) if outputs else None,
+                any_enabled=any(o["enabled"] for o in outputs),
+                outputs=outputs,
+            )
+
+    logger.warning("Alimentation UISP Power — OK : %s", message)
+    return PowerOutputResult(ok=True, message=message, action=body.action, state=state)

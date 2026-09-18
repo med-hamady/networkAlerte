@@ -5,6 +5,7 @@ import useSWR from 'swr'
 import { endpoints, fetcher, type ClientBlockResult } from '@/lib/api'
 import type { AccessClientRow, AccessClientsResponse, AccessStats } from '@/lib/types'
 import ClientAccessActionModal from '@/components/ClientAccessActionModal'
+import { PERM, usePermissions } from '@/lib/permissions'
 import IpLink from '@/components/IpLink'
 
 type Filter = 'all' | 'active' | 'blocked_full' | 'blocked_whatsapp' | 'bridge'
@@ -57,6 +58,8 @@ function timeAgo(iso: string | null): string {
 }
 
 export default function AccessPage() {
+  const { can } = usePermissions()
+  const canBlock = can(PERM.faiBlock)
   const [filter, setFilter] = React.useState<Filter>('all')
   const [search, setSearch] = React.useState('')
   // Debounce the typed search so we don't refetch on every keystroke; the
@@ -272,7 +275,14 @@ export default function AccessPage() {
                         <TopologyBadge mode={lr.effective_mode} />
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">
-                        {isBlocked ? (
+                        {/* ⚠️ Voir la page et couper un abonné sont deux droits
+                            distincts : un profil de consultation garde la liste
+                            complète, sans le bouton. Le masquer ne protège rien
+                            par lui-même — la route répond 403 — mais évite de
+                            proposer un geste qui échouerait. */}
+                        {!canBlock ? (
+                          <span className="text-blue-300 text-xs">—</span>
+                        ) : isBlocked ? (
                           <div className="flex flex-col gap-1">
                             <span className="text-red-500 font-semibold text-xs">● Bloqué</span>
                             <ModeBadge mode={lr.block_mode} />

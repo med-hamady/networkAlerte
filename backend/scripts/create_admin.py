@@ -22,6 +22,7 @@ import sys
 from sqlalchemy import select
 
 from app.db.session import async_session_factory
+from app.models.profile import Profile
 from app.models.user import User
 from app.services.auth_service import hash_password
 
@@ -63,17 +64,36 @@ async def main() -> int:
             )
             return 1
 
+        # Le profil SYSTÈME, posé par la migration e1f2a3b4c5d6. Le script
+        # d'amorçage crée un ADMINISTRATEUR : il lui faut ce profil, sinon le
+        # compte se connecte sur un dashboard vide (un compte sans profil n'a
+        # aucun droit — cf. profile_service.effective_permissions) et personne
+        # ne peut plus lui en donner un, la section qui affecte les profils
+        # exigeant elle-même le droit `admin.users`.
+        admin_profile = (
+            await session.execute(select(Profile).where(Profile.is_system.is_(True)))
+        ).scalars().first()
+        if admin_profile is None:
+            print(
+                "\n✗ Le profil système « Administrateur » est introuvable.\n"
+                "  Applique d'abord les migrations : alembic upgrade head",
+                file=sys.stderr,
+            )
+            return 1
+
         user = User(
             username=username,
             password_hash=hash_password(password),
             full_name=full_name,
             enabled=True,
+            profile_id=admin_profile.id,
         )
         session.add(user)
         await session.commit()
         await session.refresh(user)
 
     print(f"\n✓ Compte administrateur '{user.username}' créé (id={user.id}).")
+    print("  Profil : Administrateur (tous les droits).")
     print("  Tu peux maintenant te connecter sur le dashboard.")
     return 0
 

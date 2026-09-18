@@ -13,13 +13,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import require_permission
 from app.db.session import get_db
 from app.services import access_diagnostics_service, uisp_enrollment_service
 
 router = APIRouter()
 
 
-@router.get("")
+@router.get("",
+    dependencies=[Depends(require_permission("access_diagnostics.view"))],
+)
 async def get_access_diagnostics(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     """LR refusant le SSH + LR découverts par radio mais absents de UISP."""
     return await access_diagnostics_service.get_access_diagnostics(db)
@@ -35,7 +38,9 @@ class EnrollUispRequest(BaseModel):
     force: bool = False
 
 
-@router.post("/enroll-uisp")
+@router.post("/enroll-uisp",
+    dependencies=[Depends(require_permission("access_diagnostics.enroll"))],
+)
 async def enroll_uisp_bulk(
     body: EnrollUispRequest | None = None,
     db: AsyncSession = Depends(get_db),

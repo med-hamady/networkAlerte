@@ -5,6 +5,7 @@ from app.models.incident import Incident
 from app.models.lr_metric_sample import LrMetricSample
 from app.models.manual_alert import ManualAlert
 from app.models.power_status_log import PowerStatusLog
+from app.models.profile import Profile
 from app.models.site_link import SiteLink
 from app.models.system_setting import SystemSetting
 from app.models.traffic_dest_stat import TrafficDestStat
@@ -18,6 +19,7 @@ __all__ = [
     "LrMetricSample",
     "ManualAlert",
     "PowerStatusLog",
+    "Profile",
     "Rocket",
     "SiteLink",
     "SystemSetting",

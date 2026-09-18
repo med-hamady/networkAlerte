@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { getThresholds, patchThresholds, resetThreshold } from '@/lib/api'
+import { PERM, usePermissions } from '@/lib/permissions'
 import type { Threshold } from '@/lib/types'
 
 const CATEGORY_ORDER = [
@@ -18,6 +19,10 @@ const CATEGORY_ORDER = [
 ]
 
 export default function SettingsPage() {
+  const { can } = usePermissions()
+  // ⚠️ Voir les seuils et les CHANGER sont deux droits distincts : un seuil
+  // pilote l'alerting de tout le réseau, alors que le consulter n'engage rien.
+  const canEdit = can(PERM.thresholdsEdit)
   const [thresholds, setThresholds] = useState<Threshold[]>([])
   const [pending, setPending]       = useState<Record<string, number>>({})
   const [saving, setSaving]         = useState(false)
@@ -108,8 +113,10 @@ export default function SettingsPage() {
           </p>
         </div>
 
-        {/* Save bar */}
-        <div className="flex items-center gap-3">
+        {/* Save bar — absente en lecture seule : une barre de sauvegarde
+            grisée en permanence se lit comme une panne, pas comme un droit
+            manquant. Le bandeau ci-dessous dit pourquoi. */}
+        <div className={`flex items-center gap-3 ${canEdit ? '' : 'hidden'}`}>
           {savedAt && !hasPending && (
             <span className="text-xs text-green-600 font-medium">✓ Sauvegardé à {savedAt}</span>
           )}
@@ -130,6 +137,13 @@ export default function SettingsPage() {
           </button>
         </div>
       </div>
+
+      {!canEdit && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-sm text-blue-800">
+          Lecture seule — ton profil te permet de consulter les seuils, pas de
+          les modifier.
+        </div>
+      )}
 
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700">
@@ -190,7 +204,8 @@ export default function SettingsPage() {
                       max={t.max}
                       step={t.step}
                       onChange={e => handleChange(t.key, t.type === 'int' ? parseInt(e.target.value) : parseFloat(e.target.value))}
-                      className="w-24 border border-blue-200 rounded-lg px-3 py-1.5 text-sm text-center font-mono focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      disabled={!canEdit}
+                      className="w-24 border border-blue-200 rounded-lg px-3 py-1.5 text-sm text-center font-mono focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:bg-blue-50 disabled:text-blue-400 disabled:cursor-not-allowed"
                     />
                     <span className="text-xs text-blue-400 w-8">{t.unit}</span>
                   </div>
@@ -198,7 +213,7 @@ export default function SettingsPage() {
                   {/* Reset button */}
                   <button
                     onClick={() => handleReset(t.key)}
-                    disabled={resetKey === t.key || (!t.is_overridden && !isModified)}
+                    disabled={!canEdit || resetKey === t.key || (!t.is_overridden && !isModified)}
                     title="Remettre à la valeur par défaut"
                     className="text-xs text-blue-400 hover:text-blue-700 disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded transition-colors whitespace-nowrap"
                   >

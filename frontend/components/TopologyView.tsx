@@ -19,6 +19,7 @@ import type { NetworkTopology } from '@/lib/types'
 import TopologyGraph from '@/components/TopologyGraph'
 import TopologyMap from '@/components/TopologyMap'
 import TopologyRoutesPanel from '@/components/TopologyRoutesPanel'
+import { PERM, usePermissions } from '@/lib/permissions'
 
 type ViewMode = 'graph' | 'map'
 
@@ -32,6 +33,8 @@ function filenameFromResponse(res: Response, fallback: string): string {
 }
 
 export default function TopologyView({ topo }: { topo: NetworkTopology }) {
+  const { can } = usePermissions()
+  const canExport = can(PERM.topologyExport)
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
   const [selectedRoute, setSelectedRoute] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
@@ -137,6 +140,7 @@ export default function TopologyView({ topo }: { topo: NetworkTopology }) {
                 topologie redessinée en cartographie, coordonnées réelles. */}
             <button
               onClick={downloadWord}
+              hidden={!canExport}
               disabled={exporting}
               className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-xs
                          font-medium text-slate-700 shadow-sm transition-colors

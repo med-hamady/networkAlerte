@@ -12,6 +12,7 @@ import {
 import type { Device, Lr } from '@/lib/types'
 import IpLink from '@/components/IpLink'
 import { platformIcon } from '@/lib/platformIcons'
+import { PERM, usePermissions } from '@/lib/permissions'
 
 interface SearchResult {
   id: number
@@ -23,6 +24,9 @@ interface SearchResult {
 }
 
 export default function ContentBlockPage() {
+  const { can } = usePermissions()
+  // Consulter le filtre d'un abonné et le MODIFIER sont deux droits distincts.
+  const canEditFilter = can(PERM.contentFilterEdit)
   // Catalogue of blockable services (Facebook, TikTok, …) from the backend.
   const { data: categories } = useSWR<ContentBlockCategory[]>(
     endpoints.contentBlockCategories,
@@ -323,6 +327,7 @@ export default function ContentBlockPage() {
           <div className="flex items-center gap-3 pt-1">
             <button
               onClick={onApply}
+              hidden={!canEditFilter}
               disabled={!canApply || !dirty}
               className={`px-4 py-2 rounded-lg text-sm font-semibold text-white transition-colors ${
                 canApply && dirty ? 'bg-blue-600 hover:bg-blue-700' : 'bg-blue-200 cursor-not-allowed'
@@ -337,6 +342,7 @@ export default function ContentBlockPage() {
             {hasAnythingApplied && (
               <button
                 onClick={onRemoveAll}
+                hidden={!canEditFilter}
                 disabled={!canApply}
                 className={`px-4 py-2 rounded-lg text-sm font-semibold border transition-colors ${
                   canApply

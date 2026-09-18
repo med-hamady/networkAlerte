@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import Sidebar from '@/components/Sidebar'
 import DeviceSearchBar from '@/components/DeviceSearchBar'
 import AlertBanner from '@/components/AlertBanner'
+import { PERM, firstAllowedRoute, usePermissions } from '@/lib/permissions'
 
 /**
  * Decides whether to render the dashboard chrome (Sidebar + main column) or
@@ -24,9 +25,49 @@ import AlertBanner from '@/components/AlertBanner'
 // dont le graphe dépasse largement la largeur d'une colonne centrée.
 const FULL_WIDTH_ROUTES = new Set(['/topology'])
 
+/**
+ * Le droit qui ouvre chaque page du dashboard.
+ *
+ * ⚠️ **Ce contrôle est un CONFORT, pas une protection.** Il évite qu'un compte
+ * arrivant par un signet sur une page qui ne lui est pas ouverte n'y trouve un
+ * écran cassé, dont chaque requête répond 403. La protection réelle est sur les
+ * routes du backend — le proxy relaie le cookie de session, donc tout ce qui
+ * n'est gardé qu'ici reste appelable à la main.
+ *
+ * ⚠️ Le contrôle NE PEUT PAS vivre dans `middleware.ts` : celui-ci tourne à
+ * l'edge, ne parle pas à la base, et ne connaît donc que la PRÉSENCE du cookie
+ * — jamais les droits qu'il porte. C'est déjà la raison pour laquelle il ne
+ * vérifie pas la validité de la session.
+ *
+ * ⚠️ Une page absente de cette table est ouverte à tout compte connecté. C'est
+ * volontaire pour `/topo-preview` et `/login` (traités en amont), et ce doit
+ * être un choix conscient pour toute page ajoutée plus tard.
+ */
+const PAGE_PERMISSIONS: Record<string, string> = {
+  '/': PERM.dashboard,
+  '/sites': PERM.sites,
+  '/lr-health': PERM.lrHealth,
+  '/clients': PERM.clients,
+  '/capacity': PERM.capacity,
+  '/topology': PERM.topology,
+  '/map': PERM.map,
+  '/traffic': PERM.traffic,
+  '/access': PERM.fai,
+  '/fai-requests': PERM.faiRequests,
+  '/fai-journal': PERM.faiJournal,
+  '/router-rules': PERM.routerRules,
+  '/content-block': PERM.contentFilter,
+  '/incidents': PERM.incidents,
+  '/access-diagnostics': PERM.accessDiagnostics,
+  '/reports': PERM.reports,
+  '/settings': PERM.thresholds,
+  '/admin': PERM.adminAccess,
+}
+
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
+  const { can, loading: permsLoading } = usePermissions()
   // Paths that render full-screen, without the dashboard chrome.
   // (/topo-preview = aperçu temporaire sans auth ni sidebar)
   const isChromeless = pathname === '/login' || pathname === '/topo-preview'
@@ -44,6 +85,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   if (isChromeless) {
     return <>{children}</>
   }
+
+  // ⚠️ Rien ne se décide avant que /auth/me ait répondu : au premier rendu
+  // aucun droit n'est connu, et trancher là afficherait « accès refusé » à un
+  // administrateur pendant une fraction de seconde à chaque navigation.
+  const requiredPermission = PAGE_PERMISSIONS[pathname]
+  const pageRefused = !permsLoading && requiredPermission !== undefined
+    && !can(requiredPermission)
 
   const show = () => setMenuHidden(false)
   const hide = () => setMenuHidden(true)
@@ -95,7 +143,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </div>
 
         <div className={`px-6 py-6 ${fullWidth ? '' : 'max-w-6xl mx-auto'}`}>
-          {children}
+          {pageRefused ? <PageRefused router={router} can={can} /> : children}
         </div>
       </main>
     </div>
@@ -109,5 +157,42 @@ function ExpandIcon() {
       <path strokeLinecap="round" strokeLinejoin="round"
             d="M4 6h16M10 12h10M4 18h16M5 9l3 3-3 3" />
     </svg>
+  )
+}
+
+/**
+ * Écran servi à la place d'une page que le profil n'ouvre pas.
+ *
+ * Il propose une PORTE DE SORTIE plutôt qu'un cul-de-sac : un compte arrivé là
+ * par un signet doit pouvoir rejoindre son travail sans deviner quelle page lui
+ * est ouverte. La destination est la première de l'ordre du menu qu'il a le
+ * droit de voir — jamais `/` en dur, qui est lui-même une permission et
+ * renverrait un agent sur un second refus.
+ */
+function PageRefused({
+  router, can,
+}: {
+  router: ReturnType<typeof useRouter>
+  can: (...keys: string[]) => boolean
+}) {
+  const fallback = firstAllowedRoute(can)
+  return (
+    <div className="max-w-xl mx-auto mt-16 rounded-xl border border-slate-200
+                    bg-white p-8 text-center">
+      <h1 className="text-lg font-bold text-slate-900">Accès refusé</h1>
+      <p className="mt-2 text-sm text-slate-600">
+        Ton profil ne donne pas accès à cette page. Si tu penses en avoir besoin,
+        demande-le à un administrateur.
+      </p>
+      {fallback && (
+        <button
+          onClick={() => router.push(fallback)}
+          className="mt-5 px-4 py-2 rounded-lg text-sm font-semibold text-white
+                     bg-blue-700 hover:bg-blue-800 transition-colors"
+        >
+          Retour à une page autorisée
+        </button>
+      )}
+    </div>
   )
 }

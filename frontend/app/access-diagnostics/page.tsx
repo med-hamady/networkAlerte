@@ -10,6 +10,7 @@ import type {
   SshRefusedRow,
 } from '@/lib/types'
 import IpLink from '@/components/IpLink'
+import { PERM, usePermissions } from '@/lib/permissions'
 
 // Chaque cause de refus SSH, avec son libellé et sa couleur. Toutes en teinte
 // « alerte » (le LR est ingérable), nuancées par gravité de l'action requise.
@@ -41,6 +42,12 @@ function formatTs(ts: string | null): string {
 }
 
 export default function AccessDiagnosticsPage() {
+  const { can } = usePermissions()
+  // ⚠️ À ne pas confondre avec `canEnroll` plus bas, qui dit si la
+  // FONCTIONNALITÉ est disponible (clé du contrôleur configurée). Celui-ci dit
+  // si CE COMPTE a le droit de s'en servir : voir les anomalies d'accès et
+  // écrire une clé sur un CPE sont deux choses distinctes.
+  const mayEnroll = can(PERM.accessDiagnosticsEnroll)
   const { data, isLoading, mutate } = useSWR<AccessDiagnosticsResponse>(
     endpoints.accessDiagnostics,
     fetcher,
@@ -195,6 +202,7 @@ export default function AccessDiagnosticsPage() {
               <div className="shrink-0 flex flex-col items-end gap-1.5">
               <button
                 onClick={runEnrollAll}
+                hidden={!mayEnroll}
                 disabled={!canEnroll || busy !== null}
                 title={
                   canEnroll
@@ -264,6 +272,7 @@ export default function AccessDiagnosticsPage() {
                   key={r.id}
                   row={r}
                   canEnroll={canEnroll}
+                  mayEnroll={mayEnroll}
                   force={force}
                   busy={busy === r.id}
                   disabled={busy !== null}
@@ -317,10 +326,13 @@ function SshRow({ row }: { row: SshRefusedRow }) {
 }
 
 function RadioRow({
-  row, canEnroll, force, busy, disabled, onEnroll,
+  row, canEnroll, mayEnroll, force, busy, disabled, onEnroll,
 }: {
   row: RadioNotInUispRow
+  /** La FONCTIONNALITÉ est disponible (clé du contrôleur configurée). */
   canEnroll: boolean
+  /** CE COMPTE a le droit de s'en servir. Deux questions distinctes. */
+  mayEnroll: boolean
   force: boolean
   busy: boolean
   disabled: boolean
@@ -356,6 +368,7 @@ function RadioRow({
         ) : (
           <button
             onClick={onEnroll}
+            hidden={!mayEnroll}
             disabled={!canEnroll || !row.enrollable || disabled}
             title={
               !canEnroll

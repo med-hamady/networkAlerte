@@ -18,6 +18,7 @@ not enough to identify whose password to change.
 
 import hmac
 import logging
+from collections.abc import Awaitable, Callable
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.user import User
-from app.services import auth_service
+from app.services import auth_service, profile_service
 from app.services.auth_service import SESSION_COOKIE_NAME
 
 logger = logging.getLogger(__name__)
@@ -129,13 +130,59 @@ def _log_master_key_use(request: Request) -> None:
     )
 
 
+# Sentinelle : « pas encore résolu ». `None` est une valeur LÉGITIME du cache
+# (authentification par clé API = aucune identité d'utilisateur), donc elle ne
+# peut pas servir de « absent » — sans cette sentinelle, chaque requête portée
+# par une clé API relirait la session à chaque dépendance.
+_UNRESOLVED = object()
+
+
+def _mark_api_key_auth(request: Request) -> None:
+    """Marquer la requête comme authentifiée par une CLÉ, sans identité humaine.
+
+    ⚠️ Ce marquage est ce qui empêche le contrôle de droits de casser les cinq
+    intégrations tierces. Une clé cloisonnée n'a pas de profil — elle est déjà
+    limitée à sa route par sa propre dépendance de router — donc
+    `require_permission` doit la laisser passer. Sans ce drapeau, la dépendance
+    de permission re-authentifierait par `require_user_or_api_key`, qui ne
+    connaît QUE la clé maîtresse : le système de paiement recevrait un 401 sur
+    `POST /fai/block`, c.-à-d. qu'aucun impayé ne serait plus coupé.
+    """
+    request.state.auth_user = None
+    request.state.auth_via_api_key = True
+
+
+async def _resolve_session_user(request: Request, db: AsyncSession) -> User | None:
+    """Résoudre le cookie de session UNE FOIS par requête HTTP.
+
+    ⚠️ Ce cache existe pour une raison mesurable, pas par élégance : les routers
+    portent déjà `require_user_or_api_key` au niveau du router, et les
+    permissions s'ajoutent PAR ROUTE (une dépendance de router étant additive et
+    non surchargeable — cf. `/uisp/assign`). Les deux dépendances s'exécutent
+    donc sur le même appel, et sans mémoïsation chaque requête du dashboard
+    paierait deux fois la lecture de session, sur un chemin où le projet compte
+    déjà ses allers-retours DB (cf. « Attendre un verrou coûte autant qu'un
+    interblocage »).
+
+    La portée est celle de l'objet `Request`, donc d'un seul appel HTTP : rien
+    ne survit d'une requête à la suivante, et un changement de profil s'applique
+    dès l'appel d'après.
+    """
+    cached = getattr(request.state, "auth_user", _UNRESOLVED)
+    if cached is not _UNRESOLVED:
+        return cached
+    raw = request.cookies.get(SESSION_COOKIE_NAME)
+    user = await auth_service.get_user_from_token(db, raw)
+    request.state.auth_user = user
+    return user
+
+
 async def require_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """Return the user owning the current session cookie, or raise 401."""
-    raw = request.cookies.get(SESSION_COOKIE_NAME)
-    user = await auth_service.get_user_from_token(db, raw)
+    user = await _resolve_session_user(request, db)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -161,9 +208,9 @@ async def require_user_or_api_key(
     """
     if _api_key_matches(x_api_key):
         _log_master_key_use(request)
+        _mark_api_key_auth(request)
         return None
-    raw = request.cookies.get(SESSION_COOKIE_NAME)
-    user = await auth_service.get_user_from_token(db, raw)
+    user = await _resolve_session_user(request, db)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -187,6 +234,7 @@ async def require_fai_client(
     block/unblock buttons use.
     """
     if _fai_api_key_matches(x_api_key):
+        _mark_api_key_auth(request)
         return None
     return await require_user_or_api_key(request, x_api_key, db)
 
@@ -205,6 +253,7 @@ async def require_verify_client(
     never removes the existing ones.
     """
     if _lr_verify_api_key_matches(x_api_key):
+        _mark_api_key_auth(request)
         return None
     return await require_fai_client(request, x_api_key, db)
 
@@ -230,6 +279,7 @@ async def require_uisp_assign_client(
     over `api_key` — and with it `DELETE /devices/{id}` and `/uisp/sync`.
     """
     if _uisp_assign_api_key_matches(x_api_key):
+        _mark_api_key_auth(request)
         return None
     return await require_user_or_api_key(request, x_api_key, db)
 
@@ -250,6 +300,7 @@ async def require_content_block_client(
     working: the dedicated key ADDS a scoped path, it never removes one.
     """
     if _content_block_api_key_matches(x_api_key):
+        _mark_api_key_auth(request)
         return None
     return await require_user_or_api_key(request, x_api_key, db)
 
@@ -275,5 +326,71 @@ async def require_client_signal_client(
     a scoped path, it never removes one.
     """
     if _client_signal_api_key_matches(x_api_key):
+        _mark_api_key_auth(request)
         return None
     return await require_user_or_api_key(request, x_api_key, db)
+
+
+# ---------------------------------------------------------------------------
+# Contrôle des droits — le cloisonnement par PROFIL
+# ---------------------------------------------------------------------------
+
+def require_permission(
+    *keys: str,
+) -> Callable[..., Awaitable[User | None]]:
+    """Dépendance de route : exiger AU MOINS UNE des permissions données.
+
+    ⚠️ **Le contrôle est ici, côté serveur, et pas seulement dans le dashboard.**
+    Masquer un bouton dans le frontend ne protège rien : le proxy du dashboard
+    relaie les appels avec le cookie de session de l'utilisateur, donc un compte
+    « agent » peut appeler n'importe quelle route à la main depuis l'onglet
+    réseau de son navigateur. Une permission qui n'est pas posée sur la route
+    n'existe pas.
+
+    ⚠️ **Une authentification par CLÉ API passe outre**, délibérément. Les clés
+    sont des identités de MACHINE, sans profil : la clé maîtresse ouvre déjà
+    toute l'API par définition (c'est ce que dit `_log_master_key_use`), et les
+    cinq clés cloisonnées sont déjà limitées à leur route par leur propre
+    dépendance de router. Leur imposer un profil n'ajouterait aucun
+    cloisonnement et casserait l'outillage d'exploitation.
+
+    Le OU entre les clés sert les endpoints partagés par plusieurs pages :
+    `GET /fai-journal` alimente à la fois « Demandes de coupure » et « Journal
+    des blocages », et doit répondre à qui n'a reçu que l'une des deux.
+    """
+
+    # ⚠️ Le NOM de cette fonction est public : plusieurs tests de cloisonnement
+    # (`test_uisp_assign_scoped_key`, `test_client_signal_scoped_key`,
+    # `test_content_filter_api`) énumèrent les dépendances d'une route pour
+    # vérifier qu'elle ne porte QUE son auth cloisonnée. Ils écartent celle-ci
+    # par son nom — la renommer ferait échouer ces tests sans que rien ne soit
+    # cassé, ou pire, la ferait passer pour une auth de plus.
+    async def permission_guard(
+        request: Request,
+        x_api_key: str | None = Header(default=None),
+        db: AsyncSession = Depends(get_db),
+    ) -> User | None:
+        # Authentification par clé (maîtresse ou cloisonnée) : hors du système
+        # de profils, cf. docstring. Le drapeau est posé par la dépendance de
+        # ROUTER, qui s'exécute avant celle de route.
+        if getattr(request.state, "auth_via_api_key", False):
+            return None
+        user = await require_user_or_api_key(request, x_api_key, db)
+        if user is None:
+            return None  # clé API — hors du système de profils (cf. docstring)
+        if not profile_service.has_permission(user, *keys):
+            logger.warning(
+                "Accès refusé — user=%s profil=%s sur %s %s (droit requis : %s)",
+                user.username,
+                user.profile.name if user.profile else None,
+                request.method,
+                request.url.path,
+                " ou ".join(keys),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Ton profil ne permet pas cette action.",
+            )
+        return user
+
+    return permission_guard

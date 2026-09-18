@@ -69,6 +69,9 @@ export const endpoints = {
   discoverModems:       (lrId: number) => `${API_BASE}/devices/${lrId}/discover-modems`,
   blockClient:          (lrId: number) => `${API_BASE}/devices/${lrId}/block-client`,
   unblockClient:        (lrId: number) => `${API_BASE}/devices/${lrId}/unblock-client`,
+  // Alimentation d'un UISP Power : GET = état de la sortie DC (lu en direct
+  // sur le boîtier), POST = couper / rallumer.
+  powerOutput:          (id: number) => `${API_BASE}/devices/${id}/power-output`,
   contentBlockCategories: `${API_BASE}/devices/content-block/categories`,
   contentBlock:         (lrId: number) => `${API_BASE}/devices/${lrId}/content-block`,
   systemInfo:           `${API_BASE}/system/info`,
@@ -149,6 +152,16 @@ export const endpoints = {
   // Enrôlement UISP : pose de la clé du contrôleur sur le CPE (unitaire / lot).
   enrollUisp:           (lrId: number) => `${API_BASE}/devices/${lrId}/enroll-uisp`,
   enrollUispBulk:       `${API_BASE}/access-diagnostics/enroll-uisp`,
+  // Administration : le catalogue de TOUT ce que le système sait faire, les
+  // profils et les comptes. ⚠️ Le catalogue est lu au serveur et jamais recopié
+  // ici : ajouter une permission côté backend la rend cochable sans toucher au
+  // dashboard.
+  accessPermissions:    `${API_BASE}/access-control/permissions`,
+  accessProfiles:       `${API_BASE}/access-control/profiles`,
+  accessProfile:        (id: number) => `${API_BASE}/access-control/profiles/${id}`,
+  accessUsers:          `${API_BASE}/access-control/users`,
+  accessUser:           (id: number) => `${API_BASE}/access-control/users/${id}`,
+  accessUserPassword:   (id: number) => `${API_BASE}/access-control/users/${id}/password`,
 }
 
 // ---------------------------------------------------------------------------
@@ -161,7 +174,111 @@ export interface CurrentUser {
   full_name: string | null
   enabled: boolean
   last_login_at: string | null
+  profile_id: number | null
+  profile_name: string | null
+  /** Profil système : détient tout, y compris ce qui sera ajouté plus tard. */
+  is_admin: boolean
+  /**
+   * Les droits EFFECTIFS du compte, recalculés par le serveur à chaque appel
+   * de /auth/me. C'est la seule source dont le dashboard dispose pour savoir
+   * quoi afficher.
+   *
+   * ⚠️ Cette liste ne PROTÈGE rien : elle sert à ne pas montrer des écrans qui
+   * répondraient 403. Le contrôle réel est posé sur chaque route du backend
+   * (`deps.require_permission`) — le proxy relaie le cookie de session, donc
+   * un bouton simplement masqué resterait appelable à la main.
+   */
+  permissions: string[]
 }
+
+// --- Administration : profils et comptes -----------------------------------
+
+export interface PermissionItem {
+  key: string
+  label: string
+  description: string
+  /** "page" = voir une interface ; "action" = poser un geste. */
+  kind: 'page' | 'action'
+  route: string | null
+}
+
+export interface PermissionGroup {
+  key: string
+  label: string
+  description: string
+  permissions: PermissionItem[]
+}
+
+export interface AccessProfile {
+  id: number
+  name: string
+  description: string | null
+  permissions: string[]
+  is_system: boolean
+  user_count: number
+}
+
+export interface ManagedUser {
+  id: number
+  username: string
+  full_name: string | null
+  enabled: boolean
+  last_login_at: string | null
+  profile_id: number | null
+  profile_name: string | null
+  is_admin: boolean
+}
+
+/**
+ * Appel d'écriture de l'administration. Remonte le `detail` du backend tel
+ * quel : ce sont les refus métier (dernier administrateur, profil système,
+ * profil encore porté) et ils sont rédigés pour être lus par l'opérateur —
+ * les remplacer par « une erreur est survenue » lui retirerait la seule
+ * indication de ce qu'il doit faire.
+ */
+async function adminWrite<T>(url: string, method: string, body?: unknown): Promise<T | null> {
+  const res = await fetch(url, {
+    method,
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try {
+      const payload = await res.json()
+      if (typeof payload?.detail === 'string') detail = payload.detail
+    } catch { /* corps non JSON — on garde le code HTTP */ }
+    throw new Error(detail)
+  }
+  if (res.status === 204) return null
+  return res.json() as Promise<T>
+}
+
+export const createProfile = (body: {
+  name: string; description?: string | null; permissions: string[]
+}) => adminWrite<AccessProfile>(endpoints.accessProfiles, 'POST', body)
+
+export const updateProfile = (id: number, body: {
+  name?: string; description?: string | null; permissions?: string[]
+}) => adminWrite<AccessProfile>(endpoints.accessProfile(id), 'PUT', body)
+
+export const deleteProfile = (id: number) =>
+  adminWrite<null>(endpoints.accessProfile(id), 'DELETE')
+
+export const createManagedUser = (body: {
+  username: string; password: string; profile_id: number
+  full_name?: string | null; enabled?: boolean
+}) => adminWrite<ManagedUser>(endpoints.accessUsers, 'POST', body)
+
+export const updateManagedUser = (id: number, body: {
+  full_name?: string | null; enabled?: boolean; profile_id?: number
+}) => adminWrite<ManagedUser>(endpoints.accessUser(id), 'PUT', body)
+
+export const resetManagedUserPassword = (id: number, password: string) =>
+  adminWrite<null>(endpoints.accessUserPassword(id), 'POST', { password })
+
+export const deleteManagedUser = (id: number) =>
+  adminWrite<null>(endpoints.accessUser(id), 'DELETE')
 
 export async function logout(): Promise<void> {
   // The cookie is HttpOnly so we cannot clear it client-side — only the
@@ -457,4 +574,46 @@ export type {
   Incident,
   ManualAlert,
   SystemInfo,
+}
+
+// ---------------------------------------------------------------------------
+// Alimentation d'un UISP Power — le seul geste du dashboard qui éteint du
+// matériel physique
+// ---------------------------------------------------------------------------
+// Deux actions à ne pas confondre : `cycle` est rendu à son état initial par
+// le firmware du boîtier au bout de quelques secondes, `off` ne l'est par
+// personne — seul un `on` explicite le relève.
+
+export type PowerOutputAction = 'cycle' | 'off' | 'on'
+
+export interface PowerOutputState {
+  enabled: boolean | null
+  any_enabled: boolean
+  outputs: { id: number; enabled: boolean }[]
+  power_w: number | null
+  voltage_v: number | null
+  current_a: number | null
+}
+
+export interface PowerOutputResult {
+  ok: boolean
+  message: string
+  action: PowerOutputAction
+  state: PowerOutputState | null
+}
+
+export async function controlPowerOutput(
+  deviceId: number,
+  action: PowerOutputAction,
+): Promise<PowerOutputResult> {
+  const res = await fetch(endpoints.powerOutput(deviceId), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
+  }
+  return res.json() as Promise<PowerOutputResult>
 }

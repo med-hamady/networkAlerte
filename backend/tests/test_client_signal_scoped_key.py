@@ -59,7 +59,17 @@ def _route(path: str):
 
 
 def _dependency_names(route) -> list[str]:
-    return [d.dependency.__name__ for d in route.dependencies]
+    # ⚠️ `permission_guard` est ÉCARTÉ, et seulement lui. C'est la dépendance de
+    # contrôle des droits par profil (`deps.require_permission`) : elle ne
+    # donne accès à rien, elle ne fait que retirer. Ce que ce test surveille,
+    # c'est qu'aucune AUTRE auth ne s'ajoute à l'auth cloisonnée — un filtre
+    # large (« ignorer ce qu'on ne connaît pas ») laisserait au contraire
+    # passer exactement ce qu'on cherche à interdire.
+    return [
+        d.dependency.__name__
+        for d in route.dependencies
+        if d.dependency.__name__ != "permission_guard"
+    ]
 
 
 def test_client_signal_route_carries_its_own_scoped_dependency():

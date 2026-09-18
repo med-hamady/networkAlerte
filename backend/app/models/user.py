@@ -12,10 +12,11 @@ server-side sessions opened on successful login.
 
 import datetime
 
-from sqlalchemy import Boolean, DateTime, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.models.profile import Profile
 
 
 class User(Base):
@@ -36,6 +37,31 @@ class User(Base):
     last_login_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
+
+    # Le profil qui porte les droits de ce compte. UN SEUL profil par compte :
+    # « untel est Agent » se lit d'un coup d'oeil, ce qu'un cumul de profils
+    # rendrait impossible. Un besoin particulier se traite en créant un profil
+    # de plus, pas en empilant.
+    #
+    # ⚠️ `ondelete="RESTRICT"` : un profil encore porté par un compte ne peut
+    # pas etre supprime. Une cascade viderait les droits du compte en silence
+    # (il resterait connecte, sans plus rien pouvoir faire et sans savoir
+    # pourquoi) ; un SET NULL ferait la meme chose en moins visible encore.
+    # Le service refuse la suppression AVANT d'en arriver la, avec le nombre de
+    # comptes concernes — la contrainte n'est que le filet.
+    #
+    # Nullable pour une seule raison : un compte cree avant l'arrivee des
+    # profils. La migration les rattache tous a l'Administrateur, et
+    # `effective_permissions` traite un profil absent comme AUCUN droit —
+    # jamais comme tous.
+    profile_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("profiles.id", ondelete="RESTRICT"), nullable=True, index=True,
+    )
+
+    # `lazy="joined"` et pas `select` : le profil est relu a CHAQUE requete
+    # authentifiee (c'est lui qui autorise ou refuse), donc le charger dans la
+    # meme requete que la session evite un aller-retour par appel d'API.
+    profile: Mapped[Profile | None] = relationship(lazy="joined")
 
     def __repr__(self) -> str:
         return f"<User(id={self.id}, username={self.username!r}, enabled={self.enabled})>"

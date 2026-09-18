@@ -1304,6 +1304,40 @@ Passer `dashboard.stats` en application serveur plus tard ne demande que trois
 lignes dans `endpoints/dashboard.py` (`caller_has_permission`, comme
 `fai.stats`) et le retrait du drapeau.
 
+##### Où vit la décision d'affichage — la symétrie à ne pas casser
+
+| | Appliqué côté serveur (`fai.stats`, `sites.client_counts`) | `ui_only` (`dashboard.stats`) |
+|---|---|---|
+| Clé dans `lib/permissions.ts` | **NON** | **OUI, obligatoire** |
+| Ce que regarde le composant | l'**absence** de la donnée (`stats === null`) | `can(PERM.…)` |
+
+⚠️ Redire un droit **déjà appliqué côté serveur** avec un `can()` le mettrait à
+deux endroits qui finiraient par diverger — et c'est la version frontend qui
+serait la fausse : elle peut se tromper dans les deux sens, alors que la donnée
+est ou n'est pas là.
+
+⚠️ À l'inverse, un droit **`ui_only` sans clé côté dashboard ne fait
+STRICTEMENT RIEN** : rien dans la réponse ne le signale, donc l'administrateur
+coche une case sans effet et n'a aucun moyen de s'en apercevoir autrement qu'en
+comparant deux écrans côte à côte. Verrouillé par
+`test_ui_only_permissions_are_wired_in_the_frontend`.
+
+##### `sites.client_counts` — pourquoi celui-là est appliqué côté serveur
+
+« Clients en ligne » et « Clients bloqués » des cartes de `/sites`. Il aurait pu
+être un `ui_only` de plus ; il ne l'est pas, pour une raison précise : **sommés
+sur les sites, ces deux compteurs reconstituent exactement ce que `fai.stats`
+retire de `/access`** (total d'abonnés, part bloquée). Les laisser partir au
+navigateur ouvrirait une porte dérobée sur le chiffre qu'on vient de fermer à
+côté, et `fai.stats` ne vaudrait plus rien.
+
+⚠️ **« Équipements infra » et « Pannes » restent visibles** : c'est ce qu'un
+profil de supervision vient chercher sur cette page, et ce ne sont pas des
+chiffres commerciaux. Masquer les quatre laisserait une carte quasi vide.
+
+⚠️ Mis à **`None`**, jamais à 0 — « 0 client en ligne » sur un site qui en porte
+128 se lirait comme une **panne totale du site**.
+
 ##### ⚠️ Le contrôle est sur les ROUTES, pas sur l'écran
 
 Masquer un bouton ne protège rien : le proxy du dashboard relaie les appels avec

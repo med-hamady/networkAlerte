@@ -1106,8 +1106,15 @@ export interface SiteDownDevice {
 export interface SiteOverviewItem {
   name: string
   infra: number
-  clients_online: number
-  clients_blocked: number
+  /**
+   * ⚠️ `null` quand le profil n'a pas `sites.client_counts` : le backend RETIRE
+   * ces deux compteurs de la réponse (sommés sur les sites, ils reconstituent
+   * ce que `fai.stats` masque sur /access). Ne jamais retomber sur 0 —
+   * « 0 client en ligne » sur un site qui en porte 128 se lirait comme une
+   * panne totale du site.
+   */
+  clients_online: number | null
+  clients_blocked: number | null
   pannes: number
   down_since: string | null
   down_devices: SiteDownDevice[]

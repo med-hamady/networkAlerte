@@ -536,3 +536,32 @@ def test_a_data_permission_is_enforced_unless_it_declares_otherwise():
 
     sample = Permission(key="x.y", label="X", description="d", kind=PermissionKind.DATA)
     assert sample.ui_only is False
+
+
+def test_ui_only_permissions_are_wired_in_the_frontend():
+    """⚠️ Une case `ui_only` sans clé côté dashboard ne ferait STRICTEMENT RIEN.
+
+    C'est le pendant exact de `test_data_permissions_are_enforced_server_side`,
+    et la symétrie n'est pas décorative :
+
+      - un droit DATA **applique côté serveur** ne doit PAS être cité dans le
+        frontend — le composant réagit à l'ABSENCE de la donnée (`stats === null`).
+        Redire la règle la mettrait à deux endroits qui divergeraient, et c'est
+        la version frontend qui serait la fausse ;
+      - un droit **`ui_only`** DOIT l'être, puisque rien dans la réponse ne le
+        signale. Sans sa clé dans `lib/permissions.ts`, l'administrateur coche
+        une case qui n'a aucun effet — et il n'a AUCUN moyen de s'en apercevoir
+        autrement qu'en comparant deux écrans côte à côte.
+    """
+    path = Path(__file__).resolve().parents[2] / "frontend" / "lib" / "permissions.ts"
+    if not path.exists():
+        pytest.skip("frontend absent de cette copie de travail")
+
+    text_ = path.read_text(encoding="utf-8")
+    for perm in ALL_PERMISSIONS:
+        if not perm.ui_only:
+            continue
+        assert f"'{perm.key}'" in text_, (
+            f"{perm.key} masque seulement à l'écran mais n'est cité nulle part "
+            "dans lib/permissions.ts : la case cochée n'aurait aucun effet."
+        )

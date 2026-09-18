@@ -48,8 +48,20 @@ export default function SiteOverviewCard({ site, onShowPannes, onShowEquipment }
             tone="blue"
             onClick={site.infra > 0 ? () => onShowEquipment(site.name, 'infra') : undefined}
           />
-          <Stat value={site.clients_online}   label="Clients en ligne"  tone="green" />
-          <Stat value={site.clients_blocked}  label="Clients bloqués"   tone={site.clients_blocked > 0 ? 'amber' : 'slate'} />
+          {/* Compteurs d'abonnés — absents (et non mis à zéro) quand le profil
+              n'a pas le droit `sites.client_counts`. « Équipements infra » et
+              « Pannes » restent, eux : c'est ce qu'un profil de supervision
+              vient chercher sur cette page. */}
+          {site.clients_online !== null && (
+            <Stat value={site.clients_online} label="Clients en ligne" tone="green" />
+          )}
+          {site.clients_blocked !== null && (
+            <Stat
+              value={site.clients_blocked}
+              label="Clients bloqués"
+              tone={site.clients_blocked > 0 ? 'amber' : 'slate'}
+            />
+          )}
           <Stat value={site.pannes}           label="Pannes"            tone={hasPannes ? 'red' : 'slate'} />
         </div>
 

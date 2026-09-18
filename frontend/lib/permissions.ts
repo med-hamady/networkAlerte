@@ -24,9 +24,21 @@ import { endpoints, fetcher, type CurrentUser } from '@/lib/api'
  * seules y figurent celles sur lesquelles une décision d'affichage est prise.
  *
  * ⚠️ Une clé absente du backend ne fait rien échouer — elle rend simplement
- * `can()` faux, donc masque l'élément. Le test `test_permission_catalog.py`
- * vérifie que toutes les clés citées ici existent bien au catalogue, sinon une
- * faute de frappe masquerait un écran à tout le monde en silence.
+ * `can()` faux, donc masque l'élément. Un test vérifie que toutes les clés
+ * citées ici existent bien au catalogue, sinon une faute de frappe masquerait
+ * un écran à tout le monde en silence.
+ *
+ * ⚠️ **Un droit sur une DONNÉE appliqué côté serveur n'a rien à faire ici.**
+ * Quand le backend retire la donnée de la réponse (`fai.stats`,
+ * `sites.client_counts`), le composant réagit à son ABSENCE — `stats === null`,
+ * `clients_online === null`. Redire la règle avec un `can()` la mettrait à deux
+ * endroits qui finiraient par diverger, et la version frontend serait la
+ * fausse : elle peut se tromper dans les deux sens, alors que la donnée, elle,
+ * est ou n'est pas là.
+ *
+ * L'exception est exactement l'inverse : un droit **`ui_only`**
+ * (`dashboard.stats`) DOIT figurer ici, puisque rien dans la réponse ne le
+ * signale — sans sa clé, la case cochée ne ferait strictement rien.
  */
 export const PERM = {
   dashboard: 'dashboard.view',
@@ -51,7 +63,6 @@ export const PERM = {
   uispSync: 'uisp.sync',
 
   fai: 'fai.view',
-  faiStats: 'fai.stats',
   faiRequests: 'fai.requests.view',
   faiJournal: 'fai.journal.view',
   routerRules: 'fai.router_rules.view',

@@ -154,6 +154,11 @@ PERMISSION_GROUPS: tuple[PermissionGroup, ...] = (
             _page("sites.view", "Sites",
                   "Les sites et les équipements qu'ils portent, avec leurs fiches.",
                   "/sites"),
+            _data("sites.client_counts", "Compteurs clients par site",
+                  "Sur chaque carte de site : « Clients en ligne » et « Clients "
+                  "bloqués ». « Équipements infra » et « Pannes » restent "
+                  "visibles — un profil de supervision en a besoin pour "
+                  "travailler."),
             _page("lr_health.view", "Liaisons clients",
                   "Qualité des liens abonnés et des liaisons entre sites.",
                   "/lr-health"),

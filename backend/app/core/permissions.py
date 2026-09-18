@@ -71,6 +71,20 @@ class Permission:
     # au frontend à savoir quelle entrée de menu masquer, et à rediriger un
     # utilisateur qui arrive sur une page qu'il n'a pas le droit de voir.
     route: str | None = None
+    # ⚠️ MASQUAGE D'AFFICHAGE SEULEMENT — la donnée continue de voyager dans la
+    # réponse, elle est simplement retirée de l'écran.
+    #
+    # Ce drapeau existe pour que la différence soit ÉCRITE plutôt que supposée.
+    # Un droit `DATA` ordinaire est applique côté serveur (la donnée est retirée
+    # de la réponse) ; un droit `ui_only` ne l'est pas, donc il reste lisible
+    # dans l'onglet réseau du navigateur par qui va le chercher.
+    #
+    # C'est un choix d'exploitation légitime quand la donnée n'est pas
+    # confidentielle mais encombre l'écran d'un profil qui n'en a pas l'usage.
+    # Ce qui ne serait PAS légitime, c'est de ne pas pouvoir distinguer les deux
+    # d'un coup d'œil : sans ce drapeau, on finirait par croire cloisonné ce qui
+    # ne l'est pas — et on cesserait de chercher.
+    ui_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -91,6 +105,17 @@ def _page(key: str, label: str, description: str, route: str) -> Permission:
 def _action(key: str, label: str, description: str) -> Permission:
     return Permission(key=key, label=label, description=description,
                       kind=PermissionKind.ACTION)
+
+
+def _ui(key: str, label: str, description: str) -> Permission:
+    """Un bloc d'information RETIRÉ DE L'ÉCRAN, mais pas de la réponse.
+
+    ⚠️ À ne pas confondre avec `_data` : ici rien n'est applique côté serveur.
+    À réserver aux chiffres qu'on retire par confort de lecture, jamais à une
+    donnée dont la divulgation compte.
+    """
+    return Permission(key=key, label=label, description=description,
+                      kind=PermissionKind.DATA, ui_only=True)
 
 
 def _data(key: str, label: str, description: str) -> Permission:
@@ -120,6 +145,12 @@ PERMISSION_GROUPS: tuple[PermissionGroup, ...] = (
         permissions=(
             _page("dashboard.view", "Tableau de bord",
                   "Vue d'ensemble : santé du réseau, journal des coupures.", "/"),
+            _ui("dashboard.stats", "Compteurs du tableau de bord",
+                "La barre de chiffres en haut du tableau de bord : total "
+                "d'équipements, en ligne, hors ligne, incidents ouverts, sites, "
+                "pannes et clients. ⚠️ Masquage d'affichage seulement — ces "
+                "chiffres restent lisibles par qui les cherche dans son "
+                "navigateur."),
             _page("sites.view", "Sites",
                   "Les sites et les équipements qu'ils portent, avec leurs fiches.",
                   "/sites"),

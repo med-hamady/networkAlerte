@@ -30,6 +30,7 @@ import { endpoints, fetcher, type CurrentUser } from '@/lib/api'
  */
 export const PERM = {
   dashboard: 'dashboard.view',
+  dashboardStats: 'dashboard.stats',
   sites: 'sites.view',
   lrHealth: 'lr_health.view',
   clients: 'clients.view',

@@ -8,6 +8,7 @@ import StatsBar from '@/components/StatsBar'
 import SiteOutageCharts from '@/components/SiteOutageCharts'
 import NetworkHealthBadge from '@/components/NetworkHealthBadge'
 import CpuBadge from '@/components/CpuBadge'
+import { PERM, usePermissions } from '@/lib/permissions'
 
 const REFRESH = 15_000
 const WINDOW_DAYS = 7
@@ -25,6 +26,7 @@ function dayEndIso(d: string): string {
 }
 
 export default function DashboardPage() {
+  const { can } = usePermissions()
   // All counting (total/up/down/sites/pannes/clients/open incidents) is done in
   // SQL — fn_dashboard_summary(). This page only renders the returned values.
   const { data: summary } = useSWR<DashboardSummary>(
@@ -62,7 +64,13 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* KPI bar */}
+        {/* KPI bar — retiree pour un profil sans `dashboard.stats`.
+            ⚠️ Masquage d'AFFICHAGE seulement : /dashboard/summary continue de
+            renvoyer ces chiffres, qui restent lisibles dans l'onglet reseau.
+            Choix assume (cf. `ui_only` dans core/permissions.py) ; le passage a
+            un retrait cote serveur se ferait dans l'endpoint, avec
+            `caller_has_permission`, comme pour `fai.stats`. */}
+        {can(PERM.dashboardStats) && (
         <StatsBar
           sites={summary?.sites ?? 0}
           pannes={summary?.pannes ?? 0}
@@ -72,6 +80,7 @@ export default function DashboardPage() {
           down={summary?.down ?? 0}
           openIncidents={summary?.open_incidents ?? 0}
         />
+        )}
 
         {/* Outage charts per site */}
         <section>

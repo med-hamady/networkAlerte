@@ -1275,6 +1275,35 @@ les onglets de filtre restent en place et perdent seulement leur badge. Filtrer,
 chercher et trier continuent de fonctionner — c'est la taille du parc qui est
 retirée, pas la capacité à traiter un abonné.
 
+##### ⚠️ `ui_only` — le masquage qui s'AVOUE
+
+Un droit `DATA` peut être marqué **`ui_only=True`** : la donnée est alors retirée
+de l'**écran** seulement, pas de la réponse — donc elle reste lisible dans
+l'onglet réseau du navigateur par qui va la chercher. Premier cas :
+**`dashboard.stats`**, la barre de compteurs du tableau de bord (décision
+opérateur — ces chiffres encombrent l'écran d'un profil qui n'en a pas l'usage,
+ils ne sont pas confidentiels).
+
+C'est un choix d'exploitation légitime. Ce qui ne le serait pas, c'est de ne pas
+pouvoir distinguer les deux d'un coup d'œil — on finirait par croire cloisonné ce
+qui ne l'est pas, et on cesserait de chercher. D'où trois garde-fous :
+
+- le drapeau vit **dans le catalogue**, pas dans une liste d'exceptions au fond
+  d'un test : c'est le catalogue que lit l'administrateur ;
+- il est **publié par l'API** et le formulaire de `/admin` pose un badge ambre
+  **« affichage »** sur la case, avec l'explication au survol ;
+- sa description **doit contenir le mot « affichage »**
+  (`test_ui_only_permissions_say_so_where_the_admin_reads_them`).
+
+⚠️ **Le défaut reste l'application côté serveur** : `ui_only` vaut `False`, donc
+une permission `DATA` ajoutée sans y penser fait échouer
+`test_data_permissions_are_enforced_server_side` tant qu'elle n'est pas
+appliquée. On n'obtient un masquage de façade **qu'en le demandant**.
+
+Passer `dashboard.stats` en application serveur plus tard ne demande que trois
+lignes dans `endpoints/dashboard.py` (`caller_has_permission`, comme
+`fai.stats`) et le retrait du drapeau.
+
 ##### ⚠️ Le contrôle est sur les ROUTES, pas sur l'écran
 
 Masquer un bouton ne protège rien : le proxy du dashboard relaie les appels avec

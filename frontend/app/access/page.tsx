@@ -357,16 +357,6 @@ export default function AccessPage() {
         </div>
       )}
 
-      <p className="text-[11px] text-blue-400 leading-relaxed">
-        Cette page est alimentée <strong>uniquement par l'inventaire UISP</strong> : le mode
-        (routeur/bridge) et l'état en ligne/hors ligne proviennent du dernier état connu d'UISP — les
-        clients restent donc visibles avec leur mode même quand leur Rocket est hors ligne. Les blocages
-        sont ré-appliqués automatiquement sur le LR toutes les 120 s (survivent au reboot du LR). Les LR
-        en bridge ne peuvent pas être bloqués depuis cette page (iptables et dnsmasq sont contournés par
-        leur configuration) ; repasse-les en mode routeur via leur interface airOS. Les LR hors ligne ne
-        peuvent pas être coupés (pas de session SSH).
-      </p>
-
       <ClientAccessActionModal
         lr={modalLr}
         action={modalAction}

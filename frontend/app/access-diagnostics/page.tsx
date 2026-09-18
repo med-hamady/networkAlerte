@@ -134,11 +134,6 @@ export default function AccessDiagnosticsPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Diagnostics d'accès</h1>
-        <p className="text-blue-400 text-sm mt-1">
-          Deux anomalies de gestion du parc abonné que rien d'autre ne signale : les LR qu'on ne
-          peut plus piloter en <strong>SSH</strong> (mot de passe, SSH coupé, clé d'hôte), et les
-          clients <strong>vus par le radio mais absents de UISP</strong> (non provisionnés).
-        </p>
       </div>
 
       <div className="grid grid-cols-2 gap-3 max-w-md">
@@ -152,11 +147,6 @@ export default function AccessDiagnosticsPage() {
           <h2 className="text-sm font-bold text-blue-900">
             LR qui refusent la connexion SSH — {sshRefused.length}
           </h2>
-          <p className="text-xs text-blue-500 mt-0.5">
-            Le LR est en ligne (il répond au ping) mais on ne peut pas ouvrir de session SSH :
-            impossible de le sonder, le bloquer ou le corriger à distance. Seuls les LR encore
-            actifs sont listés — un LR éteint n'est pas un refus. Contrôlé à chaque sonde.
-          </p>
         </header>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -190,13 +180,6 @@ export default function AccessDiagnosticsPage() {
               <h2 className="text-sm font-bold text-amber-900">
                 Découverts par radio mais absents de UISP — {radioNotInUisp.length}
               </h2>
-              <p className="text-xs text-amber-700 mt-0.5">
-                Ces clients sont physiquement connectés à une antenne (vus par la découverte
-                radio), mais leur MAC n'apparaît dans aucune station renvoyée par UISP : ils ne
-                sont pas provisionnés dans l'inventaire — donc potentiellement non facturés.
-                L'enrôlement pose la clé du contrôleur sur l'équipement par SSH, sans
-                redémarrage ni coupure pour l'abonné.
-              </p>
             </div>
             {radioNotInUisp.length > 0 && (
               <div className="shrink-0 flex flex-col items-end gap-1.5">

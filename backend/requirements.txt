@@ -1,5 +1,12 @@
 # Core
-fastapi[standard]>=0.115,<1.0
+# ⚠️ Version FIGÉE (2026-09-20). FastAPI 0.141 a changé `include_router` : il
+# ne recopie plus les routes du sous-routeur dans le parent, il y range le
+# sous-routeur. Le service tourne toujours, mais les garde-fous qui PARCOURENT
+# les routes deviennent aveugles — `test_every_route_is_gated` ne voit plus
+# aucune route, donc ne garantit plus qu'une route ajoutée porte son contrôle
+# de droits. Constaté en prod le 2026-09-20 : une simple reconstruction
+# d'image avait installé 0.141 sans aucun changement de code.
+fastapi[standard]>=0.115,<0.137
 uvicorn[standard]>=0.34,<1.0
 
 # Database

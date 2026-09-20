@@ -3,8 +3,8 @@ import './globals.css'
 import AppShell from '@/components/AppShell'
 
 export const metadata: Metadata = {
-  title: 'A2 Holding — Network Supervisor',
-  description: 'Supervision réseau UISP/Ubiquiti — A2 Holding',
+  title: 'A2 ICT — Network Management',
+  description: 'Gestion et supervision du réseau UISP/Ubiquiti — A2 ICT',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

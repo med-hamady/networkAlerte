@@ -17,6 +17,18 @@ function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10)
 }
 
+/** « 2026-09-19 » → « 19/09/2026 » (format des dates imprimées). */
+function frDate(iso: string): string {
+  const [y, m, d] = iso.split('-')
+  return `${d}/${m}/${y}`
+}
+
+/** Référence du document : RPT-AAAAMMJJ-HHMM, à l'heure de génération. */
+function docRef(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `RPT-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`
+}
+
 // Convertit une date "YYYY-MM-DD" en bornes ISO couvrant la journée entière.
 function dayStartIso(d: string): string {
   return new Date(`${d}T00:00:00`).toISOString()
@@ -38,6 +50,7 @@ export default function ReportsPage() {
     to: isoDate(today),
   })
 
+
   const { data: capacity, isLoading: capacityLoading } = useSWR<NetworkCapacity>(
     endpoints.networkCapacity, fetcher, { refreshInterval: 30_000 },
   )
@@ -45,25 +58,54 @@ export default function ReportsPage() {
   // Contenu imprimable (tout sauf l'en-tête/contrôles) → source du PDF.
   const reportRef = useRef<HTMLDivElement>(null)
   const [downloading, setDownloading] = useState(false)
+  // Pendant l'export : la feuille perd son cadre et son rembourrage d'écran —
+  // le PDF a ses propres marges, et html2canvas capturerait sinon le cadre gris.
+  const [exporting, setExporting] = useState(false)
 
   async function downloadPdf() {
     if (!reportRef.current || downloading) return
     setDownloading(true)
     try {
+      const now = new Date()
+      setExporting(true)
+      // Laisse React repeindre la feuille sans cadre avant la capture.
+      await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 60)))
+
       // Import dynamique : html2pdf.js dépend de `window`, jamais en SSR.
       const html2pdf = (await import('html2pdf.js')).default
+      const ref = docRef(now)
       await html2pdf()
         .set({
-          margin: 10,
-          filename: `rapport-supervision_${applied.from}_${applied.to}.pdf`,
+          // haut, gauche, bas, droite (mm) — le bas laisse la place au pied de page
+          margin: [12, 10, 18, 10],
+          filename: `${ref}_rapport-supervision_${applied.from}_${applied.to}.pdf`,
           image: { type: 'jpeg', quality: 0.98 },
           html2canvas: { scale: 2, backgroundColor: '#ffffff', useCORS: true },
           jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
           pagebreak: { mode: ['css', 'avoid-all'] },
         })
         .from(reportRef.current)
+        .toPdf()
+        .get('pdf')
+        .then((pdf) => {
+          // Pied de page sur CHAQUE page : entreprise, référence, pagination.
+          const total = pdf.internal.getNumberOfPages()
+          const w = pdf.internal.pageSize.getWidth()
+          const h = pdf.internal.pageSize.getHeight()
+          for (let i = 1; i <= total; i++) {
+            pdf.setPage(i)
+            pdf.setDrawColor(41, 83, 100)
+            pdf.setLineWidth(0.3)
+            pdf.line(10, h - 12, w - 10, h - 12)
+            pdf.setFontSize(8)
+            pdf.setTextColor(100, 116, 139)
+            pdf.text('A2 ICT — Rapport de supervision réseau · Document interne', 10, h - 7)
+            pdf.text(`${ref} · Page ${i} / ${total}`, w - 10, h - 7, { align: 'right' })
+          }
+        })
         .save()
     } finally {
+      setExporting(false)
       setDownloading(false)
     }
   }
@@ -124,30 +166,56 @@ export default function ReportsPage() {
         </div>
       </div>
 
-      {/* Contenu imprimable / exporté en PDF */}
-      <div ref={reportRef} className="space-y-6">
-      {/* Bandeau d'en-tête (visible à l'impression) */}
-      <div className="print-card bg-blue-900 text-white rounded-xl p-6 shadow-sm">
-        <h2 className="text-xl font-bold">Rapport de supervision réseau</h2>
-        <p className="text-sm text-blue-200 mt-2">
-          Coupures analysées : <strong>{applied.from}</strong> → <strong>{applied.to}</strong>
-        </p>
-        <p className="text-xs text-blue-300 mt-1">
-          Capacité : instantané au {new Date().toLocaleString('fr-FR')}
-        </p>
-      </div>
+      {/* Contenu imprimable / exporté en PDF — mis en page comme une feuille A4.
+          Largeur FIXE = la zone imprimable d'une A4 à 10 mm de marge (190 mm
+          ≈ 718 px à 96 dpi). ⚠️ html2pdf capture le bloc dans un cadre de CETTE
+          largeur : plus large, la droite du document était coupée dans le PDF.
+          Fixe aussi pour que le document soit le même sur tous les écrans. */}
+      <div className="overflow-x-auto">
+      <div
+        ref={reportRef}
+        className={`mx-auto bg-white space-y-6 ${
+          exporting ? '' : 'shadow-sm border border-slate-200 px-8 py-8 box-content'
+        }`}
+        style={{ width: 718 }}
+      >
+      {/* En-tête du document : logo + titre + date de génération */}
+      <header className="print-card">
+        <div className="flex items-start justify-between gap-6">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/brand/a2ict-logo.png" alt="A2 ICT" className="h-16 w-auto" />
+          <div className="text-right">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+              Rapport technique
+            </p>
+            <h2 className="text-2xl font-bold text-blue-900 leading-tight mt-1">
+              Rapport de supervision réseau
+            </h2>
+          </div>
+        </div>
+        <div className="mt-4 h-1 rounded-full bg-gradient-to-r from-blue-950 via-blue-900 to-blue-300" />
+
+        <dl className="mt-4 text-xs">
+          <div>
+            <dt className="text-slate-400 uppercase tracking-wider text-[10px] font-semibold">Période analysée</dt>
+            <dd className="mt-0.5 font-semibold text-slate-700">
+              {frDate(applied.from)} → {frDate(applied.to)}
+            </dd>
+          </div>
+        </dl>
+      </header>
 
       {/* ── Section 1 : Capacité du réseau ─────────────────────────────── */}
       <SectionHeader
+        number={1}
         title="Capacité du réseau"
-        subtitle="Clients connectés vs maximum avant saturation — par famille radio et par site."
       />
 
       {capacityLoading && <p className="text-slate-400 text-sm">Chargement de la capacité…</p>}
 
       {capacity != null && (
         <>
-          <div className="print-card grid grid-cols-1 md:grid-cols-2 gap-5 max-w-3xl">
+          <div className="print-card grid grid-cols-2 gap-5 justify-items-center">
             <CapacityDonut
               title="LTU" used={FAMILY.ltu.used} free={FAMILY.ltu.free}
               consumed={capacity.families.ltu.consumed}
@@ -175,9 +243,6 @@ export default function ReportsPage() {
                 <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: FAMILY.airmax.used }} />
                 airMAX
               </span>
-              <p className="text-xs text-blue-400 w-full">
-                Clients installés / capacité max par famille radio. Cellule en rouge = famille saturée.
-              </p>
             </div>
             {sites.length === 0 ? (
               <p className="py-8 text-center text-slate-400 text-sm">Aucun site.</p>
@@ -212,15 +277,17 @@ export default function ReportsPage() {
 
       {/* ── Section 2 : Coupures par site ──────────────────────────────── */}
       <SectionHeader
+        number={2}
         title="Temps de coupure des sites"
-        subtitle="Temps de panne du site = downtime du switch parent. La colonne « Au-delà du switch » liste les équipements restés down plus longtemps que le switch."
       />
       <div className="print-card">
         <SiteOutageTable
           startIso={dayStartIso(applied.from)}
           endIso={dayEndIso(applied.to)}
-          periodLabel={`${applied.from} → ${applied.to}`}
+          periodLabel={`${frDate(applied.from)} → ${frDate(applied.to)}`}
         />
+      </div>
+
       </div>
       </div>
     </div>
@@ -318,11 +385,13 @@ function SiteInfraReportTable({ infra }: { infra: NetworkInfraCapacity }) {
   )
 }
 
-function SectionHeader({ title, subtitle }: { title: string; subtitle: string }) {
+function SectionHeader({ number, title }: { number: number; title: string }) {
   return (
-    <div className="print-card border-l-4 rounded-r-xl px-5 py-3 mt-4 bg-blue-50 border-blue-300 text-blue-900">
-      <h2 className="text-base font-bold uppercase tracking-wider">{title}</h2>
-      <p className="text-sm mt-1 opacity-80">{subtitle}</p>
+    <div className="print-card mt-4 pb-2 border-b-2 border-blue-900">
+      <h2 className="flex items-baseline gap-3 text-lg font-bold text-blue-900">
+        <span className="text-blue-300 tabular-nums">{String(number).padStart(2, '0')}</span>
+        {title}
+      </h2>
     </div>
   )
 }

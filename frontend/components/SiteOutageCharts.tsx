@@ -184,10 +184,10 @@ function SiteOutageCard({
 export function SiteOutageTable({
   startIso: startProp,
   endIso: endProp,
-  periodLabel,
 }: {
   startIso?: string
   endIso?: string
+  /** Conservé pour compatibilité d'appel ; la période n'est plus affichée. */
   periodLabel?: string
 }) {
   const { startIso, endIso } = useMemo(() => {
@@ -196,8 +196,6 @@ export function SiteOutageTable({
     const start = new Date(end.getTime() - WINDOW_DAYS * 24 * 3_600_000)
     return { startIso: start.toISOString(), endIso: end.toISOString() }
   }, [startProp, endProp])
-
-  const period = periodLabel ?? `${WINDOW_DAYS} derniers jours`
 
   const { data, isLoading } = useSWR<SiteOutageSummary>(
     endpoints.siteOutageSummary(startIso, endIso), fetcher, { refreshInterval: REFRESH },
@@ -217,10 +215,6 @@ export function SiteOutageTable({
     <div className="bg-white border border-blue-100 rounded-xl shadow-sm p-5 break-inside-avoid">
       <div className="mb-4">
         <h3 className="font-semibold text-blue-900">Pannes et temps de coupure par site</h3>
-        <p className="text-xs text-blue-400 mt-0.5">
-          Temps de panne du site = downtime du switch parent ; « Au-delà du switch » =
-          équipements restés down plus longtemps — {period}.
-        </p>
       </div>
 
       {sites.length === 0 ? (

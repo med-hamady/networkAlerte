@@ -1,21 +1,58 @@
 import type { ReactNode } from 'react'
 
-interface StatCardProps {
+/**
+ * Icône PNG de `public/brand/icons/`, en deux familles :
+ *
+ * - `MaskIcon` — dessin NOIR au trait (équipements, client, pylône) : servi en
+ *   MASQUE CSS pour prendre la couleur du chiffre (`currentColor`). Une `<img>`
+ *   resterait noire quelle que soit la couleur d'état.
+ * - `ColorIcon` — dessin DÉJÀ colorié (hors-ligne, incident, pannes) : servi
+ *   tel quel, ses couleurs sont voulues. Le passer en masque l'aplatirait.
+ */
+function MaskIcon({ file, className }: { file: string; className?: string }) {
+  const src = `url(/brand/icons/${file})`
+  return (
+    <span
+      aria-hidden
+      className={`inline-block bg-current ${className ?? ''}`}
+      style={{
+        maskImage: src, WebkitMaskImage: src,
+        maskSize: 'contain', WebkitMaskSize: 'contain',
+        maskRepeat: 'no-repeat', WebkitMaskRepeat: 'no-repeat',
+        maskPosition: 'center', WebkitMaskPosition: 'center',
+      }}
+    />
+  )
+}
+
+function ColorIcon({ file, className }: { file: string; className?: string }) {
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={`/brand/icons/${file}`} alt="" aria-hidden className={className} />
+}
+
+interface StatProps {
   label: string
   value: number | string
   accent?: string
   icon: ReactNode
 }
 
-function StatCard({ label, value, accent = 'text-blue-900', icon }: StatCardProps) {
+/**
+ * Un chiffre du bandeau. ⚠️ Pas une carte : les 7 statistiques vivent dans UN
+ * seul bloc, séparées par un filet — sept cartes blanches sur fond gris
+ * découpaient le haut du tableau de bord sans rien dire de plus.
+ */
+function Stat({ label, value, accent = 'text-blue-900', icon }: StatProps) {
   return (
-    <div className="bg-white border border-blue-100 rounded-xl px-5 py-4 flex items-center gap-4 shadow-sm">
-      <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
+    <div className="flex items-center gap-3 px-5 py-4 min-w-0">
+      <span className="flex items-center justify-center shrink-0">
         {icon}
-      </div>
-      <div>
-        <p className="text-xs font-medium text-blue-400 uppercase tracking-wider">{label}</p>
-        <p className={`text-2xl font-bold mt-0.5 ${accent}`}>{value}</p>
+      </span>
+      <div className="min-w-0">
+        <p className={`text-[26px] font-bold leading-none tabular-nums ${accent}`}>{value}</p>
+        <p className="text-[11px] font-medium text-slate-500 uppercase tracking-wider mt-1 truncate">
+          {label}
+        </p>
       </div>
     </div>
   )
@@ -35,66 +72,37 @@ export default function StatsBar({
   sites, pannes, clients, total, up, down, openIncidents,
 }: StatsBarProps) {
   return (
-    <div className="space-y-4">
-      {/* Équipements / disponibilité / incidents */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard
-          label="Total équipements"
-          value={total}
-          accent="text-blue-900"
-          icon={<GridIcon />}
-        />
-        <StatCard
-          label="En ligne"
-          value={up}
-          accent="text-green-600"
-          icon={<CheckIcon />}
-        />
-        <StatCard
+    <div className="overflow-hidden">
+      {/* Rangée 1 — le parc et sa disponibilité */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 divide-x divide-y lg:divide-y-0 divide-slate-200">
+        <Stat label="Total équipements" value={total} icon={<MaskIcon file="equipements.png" className="w-5 h-5 text-blue-700" />} />
+        <Stat label="En ligne" value={up} accent="text-green-600" icon={<CheckIcon />} />
+        <Stat
           label="Hors ligne"
           value={down}
           accent={down > 0 ? 'text-red-500' : 'text-blue-900'}
-          icon={<XIcon />}
+          icon={<ColorIcon file="hors-ligne.png" className="w-5 h-5" />}
         />
-        <StatCard
+        <Stat
           label="Incidents ouverts"
           value={openIncidents}
           accent={openIncidents > 0 ? 'text-orange-500' : 'text-blue-900'}
-          icon={<WarningIcon />}
+          icon={<ColorIcon file="incident.png" className="w-5 h-5" />}
         />
       </div>
 
-      {/* Vue par site */}
-      <div className="grid grid-cols-3 gap-4">
-        <StatCard
-          label="Sites"
-          value={sites}
-          accent="text-blue-900"
-          icon={<SiteIcon />}
-        />
-        <StatCard
+      {/* Rangée 2 — la vue par site et le parc abonné */}
+      <div className="grid grid-cols-3 divide-x divide-slate-200 border-t border-slate-200">
+        <Stat label="Sites" value={sites} icon={<MaskIcon file="site.png" className="w-5 h-5 text-blue-700" />} />
+        <Stat
           label="Pannes"
           value={pannes}
           accent={pannes > 0 ? 'text-red-500' : 'text-blue-900'}
-          icon={<WarningIcon />}
+          icon={<ColorIcon file="pannes.png" className="w-5 h-5" />}
         />
-        <StatCard
-          label="Clients"
-          value={clients}
-          accent="text-blue-900"
-          icon={<UsersIcon />}
-        />
+        <Stat label="Clients" value={clients} icon={<MaskIcon file="client.png" className="w-5 h-5 text-blue-700" />} />
       </div>
     </div>
-  )
-}
-
-function GridIcon() {
-  return (
-    <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round"
-        d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
-    </svg>
   )
 }
 
@@ -106,36 +114,3 @@ function CheckIcon() {
   )
 }
 
-function XIcon() {
-  return (
-    <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
-    </svg>
-  )
-}
-
-function SiteIcon() {
-  return (
-    <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a2 2 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-      <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-    </svg>
-  )
-}
-
-function UsersIcon() {
-  return (
-    <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m6-1.13a4 4 0 10-4-4 4 4 0 004 4zm6 0a3 3 0 10-2.83-4" />
-    </svg>
-  )
-}
-
-function WarningIcon() {
-  return (
-    <svg className="w-5 h-5 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round"
-        d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-    </svg>
-  )
-}

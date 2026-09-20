@@ -204,7 +204,7 @@ PERMISSION_GROUPS: tuple[PermissionGroup, ...] = (
             _page("fai.requests.view", "Demandes de coupure",
                   "Ce que le système de paiement a demandé, et l'état réel du client.",
                   "/fai-requests"),
-            _page("fai.journal.view", "Journal des blocages",
+            _page("fai.journal.view", "Activités du système",
                   "La piste d'audit de toutes les coupures et rétablissements.",
                   "/fai-journal"),
             _page("fai.router_rules.view", "Règles du routeur",

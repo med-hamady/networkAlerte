@@ -46,6 +46,9 @@ export const config = {
      *   - /_next/...       (Next.js static & internal)
      *   - /devices/...     (photos produit dans public/ — assets non sensibles)
      *   - /platforms/...   (logos des plateformes filtrables — idem)
+     *   - /brand/...       (logo A2 ICT — affiché sur /login, donc AVANT
+     *                       toute session : sans cette exclusion il serait
+     *                       redirigé vers /login et l'image casserait)
      *   - /favicon.ico, /robots.txt, ...
      *
      * ⚠️ Un asset servi depuis public/ mais ABSENT de cette liste est happe
@@ -53,6 +56,6 @@ export const config = {
      * la place du PNG, et l'image casse sans la moindre erreur cote serveur.
      * Tout nouveau dossier d'assets publics doit donc etre ajoute ICI.
      */
-    '/((?!api/proxy|_next/static|_next/image|devices/|platforms/|favicon\\.ico|robots\\.txt).*)',
+    '/((?!api/proxy|_next/static|_next/image|devices/|platforms/|brand/|icon\\.png|favicon\\.ico|robots\\.txt).*)',
   ],
 }

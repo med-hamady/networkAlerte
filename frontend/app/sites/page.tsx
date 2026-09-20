@@ -191,14 +191,26 @@ function SitesPage() {
             <p className="text-blue-400 text-sm">Les sites apparaîtront ici dès que des équipements seront supervisés.</p>
           </div>
         ) : selectedSite == null ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-y-6">
+            {/* Trait vertical ENTRE les sites d'une même rangée : chaque cellule
+                qui n'ouvre pas sa rangée porte une bordure gauche. Le calcul
+                suit le nombre de colonnes (2 en sm, 3 en lg) — une règle fixe
+                tracerait un trait au bord gauche de la page au changement de
+                largeur. */}
             {sites.map(s => (
-              <SiteOverviewCard
+              <div
                 key={s.name}
-                site={s}
-                onShowPannes={setPannesSite}
-                onShowEquipment={openEquipment}
-              />
+                className="px-3 border-blue-300
+                           sm:[&:nth-child(2n)]:border-l
+                           lg:[&:nth-child(3n+1)]:border-l-0
+                           lg:[&:not(:nth-child(3n+1))]:border-l"
+              >
+                <SiteOverviewCard
+                  site={s}
+                  onShowPannes={setPannesSite}
+                  onShowEquipment={openEquipment}
+                />
+              </div>
             ))}
           </div>
         ) : siteDevices == null ? (

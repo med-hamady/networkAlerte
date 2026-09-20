@@ -20,21 +20,23 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // Brand blue — aligné exactement sur le logo A2 Holding (#263564 = blue-900).
-        // Override de la palette `blue` par défaut de Tailwind : toutes les classes
-        // blue-50…blue-950 de l'app suivent désormais la teinte marine du logo.
+        // Couleur de marque — alignée sur le logo A2 ICT (a2ict.mr) :
+        // bleu pétrole #295364 (lettres « ICT » = blue-900) et marine #143447
+        // (ruban du symbole = blue-950). Override de la palette `blue` par
+        // défaut de Tailwind : toutes les classes blue-50…blue-950 de l'app
+        // suivent la teinte du logo.
         blue: {
-          50:  '#f0f3f9',
-          100: '#dee3f2',
-          200: '#bdc7e5',
-          300: '#92a2d3',
-          400: '#677dc1',
-          500: '#435dad',
-          600: '#354b8d',
-          700: '#2e417a',
-          800: '#2a3b6f',
-          900: '#263564',
-          950: '#192343',
+          50:  '#eef6f9',
+          100: '#d7eaf2',
+          200: '#b3d6e6',
+          300: '#86bbd3',
+          400: '#4f8dab',
+          500: '#3f7f9f',
+          600: '#336c87',
+          700: '#2f6177',
+          800: '#2c5a6d',
+          900: '#295364',
+          950: '#143447',
         },
         a2: {
           50:  '#eaf4fe',

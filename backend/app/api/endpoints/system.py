@@ -171,7 +171,7 @@ async def test_whatsapp() -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="WhatsApp group not configured (WHATSAPP_GROUP_ID is empty)")
 
     body = (
-        "*[Network Supervisor] Test WhatsApp — configuration OK*\n"
+        "*[A2 ICT Network Management] Test WhatsApp — configuration OK*\n"
         f"Instance : {settings.whatsapp_instance_id}\n"
         f"Groupe   : {settings.whatsapp_group_id}\n\n"
         "Si vous recevez ce message, la configuration Ultramsg est correcte."

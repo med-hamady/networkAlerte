@@ -28,7 +28,7 @@ export default function ClientAccessActionModal({ lr, action, onClose, onSuccess
 
   React.useEffect(() => {
     if (lr != null) {
-      setMode(lr.block_mode ?? 'full')
+      setMode('full')
       setReason('')
       setError(null)
       setBusy(false)
@@ -92,41 +92,14 @@ export default function ClientAccessActionModal({ lr, action, onClose, onSuccess
 
           {isBlock ? (
             <>
+              {/* Le mode « WhatsApp autorisé » est masqué (décision opérateur du
+                  2026-09-19) : on ne bloque plus ici qu'en coupure totale. Le
+                  mode reste supporté par l'API et par l'enforcement. */}
               <div className="space-y-1.5">
                 <p className="text-xs font-semibold text-blue-600">Mode de blocage</p>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setMode('full')}
-                    disabled={busy}
-                    className={`py-2 px-2 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-40 ${
-                      mode === 'full'
-                        ? 'bg-red-600 text-white border-red-600'
-                        : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50'
-                    }`}
-                  >
-                    Coupure totale
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMode('whatsapp_only')}
-                    disabled={busy}
-                    className={`py-2 px-2 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-40 ${
-                      mode === 'whatsapp_only'
-                        ? 'bg-amber-500 text-white border-amber-500'
-                        : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50'
-                    }`}
-                  >
-                    WhatsApp autorisé
-                  </button>
-                </div>
-                <p className="text-[11px] text-blue-400 leading-relaxed pt-1">
-                  {mode === 'full' ? (
-                    <>Ferme le port LAN du LR via SSH. Le client perd <strong>tout internet</strong>.</>
-                  ) : (
-                    <>Filtre iptables laissant DNS + WhatsApp. Facebook/Instagram bloqués nominativement.
-                    Le client garde WhatsApp pour le support / paiement.</>
-                  )}
+                <p className="text-sm font-semibold text-red-600">Coupure totale</p>
+                <p className="text-[11px] text-blue-400 leading-relaxed">
+                  Ferme le port LAN du LR via SSH. Le client perd <strong>tout internet</strong>.
                 </p>
               </div>
 
@@ -146,17 +119,12 @@ export default function ClientAccessActionModal({ lr, action, onClose, onSuccess
               </div>
 
               <p className="text-[11px] text-red-500">
-                {mode === 'whatsapp_only' ? (
-                  <><strong>{lr.name}</strong> perdra internet sauf WhatsApp (et DNS).</>
-                ) : (
-                  <><strong>{lr.name}</strong> perdra immédiatement tout internet.</>
-                )}
+                <strong>{lr.name}</strong> perdra immédiatement tout internet.
               </p>
             </>
           ) : (
             <p className="text-sm text-green-700">
-              L'accès internet de <strong>{lr.name}</strong> sera rétabli (port LAN remonté
-              et filtre WhatsApp retiré si présent).
+              L'accès internet de <strong>{lr.name}</strong> sera rétabli.
             </p>
           )}
 

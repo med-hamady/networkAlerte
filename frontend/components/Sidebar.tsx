@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import useSWR from 'swr'
@@ -13,7 +13,6 @@ type NavLink = {
   label: string
   icon: (props: { className?: string }) => JSX.Element
   exact?: boolean
-  indent?: boolean
   /**
    * Droit qui ouvre cette entrée. ⚠️ OBLIGATOIRE sur toute nouvelle entrée :
    * une entrée sans `permission` s'afficherait pour TOUT LE MONDE, y compris
@@ -21,6 +20,16 @@ type NavLink = {
    * sans comprendre. Le type l'impose, il n'est pas optionnel.
    */
   permission: string
+  /**
+   * Sous-pages : rendues dans un MENU VOLANT au survol de l'icône, jamais
+   * comme icônes de la barre (qui passerait de 15 à 19 icônes pour une seule
+   * famille de pages). L'icône du groupe est active sur chacune d'elles.
+   */
+  children?: NavLink[]
+  /** Nom du GROUPE (bulle + titre du menu volant) quand il diffère du nom de
+   *  sa première page — « Liaisons » regroupe « Liaisons clients » et
+   *  « Point-à-Point ». */
+  groupLabel?: string
 }
 
 type NavSection = {
@@ -28,23 +37,62 @@ type NavSection = {
   links: NavLink[]
 }
 
+/**
+ * Icône dessinée par un PNG de `public/brand/icons/`, utilisée comme MASQUE
+ * CSS : la forme vient de l'image, la couleur de `currentColor`. L'icône suit
+ * donc les états du lien (gris au repos, pétrole quand la page est active)
+ * exactement comme les icônes SVG voisines — une `<img>` resterait noire.
+ */
+function maskIcon(file: string) {
+  const src = `url(/brand/icons/${file})`
+  function MaskIcon({ className }: { className?: string }) {
+    return (
+      <span
+        aria-hidden
+        className={`inline-block bg-current ${className ?? ''}`}
+        style={{
+          maskImage: src, WebkitMaskImage: src,
+          maskSize: 'contain', WebkitMaskSize: 'contain',
+          maskRepeat: 'no-repeat', WebkitMaskRepeat: 'no-repeat',
+          maskPosition: 'center', WebkitMaskPosition: 'center',
+        }}
+      />
+    )
+  }
+  return MaskIcon
+}
+
+const SiteIcon = maskIcon('site.png')
+const ConsumptionIcon = maskIcon('consommation_client.png')
+const CapacityIcon = maskIcon('capacite.png')
+const TopologyIcon = maskIcon('topologie.png')
+
 const sections: NavSection[] = [
   {
     title: 'Supervision',
     links: [
-      { href: '/',           label: 'Dashboard',           icon: DashboardIcon, permission: PERM.dashboard },
-      { href: '/sites',      label: 'Sites',               icon: ServerIcon,    permission: PERM.sites },
-      { href: '/lr-health',  label: 'Liaisons clients',    icon: LinkIcon,      permission: PERM.lrHealth },
-      { href: '/clients',    label: 'Consommation clients', icon: TrafficIcon,  permission: PERM.clients },
+      { href: '/',           label: 'Dashboard',           icon: DashboardIcon, exact: true, permission: PERM.dashboard },
+      { href: '/sites',      label: 'Sites',               icon: SiteIcon,      permission: PERM.sites },
+      {
+        href: '/lr-health', label: 'Liaisons clients', groupLabel: 'Liaisons', icon: LinkIcon, permission: PERM.lrHealth,
+        children: [
+          { href: '/site-links', label: 'Point-à-Point', icon: LinkIcon, permission: PERM.lrHealth },
+        ],
+      },
+      { href: '/clients',    label: 'Consommation clients', icon: ConsumptionIcon,  permission: PERM.clients },
       { href: '/capacity',   label: 'Capacité du réseau',  icon: CapacityIcon,  permission: PERM.capacity },
       { href: '/topology',   label: 'Topologie du réseau', icon: TopologyIcon,  permission: PERM.topology },
       { href: '/map',        label: 'Carte des clients',   icon: MapIcon,       permission: PERM.map },
       { href: '/traffic',    label: 'Destinations Internet', icon: GlobeIcon,   permission: PERM.traffic },
-      { href: '/access',     label: 'FAI',                 icon: ShieldIcon,    permission: PERM.fai },
-      { href: '/fai-requests', label: 'Demandes de coupure', icon: RequestIcon, indent: true, permission: PERM.faiRequests },
-      { href: '/fai-journal', label: 'Journal blocages',   icon: JournalIcon, indent: true, permission: PERM.faiJournal },
-      { href: '/router-rules', label: 'Règles du routeur', icon: RouterIcon, indent: true, permission: PERM.routerRules },
-      { href: '/content-block', label: 'Filtre de contenu', icon: FilterIcon, indent: true, permission: PERM.contentFilter },
+      {
+        href: '/access', label: 'FAI', icon: ShieldIcon, permission: PERM.fai,
+        children: [
+          { href: '/fai-requests',  label: 'Demandes de coupure', icon: RequestIcon, permission: PERM.faiRequests },
+          { href: '/fai-journal',   label: 'Activités du système', icon: JournalIcon, permission: PERM.faiJournal },
+          { href: '/router-rules',  label: 'Règles du routeur',   icon: RouterIcon,  permission: PERM.routerRules },
+          { href: '/content-block', label: 'Filtre de contenu',   icon: FilterIcon,  permission: PERM.contentFilter },
+        ],
+      },
     ],
   },
   {
@@ -69,12 +117,41 @@ const sections: NavSection[] = [
   },
 ]
 
+/** Largeur de la barre, en px — les bulles et le menu volant s'y accrochent. */
+const RAIL_WIDTH = 76
+
+function isActiveLink(pathname: string, { href, exact }: NavLink) {
+  return exact
+    ? pathname === href
+    : pathname === href || pathname.startsWith(href + '/')
+}
+
 /**
- * `onCollapse` — fourni par AppShell, qui possède l'état d'affichage. Le
- * contrôle de repli vit ici plutôt qu'en bouton flottant sur le contenu : à
- * gauche du contenu il recouvrirait le titre de chacune des pages.
+ * Une entrée telle que l'affiche la barre, droits appliqués : `href` est la
+ * PREMIÈRE page du groupe que le compte peut ouvrir (un agent qui voit les
+ * demandes de coupure sans voir la page FAI doit quand même avoir l'icône), et
+ * `items` la liste du menu volant.
  */
-export default function Sidebar({ onCollapse }: { onCollapse?: () => void }) {
+type RailEntry = {
+  key: string
+  label: string
+  href: string
+  icon: NavLink['icon']
+  items: NavLink[]
+  active: boolean
+}
+
+/**
+ * Barre de navigation en icônes, dans l'esprit du contrôleur UISP : 76 px,
+ * fond blanc, le nom de chaque page dans une BULLE au survol, et les
+ * sous-pages FAI dans un MENU VOLANT.
+ *
+ * ⚠️ Bulles et menu volant sont en `position: fixed`, calés sur la position
+ * de l'icône à l'écran — pas en `absolute` dans la barre : la liste d'icônes
+ * défile (`overflow-y-auto`) sur un petit écran, et un élément absolu y serait
+ * rogné au bord de la barre, donc invisible.
+ */
+export default function Sidebar() {
   const pathname = usePathname()
   const router = useRouter()
   const { can, loading: permsLoading } = usePermissions()
@@ -84,7 +161,7 @@ export default function Sidebar({ onCollapse }: { onCollapse?: () => void }) {
     { refreshInterval: 30_000 },
   )
   // Identity of the logged-in operator. Used to (a) display who is logged in
-  // in the footer, (b) trigger a redirect to /login if the session is gone
+  // in the user menu, (b) trigger a redirect to /login if the session is gone
   // (an expired cookie returns 401 → fetcher throws → SWR returns no data;
   // we treat that as "logged out" and bounce to the login page).
   const { data: currentUser, error: userError } = useSWR<CurrentUser>(
@@ -93,6 +170,50 @@ export default function Sidebar({ onCollapse }: { onCollapse?: () => void }) {
     { refreshInterval: 60_000, shouldRetryOnError: false },
   )
   const dbOk = health?.database === 'connected'
+
+  // Survol : une bulle (entrée simple) ou un menu volant (entrée à sous-pages).
+  const [hover, setHover] = useState<{ key: string; top: number; center: number } | null>(null)
+  const [userMenuOpen, setUserMenuOpen] = useState(false)
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const userMenuRef = useRef<HTMLDivElement>(null)
+
+  const cancelClose = () => {
+    if (closeTimer.current) clearTimeout(closeTimer.current)
+    closeTimer.current = null
+  }
+  // Fermeture différée : le temps de glisser de l'icône au menu volant sans
+  // qu'il se referme sous le curseur.
+  const scheduleClose = () => {
+    cancelClose()
+    closeTimer.current = setTimeout(() => setHover(null), 150)
+  }
+  const openHover = (key: string, el: HTMLElement) => {
+    cancelClose()
+    const r = el.getBoundingClientRect()
+    setHover({ key, top: r.top, center: r.top + r.height / 2 })
+  }
+
+  useEffect(() => {
+    setHover(null)
+    setUserMenuOpen(false)
+  }, [pathname])
+
+  useEffect(() => () => cancelClose(), [])
+
+  // Menu utilisateur : fermé par un clic ailleurs ou par Échap.
+  useEffect(() => {
+    if (!userMenuOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (!userMenuRef.current?.contains(e.target as Node)) setUserMenuOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setUserMenuOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [userMenuOpen])
 
   const handleLogout = async () => {
     try {
@@ -114,74 +235,81 @@ export default function Sidebar({ onCollapse }: { onCollapse?: () => void }) {
   // ⚠️ Pendant le chargement de /auth/me on n'affiche RIEN plutôt qu'un menu
   // complet : montrer puis retirer des entrées ferait clignoter la moitié du
   // menu à chaque navigation, et un agent y verrait passer des pages qui ne
-  // lui sont pas ouvertes. Une section dont toutes les entrées sont masquées
-  // disparaît avec son titre — un intitulé « FAI » surmontant le vide se lirait
-  // comme une panne d'affichage.
-  const visibleSections = permsLoading
+  // lui sont pas ouvertes. Un groupe dont toutes les entrées sont masquées
+  // disparaît avec son séparateur.
+  const visibleGroups: RailEntry[][] = permsLoading
     ? []
     : sections
-        .map(({ title, links }) => ({
-          title,
-          links: links.filter((link) => can(link.permission)),
-        }))
-        .filter((section) => section.links.length > 0)
+        .map(({ links }) =>
+          links.flatMap((link): RailEntry[] => {
+            const items = [link, ...(link.children ?? [])].filter((l) => can(l.permission))
+            if (items.length === 0) return []
+            return [{
+              key: link.href,
+              label: link.groupLabel ?? link.label,
+              href: items[0].href,
+              icon: link.icon,
+              items,
+              active: items.some((l) => isActiveLink(pathname, l)),
+            }]
+          }),
+        )
+        .filter((group) => group.length > 0)
+
+  const hovered = visibleGroups.flat().find((e) => e.key === hover?.key)
+
+  const statusLabel = health === undefined
+    ? 'Connexion…'
+    : dbOk ? 'Système opérationnel' : 'Erreur base de données'
+  const statusDot = health === undefined
+    ? 'bg-slate-300 animate-pulse'
+    : dbOk ? 'bg-emerald-500' : 'bg-red-500'
+  const initials = (currentUser?.username ?? '?').slice(0, 2).toUpperCase()
 
   return (
-    <aside className="w-60 min-h-screen bg-blue-900 flex flex-col shrink-0">
-
-      {/* Brand */}
-      <div className="px-5 py-5 border-b border-blue-800">
-        <div className="flex items-center gap-3">
-          <A2LogoMark />
-          <div className="min-w-0">
-            <p className="text-white font-bold text-sm tracking-widest uppercase leading-none">
-              A2 Holding
-            </p>
-            <p className="text-blue-300 text-xs mt-1">Network Supervisor</p>
-          </div>
-          {onCollapse && (
-            <button
-              onClick={onCollapse}
-              title="Masquer le menu (plein écran)"
-              aria-label="Masquer le menu"
-              className="ml-auto shrink-0 flex items-center justify-center w-7 h-7 rounded-md
-                         text-blue-300 hover:text-white hover:bg-blue-800 transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24"
-                   stroke="currentColor" strokeWidth={1.9}>
-                <path strokeLinecap="round" strokeLinejoin="round"
-                      d="M4 6h16M4 12h10M4 18h16M19 15l-3-3 3-3" />
-              </svg>
-            </button>
-          )}
-        </div>
-      </div>
+    <aside
+      className="sticky top-0 h-screen bg-white border-r border-slate-200 flex flex-col items-center shrink-0 z-40"
+      style={{ width: RAIL_WIDTH }}
+    >
+      {/* Marque */}
+      <Link
+        href={visibleGroups[0]?.[0]?.href ?? '/'}
+        className="h-16 w-full flex items-center justify-center border-b border-slate-100 shrink-0"
+        aria-label="A2 ICT — Network Management"
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/brand/a2ict-mark.png" alt="A2 ICT" className="w-9 h-auto" />
+      </Link>
 
       {/* Navigation */}
-      <nav className="flex-1 px-3 py-4 space-y-5 overflow-y-auto">
-        {visibleSections.map(({ title, links }) => (
-          <div key={title} className="space-y-1">
-            <p className="px-3 pb-1 text-[10px] font-bold tracking-widest uppercase text-blue-400">
-              {title}
-            </p>
-            {links.map(({ href, label, icon: Icon, exact, indent }) => {
-              const isActive = exact
-                ? pathname === href
-                : pathname === href || pathname.startsWith(href + '/')
+      <nav className="flex-1 w-full overflow-y-auto overflow-x-hidden py-3 flex flex-col items-center">
+        {visibleGroups.map((group, i) => (
+          <div key={group[0].key} className="w-full flex flex-col items-center gap-1">
+            {i > 0 && <div className="w-10 border-t border-slate-200 my-2" />}
+            {group.map((entry) => {
+              const Icon = entry.icon
               return (
                 <Link
-                  key={href}
-                  href={href}
-                  className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                    indent ? 'pl-8' : ''
-                  } ${
-                    isActive
-                      ? 'bg-white text-blue-900'
-                      : 'text-blue-200 hover:bg-blue-800 hover:text-white'
+                  key={entry.key}
+                  href={entry.href}
+                  aria-label={entry.label}
+                  onMouseEnter={(e) => openHover(entry.key, e.currentTarget)}
+                  onMouseLeave={scheduleClose}
+                  onFocus={(e) => openHover(entry.key, e.currentTarget)}
+                  onBlur={scheduleClose}
+                  className={`relative w-12 h-12 shrink-0 flex items-center justify-center rounded-xl transition-colors ${
+                    entry.active
+                      ? 'bg-blue-50 text-blue-700'
+                      : 'text-slate-500 hover:bg-slate-100 hover:text-blue-900'
                   }`}
                 >
-                  <Icon className="w-4 h-4 shrink-0" />
-                  {label}
+                  {entry.active && (
+                    <span className="absolute -left-[14px] top-2 bottom-2 w-[3px] rounded-r bg-blue-700" />
+                  )}
+                  <Icon className="w-6 h-6" />
+                  {entry.items.length > 1 && (
+                    <span className="absolute bottom-1.5 right-1.5 w-1 h-1 rounded-full bg-current opacity-60" />
+                  )}
                 </Link>
               )
             })}
@@ -189,56 +317,102 @@ export default function Sidebar({ onCollapse }: { onCollapse?: () => void }) {
         ))}
       </nav>
 
-      {/* Logged-in user + logout */}
-      <div className="px-4 py-3 border-t border-blue-800">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-full bg-blue-700 text-white text-xs font-bold flex items-center justify-center shrink-0">
-            {(currentUser?.username ?? '?').slice(0, 2).toUpperCase()}
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm text-white font-medium truncate">
-              {currentUser?.full_name || currentUser?.username || '—'}
-            </p>
-            <p className="text-[10px] text-blue-400 truncate">
-              {currentUser?.profile_name
-                ? currentUser.profile_name
-                : currentUser?.full_name
-                ? currentUser.username
-                : ''}
-            </p>
-          </div>
-          <button
-            onClick={handleLogout}
-            title="Se déconnecter"
-            className="p-1.5 rounded-lg text-blue-300 hover:text-white hover:bg-blue-800 transition-colors shrink-0"
+      {/* Utilisateur + état du système */}
+      <div ref={userMenuRef} className="w-full py-3 border-t border-slate-100 flex flex-col items-center shrink-0">
+        <button
+          onClick={() => setUserMenuOpen((v) => !v)}
+          aria-label="Compte et déconnexion"
+          aria-expanded={userMenuOpen}
+          className="relative w-10 h-10 rounded-full bg-blue-900 text-white text-sm font-bold
+                     flex items-center justify-center hover:ring-4 hover:ring-blue-100 transition-shadow"
+        >
+          {initials}
+          <span
+            title={statusLabel}
+            className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white ${statusDot}`}
+          />
+        </button>
+
+        {userMenuOpen && (
+          <div
+            className="fixed bottom-3 z-50 w-64 rounded-xl border border-slate-200 bg-white shadow-xl animate-fade-in"
+            style={{ left: RAIL_WIDTH + 8 }}
           >
-            <LogoutIcon className="w-4 h-4" />
-          </button>
-        </div>
-        {userError && (
-          <p className="text-[10px] text-red-300 mt-1">Session expirée — reconnecte-toi.</p>
+            <div className="px-4 py-3 border-b border-slate-100">
+              <p className="text-sm font-semibold text-slate-800 truncate">
+                {currentUser?.full_name || currentUser?.username || '—'}
+              </p>
+              <p className="text-xs text-slate-500 truncate">
+                {currentUser?.profile_name
+                  ? currentUser.profile_name
+                  : currentUser?.full_name
+                  ? currentUser.username
+                  : ''}
+              </p>
+            </div>
+            <div className="px-4 py-2.5 flex items-center gap-2 border-b border-slate-100">
+              <span className={`w-2 h-2 rounded-full shrink-0 ${statusDot}`} />
+              <span className="text-xs text-slate-600">{statusLabel}</span>
+            </div>
+            {userError && (
+              <p className="px-4 pt-2 text-[11px] text-red-600">Session expirée — reconnecte-toi.</p>
+            )}
+            <button
+              onClick={handleLogout}
+              className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-slate-700
+                         hover:bg-slate-50 rounded-b-xl transition-colors"
+            >
+              <LogoutIcon className="w-4 h-4 text-slate-500" />
+              Se déconnecter
+            </button>
+          </div>
         )}
       </div>
 
-      {/* System status footer */}
-      <div className="px-4 py-4 border-t border-blue-800">
-        <div className="flex items-center gap-2 px-1">
-          <span className={`w-2 h-2 rounded-full shrink-0 ${
-            health === undefined
-              ? 'bg-blue-400 animate-pulse'
-              : dbOk
-              ? 'bg-green-400'
-              : 'bg-red-400'
-          }`} />
-          <span className="text-xs text-blue-300">
-            {health === undefined
-              ? 'Connexion…'
-              : dbOk
-              ? 'Système opérationnel'
-              : 'Erreur base de données'}
-          </span>
+      {/* Bulle (entrée simple) */}
+      {hover && hovered && hovered.items.length === 1 && (
+        <div
+          className="fixed z-50 -translate-y-1/2 pointer-events-none whitespace-nowrap
+                     rounded-lg bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-white shadow-lg"
+          style={{ left: RAIL_WIDTH + 6, top: hover.center }}
+        >
+          {hovered.label}
         </div>
-      </div>
+      )}
+
+      {/* Menu volant (entrée à sous-pages) */}
+      {hover && hovered && hovered.items.length > 1 && (
+        <div
+          onMouseEnter={cancelClose}
+          onMouseLeave={scheduleClose}
+          className="fixed z-50 w-60 rounded-xl border border-slate-200 bg-white py-1.5 shadow-xl"
+          style={{ left: RAIL_WIDTH + 4, top: Math.max(8, hover.top - 6) }}
+        >
+          <p className="px-3.5 pt-1 pb-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+            {hovered.label}
+          </p>
+          {hovered.items.map((item) => {
+            const Icon = item.icon
+            const active = isActiveLink(pathname, item)
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                onFocus={cancelClose}
+                onBlur={scheduleClose}
+                className={`mx-1.5 flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors ${
+                  active
+                    ? 'bg-blue-50 text-blue-800 font-semibold'
+                    : 'text-slate-700 hover:bg-slate-50 hover:text-blue-900'
+                }`}
+              >
+                <Icon className="w-4 h-4 shrink-0" />
+                {item.label}
+              </Link>
+            )
+          })}
+        </div>
+      )}
     </aside>
   )
 }
@@ -252,29 +426,11 @@ function LogoutIcon({ className }: { className?: string }) {
   )
 }
 
-function A2LogoMark() {
-  return (
-    <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center shrink-0 overflow-hidden p-1.5">
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src="/a2-logo.png" alt="A2 Holding" className="w-full h-full object-contain" />
-    </div>
-  )
-}
-
 function DashboardIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round"
         d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-    </svg>
-  )
-}
-
-function ServerIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round"
-        d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
     </svg>
   )
 }
@@ -297,41 +453,11 @@ function ReportIcon({ className }: { className?: string }) {
   )
 }
 
-function CapacityIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round"
-        d="M11 3.055A9 9 0 1020.945 13H11V3.055z" />
-      <path strokeLinecap="round" strokeLinejoin="round"
-        d="M20.488 9A9.004 9.004 0 0015 3.512V9h5.488z" />
-    </svg>
-  )
-}
-
 function LinkIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round"
         d="M13.828 10.172a4 4 0 00-5.656 0l-3 3a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l3-3a4 4 0 00-5.656-5.656l-1.1 1.1" />
-    </svg>
-  )
-}
-
-function TrafficIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round"
-        d="M3 17l4-4 4 4 7-7m0 0V5m0 5h-5" />
-    </svg>
-  )
-}
-
-function TopologyIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round"
-        d="M12 3v4m0 0L6 11m6-4l6 4M6 11v3m12-3v3M6 18h.01M12 18h.01M18 18h.01M12 11v3" />
-      <circle cx="12" cy="3" r="1.6" />
     </svg>
   )
 }

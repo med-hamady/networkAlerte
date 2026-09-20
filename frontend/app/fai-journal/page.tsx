@@ -48,14 +48,7 @@ export default function FaiJournalPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Journal des blocages</h1>
-        <p className="text-blue-400 text-sm mt-1">
-          Chaque coupure et rétablissement, qu'il vienne du <strong>système de paiement</strong>{' '}
-          ou du renforcement automatique. Un ordre non appliqué est rejoué toutes les 2 minutes.
-          Quand la coupure ne peut pas être posée sur l'équipement du client, elle l'est{' '}
-          <strong>sur le routeur</strong> : le client est coupé quand même, et la règle du routeur
-          est retirée dès que la coupure locale aboutit.
-        </p>
+        <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Activités du système</h1>
       </div>
 
       {/* Compteurs sur la fenêtre affichée */}

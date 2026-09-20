@@ -5,7 +5,8 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { firstAllowedRoute } from '@/lib/permissions'
 
 /**
- * Login page — single-screen form, no sidebar.
+ * Login page — deux volets, sans sidebar : le formulaire à gauche, le
+ * panneau de marque A2 ICT à droite (masqué sur petit écran).
  *
  * Posts {username, password} to /api/proxy/auth/login. On success the
  * backend sets the session cookie via Set-Cookie (forwarded by the proxy),
@@ -21,6 +22,7 @@ function LoginForm() {
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showPassword, setShowPassword] = useState(false)
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -67,72 +69,142 @@ function LoginForm() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-blue-50 px-4">
-      <div className="w-full max-w-sm">
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-white border border-blue-100 shadow-sm p-2 mb-3">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/a2-logo.png" alt="A2 Holding" className="w-full h-full object-contain" />
-          </div>
-          <h1 className="text-2xl font-bold text-blue-900 tracking-tight">
-            Network Supervisor
-          </h1>
-          <p className="text-blue-400 text-sm mt-1">Connexion administrateur</p>
-        </div>
+    <div className="min-h-screen flex bg-white">
+      {/* ── Formulaire (gauche) ─────────────────────────────────────────── */}
+      <div className="w-full lg:w-[440px] shrink-0 flex flex-col px-8 sm:px-14 py-10">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/brand/a2ict-logo.png" alt="A2 ICT" className="w-32 h-auto" />
 
-        <form
-          onSubmit={onSubmit}
-          className="bg-white border border-blue-100 rounded-2xl shadow-sm p-6 space-y-4"
-        >
-          <div className="space-y-1.5">
-            <label htmlFor="username" className="text-xs font-semibold text-blue-700 uppercase tracking-wider">
-              Nom d&apos;utilisateur
-            </label>
-            <input
+        <div className="flex-1 flex flex-col justify-center py-10">
+          <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Connexion</h1>
+          <p className="text-slate-500 text-sm mt-1">
+            Accédez à la supervision du réseau.
+          </p>
+
+          <form onSubmit={onSubmit} className="mt-10 space-y-7">
+            <Field
               id="username"
+              label="Nom d'utilisateur"
               type="text"
               autoComplete="username"
-              required
               autoFocus
               value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="w-full px-3 py-2 border border-blue-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-300 focus:border-blue-400"
+              onChange={setUsername}
             />
-          </div>
-
-          <div className="space-y-1.5">
-            <label htmlFor="password" className="text-xs font-semibold text-blue-700 uppercase tracking-wider">
-              Mot de passe
-            </label>
-            <input
+            <Field
               id="password"
-              type="password"
+              label="Mot de passe"
+              type={showPassword ? 'text' : 'password'}
               autoComplete="current-password"
-              required
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-3 py-2 border border-blue-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-300 focus:border-blue-400"
+              onChange={setPassword}
+              trailing={
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  className="text-xs font-medium text-blue-600 hover:text-blue-900 transition-colors"
+                  tabIndex={-1}
+                >
+                  {showPassword ? 'Masquer' : 'Afficher'}
+                </button>
+              }
             />
-          </div>
 
-          {error && (
-            <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-2 rounded-lg">
-              {error}
-            </div>
-          )}
+            {error && (
+              <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-2 rounded-lg">
+                {error}
+              </div>
+            )}
 
-          <button
-            type="submit"
-            disabled={submitting || !username || !password}
-            className="w-full bg-blue-700 hover:bg-blue-800 disabled:bg-blue-300 text-white font-medium py-2.5 rounded-lg transition-colors text-sm"
-          >
-            {submitting ? 'Connexion…' : 'Se connecter'}
-          </button>
-        </form>
+            <button
+              type="submit"
+              disabled={submitting || !username || !password}
+              className="w-full py-3 rounded-lg text-sm font-semibold text-white shadow-sm
+                         bg-gradient-to-r from-blue-900 to-blue-600
+                         hover:from-blue-950 hover:to-blue-700
+                         disabled:from-blue-200 disabled:to-blue-100 disabled:text-blue-400 disabled:shadow-none
+                         transition-colors"
+            >
+              {submitting ? 'Connexion…' : 'Se connecter'}
+            </button>
+          </form>
+        </div>
 
-        <p className="text-center text-xs text-blue-300 mt-6">
-          Accès interne — A2 Holding
+        <p className="text-xs text-slate-400">
+          © {new Date().getFullYear()} A2 ICT — Accès interne
         </p>
+      </div>
+
+      {/* ── Panneau de marque (droite) — masqué sur petit écran ───────────── */}
+      <div className="hidden lg:flex flex-1 relative overflow-hidden items-center justify-center
+                      bg-gradient-to-br from-blue-950 via-blue-900 to-blue-600">
+        {/* Halos lumineux */}
+        <div className="absolute -top-40 -right-40 w-[36rem] h-[36rem] rounded-full bg-blue-300/20 blur-3xl" />
+        <div className="absolute -bottom-48 -left-32 w-[32rem] h-[32rem] rounded-full bg-blue-200/10 blur-3xl" />
+        {/* Symbole ruban en filigrane */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/brand/a2ict-mark-white.png"
+          alt=""
+          aria-hidden
+          className="absolute -right-24 -bottom-24 w-[34rem] h-auto opacity-[0.07] select-none pointer-events-none"
+        />
+        {/* Anneaux fins */}
+        <svg className="absolute inset-0 w-full h-full opacity-[0.08]" aria-hidden>
+          <circle cx="15%" cy="20%" r="140" fill="none" stroke="white" strokeWidth="1" />
+          <circle cx="15%" cy="20%" r="220" fill="none" stroke="white" strokeWidth="1" />
+          <circle cx="15%" cy="20%" r="300" fill="none" stroke="white" strokeWidth="1" />
+        </svg>
+
+        <div className="relative z-10 text-center px-12">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/brand/a2ict-logo-white.png" alt="A2 ICT" className="mx-auto w-[26rem] max-w-full h-auto drop-shadow-lg" />
+          <div className="mt-12 inline-flex items-center gap-3 px-4 py-1.5 rounded-full border border-white/20 bg-white/5">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-white/90 text-sm font-medium tracking-wide">Network Management</span>
+          </div>
+          <p className="mt-4 text-blue-100/80 text-sm max-w-md mx-auto leading-relaxed">
+            Gestion et supervision du réseau radio, des sites et des accès clients.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Champ souligné, dans l'esprit de l'écran de connexion UISP. */
+function Field({
+  id, label, type, autoComplete, autoFocus, value, onChange, trailing,
+}: {
+  id: string
+  label: string
+  type: string
+  autoComplete: string
+  autoFocus?: boolean
+  value: string
+  onChange: (v: string) => void
+  trailing?: React.ReactNode
+}) {
+  return (
+    <div className="group">
+      <label
+        htmlFor={id}
+        className="block text-xs font-medium text-slate-500 group-focus-within:text-blue-600 transition-colors"
+      >
+        {label}
+      </label>
+      <div className="flex items-center border-b border-slate-300 group-focus-within:border-blue-600 transition-colors">
+        <input
+          id={id}
+          type={type}
+          autoComplete={autoComplete}
+          autoFocus={autoFocus}
+          required
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="flex-1 min-w-0 bg-transparent py-2 text-sm text-slate-800 focus:outline-none"
+        />
+        {trailing}
       </div>
     </div>
   )
@@ -162,6 +234,7 @@ function PAGE_PERMISSION_FOR(path: string): string {
     '/': 'dashboard.view',
     '/sites': 'sites.view',
     '/lr-health': 'lr_health.view',
+    '/site-links': 'lr_health.view',
     '/clients': 'clients.view',
     '/capacity': 'capacity.view',
     '/topology': 'topology.view',

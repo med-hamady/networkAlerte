@@ -24,16 +24,17 @@ import {
   formatTs, nowState, readableMessage, sourceLabel, userLabel, type NowState,
 } from '@/lib/faiActions'
 
-// L'origine par défaut : c'est la question posée. « Toutes » reste à un clic —
-// voir la note sur les demandes non attribuées, plus bas.
-const DEFAULT_SOURCE = 'Block_all.php'
+// Par défaut : TOUTES les origines (décision opérateur du 2026-09-19). Un
+// défaut restreint à Block_all.php laissait croire à un écran vide que rien
+// n'avait été demandé, alors que les demandes non attribuées existaient.
+const BLOCK_ALL_SOURCE = 'Block_all.php'
 
 const SOURCES: { value: string; label: string }[] = [
-  { value: DEFAULT_SOURCE, label: 'Block_all.php (campagne impayés)' },
-  { value: 'payment',      label: 'Système de paiement (non attribué)' },
-  { value: 'enforce',      label: 'Renforcement automatique' },
-  { value: 'script',       label: 'Blocage de masse' },
-  { value: '',             label: 'Toutes les origines' },
+  { value: '',               label: 'Toutes les origines' },
+  { value: BLOCK_ALL_SOURCE, label: 'Block_all.php (campagne impayés)' },
+  { value: 'payment',        label: 'Système de paiement (non attribué)' },
+  { value: 'enforce',        label: 'Renforcement automatique' },
+  { value: 'script',         label: 'Blocage de masse' },
 ]
 
 type NowFilter = '' | NowState
@@ -52,7 +53,7 @@ export default function FaiRequestsPage() {
   const today = isoDay(new Date())
   const weekAgo = isoDay(new Date(Date.now() - 7 * 86_400_000))
 
-  const [source, setSource] = React.useState(DEFAULT_SOURCE)
+  const [source, setSource] = React.useState('')
   const [now, setNow] = React.useState<NowFilter>('')
   const [search, setSearch] = React.useState('')
   const [debounced, setDebounced] = React.useState('')
@@ -95,12 +96,6 @@ export default function FaiRequestsPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Demandes de coupure</h1>
-        <p className="text-blue-400 text-sm mt-1">
-          Chaque demande reçue du système de paiement, avec l'état <strong>réel</strong> du
-          client aujourd'hui. Les deux ne disent pas la même chose : une demande qui a
-          échoué hier peut avoir été rattrapée depuis, et une demande « appliquée » peut
-          être tombée si le client a redémarré son équipement.
-        </p>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -120,7 +115,7 @@ export default function FaiRequestsPage() {
             La demande a été enregistrée mais la coupure n'est posée nulle part — ni sur
             l'équipement du client, ni sur le routeur. Le renforcement rejoue toutes les
             2 minutes ; si la situation dure, la cause est sur la page{' '}
-            <a href="/fai-journal" className="underline font-semibold">Journal des blocages</a>.
+            <a href="/fai-journal" className="underline font-semibold">Activités du système</a>.
           </p>
         </div>
       )}
@@ -231,7 +226,7 @@ export default function FaiRequestsPage() {
                 demandé » : une demande n'est attribuée à Block_all.php que si
                 son MOTIF porte la signature attendue. Si le script change sa
                 formulation, ses demandes retombent en « payment ». */}
-            {!isLoading && source === DEFAULT_SOURCE && (
+            {!isLoading && source === BLOCK_ALL_SOURCE && (
               <p className="text-xs text-blue-400 mt-2">
                 Une demande n'est attribuée à ce script que si son motif porte sa
                 signature.{' '}

@@ -105,7 +105,7 @@ export default function DeviceSearchBar({
     <div ref={boxRef} className={`relative ${className}`}>
       <div className="relative">
         <svg
-          className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-blue-300 pointer-events-none"
+          className="absolute left-4 top-1/2 -translate-y-1/2 w-[18px] h-[18px] text-slate-700 pointer-events-none"
           fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
         >
           <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z" />
@@ -119,15 +119,17 @@ export default function DeviceSearchBar({
           onKeyDown={onKeyDown}
           placeholder={placeholder}
           aria-label="Rechercher un équipement ou un client"
-          className={`w-full pl-9 py-2 text-sm rounded-lg border border-blue-200 bg-white shadow-sm
-                      focus:outline-none focus:ring-2 focus:ring-blue-300 focus:border-blue-300
-                      placeholder:text-blue-300 ${shortcut ? 'pr-16' : 'pr-3'}`}
+          className={`w-full pl-11 h-10 text-sm text-slate-800 rounded-full border border-transparent
+                      bg-slate-100 transition-colors
+                      hover:bg-slate-200/70
+                      focus:outline-none focus:bg-white focus:border-slate-300 focus:shadow-sm
+                      placeholder:text-slate-600 ${shortcut ? 'pr-16' : 'pr-4'}`}
         />
         {shortcut && (
           <kbd
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none select-none
-                       rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5
-                       text-[10px] font-sans font-medium text-blue-300"
+            className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none select-none
+                       rounded-md border border-slate-300 bg-white px-1.5 py-0.5
+                       text-[10px] font-sans font-medium text-slate-500"
           >
             Ctrl K
           </kbd>
@@ -135,7 +137,7 @@ export default function DeviceSearchBar({
       </div>
 
       {showDropdown && (
-        <div className="absolute z-30 mt-1 w-full bg-white border border-blue-100 rounded-lg shadow-lg max-h-80 overflow-auto">
+        <div className="absolute z-30 mt-2 w-full bg-white border border-slate-200 rounded-2xl shadow-xl max-h-80 overflow-auto">
           {results.length === 0 ? (
             <p className="px-4 py-3 text-sm text-blue-300">
               {isLoading ? 'Recherche…' : 'Aucun résultat'}

@@ -24,6 +24,7 @@ export default function CapacityPage() {
     endpoints.networkCapacity, fetcher, { refreshInterval: 30_000 },
   )
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
+  const [siteSort, setSiteSort] = useState<'name' | 'load'>('name')
 
   const sites = data?.sites ?? []
   const siteObj = selectedSite != null ? sites.find(s => s.site === selectedSite) ?? null : null
@@ -50,6 +51,24 @@ export default function CapacityPage() {
       (a, b) => b.current_clients / b.max_clients! - a.current_clients / a.max_clients!,
     )
   }, [sites])
+
+  // Nombre de Rockets saturés par site — le MÊME critère que la section
+  // « Rockets saturés » juste au-dessus, pour que les deux ne se contredisent pas.
+  const saturatedBySite = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const r of saturatedRockets) m.set(r.site, (m.get(r.site) ?? 0) + 1)
+    return m
+  }, [saturatedRockets])
+
+  const sortedSites = useMemo(() => {
+    const load = (s: SiteCapacity) => {
+      const cap = s.ltu.capacity + s.airmax.capacity
+      return cap > 0 ? (s.ltu.consumed + s.airmax.consumed) / cap : -1
+    }
+    return siteSort === 'name'
+      ? sites
+      : [...sites].sort((a, b) => load(b) - load(a))
+  }, [sites, siteSort])
 
   if (error) {
     return <p className="text-red-600 text-sm">Erreur de chargement de la capacité réseau.</p>
@@ -78,11 +97,6 @@ export default function CapacityPage() {
             </>
           )}
         </div>
-        {siteObj != null && (
-          <p className="text-blue-400 text-sm">
-            Rockets de ce site — clients installés vs maximum avant saturation.
-          </p>
-        )}
       </div>
         <SyncButton onSynced={mutate} />
       </div>
@@ -92,7 +106,7 @@ export default function CapacityPage() {
       {data != null && siteObj == null && (
         <>
           {/* Cercles globaux */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5 max-w-3xl">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 justify-items-center">
             <CapacityDonut
               title="LTU" used={FAMILY.ltu.used} free={FAMILY.ltu.free}
               consumed={data.families.ltu.consumed}
@@ -126,18 +140,29 @@ export default function CapacityPage() {
 
           {/* Barres par site */}
           <div className="bg-white border border-blue-100 rounded-xl shadow-sm p-5">
-            <div className="mb-4">
-              <h3 className="font-semibold text-blue-900">Capacité par site</h3>
-              <p className="text-xs text-blue-400 mt-0.5">
-                Longueur = capacité totale du site ; partie pleine = clients installés.
-                Clique un site pour le détail.
-              </p>
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="font-semibold text-blue-900">Capacité par site</h3>
+              </div>
+              <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs">
+                {([['name', 'Par nom'], ['load', 'Par charge']] as const).map(([k, label]) => (
+                  <button
+                    key={k}
+                    onClick={() => setSiteSort(k)}
+                    className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
+                      siteSort === k ? 'bg-white text-blue-900 shadow-sm' : 'text-slate-500 hover:text-blue-900'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
             {sites.length === 0 ? (
               <p className="py-8 text-center text-slate-400 text-sm">Aucun site.</p>
             ) : (
               <div className="space-y-3 max-h-[28rem] overflow-y-auto pr-1">
-                {sites.map(s => (
+                {sortedSites.map(s => (
                   <button
                     key={s.site}
                     onClick={() => setSelectedSite(s.site)}
@@ -145,6 +170,12 @@ export default function CapacityPage() {
                   >
                     <div className="flex items-center gap-2 mb-1.5">
                       <span className="text-sm font-semibold text-slate-800 truncate">{s.site}</span>
+                      {(saturatedBySite.get(s.site) ?? 0) > 0 && (
+                        <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-red-700 bg-red-50 border border-red-200 rounded-full px-2 py-0.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                          {saturatedBySite.get(s.site)} Rocket{(saturatedBySite.get(s.site) ?? 0) > 1 ? 's' : ''} saturé{(saturatedBySite.get(s.site) ?? 0) > 1 ? 's' : ''}
+                        </span>
+                      )}
                       {s.unknown > 0 && (
                         <span
                           className="shrink-0 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5"
@@ -411,9 +442,6 @@ function SaturatedRocketsSection({
         <span className="text-xs font-semibold text-red-600 bg-red-50 border border-red-200 rounded-full px-2 py-0.5 tabular-nums">
           {rockets.length}
         </span>
-        <p className="text-xs text-blue-400 ml-1">
-          Clients installés ≥ maximum — capacité atteinte ou dépassée.
-        </p>
       </div>
       {rockets.length === 0 ? (
         <p className="py-6 text-center text-slate-400 text-sm">Aucun Rocket saturé. 🎉</p>
@@ -451,10 +479,19 @@ function SaturatedRocketsSection({
   )
 }
 
+/** Place libre : même gris neutre que la piste des cercles LTU / airMAX. */
+const FREE_TRACK = '#e2e8f0'
+
+function loadColor(pct: number): string {
+  if (pct >= 100) return 'text-red-600'
+  if (pct >= 85) return 'text-amber-600'
+  return 'text-slate-500'
+}
+
 function SiteFamilyBar({
   family, bucket, globalMax,
 }: { family: Family; bucket: CapacityBucket; globalMax: number }) {
-  const { label, used, free } = FAMILY[family]
+  const { label, used } = FAMILY[family]
 
   if (bucket.capacity <= 0) {
     if (bucket.unknown <= 0) return null
@@ -467,19 +504,25 @@ function SiteFamilyBar({
   }
 
   const trackPct = globalMax > 0 ? (bucket.capacity / globalMax) * 100 : 0
-  const usedPct = bucket.capacity > 0 ? (bucket.consumed / bucket.capacity) * 100 : 0
+  const usedPct = Math.min(100, (bucket.consumed / bucket.capacity) * 100)
+  const loadPct = Math.round((bucket.consumed / bucket.capacity) * 100)
 
   return (
     <div className="flex items-center gap-2">
       <span className="w-14 shrink-0 text-[11px] text-slate-500 text-right">{label}</span>
-      <div className="flex-1 bg-slate-50 rounded h-4 overflow-hidden relative">
-        <div className="absolute inset-y-0 left-0 flex" style={{ width: `${Math.max(trackPct, 1)}%` }}>
-          <div className="h-full" style={{ width: `${usedPct}%`, background: used }} />
-          <div className="h-full flex-1" style={{ background: free }} />
+      <div className="flex-1 h-2.5 relative">
+        <div
+          className="absolute inset-y-0 left-0 rounded-full overflow-hidden"
+          style={{ width: `${Math.max(trackPct, 1)}%`, background: FREE_TRACK }}
+        >
+          <div className="h-full rounded-full" style={{ width: `${usedPct}%`, background: used }} />
         </div>
       </div>
       <span className="w-16 shrink-0 text-[11px] font-semibold text-slate-800 text-right tabular-nums">
         {bucket.consumed}/{bucket.capacity}
+      </span>
+      <span className={`w-10 shrink-0 text-[11px] font-semibold text-right tabular-nums ${loadColor(loadPct)}`}>
+        {loadPct}%
       </span>
       <span
         className="w-8 shrink-0 text-[10px] text-amber-600 text-right tabular-nums"
@@ -498,13 +541,6 @@ function SiteRocketsTable({
 }: { site: SiteCapacity; onSaved: KeyedMutator<NetworkCapacity> }) {
   return (
     <div className="bg-white border border-blue-100 rounded-xl shadow-sm overflow-hidden">
-      <div className="px-4 pt-4 pb-2">
-        <p className="text-xs text-blue-400">
-          La <strong className="text-slate-600">capacité max</strong> est calculée automatiquement
-          (famille radio + largeur de canal). Clique « modifier » pour la fixer manuellement sur une
-          Rocket — la valeur saisie remplace alors le calcul auto.
-        </p>
-      </div>
       <table className="w-full text-sm">
         <thead>
           <tr className="bg-blue-50 text-blue-700 text-xs uppercase tracking-wide">

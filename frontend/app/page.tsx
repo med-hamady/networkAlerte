@@ -49,7 +49,7 @@ export default function DashboardPage() {
           <div>
             <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Dashboard</h1>
             <p className="text-blue-400 text-sm mt-1">
-              Supervision réseau
+              Gestion et supervision du réseau
             </p>
           </div>
           <div className="flex items-center gap-3">

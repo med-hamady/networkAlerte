@@ -12,8 +12,6 @@ import type {
   HighLatencyRow,
   LiveLinkHealthResponse,
   SignalEvidence,
-  SiteLinkHealthResponse,
-  SiteLinkRow,
 } from '@/lib/types'
 import { LR_MODEL_VARIANT_LABELS, VERDICT_LABELS } from '@/lib/types'
 
@@ -71,7 +69,7 @@ function latencyClass(ms: number | null): string {
   return 'text-slate-700'
 }
 
-type LinkTab = 'clients' | 'sites' | 'latency'
+type LinkTab = 'clients' | 'latency'
 
 export default function LrHealthPage() {
   const [tab, setTab] = useState<LinkTab>('clients')
@@ -95,19 +93,12 @@ export default function LrHealthPage() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Santé des liaisons radio</h1>
-          <p className="text-blue-400 text-sm mt-1">
-            État <strong>actuel</strong> des liaisons — interrogées en direct à l'ouverture.
-            Deux familles : les <strong>liaisons clients</strong> (LR) et les
-            <strong> liaisons entre sites</strong> (backhaul airFiber 60). Seules les liaisons
-            dégradées sont surfacées.
-          </p>
         </div>
       </div>
 
       <div className="inline-flex rounded-xl border border-blue-100 bg-white p-1 shadow-sm">
         {([
           { id: 'clients' as const, label: 'Liaisons des clients' },
-          { id: 'sites' as const,   label: 'Liaisons des sites' },
           { id: 'latency' as const, label: 'Latence élevée' },
         ]).map(t => (
           <button
@@ -126,7 +117,6 @@ export default function LrHealthPage() {
       </div>
 
       {tab === 'clients' && <ClientLinksSection onOpenDevice={openDevice} />}
-      {tab === 'sites' && <SiteLinksSection onOpenDevice={openDevice} />}
       {tab === 'latency' && <HighLatencySection onOpenDevice={openDevice} />}
     </div>
 
@@ -372,126 +362,6 @@ function ClientLinksSection({ onOpenDevice }: { onOpenDevice: (id: number) => vo
               </div>
             </div>
           ))}
-        </div>
-      )}
-    </section>
-  )
-}
-
-// ─── Liaisons entre sites (Point-à-Point) — backhaul airFiber 60 ──────────────
-// Critère UNIQUE : dernière capacité totale < plancher (1.95 Gb/s), lue en base.
-function gbps(mbps: number | null): string {
-  if (mbps === null) return '—'
-  return `${(mbps / 1000).toFixed(2)} Gb/s`
-}
-
-// AF60 se lit en Gb/s ; un backhaul airMAX (capacité bien plus faible) en Mb/s.
-function capDisplay(mbps: number | null, linkType: string): string {
-  if (mbps === null) return '—'
-  return linkType === 'af60' ? gbps(mbps) : `${mbps.toFixed(0)} Mb/s`
-}
-
-function SiteLinksSection({ onOpenDevice }: { onOpenDevice: (id: number) => void }) {
-  const { data, isLoading } = useSWR<SiteLinkHealthResponse>(
-    endpoints.siteLinks,
-    fetcher,
-    { refreshInterval: 60_000 },
-  )
-
-  const items: SiteLinkRow[] = data?.items ?? []
-  const noData = data?.no_data_count ?? 0
-
-  return (
-    <section className="space-y-4">
-      <div>
-        <h2 className="text-lg font-bold text-blue-900 tracking-tight">Liaisons entre sites (Point-à-Point)</h2>
-        <p className="text-blue-400 text-sm mt-1">
-          Backhauls <strong>airFiber 60</strong> et <strong>liaisons P2P airMAX</strong>.
-          Un lien est surfacé dès que sa <strong>dernière capacité totale</strong> passe
-          sous son plancher (1,95 Gb/s pour l'AF60, plancher dédié pour l'airMAX ;
-          dernière valeur en base, sans interrogation live).
-        </p>
-        {noData > 0 && (
-          <p className="text-blue-300 text-xs mt-1">
-            {noData} lien{noData > 1 ? 's' : ''} sans relevé de capacité — non évalué{noData > 1 ? 's' : ''}.
-          </p>
-        )}
-      </div>
-
-      {isLoading ? (
-        <div className="bg-white border border-blue-100 rounded-xl px-6 py-12 text-center text-blue-300 shadow-sm">
-          Chargement…
-        </div>
-      ) : items.length === 0 ? (
-        <div className="bg-white border border-blue-100 rounded-xl px-6 py-12 text-center shadow-sm">
-          <p className="text-green-600 font-semibold text-sm">✓ Toutes les liaisons entre sites sont au-dessus de leur plancher de capacité</p>
-          <p className="text-blue-400 text-xs mt-1">Aucun lien P2P (AF60 ou airMAX) dégradé en ce moment</p>
-        </div>
-      ) : (
-        <div className="bg-white border border-blue-100 rounded-xl overflow-hidden shadow-sm">
-          <div className="flex items-center gap-2 px-4 py-2.5 border-b bg-red-50 border-red-200 text-red-700">
-            <span className="text-xs font-bold uppercase tracking-widest">Capacité dégradée</span>
-            <span className="ml-auto text-xs font-semibold opacity-70">
-              {items.length} lien{items.length > 1 ? 's' : ''}
-            </span>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-blue-50 border-b border-blue-100">
-                <tr>
-                  {['Liaison', 'Distance', 'Capacité totale', 'Signal', 'SNR', ''].map(h => (
-                    <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-blue-50">
-                {items.map(row => (
-                  <tr key={row.device_id} className="hover:bg-blue-50/60 transition-colors align-top">
-
-                    <td className="px-4 py-3">
-                      <div className="text-slate-800 font-medium">{row.name}</div>
-                      <div className="text-blue-300 font-mono text-[11px]">{row.ip ?? '—'}</div>
-                      <div className="text-blue-400 text-[11px]">
-                        {row.link_type === 'af60' ? 'airFiber 60' : 'Liaison P2P (airMAX)'}
-                      </div>
-                    </td>
-
-                    <td className="px-4 py-3 text-xs whitespace-nowrap text-blue-400">
-                      {row.distance_m !== null ? `${Math.round(row.distance_m)} m` : '—'}
-                    </td>
-
-                    <td className="px-4 py-3 whitespace-nowrap">
-                      <span className="text-red-600 font-semibold"
-                            title={`Plancher : ${capDisplay(row.capacity_floor_mbps, row.link_type)}`}>
-                        {capDisplay(row.latest_total_capacity_mbps, row.link_type)}
-                      </span>
-                      <div className="text-blue-300 text-[11px]">plancher {capDisplay(row.capacity_floor_mbps, row.link_type)}</div>
-                    </td>
-
-                    <td className="px-4 py-3 text-xs whitespace-nowrap text-slate-700">
-                      {fmt(row.latest_signal_dbm, ' dBm')}
-                    </td>
-
-                    <td className="px-4 py-3 text-xs whitespace-nowrap text-slate-700">
-                      {fmt(row.latest_snr_db, ' dB', 1)}
-                    </td>
-
-                    <td className="px-4 py-3 whitespace-nowrap">
-                      <button
-                        type="button"
-                        onClick={() => onOpenDevice(row.device_id)}
-                        className="text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline"
-                      >
-                        Voir l'équipement →
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
         </div>
       )}
     </section>

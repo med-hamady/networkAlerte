@@ -42,9 +42,7 @@ const FILTERS: { value: Filter; label: string; count?: keyof AccessStats }[] = [
   { value: 'all',                label: 'Tous'             },
   { value: 'active',             label: 'Accès actif'      },
   { value: 'blocked',            label: 'Bloqués', count: 'blocked' },
-  { value: 'blocked_whatsapp',   label: 'WhatsApp autorisé' },
   { value: 'bridge',             label: 'Mode bridge ⚠'    },
-  { value: 'disconnected',       label: 'Hors ligne > 1 mois' },
   { value: 'out_of_supervision', label: 'Hors supervision', count: 'out_of_supervision' },
 ]
 
@@ -109,29 +107,21 @@ export default function AccessPage() {
           label="Clients (total)"
           value={stats.total}
           tone="blue"
-          sub={stats.disconnected > 0 ? `${stats.disconnected} hors ligne > 1 mois` : undefined}
         />
         <StatCard
           label="Accès actif"
           value={stats.active}
           tone="green"
-          sub={stats.out_of_supervision > 0
-            ? `${stats.out_of_supervision} hors supervision exclu${stats.out_of_supervision > 1 ? 's' : ''}`
-            : undefined}
         />
         <StatCard
           label="Bloqués"
           value={stats.blocked_full + stats.blocked_whatsapp}
           tone="red"
-          sub={stats.blocked_full + stats.blocked_whatsapp > 0
-            ? `${stats.blocked_full} total · ${stats.blocked_whatsapp} WhatsApp`
-            : undefined}
         />
         <StatCard
           label="Mode bridge"
           value={stats.bridge}
           tone={stats.bridge > 0 ? 'amber' : 'slate'}
-          sub={stats.bridge > 0 ? 'à reconfigurer' : undefined}
         />
       </div>
       )}
@@ -257,7 +247,7 @@ export default function AccessPage() {
             <table className="w-full text-sm">
               <thead className="bg-blue-50 border-b border-blue-100">
                 <tr>
-                  {['Client', 'Topologie', 'État', 'Coupé depuis', 'Action'].map(h => (
+                  {['Client', 'État', 'Coupé depuis', 'Action'].map(h => (
                     <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
                       {h}
                     </th>
@@ -276,9 +266,6 @@ export default function AccessPage() {
                         {lr.uisp_ap_name && (
                           <div className="text-blue-300 text-[10px] mt-0.5">AP : {lr.uisp_ap_name}</div>
                         )}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <TopologyBadge mode={lr.effective_mode} />
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">
                         {/* ⚠️ Voir la page et couper un abonné sont deux droits
@@ -395,46 +382,10 @@ function StatCard({ label, value, tone, sub }: {
 
 /* ─── Badges ─────────────────────────────────────────────────────────── */
 
-// Mode is sourced entirely from the UISP snapshot (uisp_mode).
-function TopologyBadge({ mode }: { mode: 'router' | 'bridge' | 'unknown' }) {
-  if (mode === 'bridge') {
-    return (
-      <span
-        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-[11px] font-semibold"
-        title="Mauvaise configuration (UISP) — le blocage ne peut pas fonctionner. Repasse le LR en mode routeur."
-      >
-        ⚠ Bridge
-      </span>
-    )
-  }
-  if (mode === 'router') {
-    return (
-      <span
-        className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-50 border border-slate-200 text-slate-600 text-[11px] font-semibold"
-        title="Mode routeur (UISP) — le blocage client fonctionne."
-      >
-        Routeur
-      </span>
-    )
-  }
-  return (
-    <span
-      className="inline-flex items-center px-2 py-0.5 rounded-md bg-blue-50 border border-blue-200 text-blue-400 text-[11px] font-semibold"
-      title="UISP ne rapporte pas de mode pour ce LR."
-    >
-      Inconnue
-    </span>
-  )
-}
-
+// Le mode « WhatsApp autorisé » est masqué de cette page (décision opérateur
+// du 2026-09-19) : une ligne bloquée dans ce mode n'affiche que « ● Bloqué ».
 function ModeBadge({ mode }: { mode: 'full' | 'whatsapp_only' }) {
-  if (mode === 'whatsapp_only') {
-    return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-amber-100 text-amber-800 text-[11px] font-semibold">
-        WhatsApp autorisé
-      </span>
-    )
-  }
+  if (mode === 'whatsapp_only') return null
   return (
     <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-red-100 text-red-700 text-[11px] font-semibold">
       Coupure totale

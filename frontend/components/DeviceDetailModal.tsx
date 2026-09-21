@@ -5,7 +5,7 @@ import useSWR, { useSWRConfig } from 'swr'
 import { controlPowerOutput, deleteDevice, endpoints, fetcher, runDiag } from '@/lib/api'
 import { PERM, usePermissions } from '@/lib/permissions'
 import type { DiagResult, PowerOutputAction, PowerOutputState } from '@/lib/api'
-import type { Device, DeviceMetrics, NetworkCapacity, RocketCapacity } from '@/lib/types'
+import type { Device, DeviceMetrics, Lr, NetworkCapacity, RocketCapacity } from '@/lib/types'
 import { deviceLabel, formatDate, timeAgo, formatBytes, formatUptime, parentRocketId } from '@/lib/types'
 import { useThresholds } from '@/lib/useThresholds'
 import DeviceImage, { devicePhotoVariant } from './DeviceImage'
@@ -269,6 +269,9 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
                     : <span className="text-blue-300">non rattachée</span>
               }
             />
+          )}
+          {device.device_type === 'lr' && (
+            <MetricRow label="Client UISP" value={<CrmAttachment lr={device} />} />
           )}
           {device.location && <MetricRow label="Localisation" value={device.location} />}
           <MetricRow
@@ -1091,6 +1094,47 @@ function Section({ title, children }: { title: React.ReactNode; children: React.
 function formatRate(mbps: number): string {
   if (mbps < 1) return `${Math.round(mbps * 1000)} kbps`
   return `${mbps.toFixed(1)} Mbps`
+}
+
+/**
+ * Rattachement de l'abonné à un client CRM dans UISP.
+ *
+ * ⚠️ « Absent de UISP » et « non rattaché » sont deux états distincts : dans le
+ * premier on ne sait rien (le contrôleur ne connaît pas l'équipement), dans le
+ * second UISP le connaît mais ne l'a rattaché à aucun client — donc
+ * potentiellement non facturé.
+ */
+function CrmAttachment({ lr }: { lr: Lr }) {
+  if (!lr.uisp_synced_at) {
+    return <span className="text-blue-300">— Absent de UISP</span>
+  }
+  if (lr.uisp_crm_client_id) {
+    return (
+      <span className="text-green-700 font-semibold">
+        ✓ {lr.uisp_crm_client_name ?? 'Client'}
+        <span className="ml-1.5 font-mono font-normal text-[11px] text-blue-400">
+          id {lr.uisp_crm_client_id}
+        </span>
+      </span>
+    )
+  }
+  return (
+    <span
+      className="text-amber-700 font-semibold"
+      title={
+        lr.uisp_site_name
+          ? `Rattaché au site UISP « ${lr.uisp_site_name} », qui n'a aucun client CRM`
+          : "Présent dans UISP mais rattaché à aucun client (« unknown »)"
+      }
+    >
+      ⚠ Non rattaché
+      {lr.uisp_site_name && (
+        <span className="block text-[11px] font-normal text-blue-400">
+          site « {lr.uisp_site_name} » sans client CRM
+        </span>
+      )}
+    </span>
+  )
 }
 
 function MetricRow({ label, value }: { label: string; value: React.ReactNode }) {

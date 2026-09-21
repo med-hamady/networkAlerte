@@ -21,6 +21,7 @@ déployer — pas après qu'il l'a découvert en production.
 
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -103,7 +104,7 @@ class FakeSession:
     """Session factice : rend `lr` à la recherche par MAC, compte les rollbacks."""
 
     def __init__(self, lr=None, *, with_lr: bool = True):
-        self.lr = lr if lr is not None else (object() if with_lr else None)
+        self.lr = lr if lr is not None else (SimpleNamespace() if with_lr else None)
         self.rollbacks = 0
 
     async def execute(self, _stmt):
@@ -238,10 +239,14 @@ async def test_a_device_owned_by_another_client_is_refused_and_names_the_owner(m
 async def test_force_moves_a_device_owned_by_another_client(monkeypatch):
     fake = _wire(monkeypatch, [[_device(site_id="site-1369")]])
 
-    report = await svc.assign_device_to_crm_client(FakeSession(), MAC_IN, "1361", reassign=True)
+    session = FakeSession()
+    report = await svc.assign_device_to_crm_client(session, MAC_IN, "1361", reassign=True)
 
     assert report["assigned"] is True
     assert fake.assigned == [("dev-1", "site-1361")]
+    # La fiche de l'abonné porte le NOUVEAU client tout de suite, sans attendre
+    # le sync quotidien.
+    assert session.lr.uisp_crm_client_id == "1361"
 
 
 async def test_the_refusal_also_applies_to_a_device_found_after_registration(monkeypatch, fast_wait):

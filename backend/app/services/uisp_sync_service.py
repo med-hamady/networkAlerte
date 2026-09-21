@@ -618,6 +618,29 @@ def _build_station_ap_map(links: list[dict]) -> dict[str, str]:
     return {sid: name for sid, (_, name) in chosen.items()}
 
 
+def crm_attachment(dev: dict, sites_by_id: dict[str, dict]) -> dict[str, str | None]:
+    """Rattachement CRM d'une station UISP → valeurs des colonnes `uisp_site_name`,
+    `uisp_crm_client_id`, `uisp_crm_client_name`.
+
+    La station porte son site (`identification.site`), et c'est le SITE qui porte
+    le client CRM (`ucrm.client`) — même plomberie que `uisp_assignment_service`.
+    Pas de site = « unknown » dans UISP. Un site sans lien CRM (créé à la main
+    dans UISP) garde son nom mais aucun client : c'est un non-rattachement au
+    sens facturation, et la fiche le montre comme tel.
+    """
+    site = (dev.get("identification") or {}).get("site") or {}
+    site_id = site.get("id")
+    if not site_id:
+        return {"uisp_site_name": None, "uisp_crm_client_id": None, "uisp_crm_client_name": None}
+    client = ((sites_by_id.get(site_id) or {}).get("ucrm") or {}).get("client") or {}
+    client_id = str(client.get("id")).strip() if client.get("id") is not None else None
+    return {
+        "uisp_site_name": site.get("name"),
+        "uisp_crm_client_id": client_id or None,
+        "uisp_crm_client_name": client.get("name") if client_id else None,
+    }
+
+
 def _norm_name(value: str | None) -> str:
     """Clé de rapprochement d'un nom d'AP (UISP ↔ notre inventaire).
 
@@ -803,6 +826,19 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
         logger.warning("UISP data-links fetch failed (%s) — using apDevice attribution only", exc)
         ap_by_station = {}
 
+    # Sites → client CRM, pour le rattachement affiché sur la fiche. Meilleur
+    # effort, comme les data-links : en cas d'échec on NE TOUCHE PAS aux colonnes
+    # de rattachement (les effacer ferait passer tout le parc pour « non
+    # rattaché » à cause d'un appel raté).
+    try:
+        sites_by_id: dict[str, dict] | None = {
+            sid: s for s in await client.fetch_sites()
+            if (sid := (s.get("identification") or {}).get("id"))
+        }
+    except Exception as exc:  # noqa: BLE001 — non-fatal, rattachement laissé en l'état
+        logger.warning("UISP sites fetch failed (%s) — CRM attachment left unchanged", exc)
+        sites_by_id = None
+
     # Every MAC UISP currently lists as a station — used after the loop to clear
     # the AP attribution of rows UISP no longer knows (deprovisioned clients).
     roster_macs: set[str] = set()
@@ -887,6 +923,9 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
             ((dev.get("attributes") or {}).get("apDevice") or {}).get("name")
         )
         model_name = ident.get("modelName") or model
+        crm = crm_attachment(dev, sites_by_id) if sites_by_id is not None else None
+        if crm is not None and crm["uisp_crm_client_id"] is None:
+            summary["crm_unassigned"] = summary.get("crm_unassigned", 0) + 1
 
         match = by_mac.get(mac)
         if match is not None:
@@ -903,6 +942,9 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
                 match.uisp_last_seen = last_seen
                 match.uisp_ap_name = ap_name
                 match.uisp_synced_at = now
+                if crm is not None:
+                    for key, value in crm.items():
+                        setattr(match, key, value)
                 await _adopt_uisp_attribution(
                     session, match, ap_name, ip, uisp_status, last_seen,
                     rockets_by_norm_name, claimed_ips, summary,
@@ -940,6 +982,7 @@ async def sync_uisp_stations(session: AsyncSession, *, dry_run: bool = False) ->
                 uisp_last_seen=last_seen,
                 uisp_ap_name=ap_name,
                 uisp_synced_at=now,
+                **(crm or {}),
             )
             session.add(lr)
             await session.flush()

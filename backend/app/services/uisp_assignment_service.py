@@ -542,9 +542,23 @@ async def assign_device_to_crm_client(
             "message": "Équipement déjà connu du contrôleur — clé en place.",
         })
 
-    return await _associate(
+    report = await _associate(
         uisp, report, device, site_id, all_sites, normalized, crm_client_id, reassign,
     )
+    if report["assigned"]:
+        # La fiche doit le montrer TOUT DE SUITE, sans attendre le sync quotidien.
+        # Committé par l'appelant (`get_db`) avec le reste de la requête. Lecture
+        # puis affectation, JAMAIS un `update(Lr)` groupé : `mac_address` vit sur
+        # `devices`, et un UPDATE de sous-classe filtré sur une colonne du
+        # parent lève en 500 (piège déjà rencontré).
+        lr = (
+            await session.execute(select(Lr).where(Lr.mac_address == normalized))
+        ).scalar_one_or_none()
+        if lr is not None:
+            lr.uisp_site_name = (site.get("identification") or {}).get("name")
+            lr.uisp_crm_client_id = str(crm.get("id")) if crm.get("id") is not None else None
+            lr.uisp_crm_client_name = crm.get("name")
+    return report
 
 
 async def _associate(

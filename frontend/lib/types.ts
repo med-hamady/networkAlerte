@@ -72,6 +72,14 @@ export interface Lr extends DeviceBase {
    *  OUT_OF_SUPERVISION_DAYS : aucune source ne mesure cet abonné. Ni une
    *  panne constatée ni un accès actif — l'UI le distingue d'un « INCONNU ». */
   out_of_supervision: boolean
+  /** Rattachement au client CRM dans UISP. `uisp_synced_at` nul = absent de
+   *  UISP ; présent sans `uisp_crm_client_id` = « unknown » dans UISP. Mis à
+   *  jour au sync quotidien et juste après un rattachement fait depuis
+   *  /access-diagnostics. */
+  uisp_synced_at: string | null
+  uisp_site_name: string | null
+  uisp_crm_client_id: string | null
+  uisp_crm_client_name: string | null
 }
 
 export type BlockMode = 'full' | 'whatsapp_only'

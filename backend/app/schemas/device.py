@@ -414,6 +414,13 @@ class LrRead(_DeviceBaseRead):
     # actif. L'UI le dit explicitement au lieu d'un « INCONNU » rouge, que
     # l'opérateur lisait comme une panne (12 % du parc en prod le 2026-07-22).
     out_of_supervision: bool = False
+    # Rattachement au client CRM dans UISP (cf. `models.device.Lr`). Trois états
+    # que la fiche distingue : `uisp_synced_at` nul = absent de UISP ; présent
+    # sans `uisp_crm_client_id` = « unknown » dans UISP ; sinon rattaché.
+    uisp_synced_at: datetime.datetime | None = None
+    uisp_site_name: str | None = None
+    uisp_crm_client_id: str | None = None
+    uisp_crm_client_name: str | None = None
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs: Any) -> "LrRead":

@@ -363,6 +363,22 @@ class Lr(Device):
     uisp_synced_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
+    # Rattachement au client CRM dans UISP — affiché sur la fiche. Écrit par le
+    # sync quotidien des stations, et tout de suite après un rattachement fait
+    # depuis notre page (`uisp_assignment_service`). Un rattachement fait
+    # DIRECTEMENT dans UISP n'apparaît qu'au sync suivant.
+    #
+    # ⚠️ Trois états, qu'il ne faut pas confondre :
+    #   * `uisp_synced_at` NULL → absent de UISP : on ne sait RIEN du rattachement ;
+    #   * présent, `uisp_crm_client_id` NULL → « unknown » dans UISP (ou rattaché à
+    #     un site sans client CRM — `uisp_site_name` le dit) : potentiellement
+    #     non facturé ;
+    #   * `uisp_crm_client_id` renseigné → rattaché à ce client.
+    # ⚠️ `uisp_site_name` est le site UISP du client, PAS `location` (notre site
+    # d'infra, déduit du Rocket).
+    uisp_site_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    uisp_crm_client_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    uisp_crm_client_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     # Dernier enrôlement UISP RÉUSSI poussé par nous (ssh_service.set_uisp_key) :
     # le contrôleur avait bien adopté l'équipement à cette date. Distingue les

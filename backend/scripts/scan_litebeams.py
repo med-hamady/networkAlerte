@@ -18,9 +18,9 @@ Se lance donc tel quel dans le conteneur backend, sur le serveur, ou sous Window
 
 Exemples :
     # dans le conteneur backend sur le serveur :
-    dc exec backend python scripts/scan_litebeams.py
-    dc exec backend python scripts/scan_litebeams.py 10.135.81.2
-    dc exec backend python scripts/scan_litebeams.py 10.135.25.1 --only 10.135.7.197
+    dc exec backend python scripts/scan_litebeams.py                 # Rocket par defaut 10.135.155.2
+    dc exec backend python scripts/scan_litebeams.py 10.135.81.2     # un autre Rocket
+    dc exec backend python scripts/scan_litebeams.py 10.135.155.2 --only 10.135.x.y   # une seule LiteBeam
 
     # directement (poste avec paramiko installe) :
     python scan_litebeams.py
@@ -45,7 +45,7 @@ from collections import defaultdict
 import paramiko
 
 # --- Reglages ---
-ROCKET_DEFAULT = "10.135.25.1"
+ROCKET_DEFAULT = "10.135.155.2"
 SSH_USER = "ubnt"
 # Mots de passe SSH essayes sur le ROCKET (le 1er qui marche est retenu).
 ROCKET_PWDS = ["A2AT1@4321$A2", "A2HQ@87654321", "A2HQ@4321", "ubnt"]

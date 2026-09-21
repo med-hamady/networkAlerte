@@ -11,6 +11,26 @@ interface Props {
 
 export default function SiteOverviewCard({ site, onShowPannes, onShowEquipment }: Props) {
   const hasPannes = site.pannes > 0
+  // ⚠️ Le PYLÔNE ne rougit QUE si le switch du site est tombé — pas sur
+  // `hasPannes`, qui compte tous les équipements d'infra en panne.
+  //
+  // Le switch porte tout ce qui est derrière lui : s'il tombe, le site est
+  // coupé. Un Rocket secteur ou un UISP Power hors ligne est une panne LOCALE,
+  // qui ne met pas le site à terre — peindre le pylône en rouge envoie
+  // l'opérateur chercher une panne de site là où il n'y en a pas. Même
+  // raisonnement que la carte `/topology`, où seul un site ENTIÈREMENT tombé
+  // rougit ses liaisons.
+  //
+  // La panne locale reste visible sans ambiguïté : le compteur « Pannes » en
+  // rouge, le bouton de détail, et « Alim. hors ligne » à côté du pylône pour
+  // un UISP Power. C'est la couleur du pylône qui cesse de mentir, pas
+  // l'information qui disparaît.
+  //
+  // ⚠️ Conséquence assumée : un site dont l'inventaire ne porte AUCUN switch
+  // ne peut jamais rougir. `down_devices` liste tous les équipements d'infra
+  // `down` (sans troncature, cf. `fn_site_overview`), donc un switch tombé y
+  // figure toujours — l'absence vient de l'inventaire, jamais de la requête.
+  const switchDown = site.down_devices.some((d) => d.device_type === 'uisp_switch')
   const downFor = site.down_since
     ? formatUptime(Math.max(0, Math.floor((Date.now() - new Date(site.down_since).getTime()) / 1000)))
     : null
@@ -40,7 +60,7 @@ export default function SiteOverviewCard({ site, onShowPannes, onShowEquipment }
             l'alimentation, pour que le pylône reste centré sur la carte. */}
         <div className="w-full grid grid-cols-[1fr_auto_1fr] items-center gap-2 px-4">
           <div />
-          <SitePylon down={hasPannes} />
+          <SitePylon down={switchDown} />
           <div className="min-w-0 justify-self-end space-y-2">
             {site.power_devices.map(d => (
               <SitePowerCompact key={d.id} device={d} showName={site.power_devices.length > 1} />
@@ -100,11 +120,12 @@ export default function SiteOverviewCard({ site, onShowPannes, onShowEquipment }
 }
 
 /**
- * Pylône d'antenne dessiné en SVG, coloré par l'état du site : vert quand il
- * fonctionne (avec des ondes qui pulsent), rouge avec des ondes éteintes quand
- * il a au moins un équipement d'infra en panne — même seuil que le reste de la
- * carte (`site.pannes > 0`), pour que le dessin ne dise jamais autre chose que
- * les chiffres en dessous.
+ * Pylône d'antenne dessiné en SVG : vert avec des ondes qui pulsent quand le
+ * site est debout, rouge avec des ondes éteintes quand son SWITCH est tombé.
+ *
+ * ⚠️ Le seuil n'est PAS `site.pannes > 0` (il l'a été) : le pylône dit si le
+ * SITE est coupé, pas s'il a une avarie. Voir le commentaire de `switchDown`
+ * dans la carte pour le pourquoi.
  */
 function SitePylon({ down }: { down: boolean }) {
   const tower = down ? 'text-red-500' : 'text-emerald-600'

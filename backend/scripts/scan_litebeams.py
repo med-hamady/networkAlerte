@@ -48,7 +48,8 @@ import paramiko
 ROCKET_DEFAULT = "10.135.155.2"
 SSH_USER = "ubnt"
 # Mots de passe SSH essayes sur le ROCKET (le 1er qui marche est retenu).
-ROCKET_PWDS = ["A2PK1@4321$A2", "A2AT1@4321$A2", "A2HQ@87654321", "A2HQ@4321", "ubnt"]
+ROCKET_PWDS = ["A2PK1@4321$a2", "A2PK1@4321$A2", "A2AT1@4321$A2",
+               "A2HQ@87654321", "A2HQ@4321", "ubnt"]
 # Login de l'API web des LiteBeam.
 LB_WEB_USER = "ubnt"
 LB_WEB_PWDS = ["A2HQ@87654321", "A2HQ@4321", "ubnt"]

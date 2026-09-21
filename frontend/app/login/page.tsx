@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, FormEvent, Suspense } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useSearchParams } from 'next/navigation'
 import { firstAllowedRoute } from '@/lib/permissions'
 
 /**
@@ -14,7 +14,6 @@ import { firstAllowedRoute } from '@/lib/permissions'
  * (carried in `?next=` by the auth middleware) — or `/` by default.
  */
 function LoginForm() {
-  const router = useRouter()
   const searchParams = useSearchParams()
   const next = searchParams.get('next') || '/'
 
@@ -61,7 +60,23 @@ function LoginForm() {
       const nextAllowed = next !== '/'
         && (nextPermission === '' || can(nextPermission))
       const target = nextAllowed ? next : firstAllowedRoute(can) ?? '/'
-      router.replace(target)
+      // ⚠️ Rechargement COMPLET, pas `router.replace` : une navigation douce
+      // garde toute la mémoire de la page précédente, cache SWR compris. Or
+      // celui-ci retient l'erreur 401 de la session qui vient d'expirer, sur
+      // la clé /auth/me — et la barre latérale, en se remontant, la recevait
+      // du cache avant même d'avoir redemandé quoi que ce soit : elle
+      // repartait vers /login alors que le cookie tout neuf était valide.
+      // L'utilisateur devait s'y reprendre à plusieurs fois, sans jamais voir
+      // d'erreur, ses identifiants étant corrects depuis le début. Les logs
+      // nginx du 2026-09-21 le montrent en creux : POST /auth/login 200, puis
+      // AUCUN appel à /auth/me, puis un second POST — la décision de le
+      // renvoyer au login était prise sans que le serveur ait été consulté.
+      //
+      // Un rechargement repart d'une page vierge : aucun état ne survit à la
+      // connexion, ce qui est de toute façon ce qu'on veut au changement
+      // d'utilisateur (les données du compte précédent ne traînent pas). Il
+      // coûte un chargement de page, une fois par connexion.
+      window.location.assign(target)
     } catch (err) {
       setError((err as Error).message || 'Erreur réseau.')
       setSubmitting(false)

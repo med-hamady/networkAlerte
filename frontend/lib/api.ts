@@ -22,9 +22,28 @@ import type {
 // un utilisateur, pas comme une machine. See app/api/proxy/[...path]/route.ts.
 const API_BASE = '/api/proxy'
 
+/**
+ * Erreur d'un appel API qui PORTE SON STATUT HTTP.
+ *
+ * ⚠️ Sans ce statut, un 401 (« ta session est morte ») et un 502/503/504
+ * (« le serveur a hoqueté ») sont rigoureusement indistinguables pour
+ * l'appelant — or la barre latérale DÉCONNECTE l'utilisateur sur cette
+ * erreur. Un hoquet passager renvoyait donc un opérateur parfaitement
+ * authentifié sur l'écran de connexion, sans message.
+ */
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(status: number) {
+    super(`HTTP ${status}`)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
 export const fetcher = (url: string) =>
   fetch(url).then((r) => {
-    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    if (!r.ok) throw new ApiError(r.status)
     return r.json()
   })
 

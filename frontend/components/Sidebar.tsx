@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import useSWR from 'swr'
-import { endpoints, fetcher, logout, type CurrentUser } from '@/lib/api'
+import { ApiError, endpoints, fetcher, logout, type CurrentUser } from '@/lib/api'
 import { PERM, usePermissions } from '@/lib/permissions'
 import type { HealthResponse } from '@/lib/types'
 
@@ -164,11 +164,43 @@ export default function Sidebar() {
   // in the user menu, (b) trigger a redirect to /login if the session is gone
   // (an expired cookie returns 401 → fetcher throws → SWR returns no data;
   // we treat that as "logged out" and bounce to the login page).
-  const { data: currentUser, error: userError } = useSWR<CurrentUser>(
-    endpoints.authMe,
-    fetcher,
-    { refreshInterval: 60_000, shouldRetryOnError: false },
-  )
+  const { data: currentUser, error: userError, isValidating: userValidating } =
+    useSWR<CurrentUser>(
+      endpoints.authMe,
+      fetcher,
+      { refreshInterval: 60_000, shouldRetryOnError: false },
+    )
+  // L'erreur que SWR avait DÉJÀ en cache au montage de ce composant. Elle ne
+  // prouve rien sur la session courante : elle a pu être produite par la
+  // session précédente, avant une reconnexion.
+  //
+  // ⚠️ C'est la condition qui corrige le défaut du 2026-09-21. SWR garde
+  // l'erreur d'une clé dans son cache GLOBAL, et `router.replace` est une
+  // navigation douce qui ne vide rien : après connexion, ce composant se
+  // remontait et recevait le 401 de la session MORTE — instantanément, avant
+  // d'avoir redemandé quoi que ce soit — donc repartait vers /login alors que
+  // le cookie tout neuf était valide. L'opérateur devait s'y reprendre à
+  // plusieurs fois, sans jamais voir d'erreur, ses identifiants étant corrects
+  // depuis le début. Les logs nginx le montraient en creux : POST
+  // /auth/login 200, puis AUCUN appel à /auth/me, puis un second POST — la
+  // décision de le renvoyer au login était prise sans consulter le serveur.
+  //
+  // ⚠️ Comparer les IDENTITÉS d'objet, et pas `isValidating` seul : ce drapeau
+  // peut encore valoir `false` au tout premier rendu, avant que SWR n'ait
+  // lancé sa revalidation, et l'effet repartirait sur l'erreur du cache. Le
+  // `fetcher` lève une ApiError NEUVE à chaque échec, donc un 401 réellement
+  // reçu depuis le montage ne peut pas être celui-ci. Une session vraiment
+  // expirée reste détectée : la revalidation du montage relève son 401, sous
+  // une autre instance, et la redirection part.
+  const cachedErrorAtMount = useRef(userError)
+  // ⚠️ Le statut doit être 401. Avant, TOUTE erreur déconnectait — un 502 ou
+  // un 504 passager sur ce seul appel suffisait à renvoyer un opérateur
+  // authentifié sur l'écran de login, sans le moindre message.
+  const sessionExpired =
+    !userValidating
+    && userError instanceof ApiError
+    && userError.status === 401
+    && userError !== cachedErrorAtMount.current
   const dbOk = health?.database === 'connected'
 
   // Survol : une bulle (entrée simple) ou un menu volant (entrée à sous-pages).
@@ -225,12 +257,14 @@ export default function Sidebar() {
 
   // Auto-redirect to /login if the session expired server-side (the cookie
   // exists so the middleware lets the page render, but /auth/me returns 401
-  // and the fetcher throws). One redirect per failed lookup.
+  // and the fetcher throws). Cf. `sessionExpired` ci-dessus pour les deux
+  // conditions — une erreur quelconque, ou une erreur encore en cache, ne
+  // déconnecte plus personne.
   useEffect(() => {
-    if (userError) {
+    if (sessionExpired) {
       router.replace('/login')
     }
-  }, [userError, router])
+  }, [sessionExpired, router])
 
   // ⚠️ Pendant le chargement de /auth/me on n'affiche RIEN plutôt qu'un menu
   // complet : montrer puis retirer des entrées ferait clignoter la moitié du
@@ -354,7 +388,7 @@ export default function Sidebar() {
               <span className={`w-2 h-2 rounded-full shrink-0 ${statusDot}`} />
               <span className="text-xs text-slate-600">{statusLabel}</span>
             </div>
-            {userError && (
+            {sessionExpired && (
               <p className="px-4 pt-2 text-[11px] text-red-600">Session expirée — reconnecte-toi.</p>
             )}
             <button

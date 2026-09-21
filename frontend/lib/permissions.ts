@@ -61,6 +61,7 @@ export const PERM = {
   deviceEnrollUisp: 'devices.enroll_uisp',
   devicePlanSync: 'devices.plan_sync',
   uispSync: 'uisp.sync',
+  uispAssign: 'uisp.assign',
 
   fai: 'fai.view',
   faiRequests: 'fai.requests.view',
@@ -72,7 +73,6 @@ export const PERM = {
 
   incidents: 'incidents.view',
   accessDiagnostics: 'access_diagnostics.view',
-  accessDiagnosticsEnroll: 'access_diagnostics.enroll',
   manualAlertAck: 'manual_alerts.acknowledge',
 
   reports: 'reports.view',

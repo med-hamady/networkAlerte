@@ -58,6 +58,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import unicodedata
 from typing import Any
 
 from sqlalchemy import select
@@ -216,6 +217,106 @@ def _crm_owner_of_site(sites: list[dict], site_id: str | None) -> dict:
         if (s.get("identification") or {}).get("id") == site_id:
             return _crm_client(s)
     return {}
+
+
+# ── Recherche d'un client CRM (dashboard) ────────────────────────────────────
+#
+# L'opérateur qui rattache un équipement depuis `/access-diagnostics` ne connaît
+# pas forcément l'id CRM : il tape un nom ou un id et choisit dans la liste. La
+# source est la MÊME table que `assign_device_to_crm_client` (les sites UISP, qui
+# portent `ucrm.client` / `ucrm.service`) : un client proposé est donc toujours
+# un client que le rattachement acceptera. Un client CRM sans aucun service n'a
+# pas de site, n'apparaît pas — et ne pourrait de toute façon pas être rattaché.
+#
+# ⚠️ ~1400 sites par lecture, et la recherche part à chaque frappe : les sites
+# sont gardés en mémoire `CRM_SITES_TTL_S`. Un client créé il y a moins d'une
+# minute peut manquer — l'écran le dit (« aucun client trouvé »), il suffit de
+# réessayer. Le rattachement, lui, relit toujours les sites frais.
+CRM_SITES_TTL_S = 60
+CRM_SEARCH_LIMIT = 20
+_sites_cache: tuple[float, list[dict]] | None = None
+_sites_lock = asyncio.Lock()
+
+
+def _read_client() -> uisp_service.UISPClient:
+    """Client UISP en LECTURE : la recherche n'a aucune raison de tenir le token
+    d'écriture (cf. `_client`)."""
+    s = get_settings()
+    return uisp_service.UISPClient(
+        s.uisp_base_url,
+        username=s.uisp_username,
+        password=s.uisp_password,
+        api_token=s.uisp_api_token,
+        verify_tls=s.uisp_verify_tls,
+        timeout=s.uisp_request_timeout,
+    )
+
+
+async def _cached_sites() -> list[dict]:
+    global _sites_cache
+    async with _sites_lock:
+        now = time.monotonic()
+        if _sites_cache is None or now - _sites_cache[0] > CRM_SITES_TTL_S:
+            _sites_cache = (now, await _read_client().fetch_sites())
+        return _sites_cache[1]
+
+
+def _fold(text: str) -> str:
+    """Minuscules sans accents : « Mariem » doit trouver « MARIÈM »."""
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in decomposed if not unicodedata.combining(c)).casefold().strip()
+
+
+def search_crm_clients_in(sites: list[dict], query: str, limit: int = CRM_SEARCH_LIMIT) -> list[dict]:
+    """Clients CRM dont l'id ou le nom correspond à `query` — logique pure.
+
+    Un client par entrée, avec TOUS ses services : l'écran doit pouvoir faire
+    choisir le service d'un client qui en a plusieurs (leurs noms sont souvent
+    identiques, d'où l'id rendu à côté).
+
+    ⚠️ L'id est toujours rendu avec le nom : deux clients distincts portent le
+    même nom (« Ba, Amadou » = 1361 et 1369), le nom seul ferait choisir au
+    hasard.
+    """
+    needle = _fold(query)
+    if not needle:
+        return []
+    by_id: dict[str, dict] = {}
+    for s in sites:
+        crm = _crm_client(s)
+        cid = str(crm.get("id") or "").strip()
+        if not cid:
+            continue  # site d'infra, ou site d'abonné sans lien CRM
+        entry = by_id.setdefault(
+            cid, {"crm_client_id": cid, "name": crm.get("name"), "services": []},
+        )
+        svc = _crm_service(s)
+        if svc.get("id") is not None:
+            entry["services"].append({
+                "crm_service_id": str(svc.get("id")), "name": svc.get("name"),
+            })
+
+    def rank(entry: dict) -> tuple[int, str] | None:
+        name = _fold(entry["name"] or "")
+        cid = entry["crm_client_id"]
+        if cid == needle:
+            return (0, name)
+        if name.startswith(needle):
+            return (1, name)
+        if needle in name:
+            return (2, name)
+        if needle.isdigit() and cid.startswith(needle):
+            return (3, name)
+        return None
+
+    ranked = [(r, e) for e in by_id.values() if (r := rank(e)) is not None]
+    ranked.sort(key=lambda pair: pair[0])
+    return [e for _, e in ranked[:limit]]
+
+
+async def search_crm_clients(query: str, limit: int = CRM_SEARCH_LIMIT) -> list[dict]:
+    """Recherche par nom ou id dans les clients CRM connus du contrôleur."""
+    return search_crm_clients_in(await _cached_sites(), query, limit)
 
 
 def registration_deadline(started: float, now: float) -> float:

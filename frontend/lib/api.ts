@@ -11,7 +11,8 @@ import type {
   ManualAlert,
   SystemInfo,
   Threshold,
-  UispEnrollBulkResult,
+  CrmClient,
+  UispAssignResult,
   UispEnrollResult,
 } from './types'
 
@@ -168,9 +169,12 @@ export const endpoints = {
   routerRules:          `${API_BASE}/router-rules`,
   // Diagnostics d'accès : LR qui refusent le SSH + LR vus par radio hors UISP.
   accessDiagnostics:    `${API_BASE}/access-diagnostics`,
-  // Enrôlement UISP : pose de la clé du contrôleur sur le CPE (unitaire / lot).
+  // Enrôlement UISP : pose de la clé du contrôleur sur le CPE.
   enrollUisp:           (lrId: number) => `${API_BASE}/devices/${lrId}/enroll-uisp`,
-  enrollUispBulk:       `${API_BASE}/access-diagnostics/enroll-uisp`,
+  // Rattachement à un client CRM : recherche (nom ou id) puis association.
+  crmClientSearch:      (q: string) =>
+    `${API_BASE}/access-diagnostics/crm-clients?q=${encodeURIComponent(q)}`,
+  uispAssign:           `${API_BASE}/uisp/assign`,
   // Administration : le catalogue de TOUT ce que le système sait faire, les
   // profils et les comptes. ⚠️ Le catalogue est lu au serveur et jamais recopié
   // ici : ajouter une permission côté backend la rend cochable sans toucher au
@@ -405,20 +409,43 @@ export async function enrollUisp(lrId: number, force = false): Promise<UispEnrol
   return res.json() as Promise<UispEnrollResult>
 }
 
-// `lrIds` omis = toute la population « vu par radio, absent de UISP ».
-export async function enrollUispBulk(
-  lrIds?: number[], force = false,
-): Promise<UispEnrollBulkResult> {
-  const res = await fetch(endpoints.enrollUispBulk, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lr_ids: lrIds ?? [], force }),
-  })
+// ---------------------------------------------------------------------------
+// Rattachement d'un équipement à un client CRM (même route que le système de
+// paiement). Si l'équipement est absent de UISP, le serveur lui pose d'abord la
+// clé puis attend qu'il se déclare : jusqu'à ~100 s.
+// ---------------------------------------------------------------------------
+
+export async function searchCrmClients(q: string): Promise<CrmClient[]> {
+  const res = await fetch(endpoints.crmClientSearch(q))
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
     throw new Error(err.detail ?? `HTTP ${res.status}`)
   }
-  return res.json() as Promise<UispEnrollBulkResult>
+  return ((await res.json()) as { clients: CrmClient[] }).clients
+}
+
+// Rend TOUJOURS le corps : les erreurs de cette route portent un contrat stable
+// (`error_code`, `message`, et le détenteur actuel sur `device_already_assigned`)
+// que l'écran exploite pour proposer de forcer.
+export async function assignUisp(body: {
+  mac: string
+  crm_client_id: string
+  crm_service_id?: string | null
+  force?: boolean
+}): Promise<UispAssignResult> {
+  const res = await fetch(endpoints.uispAssign, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const data = await res.json().catch(() => null)
+  if (!data || typeof data !== 'object') {
+    return {
+      assigned: false, pending_registration: false, retry_after_seconds: null,
+      error_code: 'http_error', message: `HTTP ${res.status}`,
+    }
+  }
+  return data as UispAssignResult
 }
 
 // ---------------------------------------------------------------------------

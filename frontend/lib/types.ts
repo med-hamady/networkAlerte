@@ -1424,19 +1424,27 @@ export interface UispEnrollResult {
   message: string
   uisp_enrolled_at: string | null
 }
-export interface UispEnrollBulkResult {
-  attempted: number
-  enrolled: number
-  // Déjà provisionnés pour ce contrôleur : NON modifiés. Compté à part —
-  // sinon un lot de clés orphelines ressemblerait à un succès complet alors que
-  // rien n'a été régularisé.
-  skipped: number
-  failed: number
-  results: {
-    id: number; name: string; mac: string | null
-    ok: boolean; skipped: boolean; message: string
-  }[]
-  message: string
+// Client CRM tel que le contrôleur UISP le connaît (via ses sites). L'id est
+// TOUJOURS affiché avec le nom : deux clients distincts portent le même nom.
+export interface CrmClient {
+  crm_client_id: string
+  name: string | null
+  services: { crm_service_id: string; name: string | null }[]
+}
+
+// Réponse de POST /uisp/assign — les quatre premières clés sont présentes dans
+// TOUTES les réponses, succès comme erreur (contrat stable de la route).
+export interface UispAssignResult {
+  assigned: boolean
+  pending_registration: boolean
+  retry_after_seconds: number | null
+  error_code: string | null
+  message?: string
+  client_name?: string | null
+  key_injected?: boolean
+  // Sur `device_already_assigned` : à qui l'équipement appartient déjà.
+  current_crm_client_id?: string | null
+  current_client_name?: string | null
 }
 
 // ─── Historique des courbes de la fiche équipement (lr_metric_samples) ──────

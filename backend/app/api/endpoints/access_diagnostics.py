@@ -9,13 +9,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_permission
 from app.db.session import get_db
-from app.services import access_diagnostics_service, uisp_enrollment_service
+from app.services import (
+    access_diagnostics_service,
+    uisp_assignment_service,
+    uisp_enrollment_service,
+    uisp_service,
+)
 
 router = APIRouter()
 
@@ -26,6 +32,29 @@ router = APIRouter()
 async def get_access_diagnostics(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     """LR refusant le SSH + LR découverts par radio mais absents de UISP."""
     return await access_diagnostics_service.get_access_diagnostics(db)
+
+
+@router.get("/crm-clients",
+    dependencies=[Depends(require_permission("uisp.assign"))],
+)
+async def search_crm_clients(
+    q: str = Query(..., min_length=1, max_length=100),
+) -> dict[str, Any]:
+    """Clients CRM par nom ou id — la liste où l'opérateur choisit à qui
+    rattacher un équipement (colonne « Action » de la page).
+
+    ⚠️ Ici et PAS dans `uisp_assign.py` : ce router porte la clé cloisonnée du
+    système de paiement, et une dépendance de router étant additive, toute
+    route ajoutée là-bas s'ouvrirait à cette clé en silence. Même droit que le
+    rattachement lui-même (`uisp.assign`) : chercher un client ne sert qu'à ça.
+    """
+    if not uisp_assignment_service.is_configured():
+        raise HTTPException(status_code=409, detail="UISP non configuré (UISP_BASE_URL + token).")
+    try:
+        clients = await uisp_assignment_service.search_crm_clients(q)
+    except (uisp_service.UISPAuthError, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=502, detail=f"Contrôleur UISP injoignable : {exc}") from exc
+    return {"clients": clients}
 
 
 class EnrollUispRequest(BaseModel):

@@ -202,15 +202,20 @@ def test_the_call_budget_fits_under_the_proxy_timeout():
     conf = REPO_ROOT / "nginx" / "nginx.conf"
     if not conf.exists():
         pytest.skip("nginx.conf hors de portée (tests lancés dans le conteneur backend)")
-    block = re.search(
-        r"location \^~ /api/v1/uisp/assign \{(.*?)\}", conf.read_text(encoding="utf-8"), re.S,
-    )
-    assert block, "location /api/v1/uisp/assign introuvable dans nginx.conf"
-    timeout = int(re.search(r"proxy_read_timeout\s+(\d+)s;", block.group(1)).group(1))
-    assert timeout >= svc.CALL_BUDGET_S + 15, (
-        f"proxy_read_timeout {timeout}s ne couvre pas CALL_BUDGET_S={svc.CALL_BUDGET_S}s "
-        f"+ 15 s de marge — le proxy couperait des associations réussies"
-    )
+    text = conf.read_text(encoding="utf-8")
+    # Deux chemins mènent à la route : l'appel direct du système de paiement, et
+    # le proxy du dashboard (bouton « Rattacher » de /access-diagnostics).
+    for location in ("/api/v1/uisp/assign", "/api/proxy/uisp/assign"):
+        block = re.search(
+            r"location \^~ " + re.escape(location) + r" \{(.*?)\}", text, re.S,
+        )
+        assert block, f"location {location} introuvable dans nginx.conf"
+        timeout = int(re.search(r"proxy_read_timeout\s+(\d+)s;", block.group(1)).group(1))
+        assert timeout >= svc.CALL_BUDGET_S + 15, (
+            f"{location} : proxy_read_timeout {timeout}s ne couvre pas "
+            f"CALL_BUDGET_S={svc.CALL_BUDGET_S}s + 15 s de marge — le proxy couperait "
+            f"des associations réussies"
+        )
 
 
 # ═══ 3. Équipement déjà rattaché : refus sauf `force` ═══════════════════════
@@ -493,3 +498,41 @@ async def test_the_envelope_is_local_to_this_route(http):
 
     assert r.status_code == 401
     assert r.json() == {"detail": "Authentication required"}
+
+
+# ═══ Recherche d'un client CRM (dashboard, /access-diagnostics) ═════════════
+
+_SEARCH_SITES = [
+    {"ucrm": {"client": {"id": "1361", "name": "Ba, Amadou"}, "service": {"id": "9001", "name": "20Mb"}}},
+    {"ucrm": {"client": {"id": "1369", "name": "Ba, Amadou"}, "service": {"id": "9002", "name": "20Mb"}}},
+    {"ucrm": {"client": {"id": "842", "name": "Ba, Aminata"}, "service": {"id": "9003", "name": "10Mb"}}},
+    # Client à deux services : UNE entrée, deux services.
+    {"ucrm": {"client": {"id": "1005", "name": "Sall, Mariem"}, "service": {"id": "9010", "name": "15Mb"}}},
+    {"ucrm": {"client": {"id": "1005", "name": "Sall, Mariem"}, "service": {"id": "9011", "name": "15Mb"}}},
+    {"ucrm": {"client": {"id": "13", "name": "Diop, Élise"}, "service": {"id": "9020", "name": "5Mb"}}},
+    {"identification": {"name": "A2 HQ"}},  # site d'infra : aucun lien CRM
+]
+
+
+def test_search_by_name_keeps_homonyms_apart_by_id():
+    """Deux clients distincts portent le même nom : les deux sortent, avec leur id."""
+    found = svc.search_crm_clients_in(_SEARCH_SITES, "ba, am")
+    assert [c["crm_client_id"] for c in found] == ["1361", "1369", "842"]
+
+
+def test_search_by_exact_id_comes_first():
+    found = svc.search_crm_clients_in(_SEARCH_SITES, "13")
+    assert found[0]["crm_client_id"] == "13"
+    # Préfixe d'id : les autres clients dont l'id commence par 13 suivent.
+    assert {c["crm_client_id"] for c in found} == {"13", "1361", "1369"}
+
+
+def test_search_groups_services_of_one_client():
+    [client] = svc.search_crm_clients_in(_SEARCH_SITES, "sall")
+    assert [s["crm_service_id"] for s in client["services"]] == ["9010", "9011"]
+
+
+def test_search_ignores_accents_and_case_and_infra_sites():
+    assert [c["crm_client_id"] for c in svc.search_crm_clients_in(_SEARCH_SITES, "ELISE")] == ["13"]
+    assert svc.search_crm_clients_in(_SEARCH_SITES, "hq") == []
+    assert svc.search_crm_clients_in(_SEARCH_SITES, "   ") == []

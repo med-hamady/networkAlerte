@@ -883,8 +883,9 @@ class Settings(BaseSettings):
     # est la MOYENNE des deux sens (lien TDD), plus leur somme — le firmware
     # affiche lui-même la moyenne (« TOTAL CAPACITY » du dashboard airFiber). Le
     # plancher a donc été HALVÉ 1950 → 975 pour garder EXACTEMENT le même verdict
-    # qu'avant : `(dl+ul) < 1950` ⟺ `moyenne < 975`. Aligné sur le seuil
-    # d'affichage /lr-health `af60_capacity_display_min_mbps`.
+    # qu'avant : `(dl+ul) < 1950` ⟺ `moyenne < 975`. ⚠️ N'est PLUS aligné sur le
+    # seuil d'affichage `af60_capacity_display_min_mbps`, repassé à 1950 (moyenne)
+    # le 2026-09-21 : l'affichage est plus strict que l'alerte, délibérément.
     af60_link_potential_min_pct: float = 30.0
     af60_total_capacity_min_mbps: float = 975.0
 
@@ -914,9 +915,13 @@ class Settings(BaseSettings):
     # un AF60 dont la dernière capacité totale est < ce plancher y est surfacé
     # (critère unique, sur la dernière valeur en base — pas de fetch live).
     # ⚠️ `total_capacity_mbps` = MOYENNE des deux sens (lien TDD, cf.
-    # af60_api_service) → plancher HALVÉ 1950 → 975 en même temps que le calcul,
-    # pour que les liaisons saines (moyenne ~1.5-1.9 Gb/s) ne virent pas au rouge.
-    af60_capacity_display_min_mbps: float = 975.0
+    # af60_api_service). Le plancher avait été HALVÉ 1950 → 975 en même temps
+    # que le calcul (2026-08-05) ; REPASSÉ à 1950 le 2026-09-21 (décision
+    # opérateur) : une moyenne sous 1,95 Gb/s EST une liaison dégradée. Cas
+    # fondateur : F60 CT2↔PK1 à dl 1801 / ul 600 (moyenne 1200) passait pour
+    # saine. ⚠️ Plancher d'AFFICHAGE seulement (/site-links, /topology) — l'alerte
+    # WhatsApp `af60_link_substandard` garde `af60_total_capacity_min_mbps`.
+    af60_capacity_display_min_mbps: float = 1950.0
 
     # Anomaly thresholds — RX/TX error rate (errors / total bytes, %)
     rx_tx_error_warning_pct: float = 1.0    # above → warning

@@ -76,6 +76,24 @@ l'entreprise doit recevoir une copie, il suffit d'installer le client Sync.com
 sur le serveur Windows et de faire pointer `BACKUP_REMOTE_DIR` vers un dossier
 qu'il synchronise. Rien d'autre ne change.
 
+**En place depuis le 2026-09-22** :
+`BACKUP_REMOTE_DIR=C:/Users/Administrator/Sync/Systeme_Developpement/Backup_DB`,
+avec `icacls <dossier> /grant "backup:(OI)(CI)M"` (le compte `backup` n'a sinon
+aucun droit dans le profil d'Administrator). Le transit reste `C:\Backups\_transit`,
+**hors** du dossier synchronisé et sur le même volume.
+
+> ⚠️ **Le client Sync.com vit dans la SESSION d'Administrator.** Une session
+> fermée (« Se déconnecter ») l'arrête : les archives continuent d'arriver dans
+> `Backup_DB` mais **ne montent plus dans le cloud**, sans aucune alerte. Fermer
+> le bureau à distance par la croix, jamais par « Se déconnecter ».
+>
+> ⚠️ **Archives en clair + dossier cloud** : tout accès au compte Sync.com ou au
+> dossier partagé `Systeme_Developpement` donne les mots de passe SSH du parc.
+> Le chiffrement de Sync.com protège contre Sync.com, pas contre ceux qui ont
+> accès au compte. Réactiver `BACKUP_PASSPHRASE` est le seul correctif (§3).
+>
+> ⚠️ La rétention (`BACKUP_REMOTE_KEEP_DAYS`) supprime aussi **dans le cloud**.
+
 ---
 
 ## 2. Ce qui est sauvegardé, et ce qui ne l'est pas

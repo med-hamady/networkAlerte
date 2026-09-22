@@ -446,57 +446,134 @@ function AssignCrmModal({
     }
   }
 
+  // Échap ferme la fenêtre (sauf pendant un rattachement, qui ne s'annule pas).
+  React.useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape' && !running) onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [running, onClose])
+
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/30 p-4 pt-[10vh]"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/40 backdrop-blur-[2px] p-4 pt-[10vh]"
       onClick={() => !running && onClose()}
     >
       <div
-        className="w-full max-w-lg bg-white rounded-xl border border-blue-100 shadow-xl"
+        className="w-full max-w-lg bg-white rounded-2xl shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="px-5 py-3 border-b border-blue-100">
-          <h3 className="text-sm font-bold text-blue-900">Rattacher au client CRM</h3>
-          <p className="text-[11px] text-blue-400 mt-0.5">
-            {row.name} · <span className="font-mono">{row.mac}</span>
-          </p>
+        {/* En-tête : le geste, puis l'équipement visé */}
+        <header className="px-6 pt-5 pb-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className="flex items-center justify-center w-10 h-10 rounded-full bg-blue-50 text-blue-700 shrink-0">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.8} className="w-5 h-5" aria-hidden>
+                  <path d="M8.5 11.5a3 3 0 0 0 4.2 0l2.6-2.6a3 3 0 0 0-4.2-4.2l-1 1" strokeLinecap="round" />
+                  <path d="M11.5 8.5a3 3 0 0 0-4.2 0l-2.6 2.6a3 3 0 0 0 4.2 4.2l1-1" strokeLinecap="round" />
+                </svg>
+              </span>
+              <div>
+                <h3 className="text-base font-bold text-slate-800">Rattacher au client CRM</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Associer cet équipement à un abonné dans UISP</p>
+              </div>
+            </div>
+            <button
+              onClick={onClose}
+              disabled={running}
+              aria-label="Fermer"
+              className="p-1.5 -mr-1.5 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-40"
+            >
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2} className="w-4 h-4" aria-hidden>
+                <path d="M5 5l10 10M15 5L5 15" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
+
+          <div className="mt-4 flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-4 py-2.5">
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Équipement</p>
+              <p className="text-sm font-semibold text-slate-800 truncate">{row.name}</p>
+            </div>
+            <span className="font-mono text-[11px] text-slate-600 bg-white border border-slate-200 rounded-full px-2.5 py-0.5 shrink-0">
+              {row.mac}
+            </span>
+          </div>
         </header>
 
-        <div className="px-5 py-4 space-y-3">
+        <div className="px-6 pb-5 space-y-3">
           {!client ? (
             <>
-              <input
-                autoFocus
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Nom ou id du client CRM"
-                className="w-full px-3 py-2 text-sm rounded-lg border border-blue-200
-                           focus:outline-none focus:ring-2 focus:ring-amber-300"
-              />
+              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                Client CRM
+              </label>
+              <div className="relative">
+                <svg
+                  aria-hidden
+                  viewBox="0 0 20 20"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none"
+                >
+                  <circle cx="9" cy="9" r="6" />
+                  <path d="M14 14l4 4" strokeLinecap="round" />
+                </svg>
+                <input
+                  autoFocus
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    // Entrée choisit le premier résultat : le cas courant est
+                    // une recherche par id, qui n'en rend qu'un.
+                    if (e.key === 'Enter' && results.length > 0) pick(results[0])
+                  }}
+                  placeholder="Nom ou id du client"
+                  className="w-full pl-10 pr-10 py-2.5 text-sm rounded-full bg-slate-100 border border-transparent
+                             placeholder:text-slate-400 focus:bg-white focus:border-blue-300
+                             focus:outline-none focus:ring-2 focus:ring-blue-100 transition-colors"
+                />
+                {searching && (
+                  <span
+                    aria-hidden
+                    className="absolute right-3.5 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full border-2 border-slate-200 border-t-blue-600 animate-spin"
+                  />
+                )}
+              </div>
+
               {query.trim() && (
-                <div className="max-h-72 overflow-y-auto rounded-lg border border-blue-50 divide-y divide-blue-50">
+                <div className="max-h-72 overflow-y-auto -mx-1 px-1 space-y-1">
                   {searchError ? (
-                    <p className="px-3 py-3 text-xs text-red-700">{searchError}</p>
+                    <p className="rounded-xl bg-red-50 px-4 py-3 text-xs text-red-700">{searchError}</p>
                   ) : searching && results.length === 0 ? (
-                    <p className="px-3 py-3 text-xs text-blue-400">Recherche…</p>
+                    <p className="px-4 py-3 text-xs text-slate-400">Recherche…</p>
                   ) : results.length === 0 ? (
-                    <p className="px-3 py-3 text-xs text-blue-400">
+                    <p className="rounded-xl bg-slate-50 px-4 py-3 text-xs text-slate-500">
                       Aucun client trouvé. Un client sans service n&apos;est pas rattachable.
                     </p>
                   ) : (
-                    results.map((c) => (
+                    results.map((c, i) => (
                       <button
                         key={c.crm_client_id}
                         onClick={() => pick(c)}
-                        className="w-full text-left px-3 py-2 hover:bg-amber-50 flex items-baseline gap-2"
+                        className={`group w-full text-left flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors
+                                    hover:bg-blue-50 ${i === 0 ? 'bg-slate-50' : ''}`}
                       >
-                        <span className="text-sm text-blue-900">{c.name ?? '(sans nom)'}</span>
-                        <span className="text-[11px] font-mono text-blue-400">id {c.crm_client_id}</span>
-                        {c.services.length > 1 && (
-                          <span className="ml-auto text-[10px] text-amber-700">
-                            {c.services.length} services
+                        <ClientAvatar name={c.name} />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-semibold text-slate-800 truncate">
+                            {c.name ?? '(sans nom)'}
                           </span>
-                        )}
+                          <span className="block text-[11px] text-slate-500">
+                            Client <span className="font-mono">#{c.crm_client_id}</span>
+                          </span>
+                          <ServiceChips services={c.services} />
+                        </span>
+                        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2}
+                          className="w-4 h-4 text-slate-300 group-hover:text-blue-700 shrink-0" aria-hidden>
+                          <path d="M8 5l5 5-5 5" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
                       </button>
                     ))
                   )}
@@ -505,72 +582,94 @@ function AssignCrmModal({
             </>
           ) : (
             <>
-              <div className="flex items-baseline justify-between gap-2 rounded-lg bg-amber-50
-                              border border-amber-200 px-3 py-2">
-                <span className="text-sm text-blue-900">
-                  {client.name ?? '(sans nom)'}
-                  <span className="ml-2 text-[11px] font-mono text-blue-400">id {client.crm_client_id}</span>
+              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                Client CRM
+              </label>
+              <div className="flex items-center gap-3 rounded-xl border border-blue-200 bg-blue-50/60 px-3 py-2.5">
+                <ClientAvatar name={client.name} />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-semibold text-slate-800 truncate">
+                    {client.name ?? '(sans nom)'}
+                  </span>
+                  <span className="block text-[11px] text-slate-500">
+                    Client <span className="font-mono">#{client.crm_client_id}</span>
+                  </span>
+                  {!needsService && <ServiceChips services={client.services} />}
                 </span>
                 <button
                   onClick={() => setClient(null)}
                   disabled={running}
-                  className="text-[11px] text-amber-800 underline disabled:opacity-40"
+                  className="text-xs font-semibold text-blue-700 hover:text-blue-900 px-2 py-1 rounded-full
+                             hover:bg-blue-100 disabled:opacity-40"
                 >
-                  changer
+                  Changer
                 </button>
               </div>
 
               {needsService && (
-                <fieldset className="space-y-1">
-                  <legend className="text-xs font-semibold text-blue-900 mb-1">
+                <fieldset className="space-y-1.5">
+                  <legend className="text-xs font-semibold text-slate-700 mb-1.5">
                     Ce client a {client.services.length} services — lequel ?
                   </legend>
-                  {client.services.map((svc) => (
-                    <label key={svc.crm_service_id} className="flex items-center gap-2 text-sm cursor-pointer">
-                      <input
-                        type="radio"
-                        name="crm-service"
-                        checked={serviceId === svc.crm_service_id}
-                        onChange={() => setServiceId(svc.crm_service_id)}
-                        disabled={running}
-                        className="accent-amber-600"
-                      />
-                      <span className="text-blue-900">{svc.name ?? '(sans nom)'}</span>
-                      <span className="text-[11px] font-mono text-blue-400">id {svc.crm_service_id}</span>
-                    </label>
-                  ))}
+                  {client.services.map((svc) => {
+                    const checked = serviceId === svc.crm_service_id
+                    return (
+                      <label
+                        key={svc.crm_service_id}
+                        className={`flex items-center gap-3 rounded-xl border px-3 py-2 text-sm cursor-pointer transition-colors ${
+                          checked ? 'border-blue-300 bg-blue-50' : 'border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="crm-service"
+                          checked={checked}
+                          onChange={() => setServiceId(svc.crm_service_id)}
+                          disabled={running}
+                          className="accent-blue-700"
+                        />
+                        <span className="flex-1 text-slate-800">{svc.name ?? '(sans nom)'}</span>
+                        <span className="text-[11px] font-mono text-slate-400">#{svc.crm_service_id}</span>
+                      </label>
+                    )
+                  })}
                 </fieldset>
               )}
 
               {owner && (
-                <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-800">
+                <div className="rounded-xl bg-red-50 border border-red-200 px-4 py-3 text-xs text-red-800">
                   Cet équipement est déjà rattaché à{' '}
                   <strong>{owner.name ?? 'un autre client'}</strong>
-                  {owner.id && <span className="font-mono"> (id {owner.id})</span>}. Le déplacer
+                  {owner.id && <span className="font-mono"> (#{owner.id})</span>}. Le déplacer
                   retire son équipement à cet abonné.
                 </div>
               )}
               {error && (
-                <p className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
+                <p className="rounded-xl bg-red-50 border border-red-200 px-4 py-3 text-xs text-red-700">
                   {error}
                 </p>
               )}
               {running && (
-                <p className="text-[11px] text-blue-400">
-                  Rattachement en cours… Si l&apos;équipement est absent de UISP, sa clé est
-                  posée puis on attend qu&apos;il se déclare : jusqu&apos;à 1 min 40.
-                </p>
+                <div className="flex items-start gap-2.5 rounded-xl bg-slate-50 px-4 py-3 text-xs text-slate-600">
+                  <span
+                    aria-hidden
+                    className="mt-0.5 w-3.5 h-3.5 shrink-0 rounded-full border-2 border-slate-200 border-t-blue-600 animate-spin"
+                  />
+                  <span>
+                    Rattachement en cours… Si l&apos;équipement est absent de UISP, sa clé est
+                    posée puis on attend qu&apos;il se déclare : jusqu&apos;à 1 min 40.
+                  </span>
+                </div>
               )}
             </>
           )}
         </div>
 
-        <footer className="px-5 py-3 border-t border-blue-100 flex justify-end gap-2">
+        <footer className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-2">
           <button
             onClick={onClose}
             disabled={running}
-            className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-blue-200
-                       text-blue-900 bg-white hover:bg-blue-50 disabled:opacity-40"
+            className="px-4 py-2 rounded-full text-xs font-semibold text-slate-600 hover:bg-slate-200/70 disabled:opacity-40"
           >
             Annuler
           </button>
@@ -578,8 +677,8 @@ function AssignCrmModal({
             <button
               onClick={() => submit(true)}
               disabled={running}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold border
-                         bg-red-600 text-white border-red-700 hover:bg-red-700 disabled:opacity-40"
+              className="px-5 py-2 rounded-full text-xs font-semibold bg-red-600 text-white hover:bg-red-700
+                         shadow-sm disabled:opacity-40"
             >
               {running ? 'Rattachement…' : 'Déplacer quand même'}
             </button>
@@ -587,9 +686,8 @@ function AssignCrmModal({
             <button
               onClick={() => submit(false)}
               disabled={!client || (needsService && !serviceId) || running}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold border
-                         bg-amber-600 text-white border-amber-700 hover:bg-amber-700
-                         disabled:opacity-40 disabled:cursor-not-allowed"
+              className="px-5 py-2 rounded-full text-xs font-semibold bg-blue-700 text-white hover:bg-blue-800
+                         shadow-sm disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none disabled:cursor-not-allowed"
             >
               {running ? 'Rattachement…' : 'Rattacher'}
             </button>
@@ -597,6 +695,49 @@ function AssignCrmModal({
         </footer>
       </div>
     </div>
+  )
+}
+
+// Pastille du client : l'icône « client » de la marque (dessin noir au trait,
+// teinté en bleu pétrole par masque — une <img> resterait noire).
+function ClientAvatar(_: { name: string | null }) {
+  const src = 'url(/brand/icons/client.png)'
+  return (
+    <span aria-hidden className="flex items-center justify-center w-9 h-9 rounded-full bg-blue-50 shrink-0">
+      <span
+        className="inline-block w-5 h-5 bg-current text-blue-700"
+        style={{
+          maskImage: src, WebkitMaskImage: src,
+          maskSize: 'contain', WebkitMaskSize: 'contain',
+          maskRepeat: 'no-repeat', WebkitMaskRepeat: 'no-repeat',
+          maskPosition: 'center', WebkitMaskPosition: 'center',
+        }}
+      />
+    </span>
+  )
+}
+
+// Service(s) CRM du client, sous son nom — information de premier plan : c'est
+// au SERVICE (donc à l'abonnement) que l'équipement est rattaché. Tous sont
+// listés, jamais tronqués.
+function ServiceChips({ services }: { services: CrmClient['services'] }) {
+  if (services.length === 0) return null
+  return (
+    <span className="mt-1.5 flex flex-wrap items-center gap-1.5">
+      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+        {services.length > 1 ? `${services.length} services` : 'Service'}
+      </span>
+      {services.map((svc) => (
+        <span
+          key={svc.crm_service_id}
+          className="inline-flex items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50
+                     px-2 py-0.5 text-xs font-semibold text-blue-900"
+        >
+          {svc.name ?? '(sans nom)'}
+          <span className="font-mono text-[10px] font-medium text-blue-500">#{svc.crm_service_id}</span>
+        </span>
+      ))}
+    </span>
   )
 }
 

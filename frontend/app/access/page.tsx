@@ -188,7 +188,7 @@ export default function AccessPage() {
           </svg>
           <input
             type="search"
-            placeholder="Recherche par nom ou IP…"
+            placeholder="Recherche par nom, IP ou ID CRM…"
             value={search}
             onChange={e => setSearch(e.target.value)}
             className="w-full pl-10 pr-4 py-2 text-sm rounded-full bg-slate-100 border border-transparent placeholder:text-slate-400 focus:bg-white focus:border-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-100 transition-colors"
@@ -276,8 +276,8 @@ export default function AccessPage() {
               <thead className="bg-slate-50 border-b border-slate-200">
                 <tr>
                   {(showCutSince
-                    ? ['Client', 'État', 'Coupé depuis', 'Action']
-                    : ['Client', 'État', 'Action']
+                    ? ['Client', 'ID CRM', 'État', 'Coupé depuis', 'Action']
+                    : ['Client', 'ID CRM', 'État', 'Action']
                   ).map(h => (
                     <th
                       key={h}
@@ -305,6 +305,9 @@ export default function AccessPage() {
                           {lr.ip_address && lr.uisp_ap_name && <span aria-hidden>·</span>}
                           {lr.uisp_ap_name && <span>AP {lr.uisp_ap_name}</span>}
                         </div>
+                      </td>
+                      <td className="px-5 py-3.5 whitespace-nowrap">
+                        <CrmIdCell lr={lr} />
                       </td>
                       <td className="px-5 py-3.5 whitespace-nowrap">
                         {/* ⚠️ Voir la page et couper un abonné sont deux droits
@@ -454,6 +457,15 @@ function StatIcon({ file, mask = false }: { file: string; mask?: boolean }) {
   }
   // eslint-disable-next-line @next/next/no-img-element
   return <img src={`/brand/icons/${file}`} alt="" aria-hidden className="w-6 h-6" />
+}
+
+/**
+ * Colonne « ID CRM » : l'id du client CRM auquel UISP rattache l'équipement.
+ * Un équipement non rattaché n'en a pas → tiret, jamais un id inventé.
+ */
+function CrmIdCell({ lr }: { lr: AccessClientRow }) {
+  if (!lr.uisp_crm_client_id) return <span className="text-slate-300">—</span>
+  return <span className="font-mono text-sm font-semibold text-blue-900">{lr.uisp_crm_client_id}</span>
 }
 
 /* ─── Badges ─────────────────────────────────────────────────────────── */

@@ -1189,6 +1189,8 @@ export interface AccessClientRow {
   uisp_status: string | null
   uisp_last_seen: string | null
   uisp_ap_name: string | null
+  /** Id du client CRM auquel UISP rattache cet équipement (null = non rattaché). */
+  uisp_crm_client_id?: string | null
   // effective_mode = uisp_mode (else 'unknown'); reachable = uisp_status active.
   effective_mode: TopologyMode
   reachable: boolean

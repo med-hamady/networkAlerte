@@ -31,12 +31,13 @@ import logging
 import math
 from collections import defaultdict
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
-from app.models.device import AirFiber, Lr, PtpLiteBeam, Rocket
+from app.models.device import AirFiber, Device, Lr, PtpLiteBeam, Rocket
+from app.models.site_link import SiteLink
 from app.schemas.device import normalize_mac
 from app.schemas.lr_health import (
     BadInstallationRow,
@@ -44,7 +45,9 @@ from app.schemas.lr_health import (
     HighLatencyRow,
     LiveLinkHealthResponse,
     SignalEvidence,
+    SiteLinkEnd,
     SiteLinkHealthResponse,
+    SiteLinkPair,
     SiteLinkRow,
 )
 from app.services import airos_api_service, ltu_api_service, threshold_service
@@ -628,7 +631,11 @@ def _verdict(active_count: int) -> str:
 # Signal/SNR sont joints uniquement pour l'affichage, jamais pour le filtre.
 
 # Métriques relues en base pour la section P2P (capacité = filtre ; signal/SNR = info).
-_AF60_DISPLAY_METRICS: tuple[str, ...] = (_M_TOTAL_CAP, _M_SIGNAL, _M_SNR)
+_M_DL_CAP = "dl_capacity_mbps"
+_M_UL_CAP = "ul_capacity_mbps"
+_AF60_DISPLAY_METRICS: tuple[str, ...] = (
+    _M_TOTAL_CAP, _M_SIGNAL, _M_SNR, _M_DL_CAP, _M_UL_CAP,
+)
 
 
 async def get_site_link_health(db: AsyncSession) -> SiteLinkHealthResponse:
@@ -708,8 +715,213 @@ async def get_site_link_health(db: AsyncSession) -> SiteLinkHealthResponse:
             )
 
     items.sort(key=lambda r: r.latest_total_capacity_mbps or 0.0)  # pires d'abord
+
+    links, unmeasured = await _load_site_link_pairs(db, settings)
     return SiteLinkHealthResponse(
-        generated_at=now, no_data_count=no_data, items=items
+        generated_at=now,
+        links=links,
+        unmeasured=unmeasured,
+        no_data_count=no_data,
+        items=items,
+    )
+
+
+# ── Liaisons appariées par le CÂBLAGE ────────────────────────────────────────
+#
+# L'ancien format rendait une liste de RADIOS sous le plancher, et la page
+# reconstituait les paires d'après le NOM (« F60 PK1-CT2 » ↔ « F60 CT2-PK1 »).
+# Un bout absent de la liste s'affichait « extrémité non listée » — ce qui
+# recouvrait cinq situations sans rapport (sain, hors ligne, sans mesure, non
+# supervisé, nom hors convention). Ici l'appariement vient de ``site_links``
+# (les data-links UISP, par MAC — la même source que /topology), et chaque bout
+# porte la RAISON de son état.
+
+_P2P_TYPES = ("airfiber", "ptp_litebeam")
+
+
+def _safe_mac(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return normalize_mac(value)
+    except ValueError:
+        return None
+
+
+def _site_link_end(
+    device: dict | None,
+    site: str | None,
+    uisp_name: str | None,
+    metrics: dict[int, dict[str, float]],
+    *,
+    uncabled: bool = False,
+) -> SiteLinkEnd:
+    """Un bout de liaison et la raison de son état (cf. ``SiteLinkEnd``)."""
+    if uncabled:
+        return SiteLinkEnd(site=None, state="uncabled")
+    if device is None:
+        return SiteLinkEnd(site=site, state="unsupervised", name=uisp_name)
+
+    m = metrics.get(device["id"], {})
+    cap = m.get(_M_TOTAL_CAP)
+    status = (device["status"] or "").lower()
+    if status == "down":
+        state = "down"          # dernière capacité périmée : ignorée
+    elif status != "up":
+        state = "unknown"       # sans IP → hors du ping, on n'affirme rien
+    elif cap is None:
+        state = "no_data"
+    else:
+        state = "measured"
+    return SiteLinkEnd(
+        site=device["site"] or site,
+        state=state,
+        device_id=device["id"],
+        name=device["name"],
+        ip=device["ip"],
+        status=device["status"],
+        capacity_mbps=cap,
+        dl_capacity_mbps=m.get(_M_DL_CAP),
+        ul_capacity_mbps=m.get(_M_UL_CAP),
+        signal_dbm=m.get(_M_SIGNAL),
+        snr_db=m.get(_M_SNR),
+    )
+
+
+def build_site_link_pairs(
+    cables: list[dict],
+    devices_by_mac: dict[str, dict],
+    metrics: dict[int, dict[str, float]],
+    *,
+    af60_floor: float,
+    airmax_floor: float,
+) -> tuple[list[SiteLinkPair], list[SiteLinkPair]]:
+    """Apparier les radios P2P par le câblage → ``(dégradées, non évaluées)``.
+
+    Pur (sans DB) pour être testé tel quel. ``cables`` = lignes de ``site_links``
+    (``site_a/b``, ``mac_a/b``, ``name_a/b``) ; ``devices_by_mac`` = notre
+    inventaire indexé par MAC normalisée, avec ``distance_m`` sur les radios P2P.
+
+    Règles :
+    - une liaison n'est retenue que si au moins un bout est une radio P2P de
+      NOTRE inventaire (AF60 / PTP LiteBeam) ;
+    - seuls les bouts ``measured`` (en ligne + capacité) entrent dans le
+      verdict, et la liaison vaut le PIRE d'entre eux ;
+    - aucun bout mesuré ⇒ « non évaluée », jamais « saine » ;
+    - une radio P2P absente du câblage n'est PAS escamotée : elle sort seule,
+      l'autre bout marqué ``uncabled``.
+    """
+    pairs: list[SiteLinkPair] = []
+    cabled_ids: set[int] = set()
+
+    def make(key, dev_a, dev_b, end_a, end_b) -> SiteLinkPair:
+        types = {d["device_type"] for d in (dev_a, dev_b) if d}
+        is_af60 = "airfiber" in types
+        floor = af60_floor if is_af60 else airmax_floor
+        caps = [e.capacity_mbps for e in (end_a, end_b)
+                if e.state == "measured" and e.capacity_mbps is not None]
+        cap = min(caps) if caps else None
+        dists = [d.get("distance_m") for d in (dev_a, dev_b)
+                 if d and d.get("distance_m") is not None]
+        return SiteLinkPair(
+            key=key,
+            link_type="af60" if is_af60 else "airmax",
+            capacity_floor_mbps=floor,
+            capacity_mbps=cap,
+            degraded=cap is not None and cap < floor,
+            distance_m=max(dists) if dists else None,
+            end_a=end_a,
+            end_b=end_b,
+        )
+
+    for c in cables:
+        dev_a = devices_by_mac.get(_safe_mac(c.get("mac_a")) or "")
+        dev_b = devices_by_mac.get(_safe_mac(c.get("mac_b")) or "")
+        if not any(d and d["device_type"] in _P2P_TYPES for d in (dev_a, dev_b)):
+            continue
+        for d in (dev_a, dev_b):
+            if d:
+                cabled_ids.add(d["id"])
+        pairs.append(make(
+            f"cable:{c.get('mac_a')}|{c.get('mac_b')}",
+            dev_a, dev_b,
+            _site_link_end(dev_a, c.get("site_a"), c.get("name_a"), metrics),
+            _site_link_end(dev_b, c.get("site_b"), c.get("name_b"), metrics),
+        ))
+
+    # Radios P2P que le câblage ignore : on ne sait pas qui est en face, mais
+    # une radio sous le plancher doit rester visible.
+    seen: set[int] = set()
+    for dev in devices_by_mac.values():
+        if dev["device_type"] not in _P2P_TYPES or dev["id"] in cabled_ids:
+            continue
+        if dev["id"] in seen:
+            continue
+        seen.add(dev["id"])
+        pairs.append(make(
+            f"radio:{dev['id']}", dev, None,
+            _site_link_end(dev, dev["site"], None, metrics),
+            _site_link_end(None, None, None, metrics, uncabled=True),
+        ))
+
+    degraded = sorted(
+        (p for p in pairs if p.degraded), key=lambda p: p.capacity_mbps or 0.0,
+    )
+    unmeasured = sorted(
+        (p for p in pairs if p.capacity_mbps is None),
+        key=lambda p: (p.end_a.site or "", p.end_b.site or ""),
+    )
+    return degraded, unmeasured
+
+
+async def _load_site_link_pairs(
+    db: AsyncSession, settings,
+) -> tuple[list[SiteLinkPair], list[SiteLinkPair]]:
+    """Charger câblage + inventaire + dernières mesures, puis apparier."""
+    cables = [
+        {"site_a": r.site_a, "site_b": r.site_b, "mac_a": r.mac_a,
+         "mac_b": r.mac_b, "name_a": r.name_a, "name_b": r.name_b}
+        for r in (await db.execute(select(SiteLink))).scalars().all()
+    ]
+
+    devices_by_mac: dict[str, dict] = {}
+
+    # Tous les bouts connus du câblage, quel que soit leur type (colonnes de
+    # `devices` seulement : pas de chargement polymorphe).
+    cable_macs = {
+        m for c in cables for m in (_safe_mac(c["mac_a"]), _safe_mac(c["mac_b"])) if m
+    }
+    if cable_macs:
+        rows = (await db.execute(
+            select(Device.id, Device.name, Device.ip_address, Device.status,
+                   Device.site, Device.mac_address, Device.device_type)
+            .where(func.lower(Device.mac_address).in_(sorted(cable_macs)))
+        )).all()
+        for r in rows:
+            mac = _safe_mac(r.mac_address)
+            if mac in cable_macs:
+                devices_by_mac[mac] = {
+                    "id": r.id, "name": r.name, "ip": r.ip_address,
+                    "status": r.status, "site": r.site,
+                    "device_type": r.device_type, "distance_m": None,
+                }
+
+    # Toutes les radios P2P (avec distance), câblées ou non.
+    for model in (AirFiber, PtpLiteBeam):
+        for d in (await db.execute(select(model))).scalars().all():
+            mac = _safe_mac(d.mac_address) or f"id:{d.id}"
+            devices_by_mac[mac] = {
+                "id": d.id, "name": d.name, "ip": d.ip_address,
+                "status": d.status, "site": d.site,
+                "device_type": d.device_type, "distance_m": d.distance_m,
+            }
+
+    ids = [d["id"] for d in devices_by_mac.values()]
+    metrics = await _fetch_latest_af60_metrics(db, ids)
+    return build_site_link_pairs(
+        cables, devices_by_mac, metrics,
+        af60_floor=float(settings.af60_capacity_display_min_mbps),
+        airmax_floor=float(settings.airmax_backhaul_capacity_min_mbps),
     )
 
 

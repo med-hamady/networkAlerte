@@ -100,14 +100,62 @@ class SiteLinkRow(BaseModel):
     latest_snr_db: float | None
 
 
-class SiteLinkHealthResponse(BaseModel):
-    """Réponse de la section « Liaisons entre sites (P2P) ».
+class SiteLinkEnd(BaseModel):
+    """Une extrémité d'une liaison P2P, avec la RAISON de son état.
 
-    Liens backhaul AF60 dont la dernière capacité totale est sous le plancher
-    d'affichage (1.95 Gb/s par défaut). Lecture de la dernière valeur en base,
-    pas d'interrogation live. ``no_data_count`` = AF60 sans relevé de capacité."""
+    ``state`` dit pourquoi ce bout compte (ou non) dans le verdict — c'est ce qui
+    remplace l'ancien « extrémité non listée », qui confondait cinq situations :
+
+    - ``measured``     : en ligne, capacité relevée → entre dans le verdict ;
+    - ``no_data``      : en ligne mais aucune capacité en base ;
+    - ``down``         : hors ligne au ping (dernière capacité périmée, ignorée) ;
+    - ``unknown``      : statut indéterminé (sans IP → hors du ping) ;
+    - ``unsupervised`` : radio connue du câblage UISP mais absente de notre
+      inventaire ;
+    - ``uncabled``     : le câblage ne connaît pas l'autre bout (radio jamais vue
+      dans les data-links UISP) — on ne sait pas QUI est en face.
+    """
+
+    site: str | None
+    state: str
+    device_id: int | None = None
+    name: str | None = None           # notre nom, sinon le nom UISP
+    ip: str | None = None
+    status: str | None = None
+    capacity_mbps: float | None = None
+    dl_capacity_mbps: float | None = None
+    ul_capacity_mbps: float | None = None
+    signal_dbm: float | None = None
+    snr_db: float | None = None
+
+
+class SiteLinkPair(BaseModel):
+    """Une liaison P2P = ses DEUX bouts, appariés par le câblage (MAC), jamais
+    par le nom. ``capacity_mbps`` = le pire des bouts ``measured`` (un lien vaut
+    son extrémité la plus dégradée — même règle que ``/topology``)."""
+
+    key: str
+    link_type: str                     # "af60" | "airmax"
+    capacity_floor_mbps: float
+    capacity_mbps: float | None
+    degraded: bool
+    distance_m: float | None
+    end_a: SiteLinkEnd
+    end_b: SiteLinkEnd
+
+
+class SiteLinkHealthResponse(BaseModel):
+    """Réponse de la page « Point-à-Point ».
+
+    ``links`` = les liaisons DÉGRADÉES (au moins un bout en ligne, mesuré, sous
+    le plancher), pires d'abord, chacune avec ses deux bouts. ``unmeasured`` =
+    les liaisons dont AUCUN bout n'est évaluable (nommées, pas seulement
+    comptées). ``items`` / ``no_data_count`` = ancien format par radio, conservé
+    le temps que le frontend déployé bascule."""
 
     generated_at: datetime.datetime
+    links: list[SiteLinkPair] = []
+    unmeasured: list[SiteLinkPair] = []
     no_data_count: int
     items: list[SiteLinkRow]
 

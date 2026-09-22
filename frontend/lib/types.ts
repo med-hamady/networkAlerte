@@ -589,8 +589,46 @@ export interface SiteLinkRow {
   latest_snr_db: number | null
 }
 
+// Raison de l'état d'un bout de liaison — remplace l'ancien « non listée ».
+export type SiteLinkEndState =
+  | 'measured'      // en ligne, capacité relevée → entre dans le verdict
+  | 'no_data'       // en ligne, aucune capacité en base
+  | 'down'          // hors ligne au ping
+  | 'unknown'       // statut indéterminé (sans IP → hors du ping)
+  | 'unsupervised'  // connu du câblage UISP, absent de notre inventaire
+  | 'uncabled'      // le câblage ne dit pas qui est en face
+
+export interface SiteLinkEnd {
+  site: string | null
+  state: SiteLinkEndState
+  device_id: number | null
+  name: string | null
+  ip: string | null
+  status: string | null
+  capacity_mbps: number | null
+  dl_capacity_mbps: number | null
+  ul_capacity_mbps: number | null
+  signal_dbm: number | null
+  snr_db: number | null
+}
+
+// Une liaison = ses deux bouts, appariés par le câblage (MAC), pas par le nom.
+export interface SiteLinkPair {
+  key: string
+  link_type: 'af60' | 'airmax'
+  capacity_floor_mbps: number
+  capacity_mbps: number | null
+  degraded: boolean
+  distance_m: number | null
+  end_a: SiteLinkEnd
+  end_b: SiteLinkEnd
+}
+
 export interface SiteLinkHealthResponse {
   generated_at: string
+  links: SiteLinkPair[]        // dégradées, pires d'abord
+  unmeasured: SiteLinkPair[]   // aucun bout évaluable
+  // Ancien format par radio — conservé côté API pour la transition.
   no_data_count: number
   items: SiteLinkRow[]
 }

@@ -4,7 +4,9 @@ import { useState } from 'react'
 import useSWR from 'swr'
 import { endpoints, fetcher } from '@/lib/api'
 import DeviceDetailModal from '@/components/DeviceDetailModal'
-import type { Device, SiteLinkHealthResponse, SiteLinkRow } from '@/lib/types'
+import type {
+  Device, SiteLinkEnd, SiteLinkEndState, SiteLinkHealthResponse, SiteLinkPair,
+} from '@/lib/types'
 
 /**
  * Liaisons ENTRE SITES (backhauls P2P AF60 / airMAX) dégradées, dessinées
@@ -51,17 +53,28 @@ function fmt(value: number | null | undefined, suffix: string, digits = 0): stri
   return `${value.toFixed(digits)}${suffix}`
 }
 
-// ─── Liaisons entre sites (Point-à-Point) — backhaul airFiber 60 ──────────────
-// Critère UNIQUE : dernière capacité totale < plancher (1.95 Gb/s), lue en base.
-function gbps(mbps: number | null): string {
-  if (mbps === null) return '—'
-  return `${(mbps / 1000).toFixed(2)} Gb/s`
-}
-
 // AF60 se lit en Gb/s ; un backhaul airMAX (capacité bien plus faible) en Mb/s.
 function capDisplay(mbps: number | null, linkType: string): string {
   if (mbps === null) return '—'
-  return linkType === 'af60' ? gbps(mbps) : `${mbps.toFixed(0)} Mb/s`
+  return linkType === 'af60' ? `${(mbps / 1000).toFixed(2)} Gb/s` : `${mbps.toFixed(0)} Mb/s`
+}
+
+/** « A2 PK1 » → « PK1 » : le préfixe commun à tous les sites n'apporte rien. */
+function siteLabel(site: string | null): string {
+  if (!site) return '?'
+  return site.replace(/^A2\s+/, '').trim() || site
+}
+
+// Raison de l'état d'un bout, rendue telle quelle. Les deux bouts sont APPARIÉS
+// PAR LE BACKEND depuis le câblage UISP (MAC) : plus aucune déduction d'après le
+// nom de la radio, et plus d'« extrémité non listée » qui recouvrait cinq cas.
+const END_STATE_TEXT: Record<SiteLinkEndState, string> = {
+  measured: '',
+  no_data: 'En ligne — aucune capacité relevée',
+  down: 'Hors ligne — dernière mesure ignorée',
+  unknown: 'Statut inconnu — hors du ping (sans IP)',
+  unsupervised: 'Non supervisé — absent de notre inventaire',
+  uncabled: 'Autre extrémité inconnue — lien absent du câblage UISP',
 }
 
 function SiteLinksSection({ onOpenDevice }: { onOpenDevice: (id: number) => void }) {
@@ -71,28 +84,20 @@ function SiteLinksSection({ onOpenDevice }: { onOpenDevice: (id: number) => void
     { refreshInterval: 60_000 },
   )
 
-  const items: SiteLinkRow[] = data?.items ?? []
-  const noData = data?.no_data_count ?? 0
-  const pairs = pairSiteLinks(items)
+  const links: SiteLinkPair[] = data?.links ?? []
+  const unmeasured: SiteLinkPair[] = data?.unmeasured ?? []
 
   return (
     <section className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Point-à-Point</h1>
-        {noData > 0 && (
-          <p className="text-blue-300 text-xs mt-1">
-            {noData} lien{noData > 1 ? 's' : ''} sans relevé de capacité — non évalué{noData > 1 ? 's' : ''}.
-          </p>
-        )}
-      </div>
+      <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Point-à-Point</h1>
 
       {isLoading ? (
         <div className="bg-white border border-blue-100 rounded-xl px-6 py-12 text-center text-blue-300 shadow-sm">
           Chargement…
         </div>
-      ) : items.length === 0 ? (
+      ) : links.length === 0 ? (
         <div className="bg-white border border-blue-100 rounded-xl px-6 py-12 text-center shadow-sm">
-          <p className="text-green-600 font-semibold text-sm">✓ Toutes les liaisons entre sites sont au-dessus de leur plancher de capacité</p>
+          <p className="text-green-600 font-semibold text-sm">✓ Toutes les liaisons mesurées sont au-dessus de leur plancher de capacité</p>
           <p className="text-blue-400 text-xs mt-1">Aucun lien P2P (AF60 ou airMAX) dégradé en ce moment</p>
         </div>
       ) : (
@@ -100,13 +105,17 @@ function SiteLinksSection({ onOpenDevice }: { onOpenDevice: (id: number) => void
           <div className="flex items-center gap-2 text-red-700">
             <span className="text-xs font-bold uppercase tracking-widest">Capacité dégradée</span>
             <span className="text-xs font-semibold opacity-70">
-              {pairs.length} liaison{pairs.length > 1 ? 's' : ''}
+              {links.length} liaison{links.length > 1 ? 's' : ''}
             </span>
           </div>
-          {pairs.map(p => (
-            <SiteLinkDiagram key={p.key} pair={p} onOpenDevice={onOpenDevice} />
+          {links.map(l => (
+            <SiteLinkDiagram key={l.key} link={l} onOpenDevice={onOpenDevice} />
           ))}
         </div>
+      )}
+
+      {unmeasured.length > 0 && (
+        <UnmeasuredLinks links={unmeasured} onOpenDevice={onOpenDevice} />
       )}
     </section>
   )
@@ -114,99 +123,95 @@ function SiteLinksSection({ onOpenDevice }: { onOpenDevice: (id: number) => void
 
 // ─── Schéma pylône ↔ pylône d'une liaison entre sites ─────────────────────────
 
-/** Une liaison = les deux bouts d'un même lien P2P, chacun avec SA mesure. */
-interface SiteLinkPair {
-  key: string
-  siteA: string
-  siteB: string
-  endA: SiteLinkRow | null
-  endB: SiteLinkRow | null
-}
-
-/**
- * « F60 PK1-CT2 » → ['PK1', 'CT2'] : le site qui PORTE l'équipement, puis celui
- * qu'il vise. ⚠️ Déduit du NOM, faute de mieux : la réponse ne porte ni le site
- * ni le pair de chaque radio. Un nom qui ne suit pas la convention donne un
- * schéma à un seul bout (l'autre marqué « non identifié »), jamais un faux pair.
- */
-function parseLinkName(name: string): [string, string] | null {
-  const m = name.match(/([A-Za-z0-9]+)\s*[-–]\s*([A-Za-z0-9]+)\s*$/)
-  return m ? [m[1].toUpperCase(), m[2].toUpperCase()] : null
-}
-
-function pairSiteLinks(items: SiteLinkRow[]): SiteLinkPair[] {
-  const pairs = new Map<string, SiteLinkPair>()
-  for (const row of items) {
-    const parsed = parseLinkName(row.name)
-    if (!parsed) {
-      pairs.set(`solo-${row.device_id}`, {
-        key: `solo-${row.device_id}`, siteA: row.name, siteB: '?', endA: row, endB: null,
-      })
-      continue
-    }
-    const [own, peer] = parsed
-    const [a, b] = [own, peer].sort()
-    const key = `${row.link_type}:${a}|${b}`
-    const pair = pairs.get(key) ?? { key, siteA: a, siteB: b, endA: null, endB: null }
-    if (own === a && !pair.endA) pair.endA = row
-    else if (own === b && !pair.endB) pair.endB = row
-    else pairs.set(`dup-${row.device_id}`, { key: `dup-${row.device_id}`, siteA: own, siteB: peer, endA: row, endB: null })
-    pairs.set(key, pair)
-  }
-  return [...pairs.values()]
-}
-
-function SiteLinkDiagram({ pair, onOpenDevice }: {
-  pair: SiteLinkPair
+function SiteLinkDiagram({ link, onOpenDevice }: {
+  link: SiteLinkPair
   onOpenDevice: (id: number) => void
 }) {
-  const ends = [pair.endA, pair.endB].filter((e): e is SiteLinkRow => e !== null)
-  const ref = ends[0]
-  const linkType = ref.link_type
-  const radioLabel = linkType === 'af60' ? 'F60' : 'PTP'
-  // Un lien vaut son extrémité la plus dégradée (même règle que /topology).
-  const caps = ends.map(e => e.latest_total_capacity_mbps).filter((c): c is number => c !== null)
-  const capacity = caps.length ? Math.min(...caps) : null
-  const floor = ref.capacity_floor_mbps
-  const degraded = capacity !== null && capacity < floor
-  const distances = ends.map(e => e.distance_m).filter((d): d is number => d !== null)
-  const distance = distances.length ? Math.max(...distances) : null
-  const beam = degraded ? '#dc2626' : '#059669'
+  const radioLabel = link.link_type === 'af60' ? 'F60' : 'PTP'
+  const beam = link.degraded ? '#dc2626' : '#059669'
+  const { end_a: a, end_b: b } = link
+  // Pylône estompé = bout qui n'entre pas dans le verdict ; rouge = hors ligne.
+  const dimA = a.state !== 'measured' && a.state !== 'down'
+  const dimB = b.state !== 'measured' && b.state !== 'down'
 
   return (
-    <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden flex flex-col md:flex-row md:items-start ${degraded ? 'border-red-200' : 'border-slate-200'}`}>
+    <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden flex flex-col md:flex-row md:items-start ${link.degraded ? 'border-red-200' : 'border-slate-200'}`}>
       {/* Mesure de CHAQUE extrémité, à l'extérieur de son pylône */}
-      <EndInfo site={pair.siteA} end={pair.endA} onOpenDevice={onOpenDevice} align="left" />
+      <EndInfo end={a} linkType={link.link_type} onOpenDevice={onOpenDevice} align="left" />
       <svg viewBox="0 0 620 250" className="flex-1 min-w-0 w-full h-auto" role="img"
-           aria-label={`Liaison ${radioLabel} entre ${pair.siteA} et ${pair.siteB}`}>
+           aria-label={`Liaison ${radioLabel} entre ${siteLabel(a.site)} et ${siteLabel(b.site)}`}>
         <style>{`@keyframes slBeam { to { stroke-dashoffset: -28; } }`}</style>
 
         {/* Sol */}
         <line x1="20" y1="232" x2="600" y2="232" stroke="#e2e8f0" strokeWidth="2" />
 
-        <LinkPylon x={70} down={false} dim={!pair.endA} />
-        <LinkPylon x={550} down={false} dim={!pair.endB} />
+        <LinkPylon x={70} down={a.state === 'down'} dim={dimA} />
+        <LinkPylon x={550} down={b.state === 'down'} dim={dimB} />
 
         {/* Antennes radio montées en haut des pylônes, face à face */}
-        <RadioDish x={92} y={70} facing="right" label={radioLabel} dim={!pair.endA} />
-        <RadioDish x={528} y={70} facing="left" label={radioLabel} dim={!pair.endB} />
+        <RadioDish x={92} y={70} facing="right" label={radioLabel} dim={a.state !== 'measured'} />
+        <RadioDish x={528} y={70} facing="left" label={radioLabel} dim={b.state !== 'measured'} />
 
         {/* Faisceau radio : zone de Fresnel + ligne animée */}
         <ellipse cx="310" cy="70" rx="196" ry="22" fill={beam} opacity="0.06" />
         <line x1="118" y1="70" x2="502" y2="70" stroke={beam} strokeWidth="3" strokeLinecap="round"
               strokeDasharray="14 14" style={{ animation: 'slBeam 1.2s linear infinite' }} />
 
-        {/* Étiquette de la liaison */}
+        {/* Étiquette de la liaison : capacité du bout le plus dégradé */}
         <g transform="translate(310 118)">
           <text textAnchor="middle" y="0" fontSize="20" fontWeight="700" fill={beam}>
-            {capacity !== null ? capDisplay(capacity, linkType) : '—'}
+            {capDisplay(link.capacity_mbps, link.link_type)}
           </text>
           <text textAnchor="middle" y="24" fontSize="12" fill="#64748b">
-            {distance !== null ? `${(distance / 1000).toFixed(1).replace('.', ',')} km` : ''}
+            {link.distance_m !== null ? `${(link.distance_m / 1000).toFixed(1).replace('.', ',')} km · ` : ''}
+            plancher {capDisplay(link.capacity_floor_mbps, link.link_type)}
           </text>
         </g>
       </svg>
-      <EndInfo site={pair.siteB} end={pair.endB} onOpenDevice={onOpenDevice} align="right" />
+      <EndInfo end={b} linkType={link.link_type} onOpenDevice={onOpenDevice} align="right" />
+    </div>
+  )
+}
+
+/** Liaisons dont AUCUN bout n'est évaluable — nommées, pas seulement comptées. */
+function UnmeasuredLinks({ links, onOpenDevice }: {
+  links: SiteLinkPair[]
+  onOpenDevice: (id: number) => void
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl shadow-sm">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between gap-3 px-5 py-3 text-left"
+      >
+        <span className="text-sm font-semibold text-slate-700">
+          {links.length} liaison{links.length > 1 ? 's' : ''} non évaluée{links.length > 1 ? 's' : ''}
+          <span className="font-normal text-slate-400"> — aucun bout en ligne avec une capacité relevée</span>
+        </span>
+        <span className="text-xs text-blue-600 shrink-0">{open ? 'Masquer' : 'Voir'}</span>
+      </button>
+      {open && (
+        <ul className="divide-y divide-slate-100 border-t border-slate-100">
+          {links.map(l => (
+            <li key={l.key} className="px-5 py-2.5 grid grid-cols-1 md:grid-cols-2 gap-1 text-xs">
+              {[l.end_a, l.end_b].map((e, i) => (
+                <div key={i} className="flex items-baseline gap-2 min-w-0">
+                  <span className="font-semibold text-blue-900 shrink-0">{siteLabel(e.site)}</span>
+                  {e.device_id !== null ? (
+                    <button type="button" onClick={() => onOpenDevice(e.device_id as number)}
+                            className="text-blue-600 hover:underline truncate">{e.name}</button>
+                  ) : (
+                    <span className="text-slate-500 truncate">{e.name ?? ''}</span>
+                  )}
+                  <span className="text-slate-400 truncate">{END_STATE_TEXT[e.state] || 'Mesuré'}</span>
+                </div>
+              ))}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }
@@ -246,38 +251,46 @@ function RadioDish({ x, y, facing, label, dim }: {
   )
 }
 
-function EndInfo({ site, end, onOpenDevice, align }: {
-  site: string
-  end: SiteLinkRow | null
+function EndInfo({ end, linkType, onOpenDevice, align }: {
+  end: SiteLinkEnd
+  linkType: 'af60' | 'airmax'
   onOpenDevice: (id: number) => void
   align: 'left' | 'right'
 }) {
   const alignCls = align === 'left' ? 'items-start text-left' : 'items-end text-right'
   return (
-    <div className={`md:w-52 shrink-0 flex flex-col gap-0.5 px-5 pt-5 pb-3 ${alignCls}`}>
-      <p className="font-bold text-blue-900">{site}</p>
-      {end ? (
+    <div className={`md:w-56 shrink-0 flex flex-col gap-0.5 px-5 pt-5 pb-3 ${alignCls}`}>
+      <p className="font-bold text-blue-900">{siteLabel(end.site)}</p>
+      {end.name && <p className="text-xs text-slate-600">{end.name}</p>}
+      {end.ip && <p className="text-[11px] font-mono text-blue-300">{end.ip}</p>}
+      {end.state === 'measured' ? (
         <>
-          <p className="text-xs text-slate-600">{end.name}</p>
-          <p className="text-[11px] font-mono text-blue-300">{end.ip ?? '—'}</p>
           <p className="text-xs text-slate-700">
-            Signal <strong>{fmt(end.latest_signal_dbm, ' dBm')}</strong> · SNR <strong>{fmt(end.latest_snr_db, ' dB', 1)}</strong>
+            Signal <strong>{fmt(end.signal_dbm, ' dBm')}</strong> · SNR <strong>{fmt(end.snr_db, ' dB', 1)}</strong>
           </p>
           <p className="text-[11px] text-slate-500">
-            Capacité mesurée ici : {capDisplay(end.latest_total_capacity_mbps, end.link_type)}
+            Capacité mesurée ici : {capDisplay(end.capacity_mbps, linkType)}
           </p>
-          <button
-            type="button"
-            onClick={() => onOpenDevice(end.device_id)}
-            className="mt-1 text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline"
-          >
-            Voir l'équipement →
-          </button>
+          {(end.dl_capacity_mbps !== null || end.ul_capacity_mbps !== null) && (
+            <p className="text-[11px] text-slate-500">
+              ↓ {capDisplay(end.dl_capacity_mbps, linkType)} · ↑ {capDisplay(end.ul_capacity_mbps, linkType)}
+            </p>
+          )}
         </>
       ) : (
-        <p className="text-xs text-slate-400">Extrémité non listée — pas de relevé sous le plancher</p>
+        <p className={`text-xs ${end.state === 'down' ? 'text-red-600 font-medium' : 'text-slate-400'}`}>
+          {END_STATE_TEXT[end.state]}
+        </p>
+      )}
+      {end.device_id !== null && (
+        <button
+          type="button"
+          onClick={() => onOpenDevice(end.device_id as number)}
+          className="mt-1 text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline"
+        >
+          Voir l'équipement →
+        </button>
       )}
     </div>
   )
 }
-

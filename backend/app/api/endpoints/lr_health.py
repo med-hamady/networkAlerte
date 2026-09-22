@@ -32,11 +32,13 @@ async def list_bad_installations(
 async def list_site_links(
     db: AsyncSession = Depends(get_db),
 ) -> SiteLinkHealthResponse:
-    """Liaisons backhaul site-à-site (airFiber 60) dégradées, pires d'abord.
+    """Liaisons backhaul site-à-site (AF60 / PTP LiteBeam) dégradées, pires d'abord.
 
-    Critère unique : la **dernière capacité totale** lue en base est sous le
-    plancher d'affichage (``af60_capacity_display_min_mbps``, 1.95 Gb/s). Lecture
-    de la dernière valeur de ``device_metrics`` — pas d'interrogation live.
+    ``links`` : chaque liaison avec SES DEUX BOUTS, appariés par le câblage
+    (``site_links``, par MAC) et l'état de chacun. Critère : la dernière capacité
+    totale des bouts en ligne, sous le plancher (``af60_capacity_display_min_mbps``
+    / ``airmax_backhaul_capacity_min_mbps``). ``unmeasured`` : les liaisons sans
+    aucun bout évaluable. Lecture de la base seule — pas d'interrogation live.
     """
     return await lr_health_service.get_site_link_health(db)
 

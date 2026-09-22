@@ -16,14 +16,16 @@ type Filter = 'all' | 'active' | 'blocked_full' | 'blocked_whatsapp' | 'bridge'
 // Sous-filtres imbriqués : la sous-rangée n'apparaît qu'une fois l'onglet parent
 // sélectionné, pour ne pas charger la barre principale.
 
-// « Hors supervision » → 3 tranches d'ancienneté (aligné sur le blocage routeur).
+// « Hors supervision » → tranches d'ancienneté (aligné sur le blocage routeur).
+// Le seuil d'entrée est `OUT_OF_SUPERVISION_DAYS` (60 j) : la tranche « ≥ 30 j »
+// a été retirée de la rangée, elle aurait toujours affiché le même compte que
+// « Tous ». Le filtre reste accepté par l'API.
 const OOS_FILTERS = new Set<Filter>([
   'out_of_supervision', 'out_of_supervision_30d', 'out_of_supervision_90d',
 ])
 const OOS_SUB: { value: Filter; label: string; count: keyof AccessStats }[] = [
-  { value: 'out_of_supervision',     label: 'Tous (7 j+)', count: 'out_of_supervision' },
-  { value: 'out_of_supervision_30d', label: '≥ 30 j',      count: 'out_of_supervision_30d' },
-  { value: 'out_of_supervision_90d', label: '≥ 90 j',      count: 'out_of_supervision_90d' },
+  { value: 'out_of_supervision',     label: 'Tous (60 j+)', count: 'out_of_supervision' },
+  { value: 'out_of_supervision_90d', label: '≥ 90 j',       count: 'out_of_supervision_90d' },
 ]
 
 // « Bloqués » → par MÉCANISME : coupé sur son équipement (SSH) vs sur le routeur.

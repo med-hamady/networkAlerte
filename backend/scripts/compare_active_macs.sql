@@ -3,7 +3,7 @@
 -- « Actif » chez nous = exactement la tuile « Accès actif » de /access, c.-à-d.
 -- les mêmes critères que `fn_access_clients` : un LR **non bloqué** ET **pas hors
 -- supervision** (hors supervision = pas d'IP ET (jamais vu par UISP OU vu il y a
--- plus de OUT_OF_SUPERVISION_DAYS, défaut 7 j)).
+-- plus de OUT_OF_SUPERVISION_DAYS, défaut 60 j)).
 --
 -- Le `status` (up/down/unknown) vient du sweep de ping : il dit si le client
 -- répond réellement, indépendamment du fait qu'il soit « actif » au sens contrat.
@@ -13,7 +13,7 @@
 --     -f - < backend/scripts/compare_active_macs.sql
 --
 -- Pour changer la fenêtre « hors supervision », remplacer les deux occurrences
--- de `interval '7 days'` ci-dessous.
+-- de `interval '60 days'` ci-dessous.
 --
 -- La liste externe ci-dessous est celle du 2026-08-06.
 
@@ -238,7 +238,7 @@ SELECT lower(d.mac_address)                     AS mac,
    AND NOT (
        d.ip_address IS NULL
        AND (l.uisp_last_seen IS NULL
-            OR l.uisp_last_seen < now() - interval '7 days')
+            OR l.uisp_last_seen < now() - interval '60 days')
    );
 
 -- ─────────────────────────────────────────────────────────────────────────────

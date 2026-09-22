@@ -1119,7 +1119,10 @@ class Settings(BaseSettings):
     # aucune source ne dit quoi que ce soit. Affiché comme tel et exclu du
     # décompte des accès actifs, jamais supprimé — la découverte le récupère
     # seule dès qu'un AP le rapporte avec une IP du plan de management.
-    out_of_supervision_days: int = 7
+    # 60 j (≈ 2 mois) depuis le 2026-09-22, décision opérateur : à 7 j, une
+    # antenne éteinte une semaine (client en voyage, coupure prolongée)
+    # sortait déjà des accès actifs, alors qu'elle revient d'elle-même.
+    out_of_supervision_days: int = 60
 
     # Fenêtre de confiance de l'IP annoncée par UISP pour une station qu'il ne
     # voit PAS en ligne à l'instant. UISP donne alors la dernière adresse

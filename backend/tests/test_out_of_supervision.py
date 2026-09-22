@@ -36,7 +36,7 @@ def test_a_device_with_an_ip_is_always_supervised():
 
 
 def test_no_ip_and_uisp_silent_for_days_is_out_of_supervision():
-    assert is_out_of_supervision(None, _ago(30)) is True
+    assert is_out_of_supervision(None, _ago(90)) is True
 
 
 def test_no_ip_but_uisp_saw_it_recently_is_not_out_of_supervision():
@@ -65,7 +65,7 @@ def test_naive_timestamp_is_read_as_utc_not_crashed_on():
     naïf et aware lève un TypeError qui casserait la page équipement entière.
     """
     naive_old = (
-        datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=30)
+        datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=90)
     ).replace(tzinfo=None)
     assert is_out_of_supervision(None, naive_old) is True
 

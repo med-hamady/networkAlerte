@@ -31,25 +31,23 @@ serveur Windows de sauvegarde (`10.135.0.210`).
                                             C:\Backups\supervisor
 ```
 
-### ⚠️ Mode en place : UNE seule copie, écrasée chaque nuit (2026-09-22)
+### ⚠️ Mode en place : UNE seule copie, datée, qui remplace la précédente (2026-09-22)
 
-`BACKUP_SINGLE_COPY=true` : l'archive s'appelle toujours
-`supervisor-latest.tar`, et chaque nuit remplace la précédente **sur la prod
-comme sur le serveur Windows**. Sa date se lit dans le `MANIFEST.txt` qu'elle
-contient.
+`BACKUP_SINGLE_COPY=true` : chaque nuit crée `supervisor-<date>.tar` puis
+**supprime la précédente**, sur la prod (`backup-db.sh`) comme sur le serveur
+Windows (`receive-backup.ps1 -KeepOnlyLatest`).
 
-- Le **nom fixe** fait garder à Sync.com les versions précédentes dans son
-  historique : c'est le **seul** moyen de revenir à une nuit antérieure.
-- Un problème découvert **après** la sauvegarde suivante (inventaire vidé dans
-  la nuit, comme le 2026-05-17) n'a plus de copie saine ni sur la prod ni sur
-  Windows.
-- Le marqueur `.pushed` contient **l'empreinte** envoyée : avec un nom fixe,
-  sa seule présence ferait prendre la sauvegarde du jour pour celle de la
-  veille, et plus rien ne partirait.
-- Incompatible avec une sauvegarde **incrémentale** des courbes et du trafic
-  (qui exige de garder toutes les archives).
+- La suppression n'a lieu qu'**après** que la nouvelle est complète (prod) ou
+  vérifiée et publiée (Windows) : un échec ne laisse jamais sans sauvegarde.
+- Côté Windows, seules les archives **plus anciennes** sont supprimées (ordre du
+  nom = ordre chronologique) : un envoi en retard ne peut pas effacer une plus
+  récente.
+- La nuit précédente reste dans la **corbeille de Sync.com** (« Deleted files »),
+  pour la durée prévue par l'abonnement : c'est le **seul** retour en arrière.
+  Un problème découvert après la sauvegarde suivante (inventaire vidé dans la
+  nuit, comme le 2026-05-17) n'a plus de copie saine ailleurs.
 
-Pour revenir à une archive datée par nuit : `BACKUP_SINGLE_COPY=false`.
+Pour revenir à une archive par nuit gardée N jours : `BACKUP_SINGLE_COPY=false`.
 
 ### C'est le DOSSIER qui est envoyé, pas seulement la dernière archive
 
@@ -142,14 +140,24 @@ capacité, le câblage inter-sites, les positions des pylônes, les comptes.
 | Table | Pourquoi |
 |---|---|
 | `device_metrics` | ~20 M lignes / ~6,8 Go — re-remplie par les polls |
-| `lr_metric_samples` | courbes des fiches équipement — re-générées |
-| `traffic_dest_stats` | NetFlow, rétention 90 j — re-généré |
 | `power_status_logs` | relevés UISP Power — écrits, mais lus par **aucun** service |
 | `auth_sessions` | cookies de session — les restaurer serait une faute |
 
 À la restauration ces tables reviennent **vides mais existantes**, et se
-re-remplissent au premier tour de poll. C'est ce qui fait tenir l'archive en
-quelques dizaines de Mo au lieu de ~7 Go.
+re-remplissent au premier tour de poll.
+
+### Historiques INCLUS depuis le 2026-09-22
+
+| Table | Contenu | Rétention en base |
+|---|---|---|
+| `lr_metric_samples` | courbes des fiches équipement (« Plus d'infos ») | 30 j |
+| `traffic_dest_stats` | trafic Internet par opérateur (page `/traffic`) | 90 j |
+
+Ce sont les deux historiques qui **ne se reconstituent pas** : sans eux, une
+restauration rendait graphes et page `/traffic` vides. Contrepartie : l'archive
+passe de ~1 Mo à plusieurs centaines de Mo, voire quelques Go, et le `pg_dump`
+de 05:00 dure plus longtemps. Le dossier de travail est donc dans
+`$BACKUP_DIR/.work.*` (700) et non dans `/tmp`.
 
 ### ⚠️ La limite à connaître : la consommation brute
 

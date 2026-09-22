@@ -85,6 +85,14 @@ case "$ALLOW_PLAINTEXT" in
     *)      ALLOW_PLAINTEXT=0 ;;
 esac
 
+# Copie unique (BACKUP_SINGLE_COPY) : le receveur Windows supprime l'archive
+# precedente, mais seulement APRES avoir verifie et publie la nouvelle.
+SINGLE_COPY="${BACKUP_SINGLE_COPY:-$(env_get BACKUP_SINGLE_COPY false)}"
+case "$SINGLE_COPY" in
+    true|1) SINGLE_COPY=1 ;;
+    *)      SINGLE_COPY=0 ;;
+esac
+
 DRY_RUN=0
 FILES=()
 for arg in "$@"; do
@@ -99,11 +107,10 @@ done
     || die "BACKUP_REMOTE_HOST absent du .env - envoi non configure (voir docs/backup-database.md)"
 
 # --- Une archive est-elle deja confirmee ? -----------------------------------
-# Le marqueur `<archive>.pushed` contient l'EMPREINTE de la version confirmee.
-# C'est indispensable avec BACKUP_SINGLE_COPY : l'archive garde le meme nom
-# chaque nuit, et un marqueur qui ne dirait que « deja envoye » ferait prendre
-# la sauvegarde du jour pour celle de la veille - plus rien ne partirait, sans
-# la moindre erreur. On compare donc le contenu, pas la seule presence.
+# Le marqueur `<archive>.pushed` contient l'EMPREINTE de la version confirmee :
+# si une archive du meme nom est un jour regeneree, la nouvelle version repart,
+# au lieu d'etre prise pour celle deja envoyee (plus rien ne partirait, sans la
+# moindre erreur). On compare donc le contenu, pas la seule presence.
 # Un marqueur VIDE (ecrit avant ce changement, sur une archive a nom date qui
 # ne change plus jamais) vaut confirmation : ne pas renvoyer tout l'historique.
 is_pushed() {
@@ -198,6 +205,7 @@ push_one() {
     cmd="$cmd -FileName \"$name\" -ExpectedHash \"$hash\""
     cmd="$cmd -StagingDir \"$REMOTE_STAGING\" -DestDir \"$REMOTE_DIR\""
     cmd="$cmd -KeepDays $REMOTE_KEEP_DAYS"
+    [ "$SINGLE_COPY" -eq 1 ] && cmd="$cmd -KeepOnlyLatest"
 
     # La sortie du receveur est reprise dans NOTRE log : en cas d'incident
     # nocturne tout se lit au meme endroit, sans ouvrir de session Windows.

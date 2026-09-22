@@ -23,14 +23,18 @@
 #     Les tables time-series sont dumpees SANS LEURS DONNEES
 #     (--exclude-table-data) : le schema est la, les lignes non. A la
 #     restauration elles reviennent vides et se re-remplissent seules au premier
-#     tour de poll. C'est ce qui fait passer l'archive de ~7 Go a quelques
-#     dizaines de Mo.
+#     tour de poll.
 #
 #       device_metrics       ~20 M lignes / ~6,8 Go - re-generee par les polls
-#       lr_metric_samples    courbes de la fiche equipement - re-generees
-#       traffic_dest_stats   NetFlow, retention 90 j - re-genere
 #       power_status_logs    releves UISP Power - ecrits mais lus par aucun service
 #       auth_sessions        cookies de session - les restaurer serait une faute
+#
+#     SAUVEGARDEES avec leurs donnees depuis le 2026-09-22 (decision
+#     d'exploitation) : l'historique des courbes (`lr_metric_samples`, 30 j) et
+#     le trafic Internet par operateur (`traffic_dest_stats`, 90 j). Ce sont les
+#     deux historiques qui ne se reconstituent PAS : apres une restauration sans
+#     eux, graphes et page /traffic repartaient de zero. Contrepartie : l'archive
+#     passe de ~1 Mo a plusieurs centaines de Mo, voire quelques Go.
 #
 #     /!\ CONSEQUENCE A CONNAITRE : la consommation client est calculee en
 #     deltas sur les compteurs d'octets de `device_metrics`, qui n'a AUCUNE
@@ -126,30 +130,33 @@ chmod 700 "$BACKUP_DIR"
 
 STAMP="$(date -u '+%Y-%m-%d_%H%M%S')"
 
-# BACKUP_SINGLE_COPY=true : une seule sauvegarde, au NOM FIXE, que chaque nuit
-# ecrase (decision d'exploitation du 2026-09-22). La date reste lisible dans le
-# MANIFEST.txt de l'archive et dans le journal. Le nom fixe n'est pas un detail :
-# c'est lui qui fait garder a Sync.com les versions precedentes dans son
-# historique, la ou un nom date qu'on supprime n'y laisserait qu'un fichier efface.
-# /!\ Sans historique local, un probleme vu APRES la sauvegarde suivante (base
-#     videe dans la nuit, par exemple) n'a plus de copie saine ici : il ne reste
-#     que l'historique des versions de Sync.com.
+# BACKUP_SINGLE_COPY=true : UNE seule sauvegarde. Chaque nuit produit une
+# archive DATEE puis supprime la precedente, ici comme sur le serveur Windows
+# (decision d'exploitation du 2026-09-22). Le nom date rend la date lisible sans
+# ouvrir l'archive ; la nuit precedente reste recuperable dans la corbeille de
+# Sync.com (« Deleted files »), pour la duree prevue par l'abonnement.
+# /!\ Un probleme vu APRES la sauvegarde suivante (base videe dans la nuit, par
+#     exemple) n'a plus de copie saine ni ici ni sur Windows : il ne reste que
+#     la corbeille de Sync.com.
 SINGLE_COPY="${BACKUP_SINGLE_COPY:-$(env_get BACKUP_SINGLE_COPY false)}"
 case "$SINGLE_COPY" in
-    true|1) NAME_TAG="latest" ;;
-    *)      NAME_TAG="$STAMP" ;;
+    true|1) SINGLE_COPY=1 ;;
+    *)      SINGLE_COPY=0 ;;
 esac
 
 if [ "$ENCRYPT" -eq 1 ]; then
-    BASENAME="supervisor-${NAME_TAG}.tar.enc"
+    BASENAME="supervisor-${STAMP}.tar.enc"
 else
-    BASENAME="supervisor-${NAME_TAG}.tar"
+    BASENAME="supervisor-${STAMP}.tar"
 fi
 OUT="$BACKUP_DIR/$BASENAME"
 
-WORK="$(mktemp -d)"
-# Nettoyage meme en cas d'echec : le dump en clair ne doit jamais trainer dans
-# /tmp, et un .part abandonne ne doit pas ressembler a une archive complete.
+# Dossier de travail DANS $BACKUP_DIR (700) et pas dans /tmp : le dump y sejourne
+# en clair le temps de l'archiver, et il pese desormais plusieurs centaines de Mo
+# a quelques Go (courbes + trafic inclus) - /tmp peut etre petit, ou en memoire.
+WORK="$(mktemp -d -p "$BACKUP_DIR" .work.XXXXXX)"
+# Nettoyage meme en cas d'echec : le dump en clair ne doit jamais trainer, et un
+# .part abandonne ne doit pas ressembler a une archive complete.
 cleanup() { rm -rf "$WORK"; rm -f "$OUT.part"; }
 trap cleanup EXIT
 
@@ -162,8 +169,6 @@ dc exec -T postgres pg_dump \
     -U "$PGUSER_" -d "$PGDB_" \
     --format=custom --compress=9 \
     --exclude-table-data=device_metrics \
-    --exclude-table-data=lr_metric_samples \
-    --exclude-table-data=traffic_dest_stats \
     --exclude-table-data=power_status_logs \
     --exclude-table-data=auth_sessions \
     > "$WORK/network_supervisor.dump" \
@@ -208,8 +213,8 @@ rm -f "$WORK/.consumption.err"
     fi
     echo
     echo "Donnees exclues (schema conserve, lignes non - re-generees par les polls) :"
-    echo "  device_metrics, lr_metric_samples, traffic_dest_stats,"
-    echo "  power_status_logs, auth_sessions"
+    echo "  device_metrics, power_status_logs, auth_sessions"
+    echo "Historiques INCLUS : lr_metric_samples (courbes), traffic_dest_stats (trafic)"
     echo
     echo "Restauration : voir docs/backup-database.md"
 } > "$WORK/MANIFEST.txt"
@@ -256,7 +261,21 @@ ln -sfn "$BASENAME.sha256" "$BACKUP_DIR/$LATEST.sha256"
 
 log "OK - $OUT ($(du -h "$OUT" | cut -f1))"
 
-# --- 5. Retention locale -----------------------------------------------------
+# --- 5a. Copie unique : l'archive precedente disparait -----------------------
+# Seulement MAINTENANT, une fois la nouvelle complete, renommee et son empreinte
+# ecrite : un echec plus haut (pg_dump, disque plein) laisse la precedente en
+# place, et on n'est jamais sans sauvegarde du tout. Emporte aussi l'empreinte
+# et le marqueur d'envoi de l'ancienne. Si l'ancienne n'etait pas encore partie
+# vers Windows (serveur eteint), la nouvelle la remplace avantageusement.
+if [ "$SINGLE_COPY" -eq 1 ]; then
+    REPLACED="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'supervisor-*' \
+                ! -name "$BASENAME" ! -name "$BASENAME.*" -print -delete | wc -l)"
+    if [ "$REPLACED" -gt 0 ]; then
+        log "Copie unique : $REPLACED fichier(s) de la sauvegarde precedente supprime(s)"
+    fi
+fi
+
+# --- 5b. Retention locale ----------------------------------------------------
 # Le cloud garde sa propre profondeur ; ici on ne garde que de quoi restaurer
 # vite sans remplir le disque.
 PURGED="$(find "$BACKUP_DIR" -maxdepth 1 -name 'supervisor-*.tar*' -type f \

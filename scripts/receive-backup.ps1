@@ -41,6 +41,9 @@ param(
     [string] $StagingDir = 'C:\Backups\_transit',
     [string] $DestDir    = 'C:\Backups\supervisor',
     [int]    $KeepDays   = 30,
+    # Copie unique (BACKUP_SINGLE_COPY sur la prod) : ne garder QUE l'archive
+    # qu'on vient de publier, les plus anciennes sont supprimees.
+    [switch] $KeepOnlyLatest,
     [string] $LogFile    = 'C:\Backups\receive-backup.log'
 )
 
@@ -124,6 +127,28 @@ try {
     }
     $sizeMb = [math]::Round((Get-Item $target).Length / 1MB, 1)
     Write-Log "Publiee : $FileName ($sizeMb Mo) dans $DestDir"
+
+    # --- Copie unique -------------------------------------------------------
+    # Seulement APRES publication et verification de la nouvelle : un envoi
+    # rate ne laisse jamais ce dossier sans sauvegarde. Ne supprime que des
+    # archives PLUS ANCIENNES (le nom porte la date, l'ordre alphabetique est
+    # donc chronologique) : un envoi en retard d'une vieille archive ne peut
+    # pas effacer une plus recente. L'empreinte (.sha256) part avec son archive.
+    # /!\ Dans un dossier synchronise, supprimer ici supprime aussi dans le
+    #     cloud ; la nuit precedente reste dans la corbeille de Sync.com.
+    if ($KeepOnlyLatest) {
+        $older = Get-ChildItem -Path $DestDir -Filter 'supervisor-*' -File -ErrorAction SilentlyContinue |
+                 Where-Object {
+                     $base = $_.Name -replace '\.sha256$', ''
+                     ($base -match '^supervisor-[\w-]+\.tar(\.enc)?$') -and
+                     ($base -ne $FileName) -and
+                     ([string]::CompareOrdinal($base, $FileName) -lt 0)
+                 }
+        foreach ($f in $older) {
+            Remove-Item $f.FullName -Force
+            Write-Log "Copie unique : $($f.Name) supprime (remplace par $FileName)"
+        }
+    }
 
     # --- Retention ------------------------------------------------------------
     # /!\ Si $DestDir est un dossier synchronise vers un cloud, supprimer ici

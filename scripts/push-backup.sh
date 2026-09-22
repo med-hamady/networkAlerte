@@ -213,5 +213,10 @@ for archive in "${PENDING[@]}"; do
     esac
 done
 
-log "Bilan : $SENT envoyee(s), $FAILED en attente ou en echec."
+if [ "$DRY_RUN" -eq 1 ]; then
+    # Rien n'est parti : ne pas l'annoncer comme envoye.
+    log "Bilan (dry-run) : $SENT archive(s) partiraient, rien n'a ete envoye."
+else
+    log "Bilan : $SENT envoyee(s), $FAILED en attente ou en echec."
+fi
 [ "$FAILED" -eq 0 ] || exit 1

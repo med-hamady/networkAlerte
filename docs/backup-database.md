@@ -131,9 +131,24 @@ référence étant tenue par le système de paiement tiers, c'est acceptable ; s
 
 ---
 
-## 3. Le chiffrement n'est pas optionnel
+## 3. Le chiffrement
 
-Le dump contient les colonnes `ssh_password`, `api_password` et
+> ⚠️ **Décision d'exploitation du 2026-09-22 : les sauvegardes partent EN CLAIR.**
+> `.env` de la prod : `BACKUP_PASSPHRASE` vide + `BACKUP_ALLOW_PLAINTEXT=true`.
+> Les archives sont alors des `supervisor-<date>.tar` (sans `.enc`), envoyées
+> par `push-backup.sh` seulement grâce à ce réglage explicite.
+>
+> **Conséquence acceptée** : chaque archive porte les mots de passe SSH de tout
+> le parc radio en clair. Sur le serveur Windows, **seule l'ACL de `C:\Backups`
+> les protège** — le dossier doit être fermé à tout compte autre que `backup`,
+> `Administrators` et `SYSTEM` (§5b). Un fichier copié ailleurs (clé USB, cloud,
+> pièce jointe) emporte tous les accès du réseau.
+>
+> Pour revenir au chiffrement : renseigner `BACKUP_PASSPHRASE` (et la ranger
+> dans le coffre de l'entreprise) — rien d'autre à changer, les deux formats
+> coexistent dans le même dossier.
+
+Ce qui suit décrit le mode chiffré. Le dump contient les colonnes `ssh_password`, `api_password` et
 `management_password` de `devices` et de ses sous-classes : **les mots de passe
 SSH de tout le parc radio, en clair**.
 
@@ -249,7 +264,13 @@ $pw = Read-Host -AsSecureString "Mot de passe du compte backup"
 New-LocalUser -Name backup -Password $pw -PasswordNeverExpires
 
 New-Item -ItemType Directory -Force C:\Backups\_transit, C:\Backups\supervisor
-icacls C:\Backups /grant "backup:(OI)(CI)M"
+
+# Droits EXPLICITES uniquement : sous C:\, un dossier hérite par défaut de
+# droits pour « Utilisateurs » et « Utilisateurs authentifiés », c.-à-d. que
+# tout compte de la machine lirait les dumps (en clair, cf. §3).
+icacls C:\Backups /inheritance:r `
+  /grant "Administrators:(OI)(CI)F" /grant "SYSTEM:(OI)(CI)F" /grant "backup:(OI)(CI)M"
+icacls C:\Backups
 
 # y copier scripts/receive-backup.ps1 depuis le dépôt
 Copy-Item .\receive-backup.ps1 C:\Backups\receive-backup.ps1
@@ -294,7 +315,20 @@ Si `scp` refuse le chemin `C:/Backups/_transit`, essayer la forme SFTP
 
 ## 6. Restaurer
 
-### Récupérer et déchiffrer l'archive
+### Archive EN CLAIR (`.tar`, le mode actuel)
+
+```bash
+mkdir -p /tmp/restore && cd /tmp/restore
+scp -i ~/.ssh/id_backup_windows \
+    "backup@10.135.0.210:C:/Backups/supervisor/supervisor-2026-09-22_050000.tar*" .
+sha256sum -c supervisor-2026-09-22_050000.tar.sha256
+tar -xf supervisor-2026-09-22_050000.tar -C /tmp/restore
+cat /tmp/restore/MANIFEST.txt
+```
+
+Puis passer directement à « Restaurer dans la base ».
+
+### Récupérer et déchiffrer l'archive (`.tar.enc`)
 
 ```bash
 mkdir -p /tmp/restore && cd /tmp/restore

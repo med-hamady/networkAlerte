@@ -14,9 +14,12 @@
     VERIFIE. Si ce dossier est synchronise vers un cloud (client Sync.com par
     exemple), son client televerserait sinon un fichier a moitie ecrit.
 
-    /!\ CE SCRIPT NE DECHIFFRE RIEN. L'archive arrive chiffree (AES-256, faite
-        sur la prod). La phrase secrete ne doit PAS exister sur cette machine :
-        sinon la donnee et sa cle sont au meme endroit.
+    /!\ CE SCRIPT NE DECHIFFRE RIEN. Une archive `.tar.enc` arrive chiffree
+        (AES-256, faite sur la prod) et la phrase secrete ne doit PAS exister
+        sur cette machine. Une archive `.tar` arrive EN CLAIR (choix
+        d'exploitation du 2026-09-22) : elle porte les mots de passe SSH de tout
+        le parc radio, et seule l'ACL de C:\Backups la protege - ce dossier doit
+        etre ferme a tout compte autre que backup, Administrators et SYSTEM.
 
     /!\ Dossier de transit et dossier de sauvegarde sur LE MEME VOLUME. Sur un
         meme volume un deplacement est un renommage, instantane et indivisible ;
@@ -61,8 +64,10 @@ try {
         Write-Log "Nom de fichier refuse : '$FileName'" 'ERROR'
         exit 1
     }
-    if ($FileName -notmatch '^supervisor-[\w.-]+\.tar\.enc$') {
-        Write-Log "Nom hors convention (attendu supervisor-*.tar.enc) : '$FileName'" 'ERROR'
+    # `.tar.enc` = archive chiffree ; `.tar` = archive EN CLAIR, envoyee par la
+    # prod seulement avec BACKUP_ALLOW_PLAINTEXT=true (choix du 2026-09-22).
+    if ($FileName -notmatch '^supervisor-[\w-]+\.tar(\.enc)?$') {
+        Write-Log "Nom hors convention (attendu supervisor-*.tar ou .tar.enc) : '$FileName'" 'ERROR'
         exit 1
     }
 
@@ -124,14 +129,18 @@ try {
     # /!\ Si $DestDir est un dossier synchronise vers un cloud, supprimer ici
     #     supprime AUSSI dans le cloud.
     $cutoff = (Get-Date).AddDays(-$KeepDays)
-    $stale = Get-ChildItem -Path $DestDir -Filter 'supervisor-*.tar.enc*' -File -ErrorAction SilentlyContinue |
+    # Archives chiffrees ou en clair, et leurs empreintes (.sha256).
+    $stale = Get-ChildItem -Path $DestDir -Filter 'supervisor-*.tar*' -File -ErrorAction SilentlyContinue |
              Where-Object { $_.LastWriteTime -lt $cutoff }
     foreach ($f in $stale) {
         Remove-Item $f.FullName -Force
         Write-Log "Retention : $($f.Name) supprime (> $KeepDays j)"
     }
 
-    $kept = @(Get-ChildItem -Path $DestDir -Filter 'supervisor-*.tar.enc' -File -ErrorAction SilentlyContinue)
+    # Filtre par regex et non par -Filter '*.tar' : sous Windows ce motif attrape
+    # aussi les extensions qui COMMENCENT par .tar (heritage des noms 8.3).
+    $kept = @(Get-ChildItem -Path $DestDir -Filter 'supervisor-*' -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '\.tar(\.enc)?$' })
     Write-Log "$($kept.Count) sauvegarde(s) dans $DestDir."
     exit 0
 }

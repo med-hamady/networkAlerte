@@ -29,10 +29,11 @@
 # local est deja un acquis. Si le serveur Windows est injoignable, l'echec de
 # l'envoi ne doit ni faire echouer ni annuler la sauvegarde elle-meme.
 #
-# /!\ LE SERVEUR WINDOWS NE DECHIFFRE JAMAIS RIEN. L'archive est chiffree ici
-#     (cf. backup-db.sh) et il ne fait que ranger un bloc opaque. La phrase
-#     secrete ne doit PAS exister sur le serveur Windows : sinon la donnee et
-#     sa cle sont au meme endroit et le chiffrement ne protege plus de rien.
+# /!\ LE SERVEUR WINDOWS NE DECHIFFRE JAMAIS RIEN. Une archive chiffree
+#     (`.tar.enc`) n'est pour lui qu'un bloc opaque ; la phrase secrete ne doit
+#     PAS y exister. Une archive EN CLAIR (`.tar`, BACKUP_ALLOW_PLAINTEXT=true,
+#     choix d'exploitation du 2026-09-22) y est lisible par quiconque lit
+#     C:\Backups : c'est l'ACL de ce dossier qui la protege, et rien d'autre.
 #
 # /!\ La retention locale (BACKUP_RETENTION_DAYS, 14 j) borne le rattrapage :
 #     si le serveur Windows reste injoignable plus longtemps, les archives les
@@ -73,6 +74,17 @@ REMOTE_DIR="${BACKUP_REMOTE_DIR:-$(env_get BACKUP_REMOTE_DIR 'C:/Backups/supervi
 REMOTE_SCRIPT="${BACKUP_REMOTE_SCRIPT:-$(env_get BACKUP_REMOTE_SCRIPT 'C:/Backups/receive-backup.ps1')}"
 REMOTE_KEEP_DAYS="${BACKUP_REMOTE_KEEP_DAYS:-$(env_get BACKUP_REMOTE_KEEP_DAYS 30)}"
 
+# Archives EN CLAIR (backup-db.sh sans BACKUP_PASSPHRASE) : envoyees seulement si
+# BACKUP_ALLOW_PLAINTEXT=true. Decision d'exploitation du 2026-09-22 : pas de
+# chiffrement. /!\ Le dump porte alors les mots de passe SSH de tout le parc
+# radio en clair sur le serveur Windows : C:\Backups doit y etre ferme a tout
+# autre compte que backup, Administrators et SYSTEM (cf. docs/backup-database.md).
+ALLOW_PLAINTEXT="${BACKUP_ALLOW_PLAINTEXT:-$(env_get BACKUP_ALLOW_PLAINTEXT false)}"
+case "$ALLOW_PLAINTEXT" in
+    true|1) ALLOW_PLAINTEXT=1 ;;
+    *)      ALLOW_PLAINTEXT=0 ;;
+esac
+
 DRY_RUN=0
 FILES=()
 for arg in "$@"; do
@@ -87,13 +99,12 @@ done
     || die "BACKUP_REMOTE_HOST absent du .env - envoi non configure (voir docs/backup-database.md)"
 
 # --- Quelles archives envoyer ? ----------------------------------------------
-# Le motif `supervisor-*.tar.enc` exclut d'office :
-#   - `latest.tar.enc` (un symlink vers une archive deja dans la liste) ;
-#   - une archive en cours d'ecriture (`.tar.enc.part`) ;
-#   - une archive EN CLAIR (`.tar`, BACKUP_ALLOW_PLAINTEXT), qui porte les mots
-#     de passe SSH de tout le parc et ne doit quitter ce serveur sous aucun
-#     pretexte.
-# Le developpement du motif est trie par nom, donc par date : les plus
+# Les motifs `supervisor-*.tar.enc` / `supervisor-*.tar` excluent d'office :
+#   - `latest.tar*` (un symlink vers une archive deja dans la liste) ;
+#   - une archive en cours d'ecriture (`.part`) ;
+#   - les empreintes et marqueurs (`.sha256`, `.pushed`).
+# Une archive EN CLAIR (`.tar`) n'est retenue qu'avec BACKUP_ALLOW_PLAINTEXT.
+# Le developpement d'un motif est trie par nom, donc par date : les plus
 # anciennes partent en premier.
 PENDING=()
 if [ "${#FILES[@]}" -gt 0 ]; then
@@ -101,12 +112,20 @@ if [ "${#FILES[@]}" -gt 0 ]; then
         [ -f "$f" ] || die "archive introuvable : $f"
         case "$f" in
             *.tar.enc) PENDING+=("$f") ;;
-            *) die "archive NON chiffree ($f) - envoi refuse. Voir BACKUP_PASSPHRASE." ;;
+            *.tar)
+                [ "$ALLOW_PLAINTEXT" -eq 1 ] \
+                    || die "archive NON chiffree ($f) - envoi refuse sans BACKUP_ALLOW_PLAINTEXT=true."
+                PENDING+=("$f")
+                ;;
+            *) die "pas une archive de sauvegarde : $f" ;;
         esac
     done
 else
+    PATTERNS=("$BACKUP_DIR"/supervisor-*.tar.enc)
+    [ "$ALLOW_PLAINTEXT" -eq 1 ] && PATTERNS+=("$BACKUP_DIR"/supervisor-*.tar)
     shopt -s nullglob
-    for f in "$BACKUP_DIR"/supervisor-*.tar.enc; do
+    for f in "${PATTERNS[@]}"; do
+        [ -f "$f" ] || continue
         [ -e "$f.pushed" ] || PENDING+=("$f")
     done
     shopt -u nullglob

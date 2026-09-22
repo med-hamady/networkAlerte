@@ -2,7 +2,7 @@
 #
 # Envoie les archives de sauvegarde vers le serveur Windows de sauvegarde.
 #
-#   prod Ubuntu 10.135.3.25              serveur Windows 10.135.0.33
+#   prod Ubuntu 10.135.3.25              serveur Windows 10.135.0.210
 #   -----------------------              ---------------------------
 #   backup-db.sh (05:00 UTC)
 #     /opt/a2project/backups/

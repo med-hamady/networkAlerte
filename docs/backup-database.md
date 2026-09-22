@@ -1,7 +1,7 @@
 # Sauvegarde de la base
 
 Runbook de la sauvegarde quotidienne de PostgreSQL et de son envoi vers le
-serveur Windows de sauvegarde (`10.135.0.33`).
+serveur Windows de sauvegarde (`10.135.0.210`).
 
 | Pièce | Où | Rôle |
 |---|---|---|
@@ -15,7 +15,7 @@ serveur Windows de sauvegarde (`10.135.0.33`).
 ## 1. Le montage
 
 ```
-  prod Ubuntu 10.135.3.25                    serveur Windows 10.135.0.33
+  prod Ubuntu 10.135.3.25                    serveur Windows 10.135.0.210
   ───────────────────────                    ───────────────────────────
   backup-db.sh       (cron 05:00 UTC)
     pg_dump ──► archive chiffrée
@@ -177,7 +177,13 @@ cat ~/.ssh/id_backup_windows.pub          # à poser côté Windows (§5c)
 
 **c. Planifier**
 
+⚠️ Le cron tourne sous `a2`, qui ne peut pas écrire dans `/var/log` : sans ce
+fichier préparé, la redirection échoue et **la commande ne s'exécute même pas**,
+sans laisser de trace.
+
 ```bash
+sudo touch /var/log/supervisor-backup.log
+sudo chown a2:a2 /var/log/supervisor-backup.log
 crontab -e
 ```
 
@@ -186,29 +192,51 @@ crontab -e
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # 05:00 UTC — après le rafraîchissement des vues de consommation (03:00, 04:00).
-0 5 * * * /opt/a2project/scripts/backup-db.sh    >> /var/log/supervisor-backup.log 2>&1
+0 5 * * * /bin/bash /opt/a2project/scripts/backup-db.sh    >> /var/log/supervisor-backup.log 2>&1
 
 # Toutes les heures à :20 — envoie ce qui est en attente, et rien sinon (aucune
 # connexion ouverte). Séparé de la sauvegarde : un serveur Windows injoignable
 # ne doit pas faire échouer ce qui est déjà fait.
-20 * * * * /opt/a2project/scripts/push-backup.sh >> /var/log/supervisor-backup.log 2>&1
+20 * * * * /bin/bash /opt/a2project/scripts/push-backup.sh >> /var/log/supervisor-backup.log 2>&1
 ```
 
 ---
 
-## 5. Installation — côté serveur Windows (`10.135.0.33`)
+## 5. Installation — côté serveur Windows (`10.135.0.210`)
 
 Aucune tâche planifiée ici : le serveur Windows **subit** l'envoi.
 
 **a. Serveur OpenSSH** (PowerShell administrateur)
 
+Windows Server **2019 et plus** — composant intégré :
+
 ```powershell
 Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+```
+
+Windows Server **2016** (cas de `10.135.0.210`) — le composant n'existe pas, on
+installe le paquet officiel Microsoft `OpenSSH-Win64-v<version>.msi`, téléchargé
+depuis https://github.com/PowerShell/Win32-OpenSSH/releases (sur un poste
+connecté si le serveur n'a pas Internet, puis copié) :
+
+```powershell
+msiexec /i C:\Temp\OpenSSH-Win64-v<version>.msi ADDLOCAL=Server /qn
+```
+
+Puis, dans les deux cas :
+
+```powershell
 Set-Service -Name sshd -StartupType Automatic
 Start-Service sshd
 
-# N'accepter le SSH que depuis la prod
-Set-NetFirewallRule -Name OpenSSH-Server-In-TCP -RemoteAddress 10.135.3.25
+# N'accepter le SSH que depuis la prod (la règle peut ne pas exister selon
+# la méthode d'installation : on la crée alors)
+if (Get-NetFirewallRule -Name OpenSSH-Server-In-TCP -ErrorAction SilentlyContinue) {
+    Set-NetFirewallRule -Name OpenSSH-Server-In-TCP -RemoteAddress 10.135.3.25
+} else {
+    New-NetFirewallRule -Name OpenSSH-Server-In-TCP -DisplayName "OpenSSH (prod uniquement)" `
+      -Direction Inbound -Protocol TCP -LocalPort 22 -RemoteAddress 10.135.3.25 -Action Allow
+}
 ```
 
 **b. Compte dédié et dossiers**
@@ -252,7 +280,7 @@ icacls "$dir\authorized_keys" /inheritance:r /grant "backup:F" /grant "SYSTEM:F"
 **d. Essai depuis la prod**
 
 ```bash
-ssh -i ~/.ssh/id_backup_windows backup@10.135.0.33 "echo connexion OK"
+ssh -i ~/.ssh/id_backup_windows backup@10.135.0.210 "echo connexion OK"
 ./scripts/backup-db.sh
 ./scripts/push-backup.sh --dry-run
 ./scripts/push-backup.sh
@@ -271,7 +299,7 @@ Si `scp` refuse le chemin `C:/Backups/_transit`, essayer la forme SFTP
 ```bash
 mkdir -p /tmp/restore && cd /tmp/restore
 scp -i ~/.ssh/id_backup_windows \
-    "backup@10.135.0.33:C:/Backups/supervisor/supervisor-2026-09-16_050000.tar.enc*" .
+    "backup@10.135.0.210:C:/Backups/supervisor/supervisor-2026-09-16_050000.tar.enc*" .
 
 sha256sum -c supervisor-2026-09-16_050000.tar.enc.sha256    # intégrité d'abord
 
@@ -359,4 +387,4 @@ l'octet près. Compter **plusieurs Go** par archive.
 | Les certificats nginx | Auto-signés, régénérables. |
 | Le journal FAI (`fai_audit`) | Fichier sur disque, **hors base** (`FAI_LOG_PATH`, défaut `/app/logs/fai_actions.log`) — à sauvegarder séparément si la piste d'audit des coupures doit survivre au serveur. |
 | Un serveur Windows injoignable | L'archive est **quand même produite et gardée en local**, et partira au prochain passage horaire. Mais **rien ne le signale tout seul** : surveiller `/var/log/supervisor-backup.log` (une ligne `ERREUR` par heure d'indisponibilité). |
-| Une copie hors site | `10.135.0.33` est sur le **même LAN** que la prod : un sinistre sur le site emporte les deux. Pour une copie hors site, faire synchroniser `C:\Backups\supervisor` vers un cloud depuis le serveur Windows (§1, « Et Sync.com ? »). |
+| Une copie hors site | `10.135.0.210` est sur le **même LAN** que la prod : un sinistre sur le site emporte les deux. Pour une copie hors site, faire synchroniser `C:\Backups\supervisor` vers un cloud depuis le serveur Windows (§1, « Et Sync.com ? »). |

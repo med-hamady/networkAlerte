@@ -4,7 +4,7 @@
     empreinte, et la range dans le dossier de sauvegarde.
 
 .DESCRIPTION
-    Tourne sur le serveur Windows de sauvegarde (10.135.0.33), appele par SSH
+    Tourne sur le serveur Windows de sauvegarde (10.135.0.210), appele par SSH
     depuis scripts/push-backup.sh sur le serveur de prod. Ce script ne va rien
     chercher : il traite ce qui vient d'etre depose dans le dossier de transit.
     Aucune tache planifiee n'est necessaire sur cette machine.

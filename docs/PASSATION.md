@@ -1540,12 +1540,14 @@ pour du code Python. Le frontend est **cuit dans l'image** → `dc up -d --build
 ### 16.4 Sauvegarde de la base
 
 **Fichiers**
-- `scripts/backup-db.sh`, `scripts/push-to-aws.sh`, `scripts/receive-backup.ps1`, `scripts/sync-upload.ps1`
+- `scripts/backup-db.sh`, `scripts/push-backup.sh`, `scripts/receive-backup.ps1`
 - `docs/backup-database.md`
 
 **À savoir** — Sync.com n'a **ni client Linux, ni API, ni WebDAV, ni support rclone**
-(**ne pas re-chercher**). La production **pousse** la sauvegarde vers un relais Windows AWS,
-qui vérifie le SHA et publie dans le dossier Sync.
+(**ne pas re-chercher**). La production **pousse** ses archives chiffrées vers le serveur
+Windows du LAN **`10.135.0.210`** (Windows Server 2016, compte local `backup` non
+administrateur, SSH par clé uniquement), qui vérifie le SHA et les range dans
+`C:\Backups\supervisor`. Le relais AWS puis `10.135.0.33` ont été abandonnés.
 
 ### 16.5 ⚠️ Le serveur est partagé avec des charges étrangères
 
@@ -1610,8 +1612,8 @@ Tous dans `backend/scripts/` (à lancer par `dc exec backend python scripts/<nom
 | `mark_router_blocked.py` | Marquer des lignes comme bloquées côté routeur |
 | `backfill_journal_source.py` | Rétro-remplissage du champ `source` du journal FAI |
 
-Scripts hôte (`scripts/`) : `backup-db.sh`, `push-to-aws.sh`, `receive-backup.ps1`,
-`sync-upload.ps1`, `generate-self-signed-cert.ps1`, `start.sh`.
+Scripts hôte (`scripts/`) : `backup-db.sh`, `push-backup.sh`, `receive-backup.ps1`,
+`generate-self-signed-cert.ps1`, `start.sh`.
 
 ---
 

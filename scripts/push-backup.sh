@@ -98,6 +98,23 @@ done
 [ -n "$REMOTE_HOST" ] \
     || die "BACKUP_REMOTE_HOST absent du .env - envoi non configure (voir docs/backup-database.md)"
 
+# --- Une archive est-elle deja confirmee ? -----------------------------------
+# Le marqueur `<archive>.pushed` contient l'EMPREINTE de la version confirmee.
+# C'est indispensable avec BACKUP_SINGLE_COPY : l'archive garde le meme nom
+# chaque nuit, et un marqueur qui ne dirait que « deja envoye » ferait prendre
+# la sauvegarde du jour pour celle de la veille - plus rien ne partirait, sans
+# la moindre erreur. On compare donc le contenu, pas la seule presence.
+# Un marqueur VIDE (ecrit avant ce changement, sur une archive a nom date qui
+# ne change plus jamais) vaut confirmation : ne pas renvoyer tout l'historique.
+is_pushed() {
+    local archive="$1" marker="$1.pushed" pushed current
+    [ -e "$marker" ] || return 1
+    pushed="$(tr -d '[:space:]' < "$marker")"
+    [ -z "$pushed" ] && return 0
+    current="$(cut -d' ' -f1 < "$archive.sha256" 2>/dev/null || true)"
+    [ "$pushed" = "$current" ]
+}
+
 # --- Quelles archives envoyer ? ----------------------------------------------
 # Les motifs `supervisor-*.tar.enc` / `supervisor-*.tar` excluent d'office :
 #   - `latest.tar*` (un symlink vers une archive deja dans la liste) ;
@@ -126,7 +143,7 @@ else
     shopt -s nullglob
     for f in "${PATTERNS[@]}"; do
         [ -f "$f" ] || continue
-        [ -e "$f.pushed" ] || PENDING+=("$f")
+        is_pushed "$f" || PENDING+=("$f")
     done
     shopt -u nullglob
 fi
@@ -186,9 +203,10 @@ push_one() {
     # nocturne tout se lit au meme endroit, sans ouvrir de session Windows.
     if ssh -p "$REMOTE_PORT" "${SSH_COMMON[@]}" "$REMOTE_USER@$REMOTE_HOST" "$cmd" 2>&1 \
             | sed 's/^/    /'; then
-        # Le marqueur n'est pose qu'ICI, apres la verification cote Windows.
-        # La retention de backup-db.sh le supprime avec l'archive (meme motif).
-        touch "$archive.pushed"
+        # Le marqueur n'est pose qu'ICI, apres la verification cote Windows, et
+        # il porte l'empreinte envoyee (cf. is_pushed). La retention de
+        # backup-db.sh le supprime avec l'archive (meme motif).
+        printf '%s\n' "$hash" > "$archive.pushed"
         return 0
     fi
     return 1

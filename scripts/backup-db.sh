@@ -125,10 +125,25 @@ mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
 
 STAMP="$(date -u '+%Y-%m-%d_%H%M%S')"
+
+# BACKUP_SINGLE_COPY=true : une seule sauvegarde, au NOM FIXE, que chaque nuit
+# ecrase (decision d'exploitation du 2026-09-22). La date reste lisible dans le
+# MANIFEST.txt de l'archive et dans le journal. Le nom fixe n'est pas un detail :
+# c'est lui qui fait garder a Sync.com les versions precedentes dans son
+# historique, la ou un nom date qu'on supprime n'y laisserait qu'un fichier efface.
+# /!\ Sans historique local, un probleme vu APRES la sauvegarde suivante (base
+#     videe dans la nuit, par exemple) n'a plus de copie saine ici : il ne reste
+#     que l'historique des versions de Sync.com.
+SINGLE_COPY="${BACKUP_SINGLE_COPY:-$(env_get BACKUP_SINGLE_COPY false)}"
+case "$SINGLE_COPY" in
+    true|1) NAME_TAG="latest" ;;
+    *)      NAME_TAG="$STAMP" ;;
+esac
+
 if [ "$ENCRYPT" -eq 1 ]; then
-    BASENAME="supervisor-${STAMP}.tar.enc"
+    BASENAME="supervisor-${NAME_TAG}.tar.enc"
 else
-    BASENAME="supervisor-${STAMP}.tar"
+    BASENAME="supervisor-${NAME_TAG}.tar"
 fi
 OUT="$BACKUP_DIR/$BASENAME"
 

@@ -31,6 +31,26 @@ serveur Windows de sauvegarde (`10.135.0.210`).
                                             C:\Backups\supervisor
 ```
 
+### ⚠️ Mode en place : UNE seule copie, écrasée chaque nuit (2026-09-22)
+
+`BACKUP_SINGLE_COPY=true` : l'archive s'appelle toujours
+`supervisor-latest.tar`, et chaque nuit remplace la précédente **sur la prod
+comme sur le serveur Windows**. Sa date se lit dans le `MANIFEST.txt` qu'elle
+contient.
+
+- Le **nom fixe** fait garder à Sync.com les versions précédentes dans son
+  historique : c'est le **seul** moyen de revenir à une nuit antérieure.
+- Un problème découvert **après** la sauvegarde suivante (inventaire vidé dans
+  la nuit, comme le 2026-05-17) n'a plus de copie saine ni sur la prod ni sur
+  Windows.
+- Le marqueur `.pushed` contient **l'empreinte** envoyée : avec un nom fixe,
+  sa seule présence ferait prendre la sauvegarde du jour pour celle de la
+  veille, et plus rien ne partirait.
+- Incompatible avec une sauvegarde **incrémentale** des courbes et du trafic
+  (qui exige de garder toutes les archives).
+
+Pour revenir à une archive datée par nuit : `BACKUP_SINGLE_COPY=false`.
+
 ### C'est le DOSSIER qui est envoyé, pas seulement la dernière archive
 
 `push-backup.sh` envoie **toute archive locale que le serveur Windows n'a pas

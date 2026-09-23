@@ -1093,6 +1093,7 @@ export interface DeviceDowntime {
   device_name: string
   device_ip: string
   device_type: string               // rocket | uisp_switch | uisp_power
+  site: string | null               // site porteur — `null` = non rattaché
   current_status: string            // up | down | unknown
   episodes_count: number            // after merging
   raw_episodes_count: number        // before merging — flapping signal

@@ -171,6 +171,7 @@ async def get_downtime_log(
                 device_name=dev.name,
                 device_ip=dev.ip_address,
                 device_type=dev.device_type,
+                site=dev.site,
                 current_status=dev.status or "unknown",
                 episodes_count=len(episodes_out),
                 raw_episodes_count=len(dev_incidents),

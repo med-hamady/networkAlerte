@@ -44,6 +44,12 @@ class DeviceDowntime(BaseModel):
     device_name: str
     device_ip: str
     device_type: str  # rocket | uisp_switch | uisp_power
+    # Site porteur (colonne dénormalisée `devices.site`, tenue par trigger).
+    # Indispensable au journal des coupures, qui regroupe PAR SITE : une panne
+    # de site est la coupure de son switch (cf. migration r6b7c8d9e0f1, qui
+    # applique déjà cette règle aux graphes « pannes par site »). `None` = un
+    # équipement sans site rattaché — rendu sous « Sans site », jamais masqué.
+    site: str | None
     current_status: str  # up | down | unknown
 
     episodes_count: int  # episodes after merging (what the UI displays)

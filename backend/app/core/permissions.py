@@ -133,6 +133,10 @@ PERMISSION_GROUPS: tuple[PermissionGroup, ...] = (
                   "La barre de chiffres en haut du tableau de bord : total "
                   "d'équipements, en ligne, hors ligne, incidents ouverts, "
                   "sites, pannes et clients."),
+            _page("uptime.view", "Journal des coupures",
+                  "L'historique daté des pannes : quand chaque site est tombé, "
+                  "quand il est revenu, et combien de temps il est resté coupé.",
+                  "/downtime-log"),
             _page("sites.view", "Sites",
                   "Les sites et les équipements qu'ils portent, avec leurs fiches.",
                   "/sites"),
@@ -306,6 +310,7 @@ DEVICE_READ_PERMISSIONS: tuple[str, ...] = (
     "sites.view", "map.view", "fai.view", "fai.content_filter.view",
     "lr_health.view", "capacity.view", "topology.view", "incidents.view",
     "dashboard.view", "access_diagnostics.view", "clients.view",
+    "uptime.view",
 )
 
 # Le nom du profil système qui détient tout. Verrouillé : il ne peut être ni

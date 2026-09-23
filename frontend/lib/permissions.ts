@@ -43,6 +43,7 @@ import { endpoints, fetcher, type CurrentUser } from '@/lib/api'
  */
 export const PERM = {
   dashboard: 'dashboard.view',
+  uptime: 'uptime.view',
   sites: 'sites.view',
   lrHealth: 'lr_health.view',
   clients: 'clients.view',
@@ -142,6 +143,7 @@ export function usePermissions(): PermissionState {
 export function firstAllowedRoute(can: (...keys: string[]) => boolean): string | null {
   const ordered: Array<[string, string]> = [
     ['/', PERM.dashboard],
+    ['/downtime-log', PERM.uptime],
     ['/sites', PERM.sites],
     ['/lr-health', PERM.lrHealth],
     ['/clients', PERM.clients],

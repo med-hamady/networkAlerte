@@ -174,12 +174,13 @@ api_router.include_router(
     network_capacity.router, prefix="/network-capacity", tags=["network-capacity"],
     dependencies=_perm("capacity.view"),
 )
-# Journal des coupures : lu par le tableau de bord ET par la page Rapports
-# (composant SiteOutageCharts partagé) — donc un OU, sinon donner « Rapports »
-# sans « Tableau de bord » afficherait une page vide.
+# Journal des coupures : lu par sa page dédiée (/downtime-log), par le tableau
+# de bord ET par la page Rapports (composant SiteOutageCharts partagé) — donc
+# un OU, sinon donner « Rapports » sans « Tableau de bord » afficherait une
+# page vide.
 api_router.include_router(
     network_uptime.router, prefix="/network-uptime", tags=["network-uptime"],
-    dependencies=_perm("dashboard.view", "reports.view", "sites.view"),
+    dependencies=_perm("uptime.view", "dashboard.view", "reports.view", "sites.view"),
 )
 api_router.include_router(
     network_topology.router, prefix="/network-topology", tags=["network-topology"],

@@ -28,7 +28,9 @@ async def get_client_signal(
       classée ``excellent`` (< 80 ms) / ``tres_bien`` (80-100) / ``bien``
       (100-120) / ``mauvaise`` (120-150) / ``catastrophique`` (≥ 150) ;
     - ``rocket`` : le Rocket (AP) auquel le LR est connecté, lu en base
-      (``source`` = ``supervision`` ou ``uisp`` si seul le nom d'AP est connu).
+      (``source`` = ``supervision`` ou ``uisp`` si seul le nom d'AP est connu) ;
+    - ``history`` : les courbes des 7 derniers jours (latence, potentiel du lien,
+      capacité du lien, débit descendant), points de 30 min, lues en base.
 
     Chaque catégorie vaut ``indetermine`` quand la donnée manque (pas de mesure
     de signal récente ; LR injoignable ou sans transit pour la latence) —

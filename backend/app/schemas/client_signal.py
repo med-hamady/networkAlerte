@@ -37,6 +37,42 @@ class ConnectedRocket(BaseModel):
     source: str = Field(description="Origine du rattachement : supervision | uisp")
 
 
+class HistoryPoint(BaseModel):
+    """Un point de courbe : agrégat d'une tranche de ``bin_seconds``."""
+
+    t: datetime.datetime = Field(description="Début de la tranche (UTC)")
+    avg: float = Field(description="Moyenne des relevés de la tranche")
+    min: float = Field(description="Plus petit relevé de la tranche")
+    max: float = Field(description="Plus grand relevé de la tranche")
+
+
+class HistoryCurve(BaseModel):
+    label: str = Field(description="Libellé de la courbe, ex. « Latence Internet »")
+    unit: str = Field(description="Unité des valeurs (ms, %, Mb/s)")
+    threshold: float | None = Field(
+        default=None, description="Seuil d'alerte appliqué à cet équipement (null si aucun)"
+    )
+    threshold_direction: str | None = Field(
+        default=None,
+        description="max = anormal AU-DESSUS du seuil, min = anormal EN DESSOUS",
+    )
+    points: list[HistoryPoint] = Field(
+        description="Points du plus ancien au plus récent. Une tranche sans mesure est "
+        "ABSENTE (trou), jamais un 0",
+    )
+
+
+class ClientHistory(BaseModel):
+    period: str = Field(description="Fenêtre couverte (7d)")
+    start: datetime.datetime = Field(description="Début de la fenêtre (UTC)")
+    end: datetime.datetime = Field(description="Fin de la fenêtre (UTC)")
+    bin_seconds: int = Field(description="Largeur d'un point, en secondes (1800 = 30 min)")
+    curves: dict[str, HistoryCurve] = Field(
+        description="Courbes par clé : lr_latency_ms, link_potential_pct, "
+        "total_capacity_mbps, dl_throughput_mbps (toujours présentes, éventuellement vides)",
+    )
+
+
 class ClientSignalResponse(BaseModel):
     mac: str = Field(description="MAC du LR client, normalisé (aa:bb:cc:dd:ee:ff)")
     lr_id: int = Field(description="Identifiant interne du LR")
@@ -74,4 +110,9 @@ class ClientSignalResponse(BaseModel):
     rocket: ConnectedRocket | None = Field(
         default=None,
         description="Rocket auquel le LR est connecté (null si aucun rattachement connu)",
+    )
+    history: ClientHistory | None = Field(
+        default=None,
+        description="Courbes des 7 derniers jours (latence, potentiel, capacité, débit "
+        "descendant), lues en base",
     )

@@ -27,13 +27,31 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models.device import Lr
-from app.schemas.client_signal import ClientSignalResponse, ConnectedRocket
+from app.schemas.client_signal import (
+    ClientHistory,
+    ClientSignalResponse,
+    ConnectedRocket,
+    HistoryCurve,
+    HistoryPoint,
+)
 from app.schemas.device import normalize_mac
-from app.services import ssh_service
+from app.services import lr_metric_history_service, ssh_service, threshold_service
 
 logger = logging.getLogger(__name__)
 
 _M_SIGNAL = "signal_dbm"
+
+# Courbes renvoyées au tiers, dans cet ordre. Toutes sont des clés de
+# `GRAPH_METRICS` : libellé, unité et seuil viennent de là, jamais recopiés.
+# « Capacité du lien » = `total_capacity_mbps`, la même courbe que la fiche et
+# que le plancher d'alerte.
+CLIENT_CURVES = (
+    "lr_latency_ms",
+    "link_potential_pct",
+    "total_capacity_mbps",
+    "dl_throughput_mbps",
+)
+HISTORY_PERIOD = "7d"
 
 # Charge utile ICMP de la mesure, en octets (paquet de 64 o sur le fil) —
 # c'est le contrat annoncé au tiers, aligné sur la sonde de fond et le
@@ -136,6 +154,8 @@ async def get_client_signal(db: AsyncSession, mac: str) -> ClientSignalResponse 
     settings = get_settings()
     quality = classify_signal(signal_dbm, settings)
 
+    history = await get_client_history(db, lr)
+
     avg_rtt_ms, reason = await _measure_latency_live(db, lr, settings)
     latency_quality = classify_latency(avg_rtt_ms, settings)
 
@@ -155,6 +175,53 @@ async def get_client_signal(db: AsyncSession, mac: str) -> ClientSignalResponse 
         latency_packets_sent=settings.client_signal_ping_count,
         latency_packet_size_bytes=_PING_PAYLOAD_BYTES,
         rocket=connected_rocket(lr),
+        history=history,
+    )
+
+
+async def get_client_history(db: AsyncSession, lr: Lr) -> ClientHistory:
+    """Les courbes de ``CLIENT_CURVES`` du LR sur 7 jours (``lr_metric_samples``).
+
+    Même service, même fenêtre et même re-binning (30 min) que les graphes
+    « Plus d'infos » de la fiche : le tiers voit exactement ce que voit
+    l'opérateur. Chaque courbe est toujours présente ; vide si le LR n'en a
+    aucun relevé (ex. pas de potentiel sur un LiteBeam M5). Les trous ne sont
+    pas comblés — une tranche sans mesure est absente, jamais un 0.
+    """
+    start, end, bin_seconds = lr_metric_history_service.resolve_range(
+        HISTORY_PERIOD, None, None,
+    )
+    effective = None
+    curves: dict[str, HistoryCurve] = {}
+    for metric in CLIENT_CURVES:
+        spec = lr_metric_history_service.GRAPH_METRICS[metric]
+        rows = await lr_metric_history_service.get_history(
+            db, lr.id, metric, start=start, end=end, bin_seconds=bin_seconds,
+        )
+        threshold = None
+        setting_name = lr_metric_history_service.threshold_setting_for(spec, lr)
+        if setting_name:
+            if effective is None:
+                effective = await threshold_service.get_effective_settings(
+                    db, get_settings(),
+                )
+            threshold = float(getattr(effective, setting_name))
+        curves[metric] = HistoryCurve(
+            label=spec["label"],
+            unit=spec["unit"],
+            threshold=threshold,
+            threshold_direction=spec["threshold_direction"],
+            points=[
+                HistoryPoint(
+                    t=r["bucket_start"], avg=r["avg_value"],
+                    min=r["min_value"], max=r["max_value"],
+                )
+                for r in rows
+            ],
+        )
+    return ClientHistory(
+        period=HISTORY_PERIOD, start=start, end=end,
+        bin_seconds=bin_seconds, curves=curves,
     )
 
 

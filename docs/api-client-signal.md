@@ -96,6 +96,24 @@ curl -k --max-time 60 \
     "radio_tech": "ltu",
     "status": "up",
     "source": "supervision"
+  },
+  "history": {
+    "period": "7d",
+    "start": "2026-09-17T08:41:00Z",
+    "end": "2026-09-24T08:41:00Z",
+    "bin_seconds": 1800,
+    "curves": {
+      "lr_latency_ms": {
+        "label": "Latence Internet", "unit": "ms",
+        "threshold": 100.0, "threshold_direction": "max",
+        "points": [
+          {"t": "2026-09-17T09:00:00Z", "avg": 41.3, "min": 38.0, "max": 57.2}
+        ]
+      },
+      "link_potential_pct": { "label": "Potentiel du lien", "unit": "%", "...": "..." },
+      "total_capacity_mbps": { "label": "Capacité du lien", "unit": "Mb/s", "...": "..." },
+      "dl_throughput_mbps": { "label": "Débit descendant", "unit": "Mb/s", "...": "..." }
+    }
   }
 }
 ```
@@ -159,6 +177,31 @@ Lu en base (pas de mesure live), donc instantané.
 
 > Pour un équipement **hors ligne**, `rocket` désigne le dernier point d'accès
 > auquel il a été vu connecté.
+
+### Courbes sur 7 jours (`history`)
+
+Toujours présent. Lu en base : ce sont les relevés de la supervision (les
+mêmes courbes que sur notre fiche équipement), pas une mesure live.
+
+| Courbe (`curves.<clé>`) | Unité | Seuil d'alerte |
+|---|---|---|
+| `lr_latency_ms` — latence Internet | ms | anormal **au-dessus** (`threshold_direction: "max"`) |
+| `link_potential_pct` — potentiel du lien | % | anormal **en dessous** (`"min"`) — seuil selon la famille radio |
+| `total_capacity_mbps` — capacité du lien | Mb/s | anormal **en dessous** (`"min"`) |
+| `dl_throughput_mbps` — débit descendant (trafic réel) | Mb/s | aucun (`null`) |
+
+- Un point = une tranche de `bin_seconds` (**30 min**, soit 336 points au plus
+  par courbe) : `t` = début de la tranche (UTC), `avg` = moyenne, `min`/`max` =
+  extrêmes de la tranche (un pic court reste visible dans `max`).
+- ⚠️ **Une tranche sans mesure est ABSENTE, jamais un 0.** Un équipement éteint
+  deux jours produit un trou : tracez-le comme tel, ne le reliez pas par une
+  droite et ne le remplissez pas de zéros (0 ms se lirait « excellent »).
+- Les 4 clés sont **toujours présentes** ; une courbe peut être vide
+  (`points: []`), par exemple le potentiel sur un LiteBeam M5, qui ne le
+  mesure pas.
+- **Capacité ≠ débit** : la capacité est ce que le lien *pourrait* écouler, le
+  débit ce qui circule *réellement*. Sur un lien peu utilisé, ils diffèrent
+  de plusieurs ordres de grandeur — c'est normal.
 
 ## Codes d'erreur
 

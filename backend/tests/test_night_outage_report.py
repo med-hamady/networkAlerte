@@ -115,12 +115,12 @@ def test_every_switch_site_listed_even_without_outage():
     by_site = {s.site: s for s in rep.sites}
     assert set(by_site) == {"A2 AT1", "A2 CT1"}
     at1 = by_site["A2 AT1"]
-    # Le Rocket n'entre PAS dans les chiffres du site (règle du journal)…
+    # Le Rocket n'entre PAS dans les chiffres du site : seuls les switches comptent.
     assert (at1.episodes, at1.downtime_seconds, at1.nights_hit) == (1, 3600, 1)
     assert round(at1.availability_pct, 4) == round(100 * (1 - 3600 / (16 * 3600)), 4)
     assert by_site["A2 CT1"].availability_pct == 100.0
-    # … mais il est nommé en annexe.
-    assert [e.device_name for e in rep.other_entries[1]] == ["dev3"]
+    # … et n'apparaît nulle part dans le détail (décision opérateur 2026-09-24).
+    assert [e.device_name for e in rep.switch_entries[1]] == ["dev1"]
 
 
 def test_pdf_renders_with_and_without_outages():

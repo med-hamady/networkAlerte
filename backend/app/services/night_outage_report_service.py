@@ -7,8 +7,8 @@ Mêmes règles que le Journal des coupures (`network_uptime_service`) :
 
 * **Une panne de SITE est une coupure de son SWITCH** (règle de
   `fn_site_outage_summary`) ; un site à deux switches vaut le PIRE des deux
-  pour la disponibilité. Les autres équipements d'infra tombés sont listés en
-  annexe, **jamais tus**, mais ne comptent pas dans les chiffres des sites.
+  pour la disponibilité. **Seuls les switches** sont lus (décision opérateur du
+  2026-09-24) : Rockets, UISP Power et AF60 n'apparaissent nulle part.
 * Seuls les incidents de disponibilité existent encore après résolution
   (`AVAILABILITY_ALERT_TYPES`) — ce sont les seuls que ce rapport peut lire.
   Les abonnés (LR) n'en ouvrent aucun : ils sont absents par nature.
@@ -53,14 +53,6 @@ DEFAULT_MERGE_GAP_SECONDS = 300
 MAX_REPORT_DAYS = 92
 
 _SWITCH_TYPE = "uisp_switch"
-_TYPE_LABELS = {
-    "uisp_switch": "Switch",
-    "ltu_rocket": "Rocket LTU",
-    "airmax_rocket": "Rocket airMAX",
-    "uisp_power": "UISP Power",
-    "airfiber": "AF60",
-    "ptp_litebeam": "PTP LiteBeam",
-}
 
 
 # --------------------------------------------------------------- les tranches
@@ -226,9 +218,8 @@ class NightReport:
     generated_at: datetime.datetime
     nights: list[Night]
     sites: list[SiteSummary]
-    # Par nuit (index de `nights`) : coupures des switches, puis autres équipements.
+    # Par nuit (index de `nights`) : les coupures des switches.
     switch_entries: list[list[NightEntry]] = field(default_factory=list)
-    other_entries: list[list[NightEntry]] = field(default_factory=list)
 
     @property
     def total_episodes(self) -> int:
@@ -277,21 +268,17 @@ def assemble_report(
     site_nights_hit: dict[str, set[int]] = defaultdict(set)
 
     switch_entries: list[list[NightEntry]] = []
-    other_entries: list[list[NightEntry]] = []
     for idx, night in enumerate(nights):
-        sw_rows: list[NightEntry] = []
-        other_rows: list[NightEntry] = []
+        rows: list[NightEntry] = []
         for device_id, raws in raws_by_device.items():
             dev = by_id.get(device_id)
-            if dev is None:
+            if dev is None or dev.device_type != _SWITCH_TYPE:
                 continue
-            is_switch = dev.device_type == _SWITCH_TYPE
             site = _site_name(dev.site)
-            rows = sw_rows if is_switch else other_rows
             outs = outages_in_night(raws, night, now, merge_gap_seconds)
             for out in outs:
                 rows.append(NightEntry(site, dev.name, dev.device_type or "", out))
-            if is_switch and outs:
+            if outs:
                 summary = summaries[site]
                 summary.episodes += len(outs)
                 secs = sum(o.counted_seconds for o in outs)
@@ -304,8 +291,7 @@ def assemble_report(
                     rows.append(
                         NightEntry(site, dev.name, dev.device_type or "", None, down_since=since)
                     )
-        switch_entries.append(sorted(sw_rows, key=_entry_order))
-        other_entries.append(sorted(other_rows, key=_entry_order))
+        switch_entries.append(sorted(rows, key=_entry_order))
 
     for name, summary in summaries.items():
         summary.nights_hit = len(site_nights_hit.get(name, ()))
@@ -322,7 +308,6 @@ def assemble_report(
         nights=nights,
         sites=ordered,
         switch_entries=switch_entries,
-        other_entries=other_entries,
     )
 
 
@@ -338,25 +323,24 @@ async def build_night_report(
     now = now or datetime.datetime.now(datetime.UTC)
     nights = build_nights(first_day, last_day, from_hour, to_hour, now)
 
+    # Seuls les switches : ils suffisent à lister chaque site et à le juger.
+    switches = list(
+        (await db.execute(select(Device).where(Device.device_type == _SWITCH_TYPE))).scalars()
+    )
     raws_by_device: dict[int, list[RawOutage]] = defaultdict(list)
-    if nights:
+    if nights and switches:
         lo, hi = nights[0].start, nights[-1].end
         q = select(Incident.device_id, Incident.detected_at, Incident.resolved_at).where(
             Incident.alert_type.in_(AVAILABILITY_ALERT_TYPES),
+            Incident.device_id.in_([sw.id for sw in switches]),
             Incident.detected_at < hi,
             or_(Incident.resolved_at.is_(None), Incident.resolved_at > lo),
         )
         for device_id, detected_at, resolved_at in (await db.execute(q)).all():
             raws_by_device[device_id].append(RawOutage(device_id, detected_at, resolved_at))
 
-    # Les switches TOUS (pour lister chaque site), plus les équipements tombés.
-    dev_q = select(Device).where(
-        or_(Device.device_type == _SWITCH_TYPE, Device.id.in_(list(raws_by_device) or [-1]))
-    )
-    devices = [d for d in (await db.execute(dev_q)).scalars().all() if d.device_type != "lr"]
-
     return assemble_report(
-        devices,
+        switches,
         raws_by_device,
         nights,
         first_day=first_day,
@@ -482,7 +466,7 @@ def render_pdf(report: NightReport) -> bytes:
             "Une panne de site est une coupure de son switch. Seules les coupures qui "
             "COMMENCENT dans la tranche sont comptées, et leur durée s'arrête à la fin de "
             "la tranche. Deux coupures séparées de moins de 5 minutes comptent pour une "
-            "seule (instabilité). Un site déjà coupé à l'ouverture de la tranche est "
+            "seule. Un site déjà coupé à l'ouverture de la tranche est "
             "signalé en gris dans le détail (« coupé depuis … »), sans être compté."
         ),
         new_x="LMARGIN",
@@ -563,16 +547,13 @@ def render_pdf(report: NightReport) -> bytes:
                 pdf.set_text_color(0, 0, 0)
         pdf.ln()
 
-    def entry_rows(entries: list[NightEntry], night: Night, device_col: str) -> None:
-        cols_here = [(device_col if i == 1 else lbl, w) for i, (lbl, w) in enumerate(det_cols)]
-        table_header(cols_here)
+    def entry_rows(entries: list[NightEntry], night: Night) -> None:
+        table_header(det_cols)
         for e in entries:
             if pdf.will_page_break(6):
                 pdf.add_page()
-                table_header(cols_here)
+                table_header(det_cols)
             name = e.device_name
-            if device_col != "Switch":
-                name = f"{name} ({_TYPE_LABELS.get(e.device_type, e.device_type)})"
             if e.outage is None:
                 grey = (120, 120, 120)
                 row(
@@ -592,8 +573,6 @@ def render_pdf(report: NightReport) -> bytes:
                 if o.ended_at.date() != o.started_at.date():
                     back += f" le {o.ended_at:%d/%m}"
                 note = "revenu hors tranche" if o.ended_at > night.end else ""
-            if o.flap_count > 1:
-                note = (note + " · " if note else "") + f"instable, {o.flap_count} cycles"
             row(
                 [e.site, name, fell, back, fmt_duration(o.counted_seconds), note],
                 {3: (200, 30, 30)} if o.ended_at is None else None,
@@ -621,42 +600,6 @@ def render_pdf(report: NightReport) -> bytes:
             cell(0, 5.5, "Aucune coupure de site.", new_x="LMARGIN", new_y="NEXT")
             pdf.set_text_color(0, 0, 0)
             continue
-        entry_rows(entries, night, "Switch")
-
-    # ---- Annexe : autres équipements (hors décompte des sites)
-    if any(report.other_entries):
-        pdf.add_page()
-        font(12, True)
-        cell(
-            0,
-            8,
-            "Annexe - autres équipements coupés dans la tranche",
-            new_x="LMARGIN",
-            new_y="NEXT",
-        )
-        font(8.5)
-        pdf.set_text_color(90, 90, 90)
-        pdf.multi_cell(
-            0,
-            4.3,
-            txt(
-                "Rockets, UISP Power, AF60... tombés alors que le switch de leur site "
-                "répondait. Hors du décompte des sites ci-dessus, mais nommés : les taire "
-                "ferait lire « aucune panne » là où un secteur était hors service."
-            ),
-            new_x="LMARGIN",
-            new_y="NEXT",
-        )
-        pdf.set_text_color(0, 0, 0)
-        for idx, night in enumerate(report.nights):
-            entries = report.other_entries[idx]
-            if not entries:
-                continue
-            if pdf.will_page_break(20):
-                pdf.add_page()
-            pdf.ln(1.5)
-            font(10, True)
-            cell(0, 6.5, night_label(night, crosses), new_x="LMARGIN", new_y="NEXT")
-            entry_rows(entries, night, "Équipement")
+        entry_rows(entries, night)
 
     return bytes(pdf.output())

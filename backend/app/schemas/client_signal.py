@@ -15,6 +15,28 @@ import datetime
 from pydantic import BaseModel, Field
 
 
+class ConnectedRocket(BaseModel):
+    """Le Rocket (point d'accès) auquel le LR est rattaché.
+
+    ``source`` dit d'où vient le rattachement : ``supervision`` = la fiche du
+    Rocket existe chez nous (``lrs.rocket_id``, arbitré entre la découverte radio
+    et UISP — « le dernier qui a vu la station gagne ») ; ``uisp`` = on ne
+    connaît que le NOM de l'AP annoncé par le contrôleur (Rocket non supervisé
+    ou rattachement pas encore établi) — les autres champs sont alors ``null``.
+    """
+
+    id: int | None = Field(default=None, description="Identifiant interne du Rocket")
+    name: str | None = Field(default=None, description="Nom du Rocket")
+    mac: str | None = Field(default=None, description="MAC du Rocket")
+    ip_address: str | None = Field(default=None, description="IP de management du Rocket")
+    site: str | None = Field(default=None, description="Site du Rocket")
+    radio_tech: str | None = Field(default=None, description="Famille radio : ltu | airmax")
+    status: str | None = Field(
+        default=None, description="Joignabilité du Rocket (up/down/unknown)"
+    )
+    source: str = Field(description="Origine du rattachement : supervision | uisp")
+
+
 class ClientSignalResponse(BaseModel):
     mac: str = Field(description="MAC du LR client, normalisé (aa:bb:cc:dd:ee:ff)")
     lr_id: int = Field(description="Identifiant interne du LR")
@@ -48,4 +70,8 @@ class ClientSignalResponse(BaseModel):
     )
     latency_packet_size_bytes: int | None = Field(
         default=None, description="Taille de la charge utile ICMP en octets"
+    )
+    rocket: ConnectedRocket | None = Field(
+        default=None,
+        description="Rocket auquel le LR est connecté (null si aucun rattachement connu)",
     )

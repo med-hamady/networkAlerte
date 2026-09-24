@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models.device import Lr
-from app.schemas.client_signal import ClientSignalResponse
+from app.schemas.client_signal import ClientSignalResponse, ConnectedRocket
 from app.schemas.device import normalize_mac
 from app.services import ssh_service
 
@@ -154,7 +154,35 @@ async def get_client_signal(db: AsyncSession, mac: str) -> ClientSignalResponse 
         latency_target=settings.lr_latency_target,
         latency_packets_sent=settings.client_signal_ping_count,
         latency_packet_size_bytes=_PING_PAYLOAD_BYTES,
+        rocket=connected_rocket(lr),
     )
+
+
+def connected_rocket(lr: Lr) -> ConnectedRocket | None:
+    """Le Rocket auquel ``lr`` est rattaché, ou ``None`` si on n'en sait rien.
+
+    Source primaire : ``lr.rocket`` (``rocket_id``), déjà arbitré entre la
+    découverte radio et le sync UISP. À défaut, le nom d'AP que UISP annonce
+    (``uisp_ap_name``) — marqué ``source="uisp"`` pour que l'appelant sache
+    qu'il n'a qu'un nom, pas une fiche supervisée. Aucune valeur n'est devinée.
+    ``lr.rocket`` est chargé par la requête du LR (relation ``selectin``) :
+    aucun aller-retour supplémentaire.
+    """
+    rocket = lr.rocket
+    if rocket is not None:
+        return ConnectedRocket(
+            id=rocket.id,
+            name=rocket.name,
+            mac=rocket.mac_address,
+            ip_address=rocket.ip_address,
+            site=rocket.site,
+            radio_tech=rocket.radio_tech,
+            status=rocket.status,
+            source="supervision",
+        )
+    if lr.uisp_ap_name:
+        return ConnectedRocket(name=lr.uisp_ap_name, source="uisp")
+    return None
 
 
 async def _measure_latency_live(

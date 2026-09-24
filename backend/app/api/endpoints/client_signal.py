@@ -26,7 +26,9 @@ async def get_client_signal(
     - ``latency_quality`` + ``latency_message`` : la **latence mesurée EN DIRECT
       à cet appel** — le LR ping ``lr_latency_target`` avec 5 paquets de 56 o —
       classée ``excellent`` (< 80 ms) / ``tres_bien`` (80-100) / ``bien``
-      (100-120) / ``mauvaise`` (120-150) / ``catastrophique`` (≥ 150).
+      (100-120) / ``mauvaise`` (120-150) / ``catastrophique`` (≥ 150) ;
+    - ``rocket`` : le Rocket (AP) auquel le LR est connecté, lu en base
+      (``source`` = ``supervision`` ou ``uisp`` si seul le nom d'AP est connu).
 
     Chaque catégorie vaut ``indetermine`` quand la donnée manque (pas de mesure
     de signal récente ; LR injoignable ou sans transit pour la latence) —

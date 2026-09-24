@@ -86,7 +86,17 @@ curl -k --max-time 60 \
   "latency_message": "Latence excellente (43 ms)",
   "latency_target": "8.8.8.8",
   "latency_packets_sent": 5,
-  "latency_packet_size_bytes": 56
+  "latency_packet_size_bytes": 56,
+  "rocket": {
+    "id": 312,
+    "name": "A2-CT1-EST",
+    "mac": "aa:bb:cc:00:11:22",
+    "ip_address": "10.135.144.1",
+    "site": "A2 CT1",
+    "radio_tech": "ltu",
+    "status": "up",
+    "source": "supervision"
+  }
 }
 ```
 
@@ -132,6 +142,23 @@ Mesurées **en direct** à chaque appel (5 paquets ICMP de 56 octets).
 | `latency_avg_ms` | Latence moyenne mesurée (`null` si la mesure n'a pas abouti) |
 | `latency_target` | Cible pingée depuis l'équipement (ex. `8.8.8.8`) |
 | `latency_packets_sent` / `latency_packet_size_bytes` | Paramètres de la mesure |
+| `rocket` | Le **Rocket** (point d'accès) auquel l'équipement est connecté — voir ci-dessous. `null` si aucun rattachement n'est connu |
+
+### Rocket de connexion (`rocket`)
+
+Lu en base (pas de mesure live), donc instantané.
+
+| Champ | Description |
+|---|---|
+| `id` / `name` | Identifiant interne et nom du Rocket |
+| `mac` / `ip_address` | MAC et IP de management du Rocket |
+| `site` | Site (pylône) du Rocket |
+| `radio_tech` | Famille radio : `ltu` ou `airmax` |
+| `status` | Joignabilité du Rocket : `up` / `down` / `unknown` |
+| `source` | `supervision` = Rocket supervisé, tous les champs renseignés. `uisp` = seul le **nom** de l'AP est connu (annoncé par le contrôleur UISP) ; les autres champs valent `null` |
+
+> Pour un équipement **hors ligne**, `rocket` désigne le dernier point d'accès
+> auquel il a été vu connecté.
 
 ## Codes d'erreur
 

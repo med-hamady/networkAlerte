@@ -3126,7 +3126,7 @@ async def client_consumption_daily_rollup_job() -> None:
             while day <= yesterday:
                 days.append(day)
                 day += datetime.timedelta(days=1)
-            days = days[: settings.client_consumption_daily_max_catchup_days]
+            days = days[: get_settings().client_consumption_daily_max_catchup_days]
 
         if not days:
             logger.info("client_consumption daily rollup — deja a jour")

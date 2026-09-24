@@ -1,14 +1,14 @@
 import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.rpc import scalar_json
 from app.db.session import get_db
 from app.schemas.network_uptime import DowntimeLogResponse
-from app.services import network_uptime_service
+from app.services import network_uptime_service, night_outage_report_service
 
 router = APIRouter()
 
@@ -77,4 +77,43 @@ async def get_downtime_log(
         start=start,
         end=end,
         merge_gap_seconds=merge_gap_seconds,
+    )
+
+
+@router.get("/window-report/pdf")
+async def get_window_outage_report_pdf(
+    start: datetime.date = Query(..., description="Premier jour (YYYY-MM-DD, UTC)"),
+    end: datetime.date = Query(..., description="Dernier jour, INCLUS (YYYY-MM-DD, UTC)"),
+    from_hour: int = Query(0, ge=0, le=23, description="Ouverture de la tranche (heure UTC)"),
+    to_hour: int = Query(8, ge=0, le=23, description="Fermeture de la tranche (heure UTC)"),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Rapport PDF des coupures de TOUS les sites, limité à une tranche horaire
+    répétée chaque jour de la période (défaut 00:00 → 08:00).
+
+    `to_hour <= from_hour` = la tranche enjambe minuit (22 → 6). Seules les
+    coupures qui COMMENCENT dans la tranche sont comptées ; voir
+    `night_outage_report_service` pour la règle complète.
+    """
+    if end < start:
+        raise HTTPException(status_code=422, detail="`end` doit être postérieur ou égal à `start`")
+    if from_hour == to_hour:
+        raise HTTPException(
+            status_code=422, detail="La tranche horaire ne peut pas être vide (début = fin)"
+        )
+    days = (end - start).days + 1
+    if days > night_outage_report_service.MAX_REPORT_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Période trop longue : {night_outage_report_service.MAX_REPORT_DAYS} jours au plus",
+        )
+    report = await night_outage_report_service.build_night_report(
+        db, start, end, from_hour, to_hour
+    )
+    pdf = night_outage_report_service.render_pdf(report)
+    filename = f"coupures-{from_hour:02d}h-{to_hour:02d}h-{start:%Y%m%d}-{end:%Y%m%d}.pdf"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

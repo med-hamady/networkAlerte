@@ -240,6 +240,8 @@ export default function DowntimeLogPage() {
           </p>
         </div>
 
+        <WindowReportCard today={today} />
+
         {/* ── Chiffres de la période ────────────────────────────────────── */}
         {!isLoading && !error && (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -471,6 +473,131 @@ function OtherDevices({ devices, onOpenDevice }: {
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+/** Toutes les heures de la journée, pour les deux sélecteurs de la tranche. */
+const HOURS = Array.from({ length: 24 }, (_, h) => h)
+
+function hh(h: number): string {
+  return `${h.toString().padStart(2, '0')}:00`
+}
+
+function filenameFromResponse(res: Response, fallback: string): string {
+  const header = res.headers.get('content-disposition') ?? ''
+  const match = /filename="?([^";]+)"?/i.exec(header)
+  return match?.[1] ?? fallback
+}
+
+/**
+ * Rapport PDF des coupures de TOUS les sites sur une tranche horaire répétée
+ * chaque jour de la période (00 h → 08 h par défaut, réglable).
+ *
+ * ⚠️ Règle de comptage (côté serveur, `night_outage_report_service`) : seules
+ * les coupures qui COMMENCENT dans la tranche sont comptées, jusqu'à la fin de
+ * la tranche. Elle est rappelée ici pour qu'on ne s'étonne pas qu'une coupure
+ * de 23 h 30 manque au rapport 00 h → 08 h.
+ *
+ * `fetch` + blob plutôt qu'un lien nu : un échec (période trop longue…) doit
+ * s'afficher ici, pas s'ouvrir en JSON brut dans un onglet.
+ */
+function WindowReportCard({ today }: { today: string }) {
+  const weekAgo = useMemo(() => isoDay(new Date(Date.now() - 6 * 86_400_000)), [])
+  const [from, setFrom] = useState(weekAgo)
+  const [to, setTo] = useState(today)
+  const [fromHour, setFromHour] = useState(0)
+  const [toHour, setToHour] = useState(8)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const crossesMidnight = toHour < fromHour
+  const invalid = fromHour === toHour || from > to
+
+  const download = async () => {
+    setBusy(true)
+    setErr(null)
+    try {
+      const res = await fetch(endpoints.windowOutageReportPdf(from, to, fromHour, toHour))
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`
+        try {
+          const body = await res.json()
+          if (typeof body?.detail === 'string') detail = body.detail
+        } catch {
+          /* réponse non JSON : on garde le code HTTP */
+        }
+        throw new Error(detail)
+      }
+      const url = URL.createObjectURL(await res.blob())
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filenameFromResponse(res, 'coupures-par-tranche.pdf')
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setErr((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
+      <div>
+        <h2 className="text-sm font-semibold text-blue-950">Rapport PDF par tranche horaire</h2>
+        <p className="mt-0.5 text-xs text-slate-500">
+          Les coupures de tous les sites dans une même tranche horaire, chaque jour de la
+          période. Seules les coupures qui <strong>commencent</strong> dans la tranche sont
+          comptées, jusqu&apos;à la fin de la tranche. Heures UTC (= heure de Mauritanie).
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="text-sm text-slate-600">du</label>
+        <input
+          type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)}
+          className="px-2 py-1.5 rounded-lg border border-slate-300 text-sm"
+        />
+        <label className="text-sm text-slate-600">au</label>
+        <input
+          type="date" value={to} min={from} max={today} onChange={(e) => setTo(e.target.value)}
+          className="px-2 py-1.5 rounded-lg border border-slate-300 text-sm"
+        />
+        <span className="w-px h-6 bg-slate-200 mx-1" />
+        <label className="text-sm text-slate-600">de</label>
+        <select
+          value={fromHour} onChange={(e) => setFromHour(Number(e.target.value))}
+          className="px-2 py-1.5 rounded-lg border border-slate-300 text-sm"
+        >
+          {HOURS.map((h) => <option key={h} value={h}>{hh(h)}</option>)}
+        </select>
+        <label className="text-sm text-slate-600">à</label>
+        <select
+          value={toHour} onChange={(e) => setToHour(Number(e.target.value))}
+          className="px-2 py-1.5 rounded-lg border border-slate-300 text-sm"
+        >
+          {HOURS.map((h) => <option key={h} value={h}>{hh(h)}</option>)}
+        </select>
+        <button
+          onClick={download}
+          disabled={busy || invalid}
+          className="px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-800 text-white hover:bg-slate-900 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {busy ? 'Génération…' : 'Télécharger le PDF'}
+        </button>
+      </div>
+      {fromHour === toHour && (
+        <p className="text-xs text-amber-700">La tranche est vide : choisissez deux heures différentes.</p>
+      )}
+      {crossesMidnight && (
+        <p className="text-xs text-slate-500">
+          La tranche enjambe minuit : chaque nuit va de {hh(fromHour)} le jour J à{' '}
+          {hh(toHour)} le lendemain.
+        </p>
+      )}
+      {err != null && <p className="text-xs text-red-700">Le rapport n&apos;a pas pu être généré : {err}</p>}
     </div>
   )
 }

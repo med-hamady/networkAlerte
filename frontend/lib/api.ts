@@ -116,6 +116,10 @@ export const endpoints = {
   trafficThroughputHistory: (period: '1h' | '6h' | '24h') => `${API_BASE}/traffic/throughput-history?period=${period}`,
   downtimeLog:          (startIso: string, endIso: string) =>
     `${API_BASE}/network-uptime/downtime-log?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`,
+  // Rapport PDF des coupures de TOUS les sites sur une tranche horaire répétée
+  // chaque jour (ex. 00 h → 08 h). Jours `YYYY-MM-DD` UTC, fin incluse.
+  windowOutageReportPdf: (start: string, end: string, fromHour: number, toHour: number) =>
+    `${API_BASE}/network-uptime/window-report/pdf?start=${start}&end=${end}&from_hour=${fromHour}&to_hour=${toHour}`,
   // Logique centralisée côté DB (fonctions RPC) — payloads prêts-à-afficher.
   dashboardSummary:     `${API_BASE}/dashboard/summary`,
   // Santé du réseau (dispo moyenne des sites) sur la MÊME fenêtre que les

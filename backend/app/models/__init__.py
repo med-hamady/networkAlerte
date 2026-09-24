@@ -1,4 +1,5 @@
 from app.models.alert_state import AlertState
+from app.models.client_consumption_daily import ClientConsumptionDaily
 from app.models.device import Device, Lr, Rocket, UispPower, UispSwitch
 from app.models.device_metric import DeviceMetric
 from app.models.incident import Incident
@@ -12,6 +13,7 @@ from app.models.traffic_dest_stat import TrafficDestStat
 
 __all__ = [
     "AlertState",
+    "ClientConsumptionDaily",
     "Device",
     "DeviceMetric",
     "Incident",

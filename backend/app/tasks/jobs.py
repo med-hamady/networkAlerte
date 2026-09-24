@@ -3086,6 +3086,80 @@ async def client_consumption_matview_refresh_job() -> None:
         )
 
 
+async def client_consumption_daily_rollup_job() -> None:
+    """Totalise la consommation de la veille dans `client_consumption_daily`.
+
+    Une journee ecoulee ne change plus : on fait la soustraction des compteurs
+    UNE fois, et on garde le total. C'est ce qui rend possible une retention
+    sur `device_metrics` (58,4 M lignes / 5,9 Go au 2026-09-24, seule table du
+    projet qui grossissait sans fin) sans perdre l'historique de consommation.
+
+    Rattrape les journees manquantes (conteneur arrete, job en echec), bornees
+    a `client_consumption_daily_max_catchup_days` par passage : un rattrapage
+    trop large tiendrait le disque pendant des heures, et la nuit suivante
+    reprendra ou celle-ci s'est arretee.
+
+    /!\\ Ne traite JAMAIS la journee en cours : elle n'est pas finie, son total
+    serait faux et figerait un resultat partiel. La page la calcule en direct.
+
+    /!\\ Un commit PAR JOURNEE : une erreur au 5e jour d'un rattrapage ne doit
+    pas annuler les quatre deja calcules.
+    """
+    from app.services import consumption_service
+
+    today = datetime.datetime.now(datetime.UTC).date()
+    yesterday = today - datetime.timedelta(days=1)
+    started = datetime.datetime.now(datetime.UTC)
+
+    try:
+        async with async_session_factory() as session:
+            last = await consumption_service.last_rolled_day(session)
+
+        if last is None:
+            # Resume vide : on ne remonte pas tout l'historique ici (des mois de
+            # relevés, plusieurs heures de disque). C'est le role du script
+            # scripts/backfill_consumption_daily.py, lance a la main une fois.
+            days = [yesterday]
+        else:
+            days = []
+            day = last + datetime.timedelta(days=1)
+            while day <= yesterday:
+                days.append(day)
+                day += datetime.timedelta(days=1)
+            days = days[: settings.client_consumption_daily_max_catchup_days]
+
+        if not days:
+            logger.info("client_consumption daily rollup — deja a jour")
+            return
+
+        total_rows = 0
+        for day in days:
+            async with async_session_factory() as session:
+                rows = await consumption_service.rollup_day(session, day)
+                await session.commit()
+            total_rows += rows
+            logger.info(
+                "client_consumption daily rollup — %s : %d ligne(s)", day, rows,
+            )
+
+        elapsed = (datetime.datetime.now(datetime.UTC) - started).total_seconds()
+        logger.info(
+            "client_consumption daily rollup — %d jour(s), %d ligne(s) en %.1f s",
+            len(days), total_rows, elapsed,
+        )
+        if last is not None and (yesterday - last).days > len(days):
+            logger.warning(
+                "client_consumption daily rollup — il reste %d jour(s) de retard, "
+                "rattrapage poursuivi au prochain passage",
+                (yesterday - last).days - len(days),
+            )
+    except Exception:
+        logger.exception(
+            "client_consumption daily rollup failed — les relevés bruts restent "
+            "en place, la journee sera rattrapee au prochain passage",
+        )
+
+
 async def client_consumption_7d_refresh_job() -> None:
     """Refresh the `client_consumption_7d` materialized view.
 
@@ -3748,7 +3822,7 @@ _ALWAYS_JOB_IDS = {"heartbeat"}
 _FAST_JOB_IDS = {
     "infra_ping", "warning_digest", "flap_detection",
     "network_latency_aggregate", "client_consumption_matview_refresh",
-    "client_consumption_7d_refresh",
+    "client_consumption_7d_refresh", "client_consumption_daily_rollup",
     "traffic_stats_retention", "lr_latency_retention", "unverified_ip_cleanup",
     "security_anomaly_detection", "rocket_saturation_report",
     "site_infra_report",
@@ -3895,6 +3969,24 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         id="warning_digest", name="Warning digest flush",
         replace_existing=True,
         **safety,
+    )
+    scheduler.add_job(
+        client_consumption_daily_rollup_job,
+        # 2 h UTC : AVANT les deux REFRESH de matviews (3 h et 4 h). Les trois
+        # lisent device_metrics ; les superposer rejouerait l'incident du
+        # 2026-07-20 (E/S saturee, sonde LR a 40 min/tour).
+        #
+        # Cron et pas interval : un intervalle se cale sur le dernier
+        # redemarrage du conteneur, donc le calcul tomberait a une heure
+        # imprevisible. Ici il doit tourner une fois la journee FINIE.
+        trigger="cron", hour=settings.client_consumption_daily_rollup_hour,
+        minute=0, timezone="UTC",
+        id="client_consumption_daily_rollup",
+        name="Client consumption daily rollup (veille) — daily",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
     )
     scheduler.add_job(
         client_consumption_matview_refresh_job,

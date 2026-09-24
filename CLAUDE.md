@@ -237,6 +237,7 @@ backend/app/
 | `IPTOASN_V4_PATH` / `IPTOASN_V6_PATH` | Datasets **BGP iptoasn.com** (IP→ASN+opérateur), source ASN **primaire** (bien plus complète que GeoLite2 pour la longue traîne). Défaut `/app/data/ip2asn-v4.tsv.gz` / `-v6`. Voir `backend/data/README.md` |
 | `GEOIP_ASN_DB_PATH` | Base MaxMind GeoLite2-ASN (.mmdb), **fallback** quand iptoasn ne répond pas. Défaut `/app/data/GeoLite2-ASN.mmdb`. Aucune source = tout agrégé sous "Indéterminé" |
 | `CLIENT_CONSUMPTION_REFRESH_HOUR` | Heure UTC du recalcul **quotidien** des matviews de consommation (défaut `3` ; le 7 j suit à +1 h). ⚠️ **Ne pas repasser en intervalle court** : ce REFRESH relit `device_metrics` (6,8 Go / 20 M lignes) et prend > 19 min — planifié toutes les 15 min il tournait EN PERMANENCE et saturait l'E/S, ce qui faisait ramper la phase 2 de la sonde LR (~40 min/tour) et rendait `ltu_api_poll` à 0/60 Rockets (incident 2026-07-20) |
+| `CLIENT_CONSUMPTION_DAILY_ROLLUP_HOUR` / `CLIENT_CONSUMPTION_DAILY_MAX_CATCHUP_DAYS` | Heure UTC du **résumé quotidien de consommation** (défaut **2**, avant les REFRESH de 3 h et 4 h qui lisent la même table) et nombre max de journées rattrapées en un passage (défaut 7). Voir **Résumé quotidien de consommation** |
 | `TRAFFIC_STATS_RETENTION_DAYS` | Rétention batchée de `traffic_dest_stats` (défaut 90 ; `traffic_stats_retention_job`) |
 | `LR_METRIC_HISTORY_BUCKET_SECONDS` | Largeur d'un bucket de l'historique des courbes (défaut **60** s = un point par relevé de poll, la résolution max que les données permettent). 300 divise le volume par ~3. **Le bucket n'est PAS le facteur limitant pour la latence** : sa sonde tourne toutes les 3 min (`LR_LATENCY_INTERVAL=180` en prod) et un tour dure 100-480 s → un client produit une mesure toutes les 3-8 min quoi qu'on règle ici. Changer la valeur ne réécrit pas les lignes existantes |
 | `LR_METRIC_HISTORY_RETENTION_DAYS` | Rétention batchée de `lr_metric_samples` (historique des courbes de la fiche, défaut **30** j ; `lr_latency_retention_job`). Coût ∝ au nombre de métriques ET à la largeur de bucket : à 60 s, ~800 LR × 1440 buckets/j × N métriques ≈ **110 M lignes** à 30 j — surveiller l'autovacuum |
@@ -386,6 +387,7 @@ Réglages **séparés par famille**, aucun budget partagé (`ping_infra_reconfir
 | `warning_digest_job` | 15 min | Regroupe les warnings en un seul message pour éviter la fatigue d'alerte |
 | `client_block_enforcement_job` | 120s | Ré-applique le blocage actif (port LAN ou filtre WhatsApp, selon `block_mode`) sur chaque LR `client_blocked` (survit au reboot du LR). ⚠️ **Concurrent depuis le 2026-09-15** : `_ENFORCE_FANOUT` = **8** LR à la fois, **une session par LR**, relue au moment de le traiter et **commitée avant tout SSH** (plus aucune connexion « idle in transaction » pendant la session). La boucle était SÉRIE : tour moyen 309 s, max 3833 s (64 min) pour un cycle de 120 s, mesuré par `scripts/diag-perf.sh`. **8 et pas 10** : paramiko passe par le pool de threads PAR DÉFAUT (12 threads), partagé par tout `scheduler-heavy`. Sémaphore distinct de `_SSH_CONCURRENCY` (le réutiliser = auto-blocage). Verrouillé par `tests/test_client_block_enforcement_fanout.py` |
 | `client_consumption_matview_refresh_job` | **Cron quotidien `CLIENT_CONSUMPTION_REFRESH_HOUR`:00 UTC** (défaut 03:00) | `REFRESH MATERIALIZED VIEW CONCURRENTLY client_consumption_30d` — pré-calcule la somme des deltas de compteurs bytes sur 30 j (download/upload par CPE). Avant : l'endpoint `/clients/consumption?period=30d` transférait des millions de samples vers Python pour faire la boucle `_sum_positive_deltas` → ~36 s en prod. Maintenant : delta calculé en SQL via `LAG()` + `CASE`, et 30d servi depuis la vue. |
+| `client_consumption_daily_rollup_job` | **Cron quotidien `CLIENT_CONSUMPTION_DAILY_ROLLUP_HOUR`:00 UTC** (défaut **02:00**, donc AVANT les deux REFRESH de matviews qui lisent la même table) | **Totalise la consommation de LA VEILLE** dans `client_consumption_daily` (1 ligne par device+compteur+jour). Une journée écoulée ne change plus : la somme de deltas est calculée **une fois** au lieu d'être recalculée à chaque affichage depuis les relevés bruts. C'est ce qui rend possible une rétention sur `device_metrics` — **seule table du projet qui grossissait sans fin** (58,4 M lignes / 5,9 Go au 2026-09-24) — sans perdre l'historique de consommation. ⚠️ **Jamais la journée en cours** (total partiel qui serait figé). ⚠️ **Un commit PAR JOURNÉE** : une erreur au 5e jour d'un rattrapage ne perd pas les 4 précédents. Rattrapage borné à `CLIENT_CONSUMPTION_DAILY_MAX_CATCHUP_DAYS` (7) par passage ; l'historique ancien se remplit **une fois** par `scripts/backfill_consumption_daily.py`. Groupe **fast**. Voir **Résumé quotidien de consommation** |
 | `client_consumption_7d_refresh_job` | **Cron quotidien à `CLIENT_CONSUMPTION_REFRESH_HOUR`+1:00 UTC** (défaut 04:00 — décalé pour ne pas se disputer le disque avec le 30 j) | `REFRESH MATERIALIZED VIEW CONCURRENTLY client_consumption_7d` — même pattern que le matview 30 j mais borné à 7 j. La période 7 j à elle seule clockait ~13 s sur le live SQL (seq scan + external sort 30 MB) ; le matview la fait passer à <100 ms. Matview séparé car l'agrégat 30 j est un seul SUM qui ne peut pas être soustrait à une fenêtre plus étroite. 24h reste en SQL live (true rolling window, ~2 s acceptable) ; la **plage de dates personnalisée** de `/clients` tourne aussi en SQL live borné (`collected_at ∈ [start, end)`, pas de matview possible pour une fenêtre arbitraire). |
 | `unverified_ip_cleanup_job` | `IP_CLEANUP_INTERVAL_HOURS` (12 h) | Retire l'IP des LR que plus aucune source ne confirme (ni UISP actif/récent, ni radio récent, ou IP hors plan) → `status='unknown'`. Groupe **fast**. `ip_hygiene_service.run_cleanup` |
 | `traffic_stats_retention_job` | `TRAFFIC_STATS_RETENTION_INTERVAL_MINUTES` (6 h) | Purge `traffic_dest_stats` plus vieux que `TRAFFIC_STATS_RETENTION_DAYS` (90 j) en **batches** (`DELETE … WHERE id IN (SELECT id … LIMIT n)`, jamais une grosse transaction). Groupe scheduler **fast**. La collecte elle-même tourne dans le container **`netflow-collector`** (hors APScheduler). **NB : il n'y a plus de rétention sur `device_metrics`** — les compteurs bytes de conso sont conservés indéfiniment (plage de dates `/clients` sans limite ; surveiller disque/autovacuum). |
@@ -2080,6 +2082,62 @@ Tous les jobs de polling persistent leurs métriques via `persist_device_metrics
 Tout le reste est collapsé (latest-only) **dans `device_metrics`** — y compris `lr_latency_ms`, `total_capacity_mbps`, `dl_capacity_mbps`, `ul_capacity_mbps`, `dl_throughput_mbps`, `ul_throughput_mbps` et les autres métriques radio (`signal_dbm`, `cinr_db`, `ccq_pct`, `link_potential_pct`, `local/remote_rx_rate_idx`).
 
 ⚠️ **Les courbes de la fiche équipement ne contredisent PAS cette politique** : leur série vit dans la table dédiée **`lr_metric_samples`** (buckets 5 min, cf. `lr_metric_history_service`), écrite par le même `persist_device_metrics` pour les seules clés de `GRAPH_METRICS`. C'est exactement pour ne pas rouvrir le robinet du bloat dans `device_metrics`. Donc : **vouloir une nouvelle courbe ne justifie JAMAIS d'ajouter une métrique à `HISTORY_METRICS`** — il faut l'ajouter à `GRAPH_METRICS`. La page « Liaisons clients » tourne en LIVE (`get_live_link_health`, fetch direct LTU/airOS), pas sur `device_metrics`. La matview `lr_health_metric_stats_30d` + son job de refresh ont été supprimés (migration `x5d6e7f8a9b0`). L'alert engine lit ses baselines (EMA throughput, deltas d'erreurs) depuis `AlertState`, **jamais** depuis `device_metrics` → collapser ne casse aucune alerte. Sans cette politique, un seul UISP Power empilait ~25 métriques toutes les 30 s (~70k lignes/jour) que rien ne relit.
+
+#### Résumé quotidien de consommation (2026-09-24)
+
+`client_consumption_daily` + `client_consumption_daily_rollup_job` +
+`scripts/backfill_consumption_daily.py`.
+
+**Le problème qu'il résout.** La consommation ne se LIT pas, elle se CALCULE :
+somme des deltas positifs entre relevés successifs des 4 compteurs d'octets de
+`device_metrics`. Répondre à « combien ce client a-t-il consommé en mars »
+obligeait donc à conserver **tous** les relevés de mars — c'est la raison pour
+laquelle cette table n'avait **aucune rétention** et grossissait sans fin
+(58,4 M lignes / 5,9 Go au 2026-09-24 ; 22 Go avec ses index avant le REINDEX).
+
+**Le principe.** Une journée écoulée ne change plus. On fait la soustraction
+**une fois**, la nuit suivante, et on garde le total : 1 ligne par
+(device, compteur, jour) au lieu de 1440 relevés × 4 compteurs.
+
+⚠️ **Même forme de ligne que les matviews** (`device_id`, `metric_name`,
+`bytes`, `samples`, `first_sample_at`) : c'est ce qui permet de servir une
+plage de dates depuis le résumé **sans réécrire** le calcul ni le regroupement
+site → Rocket → client. Ne pas « simplifier » en stockant descendant/montant :
+la correspondance compteur → sens dépend de la famille radio et vit dans
+`consumption_service`, en un seul endroit.
+
+⚠️ **La clause `CASE` du rollup doit rester IDENTIQUE** à celle des matviews et
+de la requête live (delta négatif = compteur remis à zéro → 0 ; delta aberrant
+→ 0). Une divergence ferait qu'une journée archivée ne correspond plus à ce que
+la fenêtre 30 j affiche pour la même journée — un écart invisible.
+
+⚠️ **Lookback de 6 h avant minuit** (`_ROLLUP_LOOKBACK`) : sans lui, le premier
+relevé de la journée n'a pas de prédécesseur, `LAG` rend NULL, et l'octet
+consommé entre le dernier relevé de la veille et le premier du jour serait
+perdu — chaque jour, pour chaque client.
+
+**Ce que ça change aux lectures** (`consumption_service`) :
+
+| Vue | Avant | Après |
+|---|---|---|
+| 24 h | SQL live | inchangé |
+| 7 j / 30 j | matviews | inchangé |
+| **Plage de dates** | live sur des mois de relevés | **somme du résumé** |
+| **Depuis toujours** | live sur tout l'historique | **résumé + journée en cours** |
+
+Une plage de dates porte sur des **journées entières UTC** : elle s'aligne
+exactement sur le résumé. `_aggregate_via_daily` recoud les deux moitiés — les
+journées déjà totalisées, et la partie encore brute (aujourd'hui, ou un jour
+que le job de nuit n'a pas traité). ⚠️ **Résumé vide ⇒ tout repasse en live** :
+le comportement d'avant, jamais un total amputé.
+
+⚠️ **La rétention sur `device_metrics` n'est PAS activée par ce travail.**
+Purger les relevés bruts avant d'avoir rempli le résumé perdrait l'historique
+définitivement. L'ordre est : migration → `backfill_consumption_daily.py
+--apply` → **vérifier que les totaux concordent** → seulement ensuite décider
+d'une rétention. Ce qui se perdra alors est le détail **infra-journalier**
+au-delà de la rétention (« combien entre 14 h et 15 h le 3 mars »), jamais le
+total d'une journée ni d'une période.
 
 ### Device types reconnus
 | `device_type` | Polling |

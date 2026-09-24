@@ -993,6 +993,17 @@ class Settings(BaseSettings):
     # ne pas casser un .env qui les definit encore.
     client_consumption_matview_refresh_interval_minutes: int = 15
 
+    # Heure UTC du RESUME QUOTIDIEN de consommation (client_consumption_daily) :
+    # totalise la journee de la veille, une fois pour toutes. 2 h UTC, donc AVANT
+    # les REFRESH de matviews (3 h et 4 h) : les trois lisent device_metrics et
+    # se disputeraient le disque. Voir models/client_consumption_daily.py.
+    client_consumption_daily_rollup_hour: int = 2
+    # Nombre maximal de journees rattrapees en un passage (conteneur arrete
+    # plusieurs jours, job en echec). Borne le cout d'un seul reveil : au-dela,
+    # le rattrapage se poursuit la nuit suivante. L'historique ancien se remplit
+    # avec scripts/backfill_consumption_daily.py, pas ici.
+    client_consumption_daily_max_catchup_days: int = 7
+
     # Same idea for the 7-day window (`client_consumption_7d`). The 7d
     # period was the second-slowest tab (~13 s of seq scan + external sort
     # on the live SQL path) — separate matview because the 30d aggregate

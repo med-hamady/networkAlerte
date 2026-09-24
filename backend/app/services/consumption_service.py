@@ -50,11 +50,13 @@ costs no extra query and no SQL join.
 from __future__ import annotations
 
 import datetime
+from typing import NamedTuple
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.models.client_consumption_daily import ClientConsumptionDaily
 from app.models.device import Lr
 from app.schemas.clients import (
     ClientConsumption,
@@ -176,6 +178,198 @@ _MATVIEW_7D_SQL = text(
     """
 )
 
+# --- Résumé quotidien (client_consumption_daily) -----------------------------
+# Une journée écoulée ne change plus : sa somme de deltas est calculée UNE fois
+# puis relue telle quelle. C'est ce qui rend possible une rétention sur
+# device_metrics (voir models/client_consumption_daily.py).
+
+# Remonter avant minuit pour que le PREMIER relevé de la journée ait un
+# prédécesseur : sans ça, `LAG` rend NULL et l'octet consommé entre le dernier
+# relevé de la veille et le premier du jour serait perdu, chaque jour et pour
+# chaque client. 6 h couvrent largement l'intervalle de poll (60 s, jusqu'à
+# 3-8 min sur la sonde SSH) ; au-delà, un équipement était éteint, donc ne
+# consommait rien.
+_ROLLUP_LOOKBACK = datetime.timedelta(hours=6)
+
+# ⚠️ La clause CASE doit rester identique à celle des matviews et de la requête
+# live : delta négatif (compteur remis à zéro) et delta aberrant (> max_delta)
+# comptent tous deux pour 0. Une divergence ferait que le total d'une journée
+# archivée ne correspond plus à ce que la fenêtre 30 j affiche pour la même
+# journée — un écart invisible et impossible à expliquer.
+_DAILY_ROLLUP_SQL = text(
+    """
+    INSERT INTO client_consumption_daily
+        (device_id, metric_name, day, bytes, samples, first_sample_at,
+         created_at, updated_at)
+    SELECT device_id, metric_name, CAST(:day AS date),
+           SUM(CASE WHEN d IS NOT NULL AND d >= 0 AND d <= :max_delta
+                    THEN d ELSE 0 END),
+           COUNT(*),
+           MIN(collected_at),
+           now(), now()
+    FROM (
+        SELECT
+            device_id,
+            metric_name,
+            collected_at,
+            metric_value - LAG(metric_value) OVER w AS d
+        FROM device_metrics
+        WHERE metric_name = ANY(CAST(:metric_names AS text[]))
+          AND collected_at >= :lookback_start
+          AND collected_at <  :day_end
+        WINDOW w AS (
+            PARTITION BY device_id, metric_name ORDER BY collected_at
+        )
+    ) deltas
+    WHERE collected_at >= :day_start
+    GROUP BY device_id, metric_name
+    ON CONFLICT (device_id, metric_name, day) DO UPDATE
+        SET bytes           = EXCLUDED.bytes,
+            samples         = EXCLUDED.samples,
+            first_sample_at = EXCLUDED.first_sample_at,
+            updated_at      = now()
+    """
+)
+
+# Lecture : additionner les journées déjà totalisées. Bornes INCLUSIVES des
+# deux côtés (on raisonne en jours, pas en instants).
+_DAILY_RANGE_SQL = text(
+    """
+    SELECT device_id,
+           metric_name,
+           SUM(bytes)            AS bytes,
+           SUM(samples)          AS samples,
+           MIN(first_sample_at)  AS first_sample_at
+    FROM client_consumption_daily
+    WHERE day >= :from_day AND day <= :to_day
+    GROUP BY device_id, metric_name
+    """
+)
+
+
+class _AggRow(NamedTuple):
+    """Même forme que les lignes rendues par les matviews et la requête live."""
+
+    device_id: int
+    metric_name: str
+    bytes: int
+    samples: int
+    first_sample_at: datetime.datetime | None
+
+
+async def rollup_day(db: AsyncSession, day: datetime.date) -> int:
+    """Totalise la consommation de la journée `day` (UTC) et l'enregistre.
+
+    Idempotent : rejouer un jour remplace ses lignes (upsert), il ne les
+    double pas. Renvoie le nombre de lignes écrites.
+
+    N'engage PAS la transaction : l'appelant décide quand valider.
+    """
+    day_start = datetime.datetime.combine(day, datetime.time.min, tzinfo=datetime.UTC)
+    result = await db.execute(
+        _DAILY_ROLLUP_SQL,
+        {
+            "day": day,
+            "day_start": day_start,
+            "day_end": day_start + datetime.timedelta(days=1),
+            "lookback_start": day_start - _ROLLUP_LOOKBACK,
+            "metric_names": list(_COUNTER_METRICS),
+            "max_delta": _MAX_PLAUSIBLE_DELTA_BYTES,
+        },
+    )
+    return result.rowcount or 0
+
+
+async def last_rolled_day(db: AsyncSession) -> datetime.date | None:
+    """Dernière journée déjà totalisée, ou None si le résumé est vide."""
+    return await db.scalar(select(func.max(ClientConsumptionDaily.day)))
+
+
+def _merge_rows(
+    acc: dict[tuple[int, str], dict], rows
+) -> None:
+    """Additionne des lignes d'agrégat dans un accumulateur (par device+métrique).
+
+    Sert à recoudre les deux moitiés d'une plage : les journées déjà
+    totalisées, et la partie encore brute (aujourd'hui, ou les jours pas
+    encore traités par le job de nuit).
+    """
+    for r in rows:
+        key = (r.device_id, r.metric_name)
+        slot = acc.setdefault(
+            key, {"bytes": 0, "samples": 0, "first_sample_at": None}
+        )
+        slot["bytes"] += int(r.bytes or 0)
+        slot["samples"] += int(r.samples or 0)
+        first = r.first_sample_at
+        if first is not None and (
+            slot["first_sample_at"] is None or first < slot["first_sample_at"]
+        ):
+            slot["first_sample_at"] = first
+
+
+async def _aggregate_via_daily(
+    db: AsyncSession,
+    lr_ids: list[int],
+    lower: datetime.datetime,
+    upper: datetime.datetime,
+) -> list[_AggRow]:
+    """Agrège [lower, upper) en s'appuyant sur le résumé quotidien.
+
+    Découpe la fenêtre en deux : les journées déjà totalisées sont relues dans
+    `client_consumption_daily` (quelques milliers de lignes), le reste — la
+    journée en cours, et tout jour que le job de nuit n'a pas encore traité —
+    passe par la requête live sur les relevés bruts.
+
+    ⚠️ Le résumé VIDE (avant le remplissage de l'historique) fait retomber
+    l'ensemble sur la requête live : le comportement d'avant, jamais un total
+    amputé.
+    """
+    acc: dict[tuple[int, str], dict] = {}
+    rolled = await last_rolled_day(db)
+
+    live_lower = lower
+    if rolled is not None:
+        from_day = lower.date()
+        # `upper` est exclusif : la dernière journée réellement demandée est
+        # celle de l'instant qui précède.
+        to_day = min((upper - datetime.timedelta(microseconds=1)).date(), rolled)
+        if to_day >= from_day:
+            rows = (
+                await db.execute(
+                    _DAILY_RANGE_SQL, {"from_day": from_day, "to_day": to_day}
+                )
+            ).all()
+            _merge_rows(acc, rows)
+            live_lower = max(
+                lower,
+                datetime.datetime.combine(
+                    to_day + datetime.timedelta(days=1),
+                    datetime.time.min,
+                    tzinfo=datetime.UTC,
+                ),
+            )
+
+    if live_lower < upper:
+        rows = (
+            await db.execute(
+                _LIVE_AGGREGATE_RANGE_SQL,
+                {
+                    "lr_ids": lr_ids,
+                    "metric_names": list(_COUNTER_METRICS),
+                    "cutoff": live_lower,
+                    "upper": upper,
+                    "max_delta": _MAX_PLAUSIBLE_DELTA_BYTES,
+                },
+            )
+        ).all()
+        _merge_rows(acc, rows)
+
+    return [
+        _AggRow(device_id, metric_name, v["bytes"], v["samples"], v["first_sample_at"])
+        for (device_id, metric_name), v in acc.items()
+    ]
+
 
 async def get_clients_consumption(
     db: AsyncSession,
@@ -230,23 +424,27 @@ async def get_clients_consumption(
 
     # 7d and 30d are served from per-window matviews (<100 ms). 24h runs
     # live SQL (~2 s — acceptable for the default tab, and gives a true
-    # rolling 24 h window). Lifetime also runs live so it stays correct
-    # once retention pushes data past 30 d. A custom range always runs the
-    # bounded live query (matviews are fixed windows).
+    # rolling 24 h window).
+    #
+    # Une plage de dates et « depuis toujours » passent par le RÉSUMÉ
+    # QUOTIDIEN depuis le 2026-09-24 : ce sont les deux seules vues qui
+    # remontaient au-delà de 30 jours, donc les deux seules qui obligeaient à
+    # conserver indéfiniment les relevés bruts. Elles relisent maintenant des
+    # totaux déjà calculés, et ne repassent en live que sur la journée en
+    # cours. Voir models/client_consumption_daily.py.
     if is_custom:
-        lr_ids = [lr.id for lr in lrs]
-        agg_rows = (
-            await db.execute(
-                _LIVE_AGGREGATE_RANGE_SQL,
-                {
-                    "lr_ids": lr_ids,
-                    "metric_names": list(_COUNTER_METRICS),
-                    "cutoff": query_lower_bound,
-                    "upper": upper,
-                    "max_delta": _MAX_PLAUSIBLE_DELTA_BYTES,
-                },
-            )
-        ).all()
+        # Une plage de dates porte sur des JOURNÉES ENTIÈRES UTC : elle
+        # s'aligne exactement sur le résumé quotidien, qui remplace ici une
+        # relecture de plusieurs mois de relevés bruts.
+        agg_rows = await _aggregate_via_daily(
+            db, [lr.id for lr in lrs], query_lower_bound, upper,
+        )
+    elif period == "lifetime":
+        # Idem, sans borne haute : le résumé porte tout l'historique, la
+        # requête live ne couvre plus que la journée en cours.
+        agg_rows = await _aggregate_via_daily(
+            db, [lr.id for lr in lrs], query_lower_bound, now,
+        )
     elif period == "30d":
         agg_rows = (await db.execute(_MATVIEW_30D_SQL)).all()
     elif period == "7d":

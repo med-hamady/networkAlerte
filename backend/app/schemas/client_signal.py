@@ -62,7 +62,12 @@ class HistoryCurve(BaseModel):
     )
 
 
-class ClientHistory(BaseModel):
+class ClientHistoryResponse(BaseModel):
+    """Réponse de GET /client-signal/history — courbes 7 jours, lues en base."""
+
+    mac: str = Field(description="MAC du LR client, normalisé (aa:bb:cc:dd:ee:ff)")
+    lr_id: int = Field(description="Identifiant interne du LR")
+    lr_name: str | None = Field(default=None, description="Nom du LR")
     period: str = Field(description="Fenêtre couverte (7d)")
     start: datetime.datetime = Field(description="Début de la fenêtre (UTC)")
     end: datetime.datetime = Field(description="Fin de la fenêtre (UTC)")
@@ -110,9 +115,4 @@ class ClientSignalResponse(BaseModel):
     rocket: ConnectedRocket | None = Field(
         default=None,
         description="Rocket auquel le LR est connecté (null si aucun rattachement connu)",
-    )
-    history: ClientHistory | None = Field(
-        default=None,
-        description="Courbes des 7 derniers jours (latence, potentiel, capacité, débit "
-        "descendant), lues en base",
     )

@@ -1,4 +1,4 @@
-"""GET /client-signal — les courbes 7 jours (`history`).
+"""GET /client-signal/history — les courbes 7 jours.
 
 Ce qui est fixé ici : les 4 courbes demandées par l'opérateur, toujours
 présentes (vides plutôt qu'absentes), lues depuis `GRAPH_METRICS` (libellés et
@@ -41,8 +41,10 @@ def test_history_shape(monkeypatch):
     monkeypatch.setattr(hist, "get_history", fake_get_history)
     monkeypatch.setattr(svc.threshold_service, "get_effective_settings", fake_effective)
 
-    lr = SimpleNamespace(id=7, model_variant="ltu_lr")
-    out = asyncio.run(svc.get_client_history(None, lr))
+    lr = SimpleNamespace(id=7, name="LR test", model_variant="ltu_lr")
+    out = asyncio.run(svc.get_client_history(None, lr, "aa:bb:cc:dd:ee:ff"))
+
+    assert (out.mac, out.lr_id, out.lr_name) == ("aa:bb:cc:dd:ee:ff", 7, "LR test")
 
     assert out.period == "7d" and out.bin_seconds == 1800
     assert set(out.curves) == set(svc.CLIENT_CURVES)
@@ -57,3 +59,10 @@ def test_history_shape(monkeypatch):
     assert out.curves["link_potential_pct"].points == []
     # Pas de seuil sur le débit.
     assert out.curves["dl_throughput_mbps"].threshold is None
+
+
+def test_signal_response_no_longer_carries_history():
+    """Les courbes ont leur endpoint : /client-signal reste léger."""
+    from app.schemas.client_signal import ClientSignalResponse
+
+    assert "history" not in ClientSignalResponse.model_fields

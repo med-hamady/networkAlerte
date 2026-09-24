@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.schemas.client_signal import ClientSignalResponse
+from app.schemas.client_signal import ClientHistoryResponse, ClientSignalResponse
 from app.services import client_signal_service
 
 router = APIRouter()
@@ -28,9 +28,9 @@ async def get_client_signal(
       classée ``excellent`` (< 80 ms) / ``tres_bien`` (80-100) / ``bien``
       (100-120) / ``mauvaise`` (120-150) / ``catastrophique`` (≥ 150) ;
     - ``rocket`` : le Rocket (AP) auquel le LR est connecté, lu en base
-      (``source`` = ``supervision`` ou ``uisp`` si seul le nom d'AP est connu) ;
-    - ``history`` : les courbes des 7 derniers jours (latence, potentiel du lien,
-      capacité du lien, débit descendant), points de 30 min, lues en base.
+      (``source`` = ``supervision`` ou ``uisp`` si seul le nom d'AP est connu).
+
+    Les courbes d'historique sont sur ``GET /client-signal/history``.
 
     Chaque catégorie vaut ``indetermine`` quand la donnée manque (pas de mesure
     de signal récente ; LR injoignable ou sans transit pour la latence) —
@@ -44,6 +44,37 @@ async def get_client_signal(
     """
     try:
         result = await client_signal_service.get_client_signal(db, mac)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Aucun LR avec le MAC {mac!r}")
+    return result
+
+
+@router.get("/history", response_model=ClientHistoryResponse)
+async def get_client_history(
+    mac: str = Query(
+        ...,
+        description="MAC du LR client (formats acceptés : aa:bb:cc:dd:ee:ff, "
+        "aa-bb-..., aabb.ccdd.eeff, aabbccddeeff)",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> ClientHistoryResponse:
+    """Courbes des 7 derniers jours d'un client, par MAC de son LR.
+
+    Quatre courbes (``curves``) : ``lr_latency_ms``, ``link_potential_pct``,
+    ``total_capacity_mbps``, ``dl_throughput_mbps`` — points de 30 min
+    ``{t, avg, min, max}`` + seuil d'alerte. Lues en base, **aucune connexion à
+    l'équipement** : appel rapide, contrairement à ``GET /client-signal``.
+
+    Une tranche sans mesure est ABSENTE (trou), jamais un 0 ; une courbe peut
+    être vide (ex. pas de potentiel sur un LiteBeam M5).
+
+    - 400 si le MAC est mal formé.
+    - 404 si aucun LR ne porte ce MAC.
+    """
+    try:
+        result = await client_signal_service.get_client_history_by_mac(db, mac)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if result is None:

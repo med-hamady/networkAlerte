@@ -96,24 +96,6 @@ curl -k --max-time 60 \
     "radio_tech": "ltu",
     "status": "up",
     "source": "supervision"
-  },
-  "history": {
-    "period": "7d",
-    "start": "2026-09-17T08:41:00Z",
-    "end": "2026-09-24T08:41:00Z",
-    "bin_seconds": 1800,
-    "curves": {
-      "lr_latency_ms": {
-        "label": "Latence Internet", "unit": "ms",
-        "threshold": 100.0, "threshold_direction": "max",
-        "points": [
-          {"t": "2026-09-17T09:00:00Z", "avg": 41.3, "min": 38.0, "max": 57.2}
-        ]
-      },
-      "link_potential_pct": { "label": "Potentiel du lien", "unit": "%", "...": "..." },
-      "total_capacity_mbps": { "label": "Capacité du lien", "unit": "Mb/s", "...": "..." },
-      "dl_throughput_mbps": { "label": "Débit descendant", "unit": "Mb/s", "...": "..." }
-    }
   }
 }
 ```
@@ -178,10 +160,68 @@ Lu en base (pas de mesure live), donc instantané.
 > Pour un équipement **hors ligne**, `rocket` désigne le dernier point d'accès
 > auquel il a été vu connecté.
 
-### Courbes sur 7 jours (`history`)
+## Codes d'erreur
 
-Toujours présent. Lu en base : ce sont les relevés de la supervision (les
-mêmes courbes que sur notre fiche équipement), pas une mesure live.
+| Code | Cause | Que faire |
+|---|---|---|
+| `400` | MAC mal formée | Corriger le format |
+| `401` | Clé absente ou invalide | Vérifier l'en-tête `X-API-Key` |
+| `404` | Aucun équipement ne porte cette MAC | La MAC n'est pas dans notre inventaire — vérifier auprès de nous |
+| `429` | Trop d'appels | Ralentir (plafond : 120 appels/minute) |
+| `504` | Timeout du proxy | Ne devrait pas survenir (le proxy attend jusqu'à 120 s) — nous signaler |
+
+## Limites à connaître
+
+- **Débit** : 120 appels par minute et par IP source. Au-delà, `429`.
+- **Appel lent** : chaque appel ouvre une session SSH. Pour contrôler un lot de
+  clients, **séquencer les appels** plutôt que de les lancer en parallèle : au
+  delà d'une dizaine de sessions simultanées, la file d'attente SSH allonge tous
+  les temps de réponse, y compris ceux de nos propres sondes de supervision.
+- **Pas de mise en cache** côté API : deux appels rapprochés sur la même MAC
+  produisent deux mesures réelles. Si vous affichez cette information dans une
+  interface rafraîchie automatiquement, mettez en cache **de votre côté**.
+- **`/client-signal/history` n'a pas ces contraintes** : pas de SSH, réponse
+  rapide. Le plafond de 120 appels/minute est commun aux deux routes.
+
+---
+
+## Courbes sur 7 jours — `GET /api/v1/client-signal/history`
+
+Endpoint **séparé** : les courbes sont lues en base (relevés de la
+supervision, les mêmes que sur notre fiche équipement). **Aucune connexion à
+l'équipement** : contrairement à `/client-signal`, l'appel répond en moins
+d'une seconde. Même clé API, même paramètre `mac`, mêmes codes d'erreur.
+
+```bash
+curl -k --max-time 30 \
+  -H "X-API-Key: <CLE>" \
+  "https://102.215.95.229/api/v1/client-signal/history?mac=aa:bb:cc:dd:ee:ff"
+```
+
+```json
+{
+  "mac": "aa:bb:cc:dd:ee:ff",
+  "lr_id": 1423,
+  "lr_name": "12345 - Ba, Amadou - 22334455",
+  "period": "7d",
+  "start": "2026-09-17T08:41:00Z",
+  "end": "2026-09-24T08:41:00Z",
+  "bin_seconds": 1800,
+  "curves": {
+    "lr_latency_ms": {
+      "label": "Latence Internet", "unit": "ms",
+      "threshold": 100.0, "threshold_direction": "max",
+      "points": [
+        {"t": "2026-09-17T09:00:00Z", "avg": 41.3, "min": 38.0, "max": 57.2}
+      ]
+    },
+    "link_potential_pct": { "label": "Potentiel du lien", "unit": "%", "...": "..." },
+    "total_capacity_mbps": { "label": "Capacité du lien", "unit": "Mb/s", "...": "..." },
+    "dl_throughput_mbps": { "label": "Débit descendant", "unit": "Mb/s", "...": "..." }
+  }
+}
+```
+
 
 | Courbe (`curves.<clé>`) | Unité | Seuil d'alerte |
 |---|---|---|
@@ -203,23 +243,3 @@ mêmes courbes que sur notre fiche équipement), pas une mesure live.
   débit ce qui circule *réellement*. Sur un lien peu utilisé, ils diffèrent
   de plusieurs ordres de grandeur — c'est normal.
 
-## Codes d'erreur
-
-| Code | Cause | Que faire |
-|---|---|---|
-| `400` | MAC mal formée | Corriger le format |
-| `401` | Clé absente ou invalide | Vérifier l'en-tête `X-API-Key` |
-| `404` | Aucun équipement ne porte cette MAC | La MAC n'est pas dans notre inventaire — vérifier auprès de nous |
-| `429` | Trop d'appels | Ralentir (plafond : 120 appels/minute) |
-| `504` | Timeout du proxy | Ne devrait pas survenir (le proxy attend jusqu'à 120 s) — nous signaler |
-
-## Limites à connaître
-
-- **Débit** : 120 appels par minute et par IP source. Au-delà, `429`.
-- **Appel lent** : chaque appel ouvre une session SSH. Pour contrôler un lot de
-  clients, **séquencer les appels** plutôt que de les lancer en parallèle : au
-  delà d'une dizaine de sessions simultanées, la file d'attente SSH allonge tous
-  les temps de réponse, y compris ceux de nos propres sondes de supervision.
-- **Pas de mise en cache** côté API : deux appels rapprochés sur la même MAC
-  produisent deux mesures réelles. Si vous affichez cette information dans une
-  interface rafraîchie automatiquement, mettez en cache **de votre côté**.

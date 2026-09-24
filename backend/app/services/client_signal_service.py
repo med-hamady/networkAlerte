@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.models.device import Lr
 from app.schemas.client_signal import (
-    ClientHistory,
+    ClientHistoryResponse,
     ClientSignalResponse,
     ConnectedRocket,
     HistoryCurve,
@@ -142,19 +142,13 @@ async def get_client_signal(db: AsyncSession, mac: str) -> ClientSignalResponse 
     de même ``latency_quality='indetermine'`` si le ping live n'aboutit pas.
     Lève ``ValueError`` si le MAC fourni est mal formé.
     """
-    normalized = normalize_mac(mac)  # ValueError si format invalide
-
-    lr = (
-        await db.execute(select(Lr).where(func.lower(Lr.mac_address) == normalized))
-    ).scalar_one_or_none()
+    normalized, lr = await _find_lr(db, mac)  # ValueError si format invalide
     if lr is None:
         return None
 
     signal_dbm, measured_at = await _latest_signal(db, lr.id)
     settings = get_settings()
     quality = classify_signal(signal_dbm, settings)
-
-    history = await get_client_history(db, lr)
 
     avg_rtt_ms, reason = await _measure_latency_live(db, lr, settings)
     latency_quality = classify_latency(avg_rtt_ms, settings)
@@ -175,11 +169,37 @@ async def get_client_signal(db: AsyncSession, mac: str) -> ClientSignalResponse 
         latency_packets_sent=settings.client_signal_ping_count,
         latency_packet_size_bytes=_PING_PAYLOAD_BYTES,
         rocket=connected_rocket(lr),
-        history=history,
     )
 
 
-async def get_client_history(db: AsyncSession, lr: Lr) -> ClientHistory:
+async def _find_lr(db: AsyncSession, mac: str) -> tuple[str, Lr | None]:
+    """``(mac normalisé, LR)`` — LR ``None`` si inconnu ; ``ValueError`` si mal formé."""
+    normalized = normalize_mac(mac)
+    lr = (
+        await db.execute(select(Lr).where(func.lower(Lr.mac_address) == normalized))
+    ).scalar_one_or_none()
+    return normalized, lr
+
+
+async def get_client_history_by_mac(
+    db: AsyncSession, mac: str
+) -> ClientHistoryResponse | None:
+    """Courbes 7 jours du LR ``mac`` — GET /client-signal/history.
+
+    Séparé de ``get_client_signal`` parce que ce n'est pas le même coût : ici
+    tout est lu en base (quelques ms), là on ouvre une session SSH sur le LR
+    (6-15 s). Un tiers qui ne veut que les graphes ne doit ni attendre le SSH
+    ni charger la file SSH partagée avec nos sondes. ``None`` → 404.
+    """
+    normalized, lr = await _find_lr(db, mac)
+    if lr is None:
+        return None
+    return await get_client_history(db, lr, normalized)
+
+
+async def get_client_history(
+    db: AsyncSession, lr: Lr, mac: str
+) -> ClientHistoryResponse:
     """Les courbes de ``CLIENT_CURVES`` du LR sur 7 jours (``lr_metric_samples``).
 
     Même service, même fenêtre et même re-binning (30 min) que les graphes
@@ -219,7 +239,8 @@ async def get_client_history(db: AsyncSession, lr: Lr) -> ClientHistory:
                 for r in rows
             ],
         )
-    return ClientHistory(
+    return ClientHistoryResponse(
+        mac=mac, lr_id=lr.id, lr_name=lr.name,
         period=HISTORY_PERIOD, start=start, end=end,
         bin_seconds=bin_seconds, curves=curves,
     )

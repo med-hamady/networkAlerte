@@ -9,10 +9,10 @@ la situation du 2026-08-11 qui a fait naître `UISP_ASSIGN_API_KEY`.
 Ce que ces tests verrouillent, et pourquoi chacun compte :
 
   - La route porte sa propre dépendance d'auth, et ses voisines NON.
-  - ⚠️ `client_signal.py` ne contient QU'UNE route. C'est ce qui autorise à s'en
-    tenir à ce router plutôt qu'à un fichier séparé (cf. `fai_verify.py`) : une
-    dépendance de router est ADDITIVE et non surchargeable par route, donc toute
-    route ajoutée dans ce module hériterait de la clé du tiers, en silence.
+  - ⚠️ `client_signal.py` ne contient QUE les routes listées dans
+    `_ROUTES_OPEN_TO_THE_KEY`. Une dépendance de router est ADDITIVE et non
+    surchargeable par route, donc toute route ajoutée dans ce module hérite de
+    la clé du tiers, en silence — l'ajout doit être un choix écrit ici.
   - La clé n'est acceptée par AUCUN autre comparateur — sinon elle serait un
     alias de la clé maîtresse, pas une clé cloisonnée.
   - Elle ne retombe ni sur l'auth `/fai` ni sur celle du filtre de contenu : LIRE
@@ -72,9 +72,19 @@ def _dependency_names(route) -> list[str]:
     ]
 
 
-def test_client_signal_route_carries_its_own_scoped_dependency():
-    """GET /client-signal est gardée par require_client_signal_client, elle seule."""
-    assert _dependency_names(_route("/api/v1/client-signal")) == [
+# Les routes que la clé du tiers ouvre, et rien d'autre. Chacune est une
+# LECTURE de la qualité d'un lien — le pouvoir que cette clé porte :
+#   ""         → GET /client-signal          (verdict signal + latence live)
+#   "/history" → GET /client-signal/history  (courbes 7 j, lues en base ;
+#                séparée pour ne pas faire payer le SSH à qui ne veut que les
+#                graphes — 2026-09-24)
+_ROUTES_OPEN_TO_THE_KEY = {"", "/history"}
+
+
+@pytest.mark.parametrize("suffix", sorted(_ROUTES_OPEN_TO_THE_KEY))
+def test_client_signal_route_carries_its_own_scoped_dependency(suffix):
+    """Chaque route du module est gardée par require_client_signal_client, elle seule."""
+    assert _dependency_names(_route(f"/api/v1/client-signal{suffix}")) == [
         "require_client_signal_client",
     ]
 
@@ -89,17 +99,17 @@ def test_neighbour_routes_stay_behind_the_master_key():
         assert _dependency_names(_route(path)) == ["require_user_or_api_key"]
 
 
-def test_client_signal_router_holds_exactly_one_route():
-    """Une seule route dans ce module — c'est ce qui rend le cloisonnement sûr.
+def test_client_signal_router_holds_only_the_listed_routes():
+    """Seules les routes listées — c'est ce qui rend le cloisonnement sûr.
 
     La dépendance est posée au niveau du ROUTER (pas de la route), et une
     dépendance de router est additive : toute route ajoutée dans
     `client_signal.py` s'ouvrirait automatiquement à la clé du tiers, sans que
-    rien ne le signale. Une nouvelle route doit donc aller ailleurs — ou bien ce
-    module doit être scindé comme l'est `fai_verify.py`.
+    rien ne le signale. Une nouvelle route va donc ailleurs — sauf si ouvrir
+    cette clé est VOULU, auquel cas elle s'ajoute à `_ROUTES_OPEN_TO_THE_KEY`.
     """
     paths = {r.path for r in client_signal_module.router.routes}
-    assert paths == {""}, (
+    assert paths == _ROUTES_OPEN_TO_THE_KEY, (
         f"routes inattendues dans client_signal.py : {paths} — voir la docstring"
     )
 

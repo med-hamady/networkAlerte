@@ -153,12 +153,13 @@ api_router.include_router(
 # dédiée AJOUTE un chemin cloisonné, elle n'en retire aucun.
 #
 # ⚠️ Pas de fichier de router séparé ici (contrairement à /fai/verify et
-# /uisp/assign) parce que /client-signal a son PROPRE préfixe et ne porte qu'une
-# route : il n'y a aucune route voisine dont la clé du tiers hériterait. Le
-# corollaire est le piège à éviter : une dépendance de router étant ADDITIVE,
-# ajouter une seconde route dans client_signal.py l'ouvrirait automatiquement à
-# cette clé. Une telle route doit aller dans un autre router — verrouillé par
-# tests/test_client_signal_scoped_key.py.
+# /uisp/assign) parce que /client-signal a son PROPRE préfixe : il n'y a aucune
+# route voisine dont la clé du tiers hériterait. Ses DEUX routes (le verdict
+# live, et /history = les courbes 7 j lues en base) sont toutes deux voulues
+# ouvertes à cette clé. Le piège à éviter : une dépendance de router étant
+# ADDITIVE, toute AUTRE route ajoutée dans client_signal.py s'ouvrirait
+# automatiquement à cette clé — la liste permise est verrouillée par
+# tests/test_client_signal_scoped_key.py (`_ROUTES_OPEN_TO_THE_KEY`).
 api_router.include_router(
     client_signal.router, prefix="/client-signal", tags=["client-signal"],
     dependencies=[

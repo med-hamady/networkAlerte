@@ -379,14 +379,6 @@ def window_label(from_hour: int, to_hour: int) -> str:
     return f"{from_hour:02d}:00 - {to_hour:02d}:00"
 
 
-def night_label(night: Night, crosses_midnight: bool) -> str:
-    d = night.day
-    if crosses_midnight:
-        nxt = d + datetime.timedelta(days=1)
-        return f"Nuit du {d:%d/%m/%Y} au {nxt:%d/%m/%Y}"
-    return f"{d:%d/%m/%Y}"
-
-
 def render_pdf(report: NightReport) -> bytes:
     from fpdf import FPDF  # import local : seul ce chemin a besoin de la dépendance
 
@@ -449,31 +441,7 @@ def render_pdf(report: NightReport) -> bytes:
         new_x="LMARGIN",
         new_y="NEXT",
     )
-    cell(
-        0,
-        5.5,
-        f"Généré le {report.generated_at:%d/%m/%Y à %H:%M} UTC",
-        new_x="LMARGIN",
-        new_y="NEXT",
-    )
-    pdf.ln(1.5)
-    font(8.5)
-    pdf.set_text_color(90, 90, 90)
-    pdf.multi_cell(
-        0,
-        4.3,
-        txt(
-            "Une panne de site est une coupure de son switch. Seules les coupures qui "
-            "COMMENCENT dans la tranche sont comptées, et leur durée s'arrête à la fin de "
-            "la tranche. Deux coupures séparées de moins de 5 minutes comptent pour une "
-            "seule. Un site déjà coupé à l'ouverture de la tranche est "
-            "signalé en gris dans le détail (« coupé depuis … »), sans être compté."
-        ),
-        new_x="LMARGIN",
-        new_y="NEXT",
-    )
-    pdf.set_text_color(0, 0, 0)
-    pdf.ln(2)
+    pdf.ln(3)
 
     if not report.nights:
         font(11)
@@ -496,110 +464,13 @@ def render_pdf(report: NightReport) -> bytes:
     )
     pdf.ln(2)
 
-    cols = [
-        ("Site", 58),
-        ("Pannes", 22),
-        ("Temps coupé", 30),
-        ("Tranches touchées", 36),
-        ("Disponibilité", 34),
-    ]
+    cols = [("Site", 90), ("Pannes", 40), ("Temps coupé", 50)]
     table_header(cols)
     for s in report.sites:
-        if s.episodes:
-            font(8.5, True)
-        cell(58, 6, clip(s.site, 34), border=1)
-        cell(22, 6, str(s.episodes), border=1, align="C")
-        cell(30, 6, fmt_duration(s.downtime_seconds) if s.episodes else "-", border=1, align="C")
-        cell(36, 6, f"{s.nights_hit} / {len(report.nights)}", border=1, align="C")
-        if s.availability_pct < 99:
-            pdf.set_text_color(190, 60, 20)
-        cell(34, 6, f"{s.availability_pct:.2f} %", border=1, align="C")
-        pdf.set_text_color(0, 0, 0)
-        font(8.5)
+        font(8.5, bool(s.episodes))
+        cell(90, 6, clip(s.site, 50), border=1)
+        cell(40, 6, str(s.episodes), border=1, align="C")
+        cell(50, 6, fmt_duration(s.downtime_seconds) if s.episodes else "-", border=1, align="C")
         pdf.ln()
-
-    # ---- Détail tranche par tranche
-    pdf.ln(4)
-    font(12, True)
-    cell(0, 8, "Détail tranche par tranche", new_x="LMARGIN", new_y="NEXT")
-    # Largeurs en mm (somme = 190, la largeur utile d'un A4 à marges de 10 mm).
-    det_cols = [
-        ("Site", 25),
-        ("Switch", 41),
-        ("Tombé", 23),
-        ("Revenu", 25),
-        ("Durée comptée", 24),
-        ("Remarque", 52),
-    ]
-    widths = [w for _, w in det_cols]
-
-    def row(values: list[str], colors: dict[int, tuple[int, int, int]] | None = None) -> None:
-        limits = (15, 25, 14, 16, 14, 44)
-        for i, (v, w) in enumerate(zip(values, widths, strict=True)):
-            if colors and i in colors:
-                pdf.set_text_color(*colors[i])
-            if i == 5:
-                font(7.5)  # la remarque est la plus longue : un cran plus petit
-            cell(w, 6, clip(v, limits[i]), border=1, align="L" if i in (0, 1, 5) else "C")
-            if i == 5:
-                font(8.5)
-            if colors and i in colors:
-                pdf.set_text_color(0, 0, 0)
-        pdf.ln()
-
-    def entry_rows(entries: list[NightEntry], night: Night) -> None:
-        table_header(det_cols)
-        for e in entries:
-            if pdf.will_page_break(6):
-                pdf.add_page()
-                table_header(det_cols)
-            name = e.device_name
-            if e.outage is None:
-                grey = (120, 120, 120)
-                row(
-                    [e.site, name, "-", "-", "-", f"coupé depuis {e.down_since:%d/%m %H:%M}"],
-                    dict.fromkeys(range(6), grey),
-                )
-                continue
-            o = e.outage
-            fell = f"{o.started_at:%H:%M}"
-            # Tranche qui enjambe minuit : l'heure seule serait ambiguë.
-            if o.started_at.date() != night.day:
-                fell += f" le {o.started_at:%d/%m}"
-            if o.ended_at is None:
-                back, note = "toujours coupé", ""
-            else:
-                back = f"{o.ended_at:%H:%M}"
-                if o.ended_at.date() != o.started_at.date():
-                    back += f" le {o.ended_at:%d/%m}"
-                note = "revenu hors tranche" if o.ended_at > night.end else ""
-            row(
-                [e.site, name, fell, back, fmt_duration(o.counted_seconds), note],
-                {3: (200, 30, 30)} if o.ended_at is None else None,
-            )
-
-    for idx, night in enumerate(report.nights):
-        entries = report.switch_entries[idx]
-        counted = [e for e in entries if e.outage is not None]
-        if pdf.will_page_break(20):
-            pdf.add_page()
-        pdf.ln(1.5)
-        font(10, True)
-        head = night_label(night, crosses)
-        if not night.complete:
-            head += f" (tranche en cours, jusqu'à {night.end:%H:%M})"
-        if counted:
-            head += (
-                f" - {len(counted)} panne(s), "
-                f"{fmt_duration(sum(e.outage.counted_seconds for e in counted))}"
-            )
-        cell(0, 6.5, head, new_x="LMARGIN", new_y="NEXT")
-        if not entries:
-            font(9)
-            pdf.set_text_color(40, 130, 70)
-            cell(0, 5.5, "Aucune coupure de site.", new_x="LMARGIN", new_y="NEXT")
-            pdf.set_text_color(0, 0, 0)
-            continue
-        entry_rows(entries, night)
 
     return bytes(pdf.output())

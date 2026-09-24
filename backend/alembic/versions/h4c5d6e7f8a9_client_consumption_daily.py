@@ -57,6 +57,29 @@ def upgrade() -> None:
         "ix_client_consumption_daily_day", "client_consumption_daily", ["day"],
     )
 
+    # --- Index BRIN sur device_metrics.collected_at --------------------------
+    # Le calcul d'une journée filtre sur `collected_at` SEUL. Le seul index
+    # existant est `ix_device_metrics_lookup` (device_id, metric_name,
+    # collected_at) : il commence par device_id, donc il ne peut pas servir une
+    # plage de dates tous équipements confondus. Sans index, CHAQUE journée
+    # relirait les 5,9 Go de la table — des heures pour remplir l'historique.
+    #
+    # BRIN et pas B-tree : les relevés sont écrits dans l'ordre du temps, donc
+    # un simple résumé min/max par groupe de blocs suffit à écarter 98 % de la
+    # table. Coût : quelques centaines de Ko, contre ~1,3 Go pour un B-tree sur
+    # 58 M lignes — sur une table qu'on cherche justement à alléger.
+    #
+    # CONCURRENTLY dans un bloc autocommit : cette migration tourne au
+    # démarrage du conteneur backend, et un CREATE INDEX ordinaire verrouille
+    # la table en écriture le temps de la construction — les polls écrivent
+    # dedans toutes les 30 s.
+    with op.get_context().autocommit_block():
+        op.execute(
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
+            "ix_device_metrics_collected_brin ON device_metrics "
+            "USING brin (collected_at) WITH (pages_per_range = 32)"
+        )
+
     # Même réglage d'autovacuum que les autres tables à fort renouvellement :
     # le défaut (20 % de la table morte avant nettoyage) a laissé
     # `lr_metric_samples` et `traffic_dest_stats` gonfler pendant des mois
@@ -71,6 +94,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS ix_device_metrics_collected_brin")
     op.drop_index("ix_client_consumption_daily_day",
                   table_name="client_consumption_daily")
     op.drop_table("client_consumption_daily")

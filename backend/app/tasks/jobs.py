@@ -3143,6 +3143,15 @@ async def device_metrics_retention_job() -> None:
 
         batch = 50_000
         total = 0
+        # Un point d'avancement tous les 1 M de lignes. En regime etabli le job
+        # fait UN lot et n'imprime rien ; c'est la toute premiere passe qui en
+        # a besoin — elle rattrape des mois d'arriere et dure des dizaines de
+        # minutes, pendant lesquelles un journal muet ne se distingue pas d'un
+        # blocage.
+        progress_every = 20
+        passes = 0
+        started_delete = datetime.datetime.now(datetime.UTC)
+
         async with async_session_factory() as session:
             while True:
                 result = await session.execute(
@@ -3163,8 +3172,17 @@ async def device_metrics_retention_job() -> None:
                 await session.commit()
                 deleted = result.rowcount or 0
                 total += deleted
+                passes += 1
                 if deleted < batch:
                     break
+                if passes % progress_every == 0:
+                    logger.info(
+                        "device_metrics retention — %d ligne(s) purgées en "
+                        "%.0f s, ça continue…",
+                        total,
+                        (datetime.datetime.now(datetime.UTC)
+                         - started_delete).total_seconds(),
+                    )
 
         if total:
             logger.info(

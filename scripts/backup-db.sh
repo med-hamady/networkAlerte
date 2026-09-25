@@ -9,7 +9,6 @@
 #
 # L'archive contient :
 #   network_supervisor.dump      pg_dump format custom (-Fc), restaurable par pg_restore
-#   client_consumption_30d.csv   la consommation par client, deja agregee
 #   MANIFEST.txt                 quoi, quand, depuis quel commit, avec quelles exclusions
 #
 # /!\ LE CHIFFREMENT N'EST PAS OPTIONNEL. Le dump porte les colonnes
@@ -36,15 +35,18 @@
 #     eux, graphes et page /traffic repartaient de zero. Contrepartie : l'archive
 #     passe de ~1 Mo a plusieurs centaines de Mo, voire quelques Go.
 #
-#     /!\ CONSEQUENCE A CONNAITRE : la consommation client est calculee en
-#     deltas sur les compteurs d'octets de `device_metrics`, qui n'a AUCUNE
-#     retention. Exclure ses donnees perd donc l'historique BRUT de
-#     consommation. C'est pourquoi le CSV `client_consumption_30d` est joint :
-#     il porte la conso agregee des 30 derniers jours par client, pour quelques
-#     milliers de lignes. Avec 14 archives conservees, les fenetres se
-#     recouvrent largement. Ce qui reste perdu, c'est le detail a la minute
-#     au-dela de 30 jours - s'il doit etre restaurable a l'octet pres, il faut
-#     un dump integral hebdomadaire (voir docs/backup-database.md).
+#     /!\ LA CONSOMMATION CLIENT, ELLE, EST BIEN SAUVEGARDEE - depuis le
+#     2026-09-25 elle vit dans la table `client_consumption_daily` (un total
+#     par client, par compteur et par journee), qui est une VRAIE TABLE donc
+#     dumpee avec ses lignes comme le reste. Auparavant elle n'existait que
+#     sous forme de deltas a recalculer sur `device_metrics`, dont les donnees
+#     sont exclues ici : il fallait joindre un CSV de la matview des 30 jours,
+#     qui a ete supprimee avec elle.
+#
+#     Ce qui reste hors sauvegarde, c'est le detail INFRA-JOURNALIER de la
+#     consommation (« combien entre 14 h et 15 h le 3 mars ») - jamais le total
+#     d'une journee ni d'une periode. Ce detail est de toute facon purge sur la
+#     prod au-dela de `DEVICE_METRICS_RETENTION_DAYS` (7 j).
 #
 # Usage :
 #   ./scripts/backup-db.sh                 # sauvegarde
@@ -176,36 +178,13 @@ dc exec -T postgres pg_dump \
 
 log "  dump : $(du -h "$WORK/network_supervisor.dump" | cut -f1)"
 
-# --- 2. Consommation agregee -------------------------------------------------
-# pg_dump ne transporte JAMAIS le contenu d'une vue materialisee (il n'en dumpe
-# que la definition, les lignes etant censees revenir d'un REFRESH). Or ici le
-# REFRESH relit device_metrics, qu'on vient justement d'exclure : apres
-# restauration la matview reviendrait VIDE. D'ou cet export explicite en CSV,
-# seul porteur de l'historique de consommation dans l'archive.
-log "Export de la consommation agregee (client_consumption_30d)..."
-if dc exec -T postgres psql -U "$PGUSER_" -d "$PGDB_" -v ON_ERROR_STOP=1 \
-        -c "COPY (SELECT * FROM client_consumption_30d) TO STDOUT WITH CSV HEADER" \
-        > "$WORK/client_consumption_30d.csv" 2>"$WORK/.consumption.err"; then
-    log "  $(($(wc -l < "$WORK/client_consumption_30d.csv") - 1)) lignes"
-    CONSO_OK="oui"
-else
-    # Une matview jamais rafraichie fait echouer le COPY. Ce n'est pas une raison
-    # de perdre la sauvegarde de configuration, qui est l'essentiel : on note et
-    # on continue, mais la trace reste dans le manifeste.
-    log "  /!\\ export impossible : $(tr -d '\n' < "$WORK/.consumption.err" | tail -c 200)"
-    echo "EXPORT ECHOUE - voir le log du $STAMP" > "$WORK/client_consumption_30d.csv"
-    CONSO_OK="NON (voir le log)"
-fi
-rm -f "$WORK/.consumption.err"
-
-# --- 3. Manifeste ------------------------------------------------------------
+# --- 2. Manifeste ------------------------------------------------------------
 {
     echo "Sauvegarde Network Supervisor"
     echo "date_utc      : $(date -u '+%Y-%m-%d %H:%M:%SZ')"
     echo "hote          : $(hostname)"
     echo "base          : $PGDB_ (user $PGUSER_)"
     echo "commit        : $(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || echo inconnu)"
-    echo "conso_exportee: $CONSO_OK"
     if [ "$ENCRYPT" -eq 1 ]; then
         echo "chiffrement   : AES-256-CBC / PBKDF2 600k iterations"
     else
@@ -214,12 +193,13 @@ rm -f "$WORK/.consumption.err"
     echo
     echo "Donnees exclues (schema conserve, lignes non - re-generees par les polls) :"
     echo "  device_metrics, power_status_logs, auth_sessions"
-    echo "Historiques INCLUS : lr_metric_samples (courbes), traffic_dest_stats (trafic)"
+    echo "Historiques INCLUS : lr_metric_samples (courbes), traffic_dest_stats (trafic),"
+    echo "                     client_consumption_daily (consommation par journee)"
     echo
     echo "Restauration : voir docs/backup-database.md"
 } > "$WORK/MANIFEST.txt"
 
-# --- 4. Archive + chiffrement ------------------------------------------------
+# --- 3. Archive + chiffrement ------------------------------------------------
 # Ecriture en .part puis renommage : le relais Windows lit ce repertoire, et
 # doit etre incapable de ramasser une archive a moitie ecrite.
 if [ "$ENCRYPT" -eq 1 ]; then
@@ -261,7 +241,7 @@ ln -sfn "$BASENAME.sha256" "$BACKUP_DIR/$LATEST.sha256"
 
 log "OK - $OUT ($(du -h "$OUT" | cut -f1))"
 
-# --- 5a. Copie unique : l'archive precedente disparait -----------------------
+# --- 4a. Copie unique : l'archive precedente disparait -----------------------
 # Seulement MAINTENANT, une fois la nouvelle complete, renommee et son empreinte
 # ecrite : un echec plus haut (pg_dump, disque plein) laisse la precedente en
 # place, et on n'est jamais sans sauvegarde du tout. Emporte aussi l'empreinte
@@ -275,7 +255,7 @@ if [ "$SINGLE_COPY" -eq 1 ]; then
     fi
 fi
 
-# --- 5b. Retention locale ----------------------------------------------------
+# --- 4b. Retention locale ----------------------------------------------------
 # Le cloud garde sa propre profondeur ; ici on ne garde que de quoi restaurer
 # vite sans remplir le disque.
 PURGED="$(find "$BACKUP_DIR" -maxdepth 1 -name 'supervisor-*.tar*' -type f \

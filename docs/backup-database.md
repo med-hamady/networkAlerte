@@ -116,13 +116,17 @@ aucun droit dans le profil d'Administrator). Le transit reste `C:\Backups\_trans
 
 ## 2. Ce qui est sauvegardé, et ce qui ne l'est pas
 
-L'archive `supervisor-<date>.tar.enc` contient trois fichiers :
+L'archive `supervisor-<date>.tar` contient deux fichiers :
 
 | Fichier | Contenu |
 |---|---|
 | `network_supervisor.dump` | `pg_dump` format custom, restaurable par `pg_restore` |
-| `client_consumption_30d.csv` | consommation par client, déjà agrégée |
 | `MANIFEST.txt` | date, hôte, commit git, exclusions |
+
+> Il y en avait trois jusqu'au 2026-09-25 : un `client_consumption_30d.csv`
+> compensait le fait que la consommation n'existait que sous forme de deltas à
+> recalculer sur `device_metrics`, dont les données sont exclues. Elle vit
+> désormais dans la table `client_consumption_daily`, donc dans le dump.
 
 ### Conservé intégralement
 
@@ -159,21 +163,21 @@ passe de ~1 Mo à plusieurs centaines de Mo, voire quelques Go, et le `pg_dump`
 de 05:00 dure plus longtemps. Le dossier de travail est donc dans
 `$BACKUP_DIR/.work.*` (700) et non dans `/tmp`.
 
-### ⚠️ La limite à connaître : la consommation brute
+### ⚠️ La limite à connaître : le détail infra-journalier
 
-La consommation client est calculée **en deltas sur les compteurs d'octets de
-`device_metrics`**, table qui n'a **aucune rétention**. Exclure ses données perd
-donc **l'historique brut de consommation**.
+La consommation client **est sauvegardée** : depuis le 2026-09-25 elle vit dans
+`client_consumption_daily` (un total par client, par compteur et par journée),
+une vraie table, donc dumpée avec ses lignes comme le reste.
 
-`client_consumption_30d.csv` est joint à chaque archive pour compenser : la
-conso agrégée des 30 derniers jours par client et par métrique. Ce qui **reste
-perdu**, c'est le détail à la minute au-delà de 30 jours. La facturation de
-référence étant tenue par le système de paiement tiers, c'est acceptable ; si
-ça change, voir §8.
+Ce qui **reste hors sauvegarde**, c'est le détail **à la minute** — « combien
+entre 14 h et 15 h le 3 mars » — puisque `device_metrics` est dumpée sans ses
+données. Jamais le total d'une journée ni d'une période. Ce détail est de toute
+façon purgé sur la prod au-delà de `DEVICE_METRICS_RETENTION_DAYS` (7 jours).
 
-> ⚠️ Le CSV n'a de sens qu'après le rafraîchissement des vues de consommation
-> (03:00 et 04:00 UTC, `CLIENT_CONSUMPTION_REFRESH_HOUR`) — **d'où la
-> sauvegarde à 05:00 UTC**, jamais avant.
+> ⚠️ **L'ordre des jobs de nuit compte.** Le résumé de la veille est écrit à
+> 02:00 UTC (`CLIENT_CONSUMPTION_DAILY_ROLLUP_HOUR`) — **d'où la sauvegarde à
+> 05:00 UTC**, jamais avant : une archive prise à 01:00 n'aurait pas la
+> journée de la veille.
 
 ---
 
@@ -421,8 +425,9 @@ Les tables exclues reviennent vides et se re-remplissent en quelques minutes.
 `alembic_version` fait partie du dump : si le code déployé est plus récent, le
 backend applique les migrations manquantes à son démarrage.
 
-`client_consumption_30d.csv` s'ouvre tel quel (`device_id`, `metric_name`,
-`bytes`, `samples`, `first_sample_at`) ; `device_id` se recoupe avec `devices`.
+La consommation se relit dans `client_consumption_daily` (`device_id`,
+`metric_name`, `day`, `bytes`, `samples`) ; `device_id` se recoupe avec
+`devices`.
 
 ---
 

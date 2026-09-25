@@ -33,11 +33,20 @@ Performance:
   before 2026-06-02; transferring millions of samples to Python made
   30d/lifetime take 30 s+ → user-visible "Chargement…" stall).
 
-  For the 30d window — the most common page view — a materialized view
-  (`client_consumption_30d`, refreshed every 15 min) pre-computes the
-  aggregate, dropping 30d latency from ~36 s to <100 ms. 24h and 7d
-  windows run the live query (sub-2 s, acceptable). Lifetime also runs
-  live for correctness once retention >30 d is enabled.
+  Toutes les fenetres SAUF 24 h sont servies par le RESUME QUOTIDIEN
+  (`client_consumption_daily`) : des totaux deja calcules, quelques
+  milliers de lignes, plus aucune relecture des releves bruts. Seule la
+  journee en cours repasse en live, et elle seule.
+
+  Les deux matviews (`client_consumption_30d` / `_7d`) ont ete SUPPRIMEES
+  le 2026-09-25 avec leurs deux REFRESH nocturnes : chacun relisait la
+  fenetre entiere de `device_metrics` (>19 min d'E/S, cause de l'incident
+  du 2026-07-20) et surtout exigeait de conserver 30 jours de releves
+  bruts — c'est-a-dire exactement ce que la retention devait purger.
+
+  24 h reste en SQL live sur les releves bruts : c'est une fenetre
+  GLISSANTE a la seconde, que le resume — aligne sur les journees — ne
+  peut pas rendre. C'est aussi ce qui fixe le plancher de la retention.
 
 The site → rocket → client roll-up (`get_clients_consumption`) is a cheap
 in-Python reshape over ~one row per LR — deliberately NOT pushed into SQL.
@@ -72,8 +81,7 @@ _MAX_PLAUSIBLE_DELTA_BYTES = 8 * 1024**3
 
 _AIRMAX_LR_VARIANTS = {"litebeam_5ac", "litebeam_m5"}
 
-# Counter metrics queried, in stable order. Must match the matview definition
-# in migration p7b8c9d0e1f2 — a divergence makes 30d/lifetime under-report.
+# Counter metrics queried, in stable order.
 _COUNTER_METRICS = (
     "peer_tx_bytes",
     "peer_rx_bytes",
@@ -81,15 +89,39 @@ _COUNTER_METRICS = (
     "radio_tx_bytes",
 )
 
+# Alias PUBLIC, lu par la retention sur `device_metrics`
+# (`jobs.device_metrics_retention_job`).
+#
+# /!\ C'est la liste des seules metriques que la purge a le droit d'effacer.
+# Toutes les autres sont ECRASEES EN PLACE (une ligne par (device, metric),
+# cf. `persist_device_metrics`) : les purger sur une date ferait perdre a un
+# equipement qui n'est plus interroge sa derniere valeur connue, donc le
+# ferait disparaitre de `/lr-health`. Y ajouter une cle sans se poser cette
+# question est le moyen le plus simple de perdre des donnees en silence.
+COUNTER_METRICS = _COUNTER_METRICS
+
 # Bucket label for LRs whose parent Rocket has no location, or no parent at all.
 # Must match the frontend SITE_FALLBACK so deep-links stay consistent.
 _SITE_FALLBACK = "Sans site"
 
+# Les seules fenetres encore GLISSANTES. 7 j et 30 j n'y sont plus depuis le
+# 2026-09-25 : elles sont alignees sur les journees (cf. _CALENDAR_PERIOD_DAYS).
 _PERIOD_TO_TIMEDELTA: dict[str, datetime.timedelta] = {
     "24h": datetime.timedelta(hours=24),
-    "7d": datetime.timedelta(days=7),
-    "30d": datetime.timedelta(days=30),
 }
+
+# Fenetres servies par le RESUME QUOTIDIEN, donc alignees sur des JOURNEES
+# ENTIERES UTC : « 7 j » = aujourd'hui + les 6 journees precedentes.
+#
+# /!\ Ce n'est plus tout a fait le glissant a la seconde que rendaient les
+# matviews : le bord de la fenetre saute a minuit au lieu d'avancer en
+# continu. C'est le prix a payer pour ne plus conserver 30 jours de releves
+# bruts, et l'ecart ne porte que sur la journee de bord.
+#
+# /!\ N-1 et pas N : le resume rend des journees ENTIERES, donc partir de
+# `aujourd'hui - 7 jours` couvrirait 8 journees calendaires et surestimerait
+# le total d'une journee complete.
+_CALENDAR_PERIOD_DAYS: dict[str, int] = {"7d": 7, "30d": 30}
 
 # Live SQL: window function + CASE replicates _sum_positive_deltas in Postgres.
 # Keeps transfer at ~272 rows (68 LRs × 4 metrics) instead of millions.
@@ -158,23 +190,6 @@ _LIVE_AGGREGATE_RANGE_SQL = text(
         )
     ) deltas
     GROUP BY device_id, metric_name
-    """
-)
-
-# Matview lookup: same schema as the live query above, but pre-computed.
-# Keep the column list aligned with the matview definition. One matview per
-# pre-computed window — the SUM in each can't be subtracted to a narrower
-# range, so 7d and 30d need separate objects.
-_MATVIEW_30D_SQL = text(
-    """
-    SELECT device_id, metric_name, bytes, samples, first_sample_at
-    FROM client_consumption_30d
-    """
-)
-_MATVIEW_7D_SQL = text(
-    """
-    SELECT device_id, metric_name, bytes, samples, first_sample_at
-    FROM client_consumption_7d
     """
 )
 
@@ -371,6 +386,24 @@ async def _aggregate_via_daily(
     ]
 
 
+def calendar_period_start(
+    now: datetime.datetime, period: str
+) -> datetime.datetime:
+    """Debut (UTC) d'une fenetre alignee sur les journees, pour 7 j / 30 j.
+
+    Bornee au DEBUT d'une journee : c'est ce que le resume quotidien sait
+    rendre, et `period_start` doit annoncer la fenetre reellement totalisee —
+    sinon la page afficherait une borne que le chiffre ne respecte pas.
+
+    N-1 et pas N : le resume rend des journees ENTIERES, donc partir de
+    `aujourd'hui - 7 jours` couvrirait 8 journees calendaires et surestimerait
+    le total d'une journee complete.
+    """
+    return datetime.datetime.combine(
+        now.date(), datetime.time.min, tzinfo=datetime.UTC
+    ) - datetime.timedelta(days=_CALENDAR_PERIOD_DAYS[period] - 1)
+
+
 async def get_clients_consumption(
     db: AsyncSession,
     period: Period,
@@ -404,6 +437,12 @@ async def get_clients_consumption(
         upper = None
         period_end = now
         effective_period = period
+    elif period in _CALENDAR_PERIOD_DAYS:
+        cutoff = calendar_period_start(now, period)
+        query_lower_bound = cutoff
+        upper = None
+        period_end = now
+        effective_period = period
     else:
         cutoff = now - _PERIOD_TO_TIMEDELTA[period]
         query_lower_bound = cutoff
@@ -422,16 +461,17 @@ async def get_clients_consumption(
             sites=[],
         )
 
-    # 7d and 30d are served from per-window matviews (<100 ms). 24h runs
-    # live SQL (~2 s — acceptable for the default tab, and gives a true
-    # rolling 24 h window).
+    # TOUTES les fenêtres sauf 24 h passent par le RÉSUMÉ QUOTIDIEN : plage de
+    # dates et « depuis toujours » depuis le 2026-09-24, puis 7 j et 30 j le
+    # 2026-09-25, à la suppression de leurs matviews. Chacune relit des totaux
+    # déjà calculés et ne repasse en live que sur la journée en cours.
     #
-    # Une plage de dates et « depuis toujours » passent par le RÉSUMÉ
-    # QUOTIDIEN depuis le 2026-09-24 : ce sont les deux seules vues qui
-    # remontaient au-delà de 30 jours, donc les deux seules qui obligeaient à
-    # conserver indéfiniment les relevés bruts. Elles relisent maintenant des
-    # totaux déjà calculés, et ne repassent en live que sur la journée en
-    # cours. Voir models/client_consumption_daily.py.
+    # ⚠️ C'est ce qui BORNE la rétention sur `device_metrics` : tant qu'une vue
+    # relit plusieurs semaines de relevés bruts, on ne peut pas les purger.
+    # Ne pas rebrancher une fenêtre sur le brut sans revoir la rétention.
+    #
+    # 24 h reste en live : fenêtre glissante à la seconde (~2 s, acceptable
+    # pour l'onglet par défaut). Voir models/client_consumption_daily.py.
     if is_custom:
         # Une plage de dates porte sur des JOURNÉES ENTIÈRES UTC : elle
         # s'aligne exactement sur le résumé quotidien, qui remplace ici une
@@ -445,10 +485,12 @@ async def get_clients_consumption(
         agg_rows = await _aggregate_via_daily(
             db, [lr.id for lr in lrs], query_lower_bound, now,
         )
-    elif period == "30d":
-        agg_rows = (await db.execute(_MATVIEW_30D_SQL)).all()
-    elif period == "7d":
-        agg_rows = (await db.execute(_MATVIEW_7D_SQL)).all()
+    elif period in _CALENDAR_PERIOD_DAYS:
+        # Les journées écoulées viennent du résumé, la journée en cours du
+        # live — le découpage est fait par `_aggregate_via_daily`.
+        agg_rows = await _aggregate_via_daily(
+            db, [lr.id for lr in lrs], query_lower_bound, now,
+        )
     else:
         lr_ids = [lr.id for lr in lrs]
         agg_rows = (

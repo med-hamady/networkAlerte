@@ -1036,16 +1036,23 @@ ou une **plage de dates libre**, agrégé site → Rocket → client.
 - `backend/app/services/consumption_service.py` — `_sum_positive_deltas`, pattern SQL `LAG()`
 - `backend/app/api/endpoints/clients.py` → `GET /clients/consumption`
 - `backend/app/schemas/clients.py`
-- `backend/app/tasks/jobs.py` → `client_consumption_matview_refresh_job` (30 j), `client_consumption_7d_refresh_job`
+- `backend/app/tasks/jobs.py` → `client_consumption_daily_rollup_job` (le résumé de la veille),
+  `device_metrics_retention_job` (la purge qu'il autorise)
+- `backend/app/models/client_consumption_daily.py` — le résumé : 1 ligne par (équipement, compteur, jour)
 - `frontend/app/clients/page.tsx`
-- Les matviews `client_consumption_30d` / `_7d` sont définies dans les migrations
 
 **À savoir**
-- ⚠️ **Ne PAS repasser le refresh en intervalle court.** Il relit `device_metrics` (6,8 Go,
-  20 M lignes) et prend **> 19 min** : planifié toutes les 15 min, il tournait **en
-  permanence**, saturait l'E/S, faisait ramper la sonde SSH (~40 min/tour) et mettait
-  `ltu_api_poll` à **0/60 Rockets** (incident du 2026-07-20). Il est **quotidien** (03:00),
-  le 7 j suivant à +1 h pour ne pas se disputer le disque.
+- ⚠️ **Les deux matviews (`client_consumption_30d` / `_7d`) ont été SUPPRIMÉES le
+  2026-09-25** (migration `i5d6e7f8a9b0`). Chaque REFRESH relisait `device_metrics` sur
+  toute sa fenêtre (**> 19 min** ; planifié toutes les 15 min il tournait **en permanence**,
+  saturait l'E/S, faisait ramper la sonde SSH à ~40 min/tour et mettait `ltu_api_poll` à
+  **0/60 Rockets** — incident du 2026-07-20), et surtout il **interdisait toute rétention** :
+  purger au-delà de 7 j aurait fait afficher une consommation de 30 j **calculée sur 7**.
+- Toutes les fenêtres **sauf 24 h** sont servies par le **résumé quotidien**
+  (`client_consumption_daily`) recousu avec la journée en cours. ⚠️ Elles sont donc
+  **alignées sur les journées** (« 7 j » = aujourd'hui + les 6 précédentes), plus glissantes
+  à la seconde. ⚠️ **Ne rebrancher aucune fenêtre sur les relevés bruts** sans revoir
+  `DEVICE_METRICS_RETENTION_DAYS` : c'est la lecture la plus profonde qui fixe le plancher.
 - Les compteurs 32 bits des airMAX rebouclent à ~4 Go : absorbé par la **somme des deltas
   positifs** (un cycle perdu par rebouclage, borné).
 - ⚠️ **Il n'y a plus de rétention sur `device_metrics`** : les compteurs de consommation

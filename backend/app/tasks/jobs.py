@@ -3048,41 +3048,120 @@ async def _apply_lr_topology(session, dev: Lr, mode: str | None, source_msg: str
         )
 
 
-async def client_consumption_matview_refresh_job() -> None:
-    """Refresh the `client_consumption_30d` materialized view.
+# Plancher de la retention sur `device_metrics`, en jours. La fenetre 24 h de
+# `/clients` lit encore les releves bruts et GLISSE : a 00 h 05 elle redescend
+# a 00 h 05 la veille. Deux jours couvrent ce besoin quoi qu'on regle dans
+# l'env — un reglage a 0 ne doit pas pouvoir vider l'onglet par defaut.
+_RETENTION_FLOOR_DAYS = 2
 
-    REFRESH MATERIALIZED VIEW CONCURRENTLY so readers are never blocked;
-    it must run outside an explicit transaction → AUTOCOMMIT on the engine
-    connection. Pre-computes the 30-day byte-delta aggregate used by
-    /clients/consumption?period=30d (was ~36 s of seq scan + Python delta
-    loop in prod 2026-06-02, target <100 ms after).
 
-    The view is bounded to 30 days at REFRESH time via `now() - interval
-    '30 days'` — the sliding window moves forward by 15 min each refresh.
+@_timed_job
+async def device_metrics_retention_job() -> None:
+    """Purge les RELEVES BRUTS de compteurs d'octets deja totalises.
+
+    `device_metrics` etait la seule table du projet sans aucune retention
+    (58,4 M lignes / 5,9 Go au 2026-09-24) parce que la consommation se
+    CALCULE par differences successives sur ses compteurs cumules : repondre
+    a « combien ce client a-t-il consomme en mars » obligeait a conserver
+    tous les releves de mars. Le resume quotidien
+    (`client_consumption_daily`) fait cette soustraction une fois pour
+    toutes, ce qui libere enfin les releves bruts.
+
+    /!\\ NE PURGE QUE LES 4 COMPTEURS D'OCTETS. Une purge naive
+    `WHERE collected_at < cutoff` effacerait aussi les metriques ECRASEES
+    EN PLACE (signal, latence, capacite… : une seule ligne par
+    (device, metric), cf. `persist_device_metrics`). Un equipement qui n'est
+    plus interroge depuis des mois perdrait alors sa derniere valeur connue
+    et disparaitrait de `/lr-health` — en silence, sans qu'aucune alerte ne
+    le signale.
+
+    /!\\ NE PURGE JAMAIS AU-DELA DE CE QUI EST RESUME. Le seuil est ramene
+    au lendemain de la derniere journee totalisee : si le job de nuit est en
+    echec depuis trois jours, ces trois jours restent intacts (et la page
+    continue de les calculer en live). Resume VIDE = on ne purge RIEN.
+
+    /!\\ PLANCHER DE 2 JOURS. La fenetre 24 h de `/clients` est la seule qui
+    lise encore le brut, et elle GLISSE : a 00 h 05 elle redescend a 00 h 05
+    la veille. Une retention plus courte l'amputerait.
+
+    Suppression PAR LOTS commites, jamais une transaction unique sur des
+    millions de lignes — meme forme que `traffic_stats_retention_job`.
     """
     from sqlalchemy import text
 
-    from app.db.session import engine
+    from app.services import consumption_service
 
-    started = datetime.datetime.now(datetime.UTC)
+    settings = get_settings()
+    if not settings.device_metrics_retention_enabled:
+        return
+
+    days = max(settings.device_metrics_retention_days, _RETENTION_FLOOR_DAYS)
+    now = datetime.datetime.now(datetime.UTC)
+    cutoff = now - datetime.timedelta(days=days)
+
     try:
-        async with engine.connect() as conn:
-            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
-            await conn.execute(
-                text("REFRESH MATERIALIZED VIEW CONCURRENTLY client_consumption_30d")
-            )
-        elapsed = (datetime.datetime.now(datetime.UTC) - started).total_seconds()
-        logger.info("client_consumption matview refresh — done in %.2f s", elapsed)
-        if elapsed > 60:
+        async with async_session_factory() as session:
+            rolled = await consumption_service.last_rolled_day(session)
+
+        if rolled is None:
             logger.warning(
-                "client_consumption matview refresh took %.1f s (> 60 s) — "
-                "device_metrics is large, plan retention.",
-                elapsed,
+                "device_metrics retention — resume quotidien VIDE, aucune purge "
+                "(remplir l'historique avec scripts/backfill_consumption_daily.py)",
             )
+            return
+
+        # Lendemain 00:00 de la derniere journee totalisee : tout ce qui est
+        # avant a ete compte dans le resume, tout ce qui est apres ne l'est
+        # pas encore.
+        rolled_bound = datetime.datetime.combine(
+            rolled + datetime.timedelta(days=1),
+            datetime.time.min, tzinfo=datetime.UTC,
+        )
+        if rolled_bound < cutoff:
+            logger.warning(
+                "device_metrics retention — le resume s'arrete au %s, purge "
+                "limitee a cette date au lieu de %s (job de nuit en retard ?)",
+                rolled, cutoff.date(),
+            )
+            cutoff = rolled_bound
+
+        batch = 50_000
+        total = 0
+        async with async_session_factory() as session:
+            while True:
+                result = await session.execute(
+                    text(
+                        "DELETE FROM device_metrics WHERE id IN ("
+                        "  SELECT id FROM device_metrics"
+                        "  WHERE collected_at < :cutoff"
+                        "    AND metric_name = ANY(CAST(:metric_names AS text[]))"
+                        "  LIMIT :batch"
+                        ")"
+                    ),
+                    {
+                        "cutoff": cutoff,
+                        "metric_names": list(consumption_service.COUNTER_METRICS),
+                        "batch": batch,
+                    },
+                )
+                await session.commit()
+                deleted = result.rowcount or 0
+                total += deleted
+                if deleted < batch:
+                    break
+
+        if total:
+            logger.info(
+                "device_metrics retention — %d relevé(s) de compteurs purgés "
+                "(antérieurs au %s, %d jour(s) conservés)",
+                total, cutoff.isoformat(timespec="seconds"), days,
+            )
+        else:
+            logger.debug("device_metrics retention — rien à purger")
     except Exception:
         logger.exception(
-            "client_consumption matview refresh failed — page will keep "
-            "serving the previous snapshot until next attempt",
+            "device_metrics retention job failed — les relevés restent en "
+            "place, la purge reprendra au prochain passage",
         )
 
 
@@ -3157,40 +3236,6 @@ async def client_consumption_daily_rollup_job() -> None:
         logger.exception(
             "client_consumption daily rollup failed — les relevés bruts restent "
             "en place, la journee sera rattrapee au prochain passage",
-        )
-
-
-async def client_consumption_7d_refresh_job() -> None:
-    """Refresh the `client_consumption_7d` materialized view.
-
-    Same pattern as `client_consumption_matview_refresh_job` but for the
-    7-day window. Separate matview rather than slicing the 30d one because
-    the 30d aggregate is a single SUM that cannot be subtracted down to a
-    narrower window. Cheap (~4 s of refresh) and unlocks the 7d tab.
-    """
-    from sqlalchemy import text
-
-    from app.db.session import engine
-
-    started = datetime.datetime.now(datetime.UTC)
-    try:
-        async with engine.connect() as conn:
-            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
-            await conn.execute(
-                text("REFRESH MATERIALIZED VIEW CONCURRENTLY client_consumption_7d")
-            )
-        elapsed = (datetime.datetime.now(datetime.UTC) - started).total_seconds()
-        logger.info("client_consumption_7d matview refresh — done in %.2f s", elapsed)
-        if elapsed > 60:
-            logger.warning(
-                "client_consumption_7d matview refresh took %.1f s (> 60 s) — "
-                "device_metrics is large, plan retention.",
-                elapsed,
-            )
-    except Exception:
-        logger.exception(
-            "client_consumption_7d matview refresh failed — page will keep "
-            "serving the previous snapshot until next attempt",
         )
 
 
@@ -3821,8 +3866,8 @@ async def lr_plan_sync_job() -> None:
 _ALWAYS_JOB_IDS = {"heartbeat"}
 _FAST_JOB_IDS = {
     "infra_ping", "warning_digest", "flap_detection",
-    "network_latency_aggregate", "client_consumption_matview_refresh",
-    "client_consumption_7d_refresh", "client_consumption_daily_rollup",
+    "network_latency_aggregate", "client_consumption_daily_rollup",
+    "device_metrics_retention",
     "traffic_stats_retention", "lr_latency_retention", "unverified_ip_cleanup",
     "security_anomaly_detection", "rocket_saturation_report",
     "site_infra_report",
@@ -3989,37 +4034,16 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         misfire_grace_time=3600,
     )
     scheduler.add_job(
-        client_consumption_matview_refresh_job,
-        # CRON quotidien, pas un intervalle. Diagnostic prod 2026-07-20 : ce
-        # REFRESH doit relire device_metrics (6,8 Go / 20 M lignes) et prenait
-        # > 19 min, alors qu'il etait planifie toutes les 15 min — il tournait
-        # donc EN PERMANENCE ("skipped: maximum instances" a chaque tick) et
-        # saturait l'E/S disque. Degats collateraux : la phase 2 de la sonde LR
-        # (800 commits fsync) passait a ~40 min/tour, et ltu_api_poll rendait
-        # "0/60 Rocket(s)". Un cumul sur 30 jours bouge de ~0,03 % en 15 min :
-        # ce recalcul 96x/jour ne servait a rien.
-        #
-        # Cron et pas interval=1440 : un intervalle se cale sur le dernier
-        # redemarrage du conteneur, donc la fenetre de 19 min d'E/S tomberait a
-        # une heure imprevisible, potentiellement en pleine journee.
-        trigger="cron", hour=settings.client_consumption_refresh_hour, minute=0,
-        timezone="UTC",
-        id="client_consumption_matview_refresh",
-        name="Client consumption matview refresh (30-day byte deltas) — daily",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=3600,
-    )
-    scheduler.add_job(
-        client_consumption_7d_refresh_job,
-        # Meme cron, decale d'une heure : les deux REFRESH lisent la meme table
-        # et se disputeraient le disque s'ils partaient ensemble. Celui-ci ne
-        # coute que ~75 s (fenetre 7 j), mais autant ne pas les superposer.
-        trigger="cron", hour=(settings.client_consumption_refresh_hour + 1) % 24,
-        minute=0, timezone="UTC",
-        id="client_consumption_7d_refresh",
-        name="Client consumption matview refresh (7-day byte deltas) — daily",
+        device_metrics_retention_job,
+        # Intervalle et pas cron : la purge n'a aucune heure privilegiee (elle
+        # est bornee par lots et ne bloque personne), et un passage rate est
+        # rattrape au suivant. Elle se garde elle-meme de purger au-dela de ce
+        # que le resume quotidien a totalise, donc l'ordre avec le rollup de
+        # 2 h n'a pas besoin d'etre garanti par le planificateur.
+        trigger="interval",
+        minutes=settings.device_metrics_retention_interval_minutes,
+        id="device_metrics_retention",
+        name="Rétention device_metrics (relevés de compteurs déjà totalisés)",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

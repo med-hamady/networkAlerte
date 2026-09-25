@@ -979,18 +979,12 @@ class Settings(BaseSettings):
     # Per-IP cooldown — a sustained attack must not fire one alert per check.
     audit_anomaly_alert_cooldown_minutes: int = 30
 
-    # Client-consumption materialized view refresh interval (minutes). The
-    # view `client_consumption_30d` pre-aggregates 30-day byte deltas so
-    # /clients/consumption?period=30d serves <100 ms instead of ~36 s.
-    # Same 15-min cadence as lr-health: cumulative byte deltas don't change
-    # perceptibly in 15 min for a daily/weekly/monthly usage report.
-    # Heure UTC du recalcul QUOTIDIEN des matviews de consommation (30 j a cette
-    # heure, 7 j une heure plus tard pour ne pas se disputer le disque). 3 h UTC
-    # = creux d'activite en Mauritanie (GMT). Voir register_jobs() pour pourquoi
-    # ce n'est plus un intervalle.
+    # LEGACY — les deux matviews de consommation (client_consumption_30d / _7d)
+    # et leurs REFRESH ont ete SUPPRIMES le 2026-09-25 : les fenetres 7 j et
+    # 30 j sont servies par le resume quotidien. Ces reglages ne pilotent plus
+    # rien ; ils restent declares pour qu'un .env qui les porte encore ne fasse
+    # pas echouer le demarrage (pydantic-settings rejette les cles inconnues).
     client_consumption_refresh_hour: int = 3
-    # Legacy — plus utilises depuis le passage en cron quotidien. Conserves pour
-    # ne pas casser un .env qui les definit encore.
     client_consumption_matview_refresh_interval_minutes: int = 15
 
     # Heure UTC du RESUME QUOTIDIEN de consommation (client_consumption_daily) :
@@ -1004,18 +998,28 @@ class Settings(BaseSettings):
     # avec scripts/backfill_consumption_daily.py, pas ici.
     client_consumption_daily_max_catchup_days: int = 7
 
-    # Same idea for the 7-day window (`client_consumption_7d`). The 7d
-    # period was the second-slowest tab (~13 s of seq scan + external sort
-    # on the live SQL path) — separate matview because the 30d aggregate
-    # can't be subtracted down to 7d.
+    # LEGACY (meme raison que ci-dessus).
     client_consumption_7d_refresh_interval_minutes: int = 15
 
-    # device_metrics retention was REMOVED (no automatic purge). Only
-    # HISTORY_METRICS rows (byte counters) keep a time series; everything else
-    # is collapsed to one latest row per metric by persist_device_metrics, so
-    # it never accumulates. The byte-counter history is kept indefinitely so
-    # the /clients custom date range can look arbitrarily far back. Trade-off:
-    # device_metrics grows without bound — keep an eye on disk / autovacuum.
+    # RETENTION sur device_metrics — active depuis le 2026-09-25, apres que le
+    # resume quotidien (client_consumption_daily) a repris toute la
+    # consommation. C'etait la SEULE table du projet qui grossissait sans fin
+    # (58,4 M lignes / 5,9 Go au 2026-09-24), parce qu'une consommation se
+    # CALCULE par differences successives : la purger avant le resume aurait
+    # efface l'historique pour de bon.
+    #
+    # 7 jours : la seule vue qui lise encore les releves bruts est la fenetre
+    # 24 h de /clients, plus la journee en cours des autres. Le reste est une
+    # marge, pour qu'une panne de plusieurs nuits du job de nuit n'entame rien
+    # (et la purge se borne de toute facon a ce qui est deja totalise).
+    #
+    # /!\ La purge ne touche QUE les 4 compteurs d'octets
+    # (consumption_service.COUNTER_METRICS) : toutes les autres metriques sont
+    # ECRASEES EN PLACE, donc les purger sur une date ferait perdre sa derniere
+    # valeur connue a un equipement qui n'est plus interroge.
+    device_metrics_retention_enabled: bool = True
+    device_metrics_retention_days: int = 7
+    device_metrics_retention_interval_minutes: int = 360
 
     # Equipment flapping — flap_detection_job counts the availability incidents
     # (rocket_down / switch_down / device_unreachable / uisp_power_unreachable /

@@ -433,8 +433,8 @@ def parse_airos_channel_width_mhz(raw: dict) -> float | None:
 
     airMAX exposes it as ``wireless.chanbw`` (e.g. 10/20/40). The newer
     ``wireless.chwidth`` key is None on the Rocket firmware seen in the field,
-    so ``chanbw`` is the source of truth. Used by the rocket_client_overload
-    rule to pick the per-width client ceiling for airMAX base stations.
+    so ``chanbw`` is the source of truth. Used by /capacity
+    to pick the per-width client ceiling for airMAX base stations.
     """
     return _float(_nested(raw, "wireless", "chanbw"))
 

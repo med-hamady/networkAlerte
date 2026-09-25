@@ -138,7 +138,7 @@ class Rocket(Device):
     # Rockets (Litebeam peers). Polling routines branch on this.
     radio_tech: Mapped[str] = mapped_column(String(20), nullable=False)
 
-    # Manual override of the rocket_client_overload ceiling. When set (not None)
+    # Manual override of the /capacity client ceiling. When set (not None)
     # it REPLACES the per-family/channel-width formula entirely — the operator
     # pins the maximum client count this AP may serve before it is flagged
     # saturated. NULL = use the auto formula (_rocket_overload_threshold). Useful

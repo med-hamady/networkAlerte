@@ -110,28 +110,6 @@ async def test_lr_bridge_misconfig_suppressed(db, patch_notif):
     assert row is None
 
 
-async def test_rocket_overload_suppressed(db, patch_notif):
-    """rocket_client_overload n'est plus un incident (géré par /capacity, 2026-06-25)."""
-    from app.services import incident_service
-
-    rocket = await _make_rocket(db)
-
-    incident, is_new = await incident_service.open_incident(
-        db, rocket,
-        title="Rocket saturé",
-        severity="critical",
-        alert_type="rocket_client_overload",
-    )
-    await db.flush()
-
-    assert is_new is False
-    assert incident is None
-    row = (
-        await db.execute(select(Incident).where(Incident.device_id == rocket.id))
-    ).scalar_one_or_none()
-    assert row is None
-
-
 # ---------------------------------------------------------------------------
 # Famille C — Signal
 # ---------------------------------------------------------------------------

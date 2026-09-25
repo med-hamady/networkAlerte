@@ -2,10 +2,9 @@
 
 A base-station Rocket is **saturated** when its number of installed (provisioned)
 clients has reached or passed its capacity ceiling — i.e. ``current_clients >=
-max_clients`` — which is exactly the condition that opens the
-``rocket_client_overload`` incident. We reuse :func:`network_capacity_service.
+max_clients``. We reuse :func:`network_capacity_service.
 get_network_capacity` as the single source of truth for both numbers (installed
-roster from ``lrs``, ceiling from the ``rocket_client_overload`` formula /
+roster from ``lrs``, ceiling from the per-family/width formula /
 override), then render the saturated subset as a one-page-or-more PDF table for
 the daily WhatsApp document report.
 

@@ -332,7 +332,6 @@ class TestRuleRegistry:
         assert "Eth0DownRule" in rule_types
         assert "CPEDisconnectedRule" in rule_types
         assert "HighRxTxErrorsRule" in rule_types
-        assert "RocketClientOverloadRule" in rule_types
         # Et surtout PAS la qualité par liaison : elle appartient au LR.
         assert not rule_types & {
             "SignalLowRule", "CINRLowRule", "CCQLowRule", "RadioLinkDegradedRule",

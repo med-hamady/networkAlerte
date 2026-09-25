@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.models.alert_state import AlertState
-from app.models.device import Device, Lr, Rocket
+from app.models.device import Device, Lr
 from app.models.incident import Incident
 from app.services import incident_service, notification_service
 from app.services.alert_rules import AlertEvalResult, get_failure_threshold, get_rules_for_device
@@ -254,16 +254,6 @@ async def _evaluate_rules(
     if isinstance(device, Lr) and "model_variant" not in metrics:
         metrics = dict(metrics)
         metrics["model_variant"] = device.model_variant
-    # For base-station Rockets, surface the radio family so the per-family
-    # rocket_client_overload rule picks airMAX vs LTU client ceilings.
-    if device.rule_category in ("ltu_rocket", "airmax_rocket") and "is_airmax_rocket" not in metrics:
-        metrics = dict(metrics)
-        metrics["is_airmax_rocket"] = device.rule_category == "airmax_rocket"
-    # Surface the manual client-capacity ceiling (operator-set) so the overload
-    # rule uses it instead of the per-family/width formula. None = auto formula.
-    if isinstance(device, Rocket) and "max_clients_override" not in metrics:
-        metrics = dict(metrics)
-        metrics["max_clients_override"] = device.max_clients_override
 
     # Types ayant un incident OUVERT pour ce device. Copie SUIVIE au fil des
     # règles ; celle injectée dans `metrics` reste l'instantané que lisent les

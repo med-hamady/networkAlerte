@@ -2,15 +2,16 @@
 
 For every base-station Rocket we know two numbers:
 
-  - **max clients** : the ceiling that opens the ``rocket_client_overload``
-    incident, computed by :func:`alert_rules._rocket_overload_threshold`
+  - **max clients** : the Rocket's client ceiling, computed by :func:`alert_rules._rocket_overload_threshold`
     (per-family base at 10 MHz + step per +10 MHz of channel width).
   - **installed clients** : how many subscriber LRs UISP lists on this Rocket —
     the count of ``lrs`` rows whose UISP-reported parent AP (``uisp_ap_name``,
     ``attributes.apDevice.name``, refreshed every sync by
     ``sync_uisp_stations``) matches the Rocket name. This is the
     UISP-authoritative roster, so it does NOT drop when a client's antenna goes
-    down. **It is deliberately NOT the discovery ``rocket_id``**: that column is
+    down — **minus the out-of-supervision ones** (no IP and UISP silent for
+    ``OUT_OF_SUPERVISION_DAYS``), reported apart in
+    ``out_of_supervision_clients``. **It is deliberately NOT the discovery ``rocket_id``**: that column is
     owned by radio discovery, which keeps a client pinned to its old Rocket
     until it is re-seen as a peer elsewhere — so a roamed/removed client lingers
     on ``rocket_id`` (UISP moves it away instantly) and the ceiling count would
@@ -35,9 +36,10 @@ UISP reports a width for every AP).
 
 from __future__ import annotations
 
+import datetime
 from collections import defaultdict
 
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, not_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -79,10 +81,32 @@ async def _fetch_latest_capacity_metrics(
     return out
 
 
+def _out_of_supervision_clause():
+    """« Hors supervision » en SQL — la MÊME règle que
+    ``schemas.device.is_out_of_supervision`` et ``fn_access_clients`` : sans IP
+    (hors du sweep de ping) ET le contrôleur UISP ne l'a pas vu depuis
+    ``OUT_OF_SUPERVISION_DAYS`` (``uisp_last_seen`` nul = silence)."""
+    horizon = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
+        days=get_settings().out_of_supervision_days
+    )
+    return and_(
+        Lr.ip_address.is_(None),
+        or_(Lr.uisp_last_seen.is_(None), Lr.uisp_last_seen < horizon),
+    )
+
+
 async def _fetch_installed_client_counts(
     db: AsyncSession, name_to_id: dict[str, int]
-) -> dict[int, int]:
-    """Number of subscriber LRs UISP lists on each Rocket — ``{rocket_id: n}``.
+) -> tuple[dict[int, int], dict[int, int]]:
+    """Number of subscriber LRs UISP lists on each Rocket, split in two —
+    ``({rocket_id: supervised}, {rocket_id: out_of_supervision})``.
+
+    ⚠️ Only the SUPERVISED ones count against the ceiling. UISP keeps listing
+    a client whose antenna nobody has heard of for months (no IP, UISP silent
+    since ``OUT_OF_SUPERVISION_DAYS``) : counting it would declare a Rocket
+    saturated on subscribers that no longer occupy a slot on it. They are
+    returned separately so the page can say how many were excluded, instead
+    of making them vanish silently.
 
     Counts ``lrs`` rows by their UISP-reported parent AP (``uisp_ap_name``,
     refreshed every sync by ``sync_uisp_stations``), mapped to the Rocket by
@@ -95,19 +119,26 @@ async def _fetch_installed_client_counts(
     or decommissioned clients (the sync never deletes) linger there and inflate
     the count — while UISP moves them off ``uisp_ap_name`` immediately. LRs
     whose ``uisp_ap_name`` is NULL or names no known Rocket are skipped."""
+    oos = _out_of_supervision_clause()
     rows = (
         await db.execute(
-            select(Lr.uisp_ap_name, func.count())
+            select(
+                Lr.uisp_ap_name,
+                func.count().filter(not_(oos)),
+                func.count().filter(oos),
+            )
             .where(Lr.uisp_ap_name.isnot(None))
             .group_by(Lr.uisp_ap_name)
         )
     ).all()
-    out: dict[int, int] = {}
-    for ap_name, count in rows:
+    supervised: dict[int, int] = {}
+    excluded: dict[int, int] = {}
+    for ap_name, n_supervised, n_excluded in rows:
         rocket_id = name_to_id.get(ap_name)
         if rocket_id is not None:
-            out[rocket_id] = out.get(rocket_id, 0) + count
-    return out
+            supervised[rocket_id] = supervised.get(rocket_id, 0) + n_supervised
+            excluded[rocket_id] = excluded.get(rocket_id, 0) + n_excluded
+    return supervised, excluded
 
 
 def _empty_bucket() -> dict[str, int]:
@@ -147,7 +178,9 @@ async def get_network_capacity(db: AsyncSession) -> dict:
     # resolve it back to Rocket ids via the name→id map. Names come from UISP for
     # both sides (Rocket + station `apDevice`) so they converge each sync.
     name_to_id = {r.name: r.id for r in rockets}
-    installed = await _fetch_installed_client_counts(db, name_to_id)
+    installed, out_of_supervision = await _fetch_installed_client_counts(
+        db, name_to_id
+    )
 
     families = {"ltu": _empty_bucket(), "airmax": _empty_bucket()}
     sites: dict[str, dict] = {}
@@ -189,6 +222,9 @@ async def get_network_capacity(db: AsyncSession) -> dict:
                 "name": rocket.name,
                 "family": family,
                 "current_clients": current,
+                # Listés par UISP sur ce Rocket mais hors supervision → exclus
+                # de `current_clients` (donc de la saturation), nommés à part.
+                "out_of_supervision_clients": out_of_supervision.get(rocket.id, 0),
                 "max_clients": max_clients,
                 "max_clients_auto": max_clients_auto,
                 "max_clients_override": override,

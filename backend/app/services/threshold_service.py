@@ -193,10 +193,9 @@ THRESHOLD_SCHEMA: dict[str, dict[str, Any]] = {
         "max": 12,
         "step": 1,
     },
-    # Surcharge clients par Rocket (rocket_client_overload) — seuil = base par
-    # famille radio à 10 MHz, +`per_10mhz` clients par tranche de +10 MHz de
-    # largeur de canal. Incident critique quand le nombre de clients connectés
-    # ATTEINT le seuil calculé.
+    # Capacité max d'un Rocket (/capacity + rapport PDF des saturés) — seuil =
+    # base par famille radio à 10 MHz, +`per_10mhz` clients par tranche de
+    # +10 MHz de largeur de canal. Aucune alerte n'en dépend plus.
     "rocket_overload_clients_ltu_base": {
         "label": "Surcharge clients — Rocket LTU (base 10 MHz)",
         "category": "rocket_overload",

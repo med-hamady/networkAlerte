@@ -575,6 +575,14 @@ function SiteRocketsTable({
                   <span className={over ? 'font-bold text-red-600' : 'text-slate-800'}>
                     {r.current_clients}
                   </span>
+                  {r.out_of_supervision_clients > 0 && (
+                    <span
+                      className="block text-[11px] text-amber-600"
+                      title="Listés par UISP sur ce Rocket mais hors supervision (sans IP et non vus par UISP depuis longtemps) — exclus de la charge"
+                    >
+                      +{r.out_of_supervision_clients} hors supervision
+                    </span>
+                  )}
                 </td>
                 <td className="px-4 py-2.5">
                   <MaxClientsCell rocket={r} onSaved={onSaved} />

@@ -335,8 +335,8 @@ def parse_rocket_ap_metrics(raw: dict) -> dict[str, float | None]:
     channel_width_mhz: float | None = None
     if isinstance(radios, list) and radios:
         noise_dbm = _float(_nested(radios[0], "noiseFloor"))
-        # channelWidth = {"tx": 10, "rx": 10} (MHz). Used by the
-        # rocket_client_overload rule to pick the per-width client ceiling.
+        # channelWidth = {"tx": 10, "rx": 10} (MHz). Used by /capacity to
+        # pick the per-width client ceiling.
         channel_width_mhz = _float(_nested(radios[0], "channelWidth", "tx"))
     return {"noise_dbm": noise_dbm, "channel_width_mhz": channel_width_mhz}
 

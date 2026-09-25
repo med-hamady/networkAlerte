@@ -53,7 +53,6 @@ from app.core.alert_constants import (
     AT_P2P_LINK_SUBSTANDARD,
     AT_RADIO_INTERFACE_DOWN,
     AT_RADIO_LINK_DEGRADED,
-    AT_ROCKET_CLIENT_OVERLOAD,
     AT_ROCKET_DOWN,
     AT_SECURITY_ANOMALY,
     AT_SIGNAL_LOW,
@@ -261,13 +260,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
         notify_immediately=False,
         channels=_CHANNELS_WARNING,
         groupable=True,
-    ),
-    AT_ROCKET_CLIENT_OVERLOAD: AlertPolicy(
-        alert_type=AT_ROCKET_CLIENT_OVERLOAD,
-        severity=Severity.CRITICAL,
-        notify_immediately=True,
-        channels=_CHANNELS_CRITICAL,
-        groupable=False,
     ),
 
     # --- Radio quality UL — uplink (warning, deferred) -----------------------

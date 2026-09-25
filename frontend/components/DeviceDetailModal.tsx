@@ -110,8 +110,8 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
     { refreshInterval: REFRESH },
   )
 
-  // Client capacity for a base-station Rocket: connected peers (current) vs the
-  // rocket_client_overload ceiling (max). Read from /network-capacity so the
+  // Client capacity for a base-station Rocket: installed supervised clients
+  // (current) vs its client ceiling (max). Read from /network-capacity so the
   // per-family/width formula stays a single backend source of truth.
   const { data: capacity } = useSWR<NetworkCapacity>(
     isRocket ? endpoints.networkCapacity : null,

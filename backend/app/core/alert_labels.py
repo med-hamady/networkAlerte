@@ -43,7 +43,6 @@ from app.core.alert_constants import (
     AT_P2P_LINK_SUBSTANDARD,
     AT_RADIO_INTERFACE_DOWN,
     AT_RADIO_LINK_DEGRADED,
-    AT_ROCKET_CLIENT_OVERLOAD,
     AT_ROCKET_DOWN,
     AT_SECURITY_ANOMALY,
     AT_SIGNAL_LOW,
@@ -80,7 +79,6 @@ ALERT_TYPE_LABELS: dict[str, str] = {
     # Performance
     AT_HIGH_RX_TX_ERRORS:    "Taux d'erreurs réseau élevé",
     AT_LR_LINK_SUBSTANDARD:  "Lien client sous le seuil",
-    AT_ROCKET_CLIENT_OVERLOAD: "Station de base saturée (trop de clients)",
     AT_DEVICE_FLAPPING:      "Équipement instable (flapping répété)",
 
     # Radio quality UL (uplink — client → base)

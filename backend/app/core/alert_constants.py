@@ -162,12 +162,11 @@ AT_SECURITY_ANOMALY = "security_anomaly"
 # Critique. PAS un type de disponibilité (se résout/purge normalement).
 AT_DEVICE_FLAPPING = "device_flapping"
 
-# Charge / capacité de l'AP — un Rocket de base station dépasse le nombre de
-# clients qu'il peut servir correctement pour sa (famille radio × largeur de
-# canal). Incident critique quand clients connectés ≥ seuil (AP saturé). La
-# largeur de canal est lue en direct (LTU channelWidth.tx / airMAX chwidth) ;
-# si elle est inconnue ou hors {10, 20} MHz, la règle ne déclenche pas.
-AT_ROCKET_CLIENT_OVERLOAD = "rocket_client_overload"
+# `rocket_client_overload` (Rocket saturé) a été SUPPRIMÉ le 2026-09-25 : la
+# règle tournait encore mais son incident était supprimé depuis le 2026-06-25
+# — rien n'en sortait. La saturation vit sur /capacity et dans le rapport PDF
+# quotidien, qui comptent le roster UISP (hors supervision exclus) et non les
+# CPE connectés en direct.
 
 
 # Availability / outage alert_types — a device fully unreachable. These are the
@@ -210,7 +209,6 @@ KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_AF60_LINK_SATURATED,
     AT_P2P_LINK_SUBSTANDARD,
     AT_SECURITY_ANOMALY,
-    AT_ROCKET_CLIENT_OVERLOAD,
     AT_DEVICE_FLAPPING,
 })
 
@@ -279,8 +277,6 @@ WHATSAPP_ALERT_TYPES: frozenset[str] = frozenset({
 #     device:
 #       * cpe_disconnected is a Rocket-side signal that a subscriber CPE
 #         vanished, i.e. client-side churn, not our outage.
-#       * rocket_client_overload (Rocket saturation) is owned by the /capacity
-#         page (policy 2026-06-25) — surfaced there, never an /incidents row.
 #       * lr_bridge_mode_misconfig (LR in bridge mode) is owned by the /access
 #         page (policy 2026-06-25) — surfaced there, never an /incidents row.
 CLIENT_RULE_CATEGORY: str = "lr"
@@ -289,7 +285,6 @@ CLIENT_KEPT_ALERT_TYPES: frozenset[str] = frozenset()
 
 INFRA_DEVICE_SUPPRESSED_ALERT_TYPES: frozenset[str] = frozenset({
     AT_CPE_DISCONNECTED,
-    AT_ROCKET_CLIENT_OVERLOAD,
     AT_LR_BRIDGE_MODE_MISCONFIG,
 })
 

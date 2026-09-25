@@ -1040,8 +1040,8 @@ async def _run_snmp_poll(device_types: tuple[str, ...], label: str) -> None:
                     host=ip, community=community, port=snmp_port, timeout=snmp_timeout,
                 )
                 # Channel width (chanbw) is NOT in SNMP — read it from airOS
-                # status.cgi for the rocket_client_overload rule. Needs airOS
-                # creds on the device; None (missing/unreachable) → rule skips.
+                # status.cgi for the /capacity ceiling. Needs airOS creds on the
+                # device; None (missing/unreachable) → UISP width fallback.
                 if airos_user and airos_pwd:
                     channel_width_mhz = await airos_api_service.collect_airos_channel_width(
                         host=ip, username=airos_user, password=airos_pwd, port=443,
@@ -1104,7 +1104,7 @@ async def _run_snmp_poll(device_types: tuple[str, ...], label: str) -> None:
                     "radio_if_up":      "",
                     "eth_if_up":        "",
                 }
-                # airMAX Rocket : alimente la règle rocket_client_overload ET la page
+                # airMAX Rocket : alimente la page
                 # Capacité réseau — nombre de clients = stations découvertes par le
                 # walk SNMP (Phase 1), largeur de canal = chanbw lu via airOS
                 # status.cgi (Phase 1). Une largeur < 10 MHz n'a pas de seuil → la
@@ -1882,8 +1882,7 @@ async def ltu_api_poll_job() -> None:
                 )
 
             # Persist AP-wide metrics on the Rocket (noise_dbm, channel_width_mhz).
-            # peer_count (connected clients) feeds the rocket_client_overload rule
-            # AND the Network Capacity page, so persist it here (latest-only
+            # peer_count (connected clients) feeds the cpe_disconnected rule, so persist it here (latest-only
             # collapse — not in HISTORY_METRICS) instead of only on the engine
             # copy. Per-link metrics (signal/CCQ/CINR/etc.) belong to each LR and
             # are stored in the concurrent fan-out below.
@@ -3707,7 +3706,7 @@ async def rocket_saturation_report_job() -> None:
     """Daily WhatsApp PDF report of saturated base-station Rockets.
 
     Builds a PDF listing every Rocket whose installed clients reached its
-    capacity ceiling (current >= max, the rocket_client_overload condition) via
+    capacity ceiling (current >= max) via
     saturation_report_service and sends it to the WhatsApp group as a document.
     Unlike network_latency_aggregate_job this is a CONTROL report: it is sent
     EVERY day even when no Rocket is saturated (empty-list PDF), so the absence

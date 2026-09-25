@@ -853,15 +853,16 @@ class Settings(BaseSettings):
     lr_rx_rate_warning_idx_airmax: float = 6.0  # airMAX : 4 ≤ rx < 6 → warning
     lr_rx_rate_critical_idx_airmax: float = 4.0 # airMAX < 4 → critical
 
-    # Surcharge clients par Rocket (rocket_client_overload) — l'AP de base
-    # station est saturé quand le nombre de clients connectés ATTEINT le seuil.
+    # Capacité max d'un Rocket (page /capacity + rapport PDF des saturés) — l'AP
+    # de base station est saturé quand ses clients installés ATTEIGNENT le seuil.
     # Le seuil est une FORMULE déclinée par famille radio : base à 10 MHz, puis
     # +`per_10mhz` clients par tranche de +10 MHz de largeur de canal. La largeur
     # est lue en direct depuis l'API (LTU channelWidth.tx / airMAX chwidth) et
     # arrondie au multiple de 10 MHz le plus proche ; une largeur < 10 MHz n'a
-    # pas de seuil défini → la règle ne déclenche pas. Ex. (base LTU 15 / airMAX
+    # pas de seuil défini → Rocket « indéterminé ». Ex. (base LTU 15 / airMAX
     # 10, step 5) : LTU 10→15, 20→20, 30→25 ; airMAX 10→10, 20→15, 40→25.
-    # Incident critique. Surchargables via la page Seuils.
+    # Surchargables via la page Seuils. (Plus aucune alerte : rocket_client_overload
+    # supprimé le 2026-09-25.)
     rocket_overload_clients_ltu_base: int = 15
     rocket_overload_clients_airmax_base: int = 10
     rocket_overload_clients_per_10mhz: int = 5
@@ -950,9 +951,6 @@ class Settings(BaseSettings):
     af60_occupancy_failure_threshold: int = 3
     # Lien P2P airMAX dégradé : capacité volatile → débounce sur 4e cycle (count>3).
     p2p_link_substandard_failure_threshold: int = 3
-    # Le nombre de clients fluctue (associations/désassociations transitoires) →
-    # ouvre l'incident sur le 4e cycle saturé consécutif (count > 3).
-    rocket_overload_failure_threshold: int = 3
 
     # Throughput anomaly — detect sudden drops vs exponential moving average
 
@@ -1048,7 +1046,7 @@ class Settings(BaseSettings):
 
     # Daily saturated-Rockets PDF report — rocket_saturation_report_job builds a
     # PDF listing every base-station Rocket whose installed clients reached its
-    # capacity ceiling (current >= max, i.e. the rocket_client_overload state)
+    # capacity ceiling (current >= max)
     # and sends it to the WhatsApp group as a document. Unlike the latency job
     # this is sent EVERY day (even when the list is empty) as a control report.
     # Fires once at scheduler boot (deploy) then daily at this hour, UTC

@@ -171,7 +171,7 @@ class RocketUpdate(_DeviceBaseUpdate):
     ssh_username: str | None = None
     ssh_password: str | None = None
     ssh_port: int | None = None
-    # Manual rocket_client_overload ceiling. None sent explicitly = clear the
+    # Manual /capacity client ceiling. None sent explicitly = clear the
     # override (back to the auto formula); omitted = keep existing.
     max_clients_override: int | None = None
 

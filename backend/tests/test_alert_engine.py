@@ -277,37 +277,6 @@ async def test_radio_interface_down_immediate():
 
 
 # ---------------------------------------------------------------------------
-# Tests: cpe_disconnected (threshold=0, immediate)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_cpe_disconnected_immediate():
-    """cpe_disconnected → immediate, no anti-flap wait."""
-    db, state = make_mock_db(failure_count=0)
-    device = make_device()
-    settings = make_settings()
-
-    opened_incident = MagicMock()
-    opened_incident.id = 20
-
-    with patch("app.services.alert_engine.incident_service") as mock_svc, \
-         patch("app.services.alert_engine.notification_service") as mock_notif:
-        mock_svc.open_incident = AsyncMock(return_value=(opened_incident, True))
-        mock_svc.resolve_incidents = AsyncMock(return_value=[])
-        mock_notif.notify_incident_opened = AsyncMock(return_value=True)
-
-        await evaluate_device_metrics(
-            db, device,
-            {"peer_count": 0},
-            settings,
-        )
-
-        mock_svc.open_incident.assert_called()
-        call_kwargs = mock_svc.open_incident.call_args.kwargs
-        assert call_kwargs.get("alert_type") == "cpe_disconnected"
-
-
-# ---------------------------------------------------------------------------
 # Tests: no applicable rules for uisp_power
 # ---------------------------------------------------------------------------
 

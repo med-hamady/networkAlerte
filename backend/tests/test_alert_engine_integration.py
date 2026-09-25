@@ -308,23 +308,6 @@ async def test_eth0_down_immediate(db, settings, patch_notif):
     assert result.scalar_one_or_none() is not None
 
 
-async def test_cpe_disconnected_suppressed(db, settings, patch_notif):
-    """cpe_disconnected est supprimé (client-side) même levé sur une Rocket infra."""
-    device = await _make_rocket(db)
-
-    await evaluate_device_metrics(db, device, {"peer_count": 0}, settings)
-    await db.flush()
-
-    result = await db.execute(
-        select(Incident).where(
-            Incident.device_id == device.id,
-            Incident.alert_type == "cpe_disconnected",
-        )
-    )
-    # Jamais créé : cpe_disconnected ∈ INFRA_DEVICE_SUPPRESSED_ALERT_TYPES.
-    assert result.scalar_one_or_none() is None
-
-
 async def test_availability_incident_kept_resolved_for_journal(db, patch_notif):
     """Un incident de disponibilité résolu reste en DB (le journal coupures en a besoin)."""
     from app.services import incident_service

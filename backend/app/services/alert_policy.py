@@ -36,7 +36,6 @@ from app.core.alert_constants import (
     AT_CCQ_UL_LOW,
     AT_CINR_LOW,
     AT_CINR_UL_LOW,
-    AT_CPE_DISCONNECTED,
     AT_DEVICE_FLAPPING,
     AT_DEVICE_UNREACHABLE,
     AT_ETH0_DOWN,
@@ -133,12 +132,6 @@ ALERT_POLICIES: dict[str, AlertPolicy] = {
     ),
     AT_ETH0_DOWN: AlertPolicy(
         alert_type=AT_ETH0_DOWN,
-        severity=Severity.CRITICAL,
-        notify_immediately=True,
-        channels=_CHANNELS_CRITICAL,
-    ),
-    AT_CPE_DISCONNECTED: AlertPolicy(
-        alert_type=AT_CPE_DISCONNECTED,
         severity=Severity.CRITICAL,
         notify_immediately=True,
         channels=_CHANNELS_CRITICAL,

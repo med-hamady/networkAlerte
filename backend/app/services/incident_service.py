@@ -41,8 +41,7 @@ def is_suppressed_incident(device: Device, alert_type: str | None) -> bool:
     base-station Rockets (kept) and subscriber LRs (dropped). Two exceptions
     override the device rule — see alert_constants for the full rationale:
       - INFRA_DEVICE_SUPPRESSED_ALERT_TYPES: dropped even on an infra device
-        (cpe_disconnected = a subscriber CPE vanished, client-side churn;
-        lr_bridge_mode_misconfig owned by /access).
+        (lr_bridge_mode_misconfig owned by /access).
       - CLIENT_KEPT_ALERT_TYPES: kept even on an LR (currently empty).
     """
     if alert_type in INFRA_DEVICE_SUPPRESSED_ALERT_TYPES:

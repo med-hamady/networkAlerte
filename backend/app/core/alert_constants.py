@@ -57,7 +57,6 @@ AT_DEVICE_UNREACHABLE   = "device_unreachable"
 # Interface and local link (alert_rules)
 AT_RADIO_INTERFACE_DOWN = "radio_interface_down"
 AT_ETH0_DOWN            = "eth0_down"
-AT_CPE_DISCONNECTED     = "cpe_disconnected"
 
 # Radio quality (alert_rules)
 AT_SIGNAL_LOW           = "signal_low"
@@ -166,7 +165,8 @@ AT_DEVICE_FLAPPING = "device_flapping"
 # règle tournait encore mais son incident était supprimé depuis le 2026-06-25
 # — rien n'en sortait. La saturation vit sur /capacity et dans le rapport PDF
 # quotidien, qui comptent le roster UISP (hors supervision exclus) et non les
-# CPE connectés en direct.
+# CPE connectés en direct. `cpe_disconnected` (Rocket LTU sans aucun CPE) a
+# été supprimé le même jour pour la même raison : toujours supprimé, jamais vu.
 
 
 # Availability / outage alert_types — a device fully unreachable. These are the
@@ -192,7 +192,7 @@ AVAILABILITY_ALERT_TYPES: frozenset[str] = frozenset({
 
 KNOWN_ALERT_TYPES: frozenset[str] = frozenset({
     AT_ROCKET_DOWN, AT_SWITCH_DOWN, AT_DEVICE_UNREACHABLE,
-    AT_RADIO_INTERFACE_DOWN, AT_ETH0_DOWN, AT_CPE_DISCONNECTED,
+    AT_RADIO_INTERFACE_DOWN, AT_ETH0_DOWN,
     AT_SIGNAL_LOW, AT_CINR_LOW, AT_CCQ_LOW, AT_RADIO_LINK_DEGRADED,
     AT_HIGH_RX_TX_ERRORS,
     AT_UISP_POWER_UNREACH, AT_BATTERY_LOW_WARN, AT_BATTERY_LOW_CRIT,
@@ -275,8 +275,6 @@ WHATSAPP_ALERT_TYPES: frozenset[str] = frozenset({
 #     must act on them. (Currently empty.)
 #   - INFRA_DEVICE_SUPPRESSED_ALERT_TYPES — dropped even when raised on an infra
 #     device:
-#       * cpe_disconnected is a Rocket-side signal that a subscriber CPE
-#         vanished, i.e. client-side churn, not our outage.
 #       * lr_bridge_mode_misconfig (LR in bridge mode) is owned by the /access
 #         page (policy 2026-06-25) — surfaced there, never an /incidents row.
 CLIENT_RULE_CATEGORY: str = "lr"
@@ -284,7 +282,6 @@ CLIENT_RULE_CATEGORY: str = "lr"
 CLIENT_KEPT_ALERT_TYPES: frozenset[str] = frozenset()
 
 INFRA_DEVICE_SUPPRESSED_ALERT_TYPES: frozenset[str] = frozenset({
-    AT_CPE_DISCONNECTED,
     AT_LR_BRIDGE_MODE_MISCONFIG,
 })
 

@@ -1882,9 +1882,9 @@ async def ltu_api_poll_job() -> None:
                 )
 
             # Persist AP-wide metrics on the Rocket (noise_dbm, channel_width_mhz).
-            # peer_count (connected clients) feeds the cpe_disconnected rule, so persist it here (latest-only
-            # collapse — not in HISTORY_METRICS) instead of only on the engine
-            # copy. Per-link metrics (signal/CCQ/CINR/etc.) belong to each LR and
+            # peer_count (connected clients) is persisted here too (latest-only
+            # collapse — not in HISTORY_METRICS) so the Rocket's latest metrics
+            # show it; no alert rule reads it anymore. Per-link metrics (signal/CCQ/CINR/etc.) belong to each LR and
             # are stored in the concurrent fan-out below.
             rocket_ap_metrics["peer_count"] = len(all_peers)
 

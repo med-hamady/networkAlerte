@@ -192,46 +192,6 @@ class Eth0DownRule(AlertRule):
         )
 
 
-class CPEDisconnectedRule(AlertRule):
-    """Détecte l'absence de CPE associé au LTU Rocket (peer_count == 0)."""
-
-    alert_type = "cpe_disconnected"
-    failure_threshold = 0  # immédiat
-
-    def evaluate(self, device_name: str, metrics: dict, settings) -> AlertEvalResult:
-        peer_count = metrics.get("peer_count")
-        if peer_count is None:
-            return AlertEvalResult(
-                alert_type=self.alert_type,
-                severity=None,
-                metric_name="peer_count",
-                metric_value=None,
-                threshold_value=None,
-                message="",
-                skip=True,
-            )
-        if peer_count == 0:
-            return AlertEvalResult(
-                alert_type=self.alert_type,
-                severity="critical",
-                metric_name="peer_count",
-                metric_value=0.0,
-                threshold_value=1.0,
-                message=(
-                    f"ALERTE CRITIQUE : LTU LR déconnecté du Rocket {device_name} "
-                    f"— aucun CPE associé détecté"
-                ),
-            )
-        return AlertEvalResult(
-            alert_type=self.alert_type,
-            severity=None,
-            metric_name="peer_count",
-            metric_value=float(peer_count),
-            threshold_value=None,
-            message=f"RECOVERY : CPE reconnecté au Rocket {device_name}",
-        )
-
-
 # ---------------------------------------------------------------------------
 # Famille C — Qualité radio
 # ---------------------------------------------------------------------------
@@ -1113,7 +1073,6 @@ _ROCKET_RULES: list[AlertRule] = [
     # HTTP API (number of connected CPEs).
     RadioInterfaceDownRule(),
     Eth0DownRule(),
-    CPEDisconnectedRule(),
     HighRxTxErrorsRule(),
 ]
 

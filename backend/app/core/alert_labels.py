@@ -26,7 +26,6 @@ from app.core.alert_constants import (
     AT_CCQ_UL_LOW,
     AT_CINR_LOW,
     AT_CINR_UL_LOW,
-    AT_CPE_DISCONNECTED,
     AT_DEVICE_FLAPPING,
     AT_DEVICE_UNREACHABLE,
     AT_ETH0_DOWN,
@@ -68,7 +67,6 @@ ALERT_TYPE_LABELS: dict[str, str] = {
     # Interfaces & local link
     AT_RADIO_INTERFACE_DOWN: "Interface radio coupée",
     AT_ETH0_DOWN:            "Lien Ethernet coupé",
-    AT_CPE_DISCONNECTED:     "Aucun client connecté à la station",
 
     # Radio quality (downlink — base → client)
     AT_SIGNAL_LOW:           "Signal radio faible",

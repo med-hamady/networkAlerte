@@ -2202,9 +2202,9 @@ d'une période. Les trois garde-fous sont décrits dans la ligne
 ### Page /incidents = INFRASTRUCTURE uniquement (suppression côté client, 2026-06-09)
 La page `/incidents` ne montre que les incidents **d'infrastructure**. Les incidents **côté client** ne sont **ni créés ni stockés** (purge DB via migration `z7f8a9b0c1d2`). Le découpage est **par device** (`rule_category`), **pas par alert_type** : les types radio (`signal_low`, `ccq_low`, `cinr_low`, `radio_link_degraded`, `high_rx_tx_errors`) se déclenchent à la fois sur les **Rockets de base station** (infra → gardés) et sur les **LR abonnés** (client → supprimés), donc filtrer sur la string `alert_type` masquerait de vraies alertes infra. Le garde-fou unique est `incident_service.is_suppressed_incident(device, alert_type)`, appelé en tête de `open_incident` (retourne `(None, False)` sans rien créer) — tous les appelants ne déréférencent l'incident que sous `if is_new`, donc un `None` est sûr. **`airmax_down` est infra** (Rocket airMAX = AP de base, pas le LiteBeam abonné). Exceptions explicites (cf. `alert_constants`) :
 - `CLIENT_KEPT_ALERT_TYPES = {}` — **vide** (plus aucune exception « gardé même sur un LR »).
-- `INFRA_DEVICE_SUPPRESSED_ALERT_TYPES = {cpe_disconnected, lr_bridge_mode_misconfig}` — supprimés **toujours**, même sur un device infra : `cpe_disconnected` (un CPE qui disparaît = churn côté abonné, pas notre panne) ; **`lr_bridge_mode_misconfig` (LR en bridge) par la page `/access`** (politique 2026-06-25 — purge DB via migration `l9a0b1c2d3e4`) : ces deux-là sont surfacés sur leur page dédiée, jamais comme incident.
+- `INFRA_DEVICE_SUPPRESSED_ALERT_TYPES = {lr_bridge_mode_misconfig}` — supprimés **toujours**, même sur un device infra : **`lr_bridge_mode_misconfig` (LR en bridge) par la page `/access`** (politique 2026-06-25 — purge DB via migration `l9a0b1c2d3e4`) : ces deux-là sont surfacés sur leur page dédiée, jamais comme incident.
 
-Conséquence : plus aucune notification ni ligne `alerts` pour les alertes client (signal/ccq/cinr/capacity sur LR, `lr_link_substandard`, `lr_no_transit`, `lr_latency_high`, `lr_discovered`/`lr_ip_changed`/`lr_reassigned`, `cpe_disconnected`). Les jobs continuent de sonder les LR (latence/transit/SSH) et d'incrémenter leurs `AlertState` ; seul l'incident final est court-circuité.
+Conséquence : plus aucune notification ni ligne `alerts` pour les alertes client (signal/ccq/cinr/capacity sur LR, `lr_link_substandard`, `lr_no_transit`, `lr_latency_high`, `lr_discovered`/`lr_ip_changed`/`lr_reassigned`). Les jobs continuent de sonder les LR (latence/transit/SSH) et d'incrémenter leurs `AlertState` ; seul l'incident final est court-circuité.
 
 ### Bandeau d'anomalies à acquitter à la main (2026-08-12)
 
@@ -2289,7 +2289,7 @@ visibles sur `/incidents`.
 | Disponibilité | `device_unreachable` | Ping device générique échoue ×3 |
 | Interface | `radio_interface_down` | SNMP : ath0 OperStatus=DOWN |
 | Interface | `eth0_down` | SNMP : eth0 OperStatus=DOWN |
-| Interface | `cpe_disconnected` | API LTU : aucun CPE connecté |
+| Interface | ~~`cpe_disconnected`~~ | **SUPPRIMÉ le 2026-09-25** (migration `k7f8a9b0c1d2`) : « Rocket LTU sans aucun CPE », incident toujours supprimé (churn abonné) → rien n'en sortait. Secteur mort couvert par `radio_interface_down` / `rocket_down`. `peer_count` reste collecté et affiché |
 | Radio | `signal_low` | Signal < seuil warning ou critical |
 | Radio | `cinr_low` | CINR < seuil warning ou critical |
 | Radio | `ccq_low` | CCQ < seuil warning ou critical |

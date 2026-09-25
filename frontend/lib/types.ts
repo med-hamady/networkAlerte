@@ -288,7 +288,6 @@ export const ALERT_TYPE_LABELS: Record<string, string> = {
   // Interfaces et lien local
   radio_interface_down:    'Interface radio coupée',
   eth0_down:               'Lien Ethernet coupé',
-  cpe_disconnected:        'Aucun client connecté à la station',
   // Qualité radio (descendant — base → client)
   signal_low:              'Signal radio faible',
   cinr_low:                'Qualité du signal radio faible (CINR)',

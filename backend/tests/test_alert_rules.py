@@ -12,7 +12,6 @@ import pytest
 from app.services.alert_rules import (
     CCQLowRule,
     CINRLowRule,
-    CPEDisconnectedRule,
     Eth0DownRule,
     HighRxTxErrorsRule,
     RadioInterfaceDownRule,
@@ -96,24 +95,6 @@ class TestEth0DownRule:
         r = self.rule.evaluate(DEVICE_NAME, {"eth_if_up": 0.0}, SETTINGS)
         assert r.severity == "critical"
         assert r.alert_type == "eth0_down"
-
-    def test_no_metric_no_alert(self):
-        r = self.rule.evaluate(DEVICE_NAME, {}, SETTINGS)
-        assert r.severity is None
-
-
-class TestCPEDisconnectedRule:
-    rule = CPEDisconnectedRule()
-
-    def test_peer_connected_no_alert(self):
-        r = self.rule.evaluate(DEVICE_NAME, {"peer_count": 1}, SETTINGS)
-        assert r.severity is None
-
-    def test_no_peer_critical(self):
-        r = self.rule.evaluate(DEVICE_NAME, {"peer_count": 0}, SETTINGS)
-        assert r.severity == "critical"
-        assert r.alert_type == "cpe_disconnected"
-        assert r.metric_value == 0.0
 
     def test_no_metric_no_alert(self):
         r = self.rule.evaluate(DEVICE_NAME, {}, SETTINGS)
@@ -330,7 +311,6 @@ class TestRuleRegistry:
         rule_types = {type(r).__name__ for r in get_rules_for_device("ltu_rocket")}
         assert "RadioInterfaceDownRule" in rule_types
         assert "Eth0DownRule" in rule_types
-        assert "CPEDisconnectedRule" in rule_types
         assert "HighRxTxErrorsRule" in rule_types
         # Et surtout PAS la qualité par liaison : elle appartient au LR.
         assert not rule_types & {
@@ -342,14 +322,12 @@ class TestRuleRegistry:
 
         Pas de `RadioInterfaceDownRule` : un LR n'est plus interrogé en SNMP
         IF-MIB — ses métriques viennent du fan-out de son Rocket parent ou de
-        l'API airOS. Pas de `CPEDisconnectedRule` non plus : un abonné n'a pas
-        de CPE derrière lui.
+        l'API airOS.
         """
         rule_types = {type(r).__name__ for r in get_rules_for_device("lr")}
         assert {"SignalLowRule", "CINRLowRule", "CCQLowRule",
                 "CINRLowULRule", "CCQLowULRule",
                 "RadioLinkDegradedRule", "LrLinkSubstandardRule"} <= rule_types
-        assert "CPEDisconnectedRule" not in rule_types
         assert "RadioInterfaceDownRule" not in rule_types
 
     def test_airmax_rocket_does_watch_radio_quality(self):

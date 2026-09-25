@@ -9,7 +9,15 @@
 #
 # L'archive contient :
 #   network_supervisor.dump      pg_dump format custom (-Fc), restaurable par pg_restore
+#   fai_actions.log              le JOURNAL FAI (coupures/deblocages d'abonnes)
+#   fai_evidence/                les preuves : transcription SSH de chaque action
 #   MANIFEST.txt                 quoi, quand, depuis quel commit, avec quelles exclusions
+#
+# /!\ LE JOURNAL FAI N'EST PAS DANS LA BASE. C'est un fichier texte
+#     (`backend/logs/`), hors de portee de pg_dump - il manquait donc
+#     entierement a la sauvegarde jusqu'au 2026-09-25. C'est pourtant la SEULE
+#     piste qui dise qui a coupe quel abonne, quand et sur ordre de qui : elle
+#     ne se reconstitue depuis rien.
 #
 # /!\ LE CHIFFREMENT N'EST PAS OPTIONNEL. Le dump porte les colonnes
 #     ssh_password / api_password / management_password de la table `devices` et
@@ -178,7 +186,47 @@ dc exec -T postgres pg_dump \
 
 log "  dump : $(du -h "$WORK/network_supervisor.dump" | cut -f1)"
 
-# --- 2. Manifeste ------------------------------------------------------------
+# --- 2. Journal FAI (fichiers, hors base) ------------------------------------
+# Traduction chemin CONTENEUR -> chemin HOTE : tous les fichiers compose montent
+# ./backend sur /app.
+#
+# /!\ Copie faite sur l'HOTE et non via `dc exec backend` : la sauvegarde doit
+# continuer de fonctionner quand le backend est en panne - c'est precisement le
+# moment ou l'on veut une archive. Postgres, lui, est indispensable au dump, on
+# n'a pas le choix.
+fai_host_path() {
+    case "$1" in
+        /app/*) printf '%s/backend/%s' "$PROJECT_DIR" "${1#/app/}" ;;
+        *)      printf '%s' "$1" ;;
+    esac
+}
+
+FAI_LOG="$(fai_host_path "$(env_get FAI_LOG_PATH /app/logs/fai_actions.log)")"
+FAI_EVIDENCE="$(fai_host_path "$(env_get FAI_EVIDENCE_DIR /app/logs/fai_evidence)")"
+
+FAI_LINES="absent"
+if [ -f "$FAI_LOG" ]; then
+    # Sans -p : les fichiers sont ecrits par le CONTENEUR, donc appartiennent a
+    # root sur l'hote. `cp -p` tenterait un chown, echouerait en non-root et,
+    # avec `set -e`, tuerait toute la sauvegarde pour une date de fichier.
+    cp "$FAI_LOG" "$WORK/fai_actions.log"
+    FAI_LINES="$(wc -l < "$WORK/fai_actions.log" | tr -d ' ') ligne(s)"
+    log "Journal FAI : $FAI_LINES ($(du -h "$WORK/fai_actions.log" | cut -f1))"
+else
+    # Pas une erreur : un deploiement ou aucun blocage n'a jamais eu lieu n'a
+    # pas encore de journal. On le NOTE dans le manifeste plutot que de le taire
+    # - une piste d'audit absente doit se voir a la relecture.
+    log "/!\ Journal FAI introuvable ($FAI_LOG) - archive produite sans lui"
+fi
+
+FAI_EVIDENCE_COUNT=0
+if [ -d "$FAI_EVIDENCE" ]; then
+    cp -r "$FAI_EVIDENCE" "$WORK/fai_evidence"   # sans -p, meme raison
+    FAI_EVIDENCE_COUNT="$(find "$WORK/fai_evidence" -type f | wc -l | tr -d ' ')"
+    log "Preuves FAI : $FAI_EVIDENCE_COUNT fichier(s) ($(du -sh "$WORK/fai_evidence" | cut -f1))"
+fi
+
+# --- 3. Manifeste ------------------------------------------------------------
 {
     echo "Sauvegarde Network Supervisor"
     echo "date_utc      : $(date -u '+%Y-%m-%d %H:%M:%SZ')"
@@ -191,6 +239,8 @@ log "  dump : $(du -h "$WORK/network_supervisor.dump" | cut -f1)"
         echo "chiffrement   : AUCUN"
     fi
     echo
+    echo "Journal FAI   : $FAI_LINES, $FAI_EVIDENCE_COUNT preuve(s)"
+    echo
     echo "Donnees exclues (schema conserve, lignes non - re-generees par les polls) :"
     echo "  device_metrics, power_status_logs, auth_sessions"
     echo "Historiques INCLUS : lr_metric_samples (courbes), traffic_dest_stats (trafic),"
@@ -199,7 +249,7 @@ log "  dump : $(du -h "$WORK/network_supervisor.dump" | cut -f1)"
     echo "Restauration : voir docs/backup-database.md"
 } > "$WORK/MANIFEST.txt"
 
-# --- 3. Archive + chiffrement ------------------------------------------------
+# --- 4. Archive + chiffrement ------------------------------------------------
 # Ecriture en .part puis renommage : le relais Windows lit ce repertoire, et
 # doit etre incapable de ramasser une archive a moitie ecrite.
 if [ "$ENCRYPT" -eq 1 ]; then
@@ -241,7 +291,7 @@ ln -sfn "$BASENAME.sha256" "$BACKUP_DIR/$LATEST.sha256"
 
 log "OK - $OUT ($(du -h "$OUT" | cut -f1))"
 
-# --- 4a. Copie unique : l'archive precedente disparait -----------------------
+# --- 5a. Copie unique : l'archive precedente disparait -----------------------
 # Seulement MAINTENANT, une fois la nouvelle complete, renommee et son empreinte
 # ecrite : un echec plus haut (pg_dump, disque plein) laisse la precedente en
 # place, et on n'est jamais sans sauvegarde du tout. Emporte aussi l'empreinte
@@ -255,7 +305,7 @@ if [ "$SINGLE_COPY" -eq 1 ]; then
     fi
 fi
 
-# --- 4b. Retention locale ----------------------------------------------------
+# --- 5b. Retention locale ----------------------------------------------------
 # Le cloud garde sa propre profondeur ; ici on ne garde que de quoi restaurer
 # vite sans remplir le disque.
 PURGED="$(find "$BACKUP_DIR" -maxdepth 1 -name 'supervisor-*.tar*' -type f \

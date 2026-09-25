@@ -116,12 +116,24 @@ aucun droit dans le profil d'Administrator). Le transit reste `C:\Backups\_trans
 
 ## 2. Ce qui est sauvegardé, et ce qui ne l'est pas
 
-L'archive `supervisor-<date>.tar` contient deux fichiers :
+L'archive `supervisor-<date>.tar` contient :
 
 | Fichier | Contenu |
 |---|---|
 | `network_supervisor.dump` | `pg_dump` format custom, restaurable par `pg_restore` |
-| `MANIFEST.txt` | date, hôte, commit git, exclusions |
+| `fai_actions.log` | **le journal FAI** — une ligne par coupure / déblocage d'abonné |
+| `fai_evidence/` | les **preuves** : la transcription SSH de chaque action |
+| `MANIFEST.txt` | date, hôte, commit git, exclusions, taille du journal |
+
+> ⚠️ **Le journal FAI n'est pas dans la base.** C'est un fichier texte
+> (`backend/logs/`), hors de portée de `pg_dump` — il manquait donc
+> **entièrement** à la sauvegarde jusqu'au 2026-09-25. C'est pourtant la seule
+> trace de qui a coupé quel abonné, quand et sur ordre de qui, et elle ne se
+> reconstitue depuis rien.
+>
+> Il est copié **depuis l'hôte** et non via `docker compose exec backend` : la
+> sauvegarde doit continuer de fonctionner quand le backend est en panne, ce
+> qui est précisément le moment où l'on veut une archive.
 
 > Il y en avait trois jusqu'au 2026-09-25 : un `client_consumption_30d.csv`
 > compensait le fait que la consommation n'existait que sous forme de deltas à
@@ -428,6 +440,21 @@ backend applique les migrations manquantes à son démarrage.
 La consommation se relit dans `client_consumption_daily` (`device_id`,
 `metric_name`, `day`, `bytes`, `samples`) ; `device_id` se recoupe avec
 `devices`.
+
+### Restaurer le journal FAI
+
+Il ne passe pas par `pg_restore` — c'est un fichier à remettre en place :
+
+```bash
+tar -xf supervisor-<date>.tar fai_actions.log fai_evidence
+cp fai_actions.log  /opt/a2project/backend/logs/
+cp -r fai_evidence  /opt/a2project/backend/logs/
+```
+
+⚠️ Le journal est **append-only** : si le serveur a continué de tourner depuis
+la sauvegarde, écraser le fichier **perd les lignes écrites entre-temps**.
+Restaurer à côté puis fusionner (les lignes sont horodatées UTC et triables)
+plutôt qu'écraser à l'aveugle.
 
 ---
 

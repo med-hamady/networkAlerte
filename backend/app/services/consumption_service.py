@@ -104,24 +104,23 @@ COUNTER_METRICS = _COUNTER_METRICS
 # Must match the frontend SITE_FALLBACK so deep-links stay consistent.
 _SITE_FALLBACK = "Sans site"
 
-# Les seules fenetres encore GLISSANTES. 7 j et 30 j n'y sont plus depuis le
-# 2026-09-25 : elles sont alignees sur les journees (cf. _CALENDAR_PERIOD_DAYS).
+# Fenetres GLISSANTES a la seconde — les trois le sont, comme avant le passage
+# au resume quotidien. Ce qui a change, c'est d'ou vient le chiffre, pas la
+# fenetre qu'il couvre.
 _PERIOD_TO_TIMEDELTA: dict[str, datetime.timedelta] = {
     "24h": datetime.timedelta(hours=24),
+    "7d": datetime.timedelta(days=7),
+    "30d": datetime.timedelta(days=30),
 }
 
-# Fenetres servies par le RESUME QUOTIDIEN, donc alignees sur des JOURNEES
-# ENTIERES UTC : « 7 j » = aujourd'hui + les 6 journees precedentes.
+# Fenetres servies par le RESUME QUOTIDIEN plutot que par une relecture des
+# releves bruts. Elles restent glissantes : `_aggregate_via_daily` recoud les
+# journees entieres (resume) avec les deux bords partiels (live).
 #
-# /!\ Ce n'est plus tout a fait le glissant a la seconde que rendaient les
-# matviews : le bord de la fenetre saute a minuit au lieu d'avancer en
-# continu. C'est le prix a payer pour ne plus conserver 30 jours de releves
-# bruts, et l'ecart ne porte que sur la journee de bord.
-#
-# /!\ N-1 et pas N : le resume rend des journees ENTIERES, donc partir de
-# `aujourd'hui - 7 jours` couvrirait 8 journees calendaires et surestimerait
-# le total d'une journee complete.
-_CALENDAR_PERIOD_DAYS: dict[str, int] = {"7d": 7, "30d": 30}
+# /!\ C'est CETTE profondeur qui borne la retention sur `device_metrics` : le
+# bord le plus ancien de la fenetre 30 j se calcule sur des releves de 30 jours.
+# Voir `deepest_raw_window_days`.
+_DAILY_BACKED_PERIODS = frozenset({"7d", "30d"})
 
 # Live SQL: window function + CASE replicates _sum_positive_deltas in Postgres.
 # Keeps transfer at ~272 rows (68 LRs × 4 metrics) instead of millions.
@@ -331,31 +330,83 @@ async def _aggregate_via_daily(
 ) -> list[_AggRow]:
     """Agrège [lower, upper) en s'appuyant sur le résumé quotidien.
 
-    Découpe la fenêtre en deux : les journées déjà totalisées sont relues dans
-    `client_consumption_daily` (quelques milliers de lignes), le reste — la
-    journée en cours, et tout jour que le job de nuit n'a pas encore traité —
-    passe par la requête live sur les relevés bruts.
+    Découpe la fenêtre en TROIS, dont deux bords qui peuvent être vides :
 
-    ⚠️ Le résumé VIDE (avant le remplissage de l'historique) fait retomber
-    l'ensemble sur la requête live : le comportement d'avant, jamais un total
-    amputé.
+        [lower ─── minuit)   [journées entières]   [minuit ─── upper)
+             live                 résumé                  live
+
+    Le résumé ne sait rendre que des journées ENTIÈRES. Une fenêtre glissante
+    (« les 7 derniers jours » à 14 h 37) commence et finit en milieu de
+    journée : ses deux bords sont donc calculés en direct sur les relevés
+    bruts, et seul le milieu vient du résumé.
+
+    ⚠️ **Le bord de TÊTE n'est pas un détail d'exactitude, c'est la fenêtre
+    elle-même.** Sans lui, prendre la journée entière de `lower` ferait
+    compter jusqu'à 24 h de trop, et la ramener au lendemain jusqu'à 24 h de
+    trop peu — sur « 7 jours » consultés le matin, un écart de 14 %.
+
+    ⚠️ Aucun double comptage à la jonction : le résumé d'une journée inclut
+    déjà l'octet consommé de part et d'autre de minuit (son lookback de 6 h),
+    et la requête de tête s'arrête à minuit exclu.
+
+    ⚠️ **Résumé VIDE ⇒ tout repasse en live** (le comportement d'avant, jamais
+    un total amputé). Idem si le résumé ne couvre aucune journée de la
+    fenêtre.
     """
     acc: dict[tuple[int, str], dict] = {}
     rolled = await last_rolled_day(db)
 
+    async def _live(from_ts: datetime.datetime, to_ts: datetime.datetime) -> None:
+        rows = (
+            await db.execute(
+                _LIVE_AGGREGATE_RANGE_SQL,
+                {
+                    "lr_ids": lr_ids,
+                    "metric_names": list(_COUNTER_METRICS),
+                    "cutoff": from_ts,
+                    "upper": to_ts,
+                    "max_delta": _MAX_PLAUSIBLE_DELTA_BYTES,
+                },
+            )
+        ).all()
+        _merge_rows(acc, rows)
+
     live_lower = lower
+    head: tuple[datetime.datetime, datetime.datetime] | None = None
+
     if rolled is not None:
-        from_day = lower.date()
+        day_floor = datetime.datetime.combine(
+            lower.date(), datetime.time.min, tzinfo=datetime.UTC
+        )
+        # `lower` tombe-t-il en MILIEU de journée ? Une plage de dates est
+        # alignée sur minuit (rien à recoudre) ; une fenêtre glissante, non.
+        partial_head = lower > day_floor
+        first_full_day = (
+            lower.date() + datetime.timedelta(days=1) if partial_head
+            else lower.date()
+        )
         # `upper` est exclusif : la dernière journée réellement demandée est
         # celle de l'instant qui précède.
         to_day = min((upper - datetime.timedelta(microseconds=1)).date(), rolled)
-        if to_day >= from_day:
+
+        if to_day >= first_full_day:
             rows = (
                 await db.execute(
-                    _DAILY_RANGE_SQL, {"from_day": from_day, "to_day": to_day}
+                    _DAILY_RANGE_SQL,
+                    {"from_day": first_full_day, "to_day": to_day},
                 )
             ).all()
             _merge_rows(acc, rows)
+            if partial_head:
+                head = (
+                    lower,
+                    min(
+                        datetime.datetime.combine(
+                            first_full_day, datetime.time.min, tzinfo=datetime.UTC
+                        ),
+                        upper,
+                    ),
+                )
             live_lower = max(
                 lower,
                 datetime.datetime.combine(
@@ -365,20 +416,10 @@ async def _aggregate_via_daily(
                 ),
             )
 
+    if head is not None and head[0] < head[1]:
+        await _live(*head)
     if live_lower < upper:
-        rows = (
-            await db.execute(
-                _LIVE_AGGREGATE_RANGE_SQL,
-                {
-                    "lr_ids": lr_ids,
-                    "metric_names": list(_COUNTER_METRICS),
-                    "cutoff": live_lower,
-                    "upper": upper,
-                    "max_delta": _MAX_PLAUSIBLE_DELTA_BYTES,
-                },
-            )
-        ).all()
-        _merge_rows(acc, rows)
+        await _live(live_lower, upper)
 
     return [
         _AggRow(device_id, metric_name, v["bytes"], v["samples"], v["first_sample_at"])
@@ -386,22 +427,24 @@ async def _aggregate_via_daily(
     ]
 
 
-def calendar_period_start(
-    now: datetime.datetime, period: str
-) -> datetime.datetime:
-    """Debut (UTC) d'une fenetre alignee sur les journees, pour 7 j / 30 j.
+def deepest_raw_window_days() -> int:
+    """Profondeur, en jours, de la lecture la plus PROFONDE qui touche encore
+    les releves bruts de `device_metrics`.
 
-    Bornee au DEBUT d'une journee : c'est ce que le resume quotidien sait
-    rendre, et `period_start` doit annoncer la fenetre reellement totalisee —
-    sinon la page afficherait une borne que le chiffre ne respecte pas.
+    Sert de plancher a la retention (`jobs.device_metrics_retention_job`) :
+    purger plus court que ca ferait rendre a une fenetre un total AMPUTE, sans
+    la moindre erreur pour le dire.
 
-    N-1 et pas N : le resume rend des journees ENTIERES, donc partir de
-    `aujourd'hui - 7 jours` couvrirait 8 journees calendaires et surestimerait
-    le total d'une journee complete.
+    /!\\ Derive de `_PERIOD_TO_TIMEDELTA` et pas ecrit en dur : le jour ou un
+    onglet « 90 jours » est ajoute, la retention refusera d'elle-meme de
+    descendre sous 91 jours. Une constante recopiee, elle, serait restee a 31.
+
+    Meme une fenetre servie par le resume touche le brut a cette profondeur :
+    sa journee la plus ancienne est PARTIELLE (la fenetre commence en milieu de
+    journee), et ce bord-la se calcule en direct.
     """
-    return datetime.datetime.combine(
-        now.date(), datetime.time.min, tzinfo=datetime.UTC
-    ) - datetime.timedelta(days=_CALENDAR_PERIOD_DAYS[period] - 1)
+    deepest = max(_PERIOD_TO_TIMEDELTA.values())
+    return -(-int(deepest.total_seconds()) // 86400)  # arrondi au jour superieur
 
 
 async def get_clients_consumption(
@@ -434,12 +477,6 @@ async def get_clients_consumption(
     elif period == "lifetime":
         cutoff = None
         query_lower_bound = datetime.datetime(2000, 1, 1, tzinfo=datetime.UTC)
-        upper = None
-        period_end = now
-        effective_period = period
-    elif period in _CALENDAR_PERIOD_DAYS:
-        cutoff = calendar_period_start(now, period)
-        query_lower_bound = cutoff
         upper = None
         period_end = now
         effective_period = period
@@ -485,9 +522,10 @@ async def get_clients_consumption(
         agg_rows = await _aggregate_via_daily(
             db, [lr.id for lr in lrs], query_lower_bound, now,
         )
-    elif period in _CALENDAR_PERIOD_DAYS:
-        # Les journées écoulées viennent du résumé, la journée en cours du
-        # live — le découpage est fait par `_aggregate_via_daily`.
+    elif period in _DAILY_BACKED_PERIODS:
+        # Journées entières depuis le résumé, les deux bords partiels en live
+        # — découpage fait par `_aggregate_via_daily`. La fenêtre couverte est
+        # exactement la même qu'avant les matviews.
         agg_rows = await _aggregate_via_daily(
             db, [lr.id for lr in lrs], query_lower_bound, now,
         )

@@ -237,7 +237,7 @@ backend/app/
 | `IPTOASN_V4_PATH` / `IPTOASN_V6_PATH` | Datasets **BGP iptoasn.com** (IP→ASN+opérateur), source ASN **primaire** (bien plus complète que GeoLite2 pour la longue traîne). Défaut `/app/data/ip2asn-v4.tsv.gz` / `-v6`. Voir `backend/data/README.md` |
 | `GEOIP_ASN_DB_PATH` | Base MaxMind GeoLite2-ASN (.mmdb), **fallback** quand iptoasn ne répond pas. Défaut `/app/data/GeoLite2-ASN.mmdb`. Aucune source = tout agrégé sous "Indéterminé" |
 | `CLIENT_CONSUMPTION_REFRESH_HOUR` | ⚠️ **Sans effet depuis le 2026-09-25** — les deux matviews de consommation (`client_consumption_30d` / `_7d`) et leurs REFRESH ont été **supprimés** (migration `i5d6e7f8a9b0`) : les fenêtres 7 j et 30 j sont servies par le **résumé quotidien**. Le réglage reste déclaré pour qu'un `.env` qui le porte encore ne fasse pas échouer le démarrage. Ce qu'il pilotait relisait `device_metrics` sur toute la fenêtre (> 19 min d'E/S, incident 2026-07-20) et **interdisait la rétention** : purger au-delà de 7 j aurait fait afficher une consommation de 30 j calculée sur 7 |
-| `DEVICE_METRICS_RETENTION_ENABLED` / `DEVICE_METRICS_RETENTION_DAYS` / `DEVICE_METRICS_RETENTION_INTERVAL_MINUTES` | **Rétention sur `device_metrics`** (défauts `true` / **7** j / 6 h), active depuis le 2026-09-25 — jusque-là c'était la **seule table du projet sans aucune rétention** (58,4 M lignes / 5,9 Go au 2026-09-24), parce qu'une consommation se **calcule** par différences successives sur ses compteurs. ⚠️ Ne purge **QUE les 4 compteurs d'octets** : toutes les autres métriques sont écrasées en place (1 ligne par `(device, metric)`), les purger sur une date ferait perdre sa dernière valeur connue à un équipement qui n'est plus interrogé — il disparaîtrait de `/lr-health` **en silence**. ⚠️ Ne purge **jamais au-delà de ce que le résumé quotidien a totalisé** (et rien du tout tant qu'il est vide) : une journée non résumée purgée serait perdue pour de bon. ⚠️ **Plancher codé en dur à 2 jours** (`_RETENTION_FLOOR_DAYS`) — la fenêtre 24 h de `/clients` lit encore le brut et **glisse**. Suppression **par lots** commités. Verrouillé par `tests/test_device_metrics_retention.py` |
+| `DEVICE_METRICS_RETENTION_ENABLED` / `DEVICE_METRICS_RETENTION_DAYS` / `DEVICE_METRICS_RETENTION_INTERVAL_MINUTES` | **Rétention sur `device_metrics`** (défauts `true` / **7** j / 6 h), active depuis le 2026-09-25 — jusque-là c'était la **seule table du projet sans aucune rétention** (58,4 M lignes / 5,9 Go au 2026-09-24), parce qu'une consommation se **calcule** par différences successives sur ses compteurs. ⚠️ Ne purge **QUE les 4 compteurs d'octets** : toutes les autres métriques sont écrasées en place (1 ligne par `(device, metric)`), les purger sur une date ferait perdre sa dernière valeur connue à un équipement qui n'est plus interrogé — il disparaîtrait de `/lr-health` **en silence**. ⚠️ Ne purge **jamais au-delà de ce que le résumé quotidien a totalisé** (et rien du tout tant qu'il est vide) : une journée non résumée purgée serait perdue pour de bon. ⚠️ **Plancher DÉRIVÉ des fenêtres de `/clients`** (`consumption_service.deepest_raw_window_days() + 1`, soit 31 j aujourd'hui) : elles sont glissantes, donc leur bord le plus ancien se calcule sur des relevés aussi profonds que la fenêtre. Un réglage plus court est **relevé et journalisé**, jamais appliqué tel quel. Suppression **par lots** commités. Verrouillé par `tests/test_device_metrics_retention.py` |
 | `CLIENT_CONSUMPTION_DAILY_ROLLUP_HOUR` / `CLIENT_CONSUMPTION_DAILY_MAX_CATCHUP_DAYS` | Heure UTC du **résumé quotidien de consommation** (défaut **2**, avant les REFRESH de 3 h et 4 h qui lisent la même table) et nombre max de journées rattrapées en un passage (défaut 7). Voir **Résumé quotidien de consommation** |
 | `TRAFFIC_STATS_RETENTION_DAYS` | Rétention batchée de `traffic_dest_stats` (défaut 90 ; `traffic_stats_retention_job`) |
 | `LR_METRIC_HISTORY_BUCKET_SECONDS` | Largeur d'un bucket de l'historique des courbes (défaut **60** s = un point par relevé de poll, la résolution max que les données permettent). 300 divise le volume par ~3. **Le bucket n'est PAS le facteur limitant pour la latence** : sa sonde tourne toutes les 3 min (`LR_LATENCY_INTERVAL=180` en prod) et un tour dure 100-480 s → un client produit une mesure toutes les 3-8 min quoi qu'on règle ici. Changer la valeur ne réécrit pas les lignes existantes |
@@ -387,7 +387,7 @@ Réglages **séparés par famille**, aucun budget partagé (`ping_infra_reconfir
 | `lr_internet_probe_job` | 60s | SSH sur **chaque LR** avec credentials → `ping -c 5` vers `LR_LATENCY_TARGET` (8.8.8.8). ⚠️ **Les LR bloqués (`client_blocked`) sont EXCLUS de la sonde** : l'abonné est coupé délibérément, mesurer la latence d'un accès qu'on a soi-même fermé ne renseigne sur rien, et le `client_block_enforcement_job` ouvre déjà sa propre session SSH sur ces mêmes LR toutes les 120 s — chaque session économisée retourne au budget du tour, la ressource rare de ce job (100-480 s à ~557 LR). L'exclusion porte sur l'**intention** en base, pas sur la coupure constatée. **Leur `lr_latency_ms` collapse est PURGÉ** à l'exclusion : cesser de mesurer ne doit jamais laisser une mesure derrière soi — sinon la dernière valeur d'avant le blocage resterait figée en base pour toujours et `/lr-health` (comme le contrôle quotidien `network_latency_aggregate_job`) continuerait de compter cet abonné en « latence élevée ». Même geste et même raison que la purge du cas « pas de transit ». Retour dans la sonde au déblocage, dès le cycle suivant. Détecte à la fois la perte de transit (`lr_no_transit` après 2 cycles KO) et la dégradation de latence (`lr_latency_high` si avg ≥ 100 ms sur 3 cycles). Le RTT part dans `persist_device_metrics`, qui l'écrit **deux fois** : en `device_metrics.lr_latency_ms` (collapse = dernière valeur, lu par `/lr-health`) **et**, `lr_latency_ms` étant dans `GRAPH_METRICS`, dans `lr_metric_samples` (bucket 5 min = la SÉRIE du graphe client). Pas de transit → **rien** n'est écrit dans l'historique et la métrique collapse est purgée → le graphe montre un trou, pas un 0. **Effet de bord (2026-07-23)** : comme la session SSH a déjà lieu, il **persiste l'issue SSH** dans `lrs.ssh_status`/`ssh_error`/`ssh_checked_at` via `ssh_service.classify_probe_ssh_status(ssh_ok, used_pw, msg)` (`ok`/`auth_failed`/`ssh_disabled`/`host_key_mismatch`/`unreachable`) — `used_pw` non nul = auth OK même si exec timeout (pas un refus). Alimente la page « Diagnostics d'accès » |
 | `warning_digest_job` | 15 min | Regroupe les warnings en un seul message pour éviter la fatigue d'alerte |
 | `client_block_enforcement_job` | 120s | Ré-applique le blocage actif (port LAN ou filtre WhatsApp, selon `block_mode`) sur chaque LR `client_blocked` (survit au reboot du LR). ⚠️ **Concurrent depuis le 2026-09-15** : `_ENFORCE_FANOUT` = **8** LR à la fois, **une session par LR**, relue au moment de le traiter et **commitée avant tout SSH** (plus aucune connexion « idle in transaction » pendant la session). La boucle était SÉRIE : tour moyen 309 s, max 3833 s (64 min) pour un cycle de 120 s, mesuré par `scripts/diag-perf.sh`. **8 et pas 10** : paramiko passe par le pool de threads PAR DÉFAUT (12 threads), partagé par tout `scheduler-heavy`. Sémaphore distinct de `_SSH_CONCURRENCY` (le réutiliser = auto-blocage). Verrouillé par `tests/test_client_block_enforcement_fanout.py` |
-| `device_metrics_retention_job` | `DEVICE_METRICS_RETENTION_INTERVAL_MINUTES` (6 h) | **Purge les relevés bruts de compteurs d'octets déjà totalisés** par le résumé quotidien. `device_metrics` était la **seule table du projet qui grossissait sans fin** — une consommation se **calcule** par différences successives, donc répondre à « combien en mars » obligeait à garder tous les relevés de mars. ⚠️ **Ne purge que les 4 compteurs** (`consumption_service.COUNTER_METRICS`) : le reste est écrasé en place et une purge par date lui ferait perdre sa dernière valeur connue. ⚠️ **Se borne au dernier jour résumé** — job de nuit en échec = rien n'est purgé de ces journées-là ; résumé vide = **aucune purge du tout**. ⚠️ **Plancher 2 j** : la fenêtre 24 h de `/clients` lit encore le brut. Batches commités, groupe **fast**. Voir **Résumé quotidien de consommation** |
+| `device_metrics_retention_job` | `DEVICE_METRICS_RETENTION_INTERVAL_MINUTES` (6 h) | **Purge les relevés bruts de compteurs d'octets déjà totalisés** par le résumé quotidien. `device_metrics` était la **seule table du projet qui grossissait sans fin** — une consommation se **calcule** par différences successives, donc répondre à « combien en mars » obligeait à garder tous les relevés de mars. ⚠️ **Ne purge que les 4 compteurs** (`consumption_service.COUNTER_METRICS`) : le reste est écrasé en place et une purge par date lui ferait perdre sa dernière valeur connue. ⚠️ **Se borne au dernier jour résumé** — job de nuit en échec = rien n'est purgé de ces journées-là ; résumé vide = **aucune purge du tout**. ⚠️ **Plancher dérivé** (31 j) : les fenêtres de `/clients` étant glissantes, leur bord le plus ancien lit le brut à leur propre profondeur. Batches commités, groupe **fast**. Voir **Résumé quotidien de consommation** |
 | `client_consumption_daily_rollup_job` | **Cron quotidien `CLIENT_CONSUMPTION_DAILY_ROLLUP_HOUR`:00 UTC** (défaut **02:00**, donc AVANT les deux REFRESH de matviews qui lisent la même table) | **Totalise la consommation de LA VEILLE** dans `client_consumption_daily` (1 ligne par device+compteur+jour). Une journée écoulée ne change plus : la somme de deltas est calculée **une fois** au lieu d'être recalculée à chaque affichage depuis les relevés bruts. C'est ce qui rend possible une rétention sur `device_metrics` — **seule table du projet qui grossissait sans fin** (58,4 M lignes / 5,9 Go au 2026-09-24) — sans perdre l'historique de consommation. ⚠️ **Jamais la journée en cours** (total partiel qui serait figé). ⚠️ **Un commit PAR JOURNÉE** : une erreur au 5e jour d'un rattrapage ne perd pas les 4 précédents. Rattrapage borné à `CLIENT_CONSUMPTION_DAILY_MAX_CATCHUP_DAYS` (7) par passage ; l'historique ancien se remplit **une fois** par `scripts/backfill_consumption_daily.py`. Groupe **fast**. Voir **Résumé quotidien de consommation** |
 | `unverified_ip_cleanup_job` | `IP_CLEANUP_INTERVAL_HOURS` (12 h) | Retire l'IP des LR que plus aucune source ne confirme (ni UISP actif/récent, ni radio récent, ou IP hors plan) → `status='unknown'`. Groupe **fast**. `ip_hygiene_service.run_cleanup` |
 | `traffic_stats_retention_job` | `TRAFFIC_STATS_RETENTION_INTERVAL_MINUTES` (6 h) | Purge `traffic_dest_stats` plus vieux que `TRAFFIC_STATS_RETENTION_DAYS` (90 j) en **batches** (`DELETE … WHERE id IN (SELECT id … LIMIT n)`, jamais une grosse transaction). Groupe scheduler **fast**. La collecte elle-même tourne dans le container **`netflow-collector`** (hors APScheduler). **NB : `device_metrics` a enfin la sienne depuis le 2026-09-25** (`device_metrics_retention_job`), une fois sa consommation reprise par le résumé quotidien. |
@@ -2120,9 +2120,9 @@ perdu — chaque jour, pour chaque client.
 
 | Vue | Avant | Après |
 |---|---|---|
-| 24 h | SQL live | **inchangé** — seule fenêtre encore glissante, et seule à lire le brut |
-| **7 j / 30 j** | matviews `client_consumption_30d` / `_7d` | **résumé + journée en cours** (2026-09-25) |
-| **Plage de dates** | live sur des mois de relevés | **somme du résumé** |
+| 24 h | SQL live | **inchangé** |
+| **7 j / 30 j** | matviews `client_consumption_30d` / `_7d` | **résumé + les deux bords en live** (2026-09-25) — même fenêtre, mêmes chiffres |
+| **Plage de dates** | live sur des mois de relevés | **somme du résumé** (déjà alignée sur minuit : aucun bord) |
 | **Depuis toujours** | live sur tout l'historique | **résumé + journée en cours** |
 
 Une plage de dates porte sur des **journées entières UTC** : elle s'aligne
@@ -2143,22 +2143,48 @@ nocturnes (migration `i5d6e7f8a9b0`). Deux raisons indépendantes :
 2. **Leur REFRESH coûtait > 19 min d'E/S** — c'est l'incident du 2026-07-20
    (sonde LR à ~40 min/tour, `ltu_api_poll` à 0/60 Rockets).
 
-⚠️ **Contrepartie assumée : 7 j et 30 j sont désormais alignées sur les
-JOURNÉES** (`calendar_period_start` — « 7 j » = aujourd'hui + les 6 journées
-précédentes) et non plus glissantes à la seconde. Le bord de la fenêtre saute à
-minuit au lieu d'avancer en continu. ⚠️ **N-1 et pas N** : le résumé rend des
-journées entières, donc partir de `aujourd'hui − 7 jours` couvrirait **8**
-journées calendaires et surestimerait le total d'une journée complète.
+⚠️ **Les chiffres affichés ne bougent PAS** : les trois fenêtres restent
+**glissantes à la seconde**, exactement comme avec les matviews.
+`_aggregate_via_daily` découpe en **trois** — `[lower → minuit)` en live, les
+**journées entières** depuis le résumé, `[minuit → maintenant)` en live :
 
-⚠️ **Ne jamais rebrancher une fenêtre sur les relevés bruts sans revoir la
-rétention** — c'est elle que borne la lecture la plus profonde. Aujourd'hui
-c'est la fenêtre 24 h, d'où le plancher de 2 jours.
+```
+        bord de tête            milieu                bord de queue
+   [ lower ─── minuit )   [ journées entières ]   [ minuit ─── now )
+         live                   résumé                   live
+```
+
+⚠️ **Le bord de TÊTE n'est pas un raffinement, c'est la fenêtre elle-même.**
+Une version intermédiaire (quelques heures le 2026-09-25) alignait les fenêtres
+sur les journées, faute de ce bord : « 7 j » consulté le matin rendait jusqu'à
+**14 % de moins** qu'avant — une baisse de trafic qui n'a jamais eu lieu.
+Prendre la journée entière de `lower` à la place ferait l'erreur inverse
+(jusqu'à 24 h de trop).
+
+⚠️ **Aucun double comptage à la jonction** : le résumé d'une journée inclut
+déjà l'octet consommé de part et d'autre de minuit (son lookback de 6 h), et la
+requête de tête s'arrête à minuit **exclu**.
+
+⚠️ **C'est ce bord de tête qui BORNE la rétention** : le bord le plus ancien de
+« 30 jours » se calcule sur des relevés de **30 jours**. D'où une rétention de
+**33 j** (30 + 3 de marge) et non de 7. Le plancher est **dérivé**
+(`consumption_service.deepest_raw_window_days()`), jamais écrit en dur : le jour
+où un onglet « 90 jours » est ajouté, la purge refuse d'elle-même de descendre
+sous 91 jours au lieu de servir un total amputé en silence.
 
 ##### La rétention, enfin (2026-09-25)
 
-`device_metrics_retention_job`, une fois le résumé rempli et **vérifié** (68 To
-contre 68 To sur les mêmes journées, écart **+0,107 %** — positif et attendu,
-le résumé rattrapant l'octet consommé de part et d'autre de minuit).
+`device_metrics_retention_job` (défaut **33 j**), une fois le résumé rempli et
+**vérifié** (68 To contre 68 To sur les mêmes journées, écart **+0,107 %** —
+positif et attendu, le résumé rattrapant l'octet consommé de part et d'autre de
+minuit).
+
+⚠️ **33 jours et pas 7** : le gain disque n'est pas le seul critère. Les
+fenêtres de `/clients` étant glissantes, descendre sous 31 jours viderait le
+bord de tête de « 30 jours » et amputerait le total **sans aucune erreur**. La
+vraie prise de ce travail, c'est la suppression des deux REFRESH de 19 min et
+la **borne** posée sur une table qui grossissait sans fin (5,9 Go → ~1,6 Go),
+pas le dernier gigaoctet.
 
 Ce qui se perd au-delà de la rétention est le détail **infra-journalier**
 (« combien entre 14 h et 15 h le 3 mars »), jamais le total d'une journée ni

@@ -1049,10 +1049,14 @@ ou une **plage de dates libre**, agrégé site → Rocket → client.
   **0/60 Rockets** — incident du 2026-07-20), et surtout il **interdisait toute rétention** :
   purger au-delà de 7 j aurait fait afficher une consommation de 30 j **calculée sur 7**.
 - Toutes les fenêtres **sauf 24 h** sont servies par le **résumé quotidien**
-  (`client_consumption_daily`) recousu avec la journée en cours. ⚠️ Elles sont donc
-  **alignées sur les journées** (« 7 j » = aujourd'hui + les 6 précédentes), plus glissantes
-  à la seconde. ⚠️ **Ne rebrancher aucune fenêtre sur les relevés bruts** sans revoir
-  `DEVICE_METRICS_RETENTION_DAYS` : c'est la lecture la plus profonde qui fixe le plancher.
+  (`client_consumption_daily`), recousu avec ses **deux bords partiels** calculés en live
+  (`_aggregate_via_daily`). ⚠️ Les chiffres sont **identiques** à ceux des matviews : les
+  fenêtres restent glissantes à la seconde. Le bord de TÊTE n'est pas un raffinement — sans
+  lui, « 7 j » consulté le matin rend jusqu'à **14 % de moins**.
+- ⚠️ **C'est ce bord de tête qui borne la rétention** : celui de « 30 jours » lit des relevés
+  de 30 jours, d'où `DEVICE_METRICS_RETENTION_DAYS=33`. Le plancher est **dérivé**
+  (`consumption_service.deepest_raw_window_days()`), donc ajouter un onglet plus profond
+  ajuste la purge tout seul.
 - Les compteurs 32 bits des airMAX rebouclent à ~4 Go : absorbé par la **somme des deltas
   positifs** (un cycle perdu par rebouclage, borné).
 - ⚠️ **Il n'y a plus de rétention sur `device_metrics`** : les compteurs de consommation

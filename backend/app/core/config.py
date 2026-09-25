@@ -1008,17 +1008,20 @@ class Settings(BaseSettings):
     # CALCULE par differences successives : la purger avant le resume aurait
     # efface l'historique pour de bon.
     #
-    # 7 jours : la seule vue qui lise encore les releves bruts est la fenetre
-    # 24 h de /clients, plus la journee en cours des autres. Le reste est une
-    # marge, pour qu'une panne de plusieurs nuits du job de nuit n'entame rien
-    # (et la purge se borne de toute facon a ce qui est deja totalise).
+    # 33 jours = 30 + 3 de marge. Ce n'est PAS un choix de confort : les
+    # fenetres de /clients sont GLISSANTES, donc le bord le plus ancien de
+    # « 30 jours » se calcule en direct sur des releves de 30 jours. Purger
+    # plus court rendrait ce bord vide et le total serait amputé — jusqu'a
+    # 24 h de consommation en moins, en silence. Le job s'en protege : son
+    # plancher est DERIVE de `consumption_service.deepest_raw_window_days()`,
+    # il releve ce reglage s'il est trop court et le journalise.
     #
     # /!\ La purge ne touche QUE les 4 compteurs d'octets
     # (consumption_service.COUNTER_METRICS) : toutes les autres metriques sont
     # ECRASEES EN PLACE, donc les purger sur une date ferait perdre sa derniere
     # valeur connue a un equipement qui n'est plus interroge.
     device_metrics_retention_enabled: bool = True
-    device_metrics_retention_days: int = 7
+    device_metrics_retention_days: int = 33
     device_metrics_retention_interval_minutes: int = 360
 
     # Equipment flapping — flap_detection_job counts the availability incidents

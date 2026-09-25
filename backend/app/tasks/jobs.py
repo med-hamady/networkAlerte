@@ -3048,10 +3048,10 @@ async def _apply_lr_topology(session, dev: Lr, mode: str | None, source_msg: str
         )
 
 
-# Plancher de la retention sur `device_metrics`, en jours. La fenetre 24 h de
-# `/clients` lit encore les releves bruts et GLISSE : a 00 h 05 elle redescend
-# a 00 h 05 la veille. Deux jours couvrent ce besoin quoi qu'on regle dans
-# l'env — un reglage a 0 ne doit pas pouvoir vider l'onglet par defaut.
+# Plancher ABSOLU de la retention sur `device_metrics`, en jours — le plancher
+# reel est calcule plus bas et vaut au moins la lecture la plus profonde.
+# Celui-ci ne sert qu'a garantir un minimum si jamais toutes les fenetres
+# disparaissaient : un reglage a 0 ne doit pas pouvoir vider l'onglet 24 h.
 _RETENTION_FLOOR_DAYS = 2
 
 
@@ -3095,7 +3095,23 @@ async def device_metrics_retention_job() -> None:
     if not settings.device_metrics_retention_enabled:
         return
 
-    days = max(settings.device_metrics_retention_days, _RETENTION_FLOOR_DAYS)
+    # Plancher DERIVE des fenetres de /clients, jamais ecrit en dur : le bord
+    # le plus ancien de la fenetre 30 j se calcule en direct sur des releves de
+    # 30 jours (+1 pour couvrir la journee entamee). Le jour ou un onglet plus
+    # profond est ajoute, la purge s'ajuste d'elle-meme au lieu de servir un
+    # total amputé sans rien dire.
+    floor = max(
+        _RETENTION_FLOOR_DAYS,
+        consumption_service.deepest_raw_window_days() + 1,
+    )
+    days = max(settings.device_metrics_retention_days, floor)
+    if settings.device_metrics_retention_days < floor:
+        logger.warning(
+            "device_metrics retention — reglage a %d j releve au plancher de "
+            "%d j : la fenetre la plus profonde de /clients lit encore les "
+            "releves bruts a cette profondeur",
+            settings.device_metrics_retention_days, floor,
+        )
     now = datetime.datetime.now(datetime.UTC)
     cutoff = now - datetime.timedelta(days=days)
 

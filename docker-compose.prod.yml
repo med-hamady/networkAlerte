@@ -64,7 +64,23 @@ services:
       - max_connections=200
     # Les requêtes parallèles échangent via /dev/shm, que Docker limite à 64 Mo :
     # au-delà, « could not resize shared memory segment » en pleine requête.
-    shm_size: 1g
+    #
+    # ⚠️ 2 Go et non 1, depuis le 2026-09-25. Une opération de maintenance
+    # PARALLÈLE (VACUUM, CREATE INDEX) demande un segment dimensionné sur
+    # `maintenance_work_mem`, soit 1 Go ici — plus quelques dizaines de Ko
+    # d'en-tête. Avec shm_size=1g elle échouait donc SYSTÉMATIQUEMENT, de très
+    # peu : « could not resize … to 1073778400 bytes » contre 1073741824
+    # disponibles, 36 Ko de trop. Constaté sur le VACUUM qui suivait la purge
+    # des 38,8 M relevés de `device_metrics`.
+    #
+    # ⚠️ Règle à tenir : **shm_size doit rester STRICTEMENT supérieur à
+    # `maintenance_work_mem`**. Relever l'un sans l'autre remet la panne, et
+    # elle ne se voit qu'au moment précis où on fait de la maintenance — donc
+    # jamais avant d'en avoir besoin.
+    #
+    # ⚠️ Un `restart` ne suffit pas à l'appliquer : `dc up -d postgres`
+    # (recréation du conteneur).
+    shm_size: 2g
 
   backend:
     # Bind-mount du code (Python interprété) : un changement de code ne demande

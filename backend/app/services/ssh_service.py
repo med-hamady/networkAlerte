@@ -321,6 +321,9 @@ def _start_session_watchdog(
     d'une session saine serait fermé sous ses pieds au bout de ``limit``).
     """
     def _force_close() -> None:
+        # Lu par les appelants pour distinguer « tué par le chien de garde » d'une
+        # autre erreur de session (cf. _watchdog_failure).
+        timer.fired = True
         logger.warning(
             "SSH watchdog: session %s bloquée > %ss — fermeture forcée du "
             "transport (lien radio probablement tombé en cours de session).",
@@ -331,8 +334,41 @@ def _start_session_watchdog(
 
     timer = threading.Timer(limit, _force_close)
     timer.daemon = True
+    timer.fired = False
     timer.start()
     return timer
+
+
+# Plafond dur d'une session de BLOCAGE (port LAN, WhatsApp seul, filtre de
+# contenu), une fois le SSH établi. Budget réel au pire : identité + contexte
+# client + résolveur (~25 s) + script 25 s + vérification 12 s ≈ 60 s → 120 s
+# ne coupe jamais une session saine.
+#
+# Mesuré en prod le 2026-09-26 (scripts/diag_jobs.py) : sans ce plafond,
+# client_block_enforcement_job a tenu un tour de 3644 s et en a sauté 121 sur
+# 6 h — les mêmes attentes paramiko non bornables que la sonde (exec_command,
+# open_session sans timeout), sur un LR dont le lien tombe en pleine session.
+# Le gather du fan-out attend le plus lent : UN LR gelait le renforcement de
+# TOUS les clients bloqués, donc un abonné dont le LR reboote retrouvait
+# Internet jusqu'à une heure.
+_BLOCK_SESSION_HARD_LIMIT_S = 120
+
+
+def _watchdog_failure(watchdog: threading.Timer, host: str, exc: Exception) -> str | None:
+    """Message d'échec si ``exc`` vient de la fermeture forcée, sinon None.
+
+    Ne convertit QUE ce cas-là en échec propre (donc rejoué au cycle suivant,
+    ``_structural_failure`` le classant transitoire) : toute autre erreur de
+    session continue de remonter exactement comme avant.
+    """
+    if not getattr(watchdog, "fired", False):
+        return None
+    msg = (
+        f"session SSH bloquée plus de {_BLOCK_SESSION_HARD_LIMIT_S}s, fermée de force "
+        f"(lien radio probablement tombé en cours) — {exc}"
+    )
+    logger.warning("SSH %s — %s", host, msg)
+    return msg
 
 
 class SshExecTimeoutError(TimeoutError):
@@ -855,6 +891,8 @@ def _set_iface_state_sync(
     if transcript is not None:
         transcript.note("session SSH établie et authentifiée")
 
+    watchdog = _start_session_watchdog(transport, host, _BLOCK_SESSION_HARD_LIMIT_S)
+
     # Identité : la fiche cible une MAC, la session part sur une IP. Refuser
     # avant d'agir évite de couper un abonné qui a hérité de l'adresse.
     refusal = identity_refusal(transport, expected_mac, transcript=transcript)
@@ -862,6 +900,7 @@ def _set_iface_state_sync(
         logger.warning("Action de blocage refusée sur %s — %s", host, refusal)
         if transcript is not None:
             transcript.note(f"REFUS — {refusal}")
+        watchdog.cancel()
         transport.close()
         return False, refusal, observed, used_pw, _ev()
 
@@ -938,7 +977,15 @@ def _set_iface_state_sync(
             used_pw,
             _ev(),
         )
+    except Exception as exc:
+        msg = _watchdog_failure(watchdog, host, exc)
+        if msg is None:
+            raise
+        if transcript is not None:
+            transcript.note(f"SESSION COUPÉE — {msg}")
+        return False, msg, observed, used_pw, _ev()
     finally:
+        watchdog.cancel()
         transport.close()
 
 
@@ -1130,9 +1177,12 @@ def _set_whatsapp_only_sync(
 
     # Identité : la fiche cible une MAC, la session part sur une IP. Refuser
     # avant d'agir évite de couper un abonné qui a hérité de l'adresse.
+    watchdog = _start_session_watchdog(transport, host, _BLOCK_SESSION_HARD_LIMIT_S)
     refusal = identity_refusal(transport, expected_mac)
     if refusal is not None:
         logger.warning("Action de blocage refusée sur %s — %s", host, refusal)
+        watchdog.cancel()
+        transport.close()
         return False, refusal, observed, used_pw
 
     try:
@@ -1269,7 +1319,13 @@ def _set_whatsapp_only_sync(
                 f"iptables : tout rétabli)."
             )
         return True, msg, observed, used_pw
+    except Exception as exc:
+        msg = _watchdog_failure(watchdog, host, exc)
+        if msg is None:
+            raise
+        return False, msg, observed, used_pw
     finally:
+        watchdog.cancel()
         transport.close()
 
 
@@ -1381,9 +1437,12 @@ def _set_content_block_sync(
 
     # Identité : la fiche cible une MAC, la session part sur une IP. Refuser
     # avant d'agir évite de couper un abonné qui a hérité de l'adresse.
+    watchdog = _start_session_watchdog(transport, host, _BLOCK_SESSION_HARD_LIMIT_S)
     refusal = identity_refusal(transport, expected_mac)
     if refusal is not None:
         logger.warning("Action de blocage refusée sur %s — %s", host, refusal)
+        watchdog.cancel()
+        transport.close()
         return False, refusal, observed, used_pw
 
     try:
@@ -1601,7 +1660,13 @@ def _set_content_block_sync(
         else:
             msg = f"Filtre de contenu retiré sur {subnet}."
         return True, msg, observed, used_pw
+    except Exception as exc:
+        msg = _watchdog_failure(watchdog, host, exc)
+        if msg is None:
+            raise
+        return False, msg, observed, used_pw
     finally:
+        watchdog.cancel()
         transport.close()
 
 

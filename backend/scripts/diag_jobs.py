@@ -139,7 +139,11 @@ def main() -> int:
             func = by_name[t[1]]
             if msg.startswith("Running job"):
                 last_start[func] = ts
-                container.setdefault(func, ctr)
+                # Un job présent dans tous les conteneurs (heartbeat) n'a pas UN
+                # conteneur : le dire plutôt que d'afficher le premier venu.
+                if container.get(func, ctr) != ctr:
+                    ctr = "(plusieurs)"
+                container[func] = ctr
             elif "maximum number of running instances" in msg:
                 skipped[func] += 1
             elif "was missed by" in msg:
@@ -169,6 +173,9 @@ def main() -> int:
         interval = table[func]["interval"]
         ds = durations.get(func, [])
         seen = bool(ds) or func in last_start or func in skipped
+        # Sans @_timed_job, un job n'écrit jamais « tour terminé » : 0 tour ne
+        # veut rien dire, et le juger « muet » ou « troué » serait faux.
+        timed = hasattr(getattr(jobs_module, func, None), "__wrapped__")
         if not seen:
             continue  # job d'un conteneur non lu, ou désactivé
         n = len(ds)
@@ -185,14 +192,14 @@ def main() -> int:
 
         print(
             f"{func:<30} {container.get(func, '?')[:22]:<22} "
-            f"{('cron' if interval is None else f'{interval:.0f}s'):>7} {n:>6} "
+            f"{('cron' if interval is None else f'{interval:.0f}s'):>7} {(n if timed else 'n/c'):>6} "
             f"{('-' if expected is None else expected):>8} {f(avg):>7} {f(p95):>7} {f(mx):>7} "
             f"{(f'{over} ({100 * over / n:.0f}%)' if interval and n else '-'):>8} "
             f"{skipped.get(func, 0):>6} {missed.get(func, 0):>5} {len(dl):>8} "
             f"{errors.get(func, 0):>7} {db_retries.get(func, 0):>7} {_fmt_age(age):>8}"
         )
 
-        if interval:
+        if interval and timed:
             if p95 is not None and p95 > interval:
                 problems.append(
                     f"[DÉPASSE]  {func} : p95 {p95:.0f} s > intervalle {interval:.0f} s "
@@ -246,7 +253,10 @@ def main() -> int:
         and f in jobs_module.__dict__ and f not in durations
         and f not in last_start and getattr(jobs_module.__dict__[f], "__wrapped__", None)
     ]
-    print()
+    print(
+        "\n(n/c = job non chronométré : pas de ligne « tour terminé », "
+        "seuls sautés/ratés/erreurs sont comptés)\n"
+    )
     if problems:
         print("À REGARDER :")
         for p in problems:

@@ -116,6 +116,40 @@ def _retryable_db_conflict(exc: BaseException) -> bool:
     return code in _RETRYABLE_SQLSTATES
 
 
+# ── Rejeu sur échec d'OUVERTURE d'une connexion à la base ────────────────────
+# Mesuré en prod (2026-09-26) : power_poll_job a planté 3 fois en 12 h sur
+# `socket.gaierror: [Errno -3] Temporary failure in name resolution` — le DNS
+# interne de Docker n'a pas su résoudre `postgres` à cet instant. Postgres n'a
+# jamais vu la tentative. Chaque connexion au-delà de `pool_size` est ouverte
+# puis refermée, donc résout le nom à chaque fois : des centaines de résolutions
+# par heure dans scheduler-heavy, et il suffit d'un raté.
+#
+# ⚠️ On ne rejoue QUE si l'erreur est levée PENDANT l'ouverture de la connexion
+# (une frame du pool SQLAlchemy ou du connecteur asyncpg est dans la pile). Un
+# OSError en général NE suffit PAS : les erreurs SSH/réseau vers les équipements
+# en sont aussi, et rejouer un job entier sur la panne d'une radio serait faux.
+# La session qui échoue n'a rien écrit (aucune transaction n'a commencé), et ce
+# que le tour avait déjà écrit est idempotent (latest-wins) : rejouer est aussi
+# sûr qu'après un interblocage. UN seul rejeu : si le DNS reste muet, c'est une
+# vraie panne, et elle doit se voir.
+_JOB_DB_CONNECT_MAX_RETRIES = 1
+_JOB_DB_CONNECT_RETRY_S = 2.0
+_DB_CONNECT_FRAMES = ("sqlalchemy/pool/", "asyncpg/connect_utils", "asyncpg/connection")
+
+
+def _db_connect_failure(exc: BaseException) -> bool:
+    """True si ``exc`` est un échec à l'OUVERTURE d'une connexion à la base."""
+    if not isinstance(exc, (OSError, DBAPIError)):
+        return False
+    tb = exc.__traceback__
+    while tb is not None:
+        path = tb.tb_frame.f_code.co_filename.replace("\\", "/")
+        if any(marker in path for marker in _DB_CONNECT_FRAMES):
+            return True
+        tb = tb.tb_next
+    return False
+
+
 def _timed_job(fn):
     """Log how long each run of a scheduled job takes (observability P2.2) and
     rejoue le job sur deadlock/serialization Postgres (transitoire, sans perte).
@@ -129,10 +163,25 @@ def _timed_job(fn):
         started = time.monotonic()
         try:
             attempt = 0
+            connect_attempt = 0
             while True:
                 try:
                     return await fn(*args, **kwargs)
-                except DBAPIError as exc:
+                except (OSError, DBAPIError) as exc:
+                    if (
+                        connect_attempt < _JOB_DB_CONNECT_MAX_RETRIES
+                        and _db_connect_failure(exc)
+                    ):
+                        connect_attempt += 1
+                        logger.warning(
+                            "JOB %s — connexion à la base impossible (%s: %s), "
+                            "rejeu dans %.0f s",
+                            fn.__name__, type(exc).__name__, exc, _JOB_DB_CONNECT_RETRY_S,
+                        )
+                        await asyncio.sleep(_JOB_DB_CONNECT_RETRY_S)
+                        continue
+                    if not isinstance(exc, DBAPIError):
+                        raise
                     # Seuls les conflits transitoires sont rejoués ; toute autre
                     # DBAPIError remonte inchangée. La transaction victime est
                     # déjà rollback par Postgres → rejouer le job repart propre.

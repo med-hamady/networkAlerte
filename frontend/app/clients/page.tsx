@@ -30,7 +30,11 @@ type RocketConsumption = {
   download_bytes: number
   upload_bytes: number
   total_bytes: number
-  client_count: number
+  // ⚠️ `null` sans le droit `clients.count` : le backend retire le compte
+  // d'abonnés de la réponse. Le compteur « N clients » du bandeau en est la
+  // SOMME, calculée ici — les deux vont donc ensemble, il n'y a pas de version
+  // qui garde la colonne.
+  client_count: number | null
   clients: ClientConsumption[]
 }
 
@@ -40,7 +44,7 @@ type SiteConsumption = {
   upload_bytes: number
   total_bytes: number
   rocket_count: number
-  client_count: number
+  client_count: number | null
   rockets: RocketConsumption[]
 }
 
@@ -167,7 +171,13 @@ export default function ClientsPage() {
     new Date(data.data_start).getTime() > new Date(data.period_start).getTime() + 60_000
 
   const grandTotal = sites.reduce((s, x) => s + x.total_bytes, 0)
-  const clientCount = sites.reduce((s, x) => s + x.client_count, 0)
+  // ⚠️ `null` (et non 0) dès qu'un site n'a pas son compte : « 0 client » sur
+  // un parc d'un millier d'abonnés est un chiffre FAUX, pire que pas de
+  // chiffre. On teste l'absence de la donnée, jamais un `can()`.
+  const showClientCount = sites.length > 0 && sites.every(x => x.client_count != null)
+  const clientCount = showClientCount
+    ? sites.reduce((s, x) => s + (x.client_count ?? 0), 0)
+    : null
 
   // Breadcrumb segments — clickable trail back up the hierarchy.
   const goSites   = () => { setSelectedSite(null); setSelectedRocket(null) }
@@ -297,9 +307,11 @@ export default function ClientsPage() {
           <span className="text-slate-600">
             <strong className="text-slate-800">{sites.length}</strong> site{sites.length > 1 ? 's' : ''}
           </span>
-          <span className="text-slate-600">
-            <strong className="text-slate-800">{clientCount}</strong> client{clientCount > 1 ? 's' : ''}
-          </span>
+          {clientCount != null && (
+            <span className="text-slate-600">
+              <strong className="text-slate-800">{clientCount}</strong> client{clientCount > 1 ? 's' : ''}
+            </span>
+          )}
           <span className="text-slate-600">
             Total flotte : <strong className="text-slate-800">{formatBytes(grandTotal)}</strong>
           </span>
@@ -342,13 +354,22 @@ function SitesTable({ sites, onSelect }: {
   onSelect: (s: SiteConsumption) => void
 }) {
   const maxTotal = sites.reduce((m, s) => Math.max(m, s.total_bytes), 0)
+  // La donnée est là ou elle n'est pas : c'est elle qui décide, pas un `can()`.
+  const showClients = sites.every(s => s.client_count != null)
   return (
     <div className="bg-white border border-blue-100 rounded-xl overflow-hidden shadow-sm">
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-blue-50 border-b border-blue-100">
             <tr>
-              {['Site', 'Rockets', 'Clients', 'Download ⬇', 'Upload ⬆', 'Total', 'Part relative'].map(h => (
+              {[
+                'Site', 'Rockets',
+                // ⚠️ La colonne est RETIRÉE, pas vidée : une colonne « Clients »
+                // dont toutes les cellules sont blanches se lit comme une panne
+                // de collecte, pas comme un droit manquant.
+                ...(showClients ? ['Clients'] : []),
+                'Download ⬇', 'Upload ⬆', 'Total', 'Part relative',
+              ].map(h => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
                   {h}
                 </th>
@@ -366,7 +387,9 @@ function SitesTable({ sites, onSelect }: {
                 >
                   <td className="px-4 py-3 font-medium text-slate-800">{s.site}</td>
                   <td className="px-4 py-3 text-xs text-slate-600 tabular-nums">{s.rocket_count}</td>
-                  <td className="px-4 py-3 text-xs text-slate-600 tabular-nums">{s.client_count}</td>
+                  {showClients && (
+                    <td className="px-4 py-3 text-xs text-slate-600 tabular-nums">{s.client_count}</td>
+                  )}
                   <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-700">{formatBytes(s.download_bytes)}</td>
                   <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-700">{formatBytes(s.upload_bytes)}</td>
                   <td className="px-4 py-3 whitespace-nowrap font-mono text-sm font-semibold text-slate-800">{formatBytes(s.total_bytes)}</td>
@@ -387,13 +410,18 @@ function RocketsTable({ site, onSelect }: {
   onSelect: (r: RocketConsumption) => void
 }) {
   const maxTotal = site.rockets.reduce((m, r) => Math.max(m, r.total_bytes), 0)
+  const showClients = site.rockets.every(r => r.client_count != null)
   return (
     <div className="bg-white border border-blue-100 rounded-xl overflow-hidden shadow-sm">
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-blue-50 border-b border-blue-100">
             <tr>
-              {['Rocket', 'Clients', 'Download ⬇', 'Upload ⬆', 'Total', 'Part relative'].map(h => (
+              {[
+                'Rocket',
+                ...(showClients ? ['Clients'] : []),
+                'Download ⬇', 'Upload ⬆', 'Total', 'Part relative',
+              ].map(h => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-blue-500 uppercase tracking-wider whitespace-nowrap">
                   {h}
                 </th>
@@ -412,7 +440,9 @@ function RocketsTable({ site, onSelect }: {
                   <td className="px-4 py-3 font-medium text-slate-800">
                     {r.rocket_name ?? <span className="text-blue-300">— sans parent —</span>}
                   </td>
-                  <td className="px-4 py-3 text-xs text-slate-600 tabular-nums">{r.client_count}</td>
+                  {showClients && (
+                    <td className="px-4 py-3 text-xs text-slate-600 tabular-nums">{r.client_count}</td>
+                  )}
                   <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-700">{formatBytes(r.download_bytes)}</td>
                   <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-700">{formatBytes(r.upload_bytes)}</td>
                   <td className="px-4 py-3 whitespace-nowrap font-mono text-sm font-semibold text-slate-800">{formatBytes(r.total_bytes)}</td>

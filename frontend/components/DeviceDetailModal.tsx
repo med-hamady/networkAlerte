@@ -118,6 +118,11 @@ function ModalContent({ device, devices, onClose, onNavigate }: {
     fetcher,
     { refreshInterval: REFRESH },
   )
+  // ⚠️ `undefined` — donc bloc de capacité absent de la fiche — pour un profil
+  // sans le droit `capacity.totals` : la réponse ne porte alors QUE les Rockets
+  // saturés. C'est le comportement voulu et non un trou à combler : « 12 / 20
+  // clients » est exactement le chiffre que ce droit retire. Un Rocket saturé y
+  // reste visible, comme sur la page /capacity.
   const rocketCap: RocketCapacity | undefined =
     isRocket && capacity
       ? capacity.sites.flatMap(s => s.rockets).find(r => r.id === device.id)

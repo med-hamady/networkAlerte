@@ -57,7 +57,10 @@ class RocketConsumption(BaseModel):
     download_bytes: int
     upload_bytes: int
     total_bytes: int
-    client_count: int
+    # ⚠️ `None` quand le profil n'a pas `clients.count` : le backend retire le
+    # compte d'abonnés de la réponse. Jamais 0 — « 0 client » sur un Rocket qui
+    # en porte 25 est un chiffre faux.
+    client_count: int | None
     clients: list[ClientConsumption]
 
 
@@ -73,7 +76,8 @@ class SiteConsumption(BaseModel):
     upload_bytes: int
     total_bytes: int
     rocket_count: int
-    client_count: int
+    # ⚠️ `None` sans le droit `clients.count` — cf. RocketConsumption.
+    client_count: int | None
     rockets: list[RocketConsumption]
 
 

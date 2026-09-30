@@ -150,8 +150,18 @@ PERMISSION_GROUPS: tuple[PermissionGroup, ...] = (
                   "/lr-health"),
             _page("clients.view", "Consommation clients",
                   "Volumes consommés par abonné sur 24 h / 7 j / 30 j.", "/clients"),
+            _data("clients.count", "Compteur d'abonnés",
+                  "Sur « Consommation clients » : le nombre de clients du bandeau "
+                  "de résumé, et la colonne « Clients » des tableaux par site et "
+                  "par Rocket. ⚠️ Les deux vont ensemble — le compteur du bandeau "
+                  "est la SOMME de ces colonnes, calculée dans le navigateur."),
             _page("capacity.view", "Capacité du réseau",
                   "Charge des Rockets et budget d'équipements par site.", "/capacity"),
+            _data("capacity.totals", "Compteurs globaux de capacité",
+                  "Sur « Capacité du réseau » : les deux cercles LTU et airMAX en "
+                  "haut de page (occupé / disponible sur tout le réseau). "
+                  "« Rockets saturés », « Capacité infra par site » et les barres "
+                  "par site restent visibles — ce sont des vues d'exploitation."),
             _page("topology.view", "Topologie du réseau",
                   "Le maillage des backhauls entre sites, et les routes vers Internet.",
                   "/topology"),

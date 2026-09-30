@@ -500,3 +500,92 @@ def test_the_scoped_auth_runs_before_the_permission_guard():
         )
         checked += 1
     assert checked > 20, f"trop peu de routes vérifiées ({checked}) — le test ne prouve rien"
+
+
+# ---------------------------------------------------------------------------
+# `capacity.totals` — le retrait qui doit ÉPARGNER les Rockets saturés
+# ---------------------------------------------------------------------------
+
+def _capacity_payload() -> dict:
+    """Un parc minimal : un Rocket saturé, un Rocket sain, un site sans Rocket."""
+    return {
+        "families": {
+            "ltu": {"consumed": 584, "capacity": 1225, "available": 641,
+                    "rockets": 61, "unknown": 0},
+            "airmax": {"consumed": 434, "capacity": 545, "available": 111,
+                       "rockets": 29, "unknown": 0},
+        },
+        "sites": [
+            {
+                "site": "A2 PK1",
+                "ltu": {"consumed": 10, "capacity": 40, "available": 30,
+                        "rockets": 1, "unknown": 0},
+                "airmax": {"consumed": 25, "capacity": 20, "available": 0,
+                           "rockets": 1, "unknown": 0},
+                "unknown": 0,
+                "rockets": [
+                    {"id": 1, "name": "A2-PK1-OUEST", "current_clients": 25,
+                     "max_clients": 20},
+                    {"id": 2, "name": "A2-PK1-NORD", "current_clients": 10,
+                     "max_clients": 40},
+                    # Capacité indéterminée : jamais saturé, donc jamais gardé.
+                    {"id": 3, "name": "A2-PK1-SUD", "current_clients": 99,
+                     "max_clients": None},
+                ],
+            },
+            {"site": "A2 CT1", "ltu": {}, "airmax": {}, "unknown": 0, "rockets": []},
+        ],
+        "infra": {"threshold": 14, "total_devices": 3, "sites": []},
+    }
+
+
+def test_capacity_strip_keeps_the_saturated_rockets():
+    """⚠️ Retirer `sites` en bloc viderait la seule section qu'on veut GARDER.
+
+    « Rockets saturés » n'est pas une section servie par le backend : le
+    navigateur la construit en parcourant `sites[].rockets[]`. Un retrait naïf
+    (`capacity["sites"] = None`) ferait donc disparaître les Rockets saturés
+    ensemble avec les chiffres — c.-à-d. exactement l'inverse de la demande.
+    """
+    from app.api.endpoints.network_capacity import _strip_totals
+
+    out = _strip_totals(_capacity_payload())
+    kept = [r["name"] for site in out["sites"] for r in site["rockets"]]
+    assert kept == ["A2-PK1-OUEST"], kept
+
+
+def test_capacity_strip_removes_every_figure_that_rebuilds_the_total():
+    """Ce qui part doit partir : cercles, agrégats par site, Rockets NON saturés.
+
+    ⚠️ Le dernier point est le moins évident et le plus important. Garder tous
+    les Rockets laisserait le compte de clients de CHACUN dans la réponse — un
+    `reduce` dans la console du navigateur redonnerait le total que les cercles
+    annonçaient. Le droit ne vaudrait alors rien tout en donnant l'impression du
+    contraire.
+    """
+    from app.api.endpoints.network_capacity import _strip_totals
+
+    out = _strip_totals(_capacity_payload())
+    assert out["families"] is None
+    for site in out["sites"]:
+        assert site["ltu"] is None
+        assert site["airmax"] is None
+        assert site["unknown"] is None
+    healthy = [r for site in out["sites"] for r in site["rockets"]
+               if r["current_clients"] < (r["max_clients"] or 0)]
+    assert healthy == []
+
+
+def test_capacity_strip_keeps_every_site_and_the_infra_budget():
+    """Les sites restent TOUS, et le budget infra n'est pas concerné.
+
+    Un site sans Rocket saturé doit rester dans la réponse : la section « Capacité
+    infra par site » s'en sert pour savoir vers lesquels on peut naviguer, et un
+    site absent s'y afficherait comme non cliquable sans raison. Le budget infra
+    lui-même compte des ÉQUIPEMENTS, pas des abonnés — il n'est pas visé.
+    """
+    from app.api.endpoints.network_capacity import _strip_totals
+
+    out = _strip_totals(_capacity_payload())
+    assert [s["site"] for s in out["sites"]] == ["A2 PK1", "A2 CT1"]
+    assert out["infra"] == {"threshold": 14, "total_devices": 3, "sites": []}

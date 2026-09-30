@@ -29,9 +29,18 @@ export default function CapacityPage() {
   const sites = data?.sites ?? []
   const siteObj = selectedSite != null ? sites.find(s => s.site === selectedSite) ?? null : null
 
+  // ⚠️ On teste l'ABSENCE DE LA DONNÉE, jamais un `can()` : sans le droit
+  // `capacity.totals`, le backend retire `families` et les agrégats par site de
+  // la réponse, et ne laisse dans `rockets[]` que les SATURÉS. La règle vit
+  // donc à un seul endroit — une copie ici pourrait se tromper dans les deux
+  // sens, la donnée est ou n'est pas là.
+  const showTotals = data?.families != null
+
   // Échelle commune des barres par site = plus grande capacité (famille × site).
   const globalMax = useMemo(
-    () => sites.reduce((m, s) => Math.max(m, s.ltu.capacity, s.airmax.capacity), 0),
+    () => sites.reduce(
+      (m, s) => Math.max(m, s.ltu?.capacity ?? 0, s.airmax?.capacity ?? 0), 0,
+    ),
     [sites],
   )
 
@@ -62,8 +71,10 @@ export default function CapacityPage() {
 
   const sortedSites = useMemo(() => {
     const load = (s: SiteCapacity) => {
-      const cap = s.ltu.capacity + s.airmax.capacity
-      return cap > 0 ? (s.ltu.consumed + s.airmax.consumed) / cap : -1
+      const cap = (s.ltu?.capacity ?? 0) + (s.airmax?.capacity ?? 0)
+      return cap > 0
+        ? ((s.ltu?.consumed ?? 0) + (s.airmax?.consumed ?? 0)) / cap
+        : -1
     }
     return siteSort === 'name'
       ? sites
@@ -105,7 +116,11 @@ export default function CapacityPage() {
 
       {data != null && siteObj == null && (
         <>
-          {/* Cercles globaux */}
+          {/* Cercles globaux — absents (et non mis à zéro) sans le droit
+              `capacity.totals`. La page garde alors « Rockets saturés » et le
+              budget infra par site : le problème à traiter, pas la taille du
+              parc. */}
+          {showTotals && data.families != null && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 justify-items-center">
             <CapacityDonut
               title="LTU" used={FAMILY.ltu.used} free={FAMILY.ltu.free}
@@ -122,6 +137,7 @@ export default function CapacityPage() {
               unknown={data.families.airmax.unknown}
             />
           </div>
+          )}
 
           {/* Rockets saturés */}
           <SaturatedRocketsSection
@@ -138,7 +154,10 @@ export default function CapacityPage() {
             />
           )}
 
-          {/* Barres par site */}
+          {/* Barres par site — retirée avec les cercles : ses barres portent
+              les mêmes grandeurs, donc la laisser redonnerait par la somme ce
+              que les cercles annonçaient. */}
+          {showTotals && (
           <div className="bg-white border border-blue-100 rounded-xl shadow-sm p-5">
             <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -176,24 +195,25 @@ export default function CapacityPage() {
                           {saturatedBySite.get(s.site)} Rocket{(saturatedBySite.get(s.site) ?? 0) > 1 ? 's' : ''} saturé{(saturatedBySite.get(s.site) ?? 0) > 1 ? 's' : ''}
                         </span>
                       )}
-                      {s.unknown > 0 && (
+                      {(s.unknown ?? 0) > 0 && (
                         <span
                           className="shrink-0 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5"
                           title="Rockets à capacité indéterminée (largeur de canal inconnue, exclus des totaux)"
                         >
-                          {s.unknown} indéterminé{s.unknown > 1 ? 's' : ''}
+                          {s.unknown} indéterminé{(s.unknown ?? 0) > 1 ? 's' : ''}
                         </span>
                       )}
                     </div>
                     <div className="space-y-1">
-                      <SiteFamilyBar family="ltu" bucket={s.ltu} globalMax={globalMax} />
-                      <SiteFamilyBar family="airmax" bucket={s.airmax} globalMax={globalMax} />
+                      {s.ltu && <SiteFamilyBar family="ltu" bucket={s.ltu} globalMax={globalMax} />}
+                      {s.airmax && <SiteFamilyBar family="airmax" bucket={s.airmax} globalMax={globalMax} />}
                     </div>
                   </button>
                 ))}
               </div>
             )}
           </div>
+          )}
         </>
       )}
 

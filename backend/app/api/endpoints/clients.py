@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import caller_has_permission
 from app.db.session import get_db
 from app.schemas.clients import ClientConsumptionResponse, Period
 from app.services import consumption_service
@@ -22,6 +23,7 @@ router = APIRouter()
 
 @router.get("/consumption", response_model=ClientConsumptionResponse)
 async def get_clients_consumption(
+    request: Request,
     period: Period = Query("24h", description="24h, 7d, 30d, or lifetime"),
     start: datetime.date | None = Query(
         None, description="Début de plage personnalisée (YYYY-MM-DD, UTC). Requiert `end`."
@@ -47,6 +49,20 @@ async def get_clients_consumption(
             status_code=422,
             detail="`end` doit être postérieure ou égale à `start`.",
         )
-    return await consumption_service.get_clients_consumption(
+    result = await consumption_service.get_clients_consumption(
         db, period, start=start, end=end
     )
+
+    # ⚠️ Le compteur « N clients » du bandeau N'EXISTE PAS dans cette réponse :
+    # le navigateur l'ADDITIONNE depuis le `client_count` de chaque site. Le
+    # retirer oblige donc à retirer les comptes par site ET par Rocket — il n'y
+    # a pas de version qui garde les colonnes, leur somme EST le compteur.
+    #
+    # Les volumes consommés restent entiers : le droit porte sur le NOMBRE
+    # d'abonnés (la taille commerciale du parc), pas sur leur trafic.
+    if not caller_has_permission(request, "clients.count"):
+        for site in result.sites:
+            site.client_count = None
+            for rocket in site.rockets:
+                rocket.client_count = None
+    return result

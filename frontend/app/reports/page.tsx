@@ -205,15 +205,26 @@ export default function ReportsPage() {
         </dl>
       </header>
 
-      {/* ── Section 1 : Capacité du réseau ─────────────────────────────── */}
-      <SectionHeader
-        number={1}
-        title="Capacité du réseau"
-      />
+      {/* ── Section 1 : Capacité du réseau ─────────────────────────────────
+          ⚠️ La section ENTIÈRE disparaît pour un profil sans `capacity.totals`
+          — en-tête comprise. Le rapport est un document qu'on imprime et qu'on
+          fait circuler : un titre « Capacité du réseau » suivi du vide s'y
+          lirait comme une panne de génération, là où une page d'application
+          tolère un bloc manquant.
+
+          On teste l'ABSENCE de la donnée (`capacity.families`), jamais un
+          `can()` : c'est le backend qui l'a retirée de la réponse, et redire la
+          règle ici la ferait diverger. */}
+      {capacity?.families != null && (
+        <SectionHeader
+          number={1}
+          title="Capacité du réseau"
+        />
+      )}
 
       {capacityLoading && <p className="text-slate-400 text-sm">Chargement de la capacité…</p>}
 
-      {capacity != null && (
+      {capacity != null && capacity.families != null && (
         <>
           <div className="print-card grid grid-cols-2 gap-5 justify-items-center">
             <CapacityDonut
@@ -259,8 +270,12 @@ export default function ReportsPage() {
                   {sites.map((s) => (
                     <tr key={s.site} className="border-b border-blue-50 last:border-0">
                       <td className="py-2 pr-3 font-medium text-slate-800">{s.site}</td>
-                      <td className="py-2 px-3 text-right"><CapacityCell bucket={s.ltu} /></td>
-                      <td className="py-2 pl-3 text-right"><CapacityCell bucket={s.airmax} /></td>
+                      <td className="py-2 px-3 text-right">
+                        {s.ltu && <CapacityCell bucket={s.ltu} />}
+                      </td>
+                      <td className="py-2 pl-3 text-right">
+                        {s.airmax && <CapacityCell bucket={s.airmax} />}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -275,9 +290,14 @@ export default function ReportsPage() {
         </>
       )}
 
-      {/* ── Section 2 : Coupures par site ──────────────────────────────── */}
+      {/* ── Section 2 : Coupures par site ────────────────────────────────
+          ⚠️ Numérotée d'après ce qui est RÉELLEMENT imprimé : quand la section
+          capacité est retirée (profil sans `capacity.totals`), celle-ci devient
+          la 1re. Un document qui s'ouvrirait sur « 2. » se lirait comme une
+          page manquante — et c'est précisément le genre de document qu'on fait
+          circuler hors du superviseur. */}
       <SectionHeader
-        number={2}
+        number={capacity?.families != null ? 2 : 1}
         title="Temps de coupure des sites"
       />
       <div className="print-card">

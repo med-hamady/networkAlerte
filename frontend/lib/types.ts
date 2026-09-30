@@ -677,9 +677,13 @@ export interface RocketCapacity {
 
 export interface SiteCapacity {
   site: string
-  ltu: CapacityBucket
-  airmax: CapacityBucket
-  unknown: number                 // total Rockets à capacité indéterminée (LTU + airMAX)
+  // ⚠️ `null` sans le droit `capacity.totals` : le backend retire les agrégats
+  // de capacité, donc la section « Capacité par site » n'a plus de quoi tracer
+  // ses barres et disparaît. `rockets` est alors réduit aux SATURÉS — la seule
+  // section que l'opérateur garde.
+  ltu: CapacityBucket | null
+  airmax: CapacityBucket | null
+  unknown: number | null          // total Rockets à capacité indéterminée (LTU + airMAX)
   rockets: RocketCapacity[]
 }
 
@@ -700,7 +704,9 @@ export interface NetworkInfraCapacity {
 }
 
 export interface NetworkCapacity {
-  families: { ltu: CapacityBucket; airmax: CapacityBucket }
+  // ⚠️ `null` sans le droit `capacity.totals` — les deux cercles globaux sont
+  // retirés de la RÉPONSE, pas seulement de l'écran.
+  families: { ltu: CapacityBucket; airmax: CapacityBucket } | null
   sites: SiteCapacity[]
   infra: NetworkInfraCapacity
 }

@@ -656,11 +656,37 @@ export interface HighLatencyResponse {
 // capacity = somme des max par Rocket. available = capacity − consumed (≥ 0).
 // unknown = Rockets sans largeur de canal connue → exclus des totaux.
 export interface CapacityBucket {
+  // ⚠️ `null` sur un agrégat PAR SITE quand le profil n'a pas `capacity.totals` :
+  // le backend n'envoie alors que `load_pct`. Les cercles globaux, eux, ne sont
+  // pas amputés — ils disparaissent entièrement (`families: null`).
+  consumed: number | null
+  capacity: number | null
+  available: number | null
+  rockets: number | null
+  // Rockets à capacité indéterminée. TOUJOURS présent : c'est un compte de
+  // matériel, pas d'abonnés.
+  unknown: number
+  /**
+   * Taux d'occupation (%), calculé PAR LE SERVEUR et envoyé à la place de
+   * `consumed`/`capacity` quand ceux-ci sont retirés. Absent le reste du temps,
+   * où le pourcentage se déduit des deux chiffres.
+   */
+  load_pct?: number | null
+}
+
+/**
+ * Agrégat COMPLET — celui des deux cercles globaux.
+ *
+ * ⚠️ Distinct de `CapacityBucket` pour une raison précise : les cercles ne sont
+ * jamais AMPUTÉS, ils disparaissent en bloc (`families: null`). Leurs champs
+ * sont donc toujours des nombres, et les typer nullables obligerait chaque
+ * lecture à un garde inutile — qui finirait par afficher « 0 » au lieu de rien.
+ */
+export type FullCapacityBucket = CapacityBucket & {
   consumed: number
   capacity: number
   available: number
   rockets: number
-  unknown: number
 }
 
 export interface RocketCapacity {
@@ -706,7 +732,7 @@ export interface NetworkInfraCapacity {
 export interface NetworkCapacity {
   // ⚠️ `null` sans le droit `capacity.totals` — les deux cercles globaux sont
   // retirés de la RÉPONSE, pas seulement de l'écran.
-  families: { ltu: CapacityBucket; airmax: CapacityBucket } | null
+  families: { ltu: FullCapacityBucket; airmax: FullCapacityBucket } | null
   sites: SiteCapacity[]
   infra: NetworkInfraCapacity
 }

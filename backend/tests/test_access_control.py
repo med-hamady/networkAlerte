@@ -555,7 +555,7 @@ def test_capacity_strip_keeps_the_saturated_rockets():
 
 
 def test_capacity_strip_removes_every_figure_that_rebuilds_the_total():
-    """Ce qui part doit partir : cercles, agrégats par site, Rockets NON saturés.
+    """Ce qui part doit partir : cercles, chiffres par site, Rockets NON saturés.
 
     ⚠️ Le dernier point est le moins évident et le plus important. Garder tous
     les Rockets laisserait le compte de clients de CHACUN dans la réponse — un
@@ -568,12 +568,46 @@ def test_capacity_strip_removes_every_figure_that_rebuilds_the_total():
     out = _strip_totals(_capacity_payload())
     assert out["families"] is None
     for site in out["sites"]:
-        assert site["ltu"] is None
-        assert site["airmax"] is None
-        assert site["unknown"] is None
+        for bucket in (site["ltu"], site["airmax"]):
+            if not bucket:
+                continue
+            assert bucket["consumed"] is None
+            assert bucket["capacity"] is None
+            assert bucket["available"] is None
+            assert bucket["rockets"] is None
     healthy = [r for site in out["sites"] for r in site["rockets"]
                if r["current_clients"] < (r["max_clients"] or 0)]
     assert healthy == []
+
+
+def test_capacity_strip_keeps_the_occupancy_ratio():
+    """La section « Capacité par site » reste UTILISABLE : le taux subsiste.
+
+    C'est le point de la demande : on veut voir quel site est plein sans lire
+    combien d'abonnés il porte. Le pourcentage est donc calculé CÔTÉ SERVEUR et
+    envoyé seul — renvoyer `consumed` et `capacity` pour que le navigateur fasse
+    la division reviendrait à envoyer les deux chiffres qu'on retire.
+    """
+    from app.api.endpoints.network_capacity import _strip_totals
+
+    site = _strip_totals(_capacity_payload())["sites"][0]
+    assert site["ltu"]["load_pct"] == 25       # 10 / 40
+    assert site["airmax"]["load_pct"] == 125   # 25 / 20, jamais écrêté à 100
+
+
+def test_capacity_strip_keeps_the_unknown_rocket_count():
+    """`unknown` compte du MATÉRIEL, pas des abonnés — il n'est pas visé.
+
+    Le badge « N indéterminés » dit que N Rockets ont une largeur de canal
+    inconnue, donc sont exclus des totaux. C'est une information d'exploitation
+    sur l'inventaire, pas la taille commerciale du parc.
+    """
+    from app.api.endpoints.network_capacity import _strip_totals
+
+    payload = _capacity_payload()
+    payload["sites"][0]["ltu"]["unknown"] = 2
+    site = _strip_totals(payload)["sites"][0]
+    assert site["ltu"]["unknown"] == 2
 
 
 def test_capacity_strip_keeps_every_site_and_the_infra_budget():

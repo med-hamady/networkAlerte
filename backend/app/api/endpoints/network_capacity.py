@@ -17,6 +17,33 @@ from app.services import network_capacity_service, site_infra_service
 router = APIRouter()
 
 
+def _ratio_only(bucket: dict | None) -> dict | None:
+    """Ne garder d'un agrégat de capacité que son TAUX D'OCCUPATION.
+
+    ⚠️ Le pourcentage est calculé ICI et non dans le navigateur : envoyer
+    `consumed` et `capacity` pour qu'il en fasse la division reviendrait à
+    envoyer les deux chiffres qu'on retire. C'est le quotient qui part, pas ses
+    opérandes.
+
+    `unknown` est CONSERVÉ : c'est un compte de Rockets à capacité indéterminée
+    — du matériel, pas des abonnés. Le droit porte sur la taille du parc client.
+    """
+    if not bucket:
+        return bucket
+    capacity = bucket.get("capacity") or 0
+    consumed = bucket.get("consumed") or 0
+    return {
+        "consumed": None,
+        "capacity": None,
+        "available": None,
+        "rockets": None,
+        "unknown": bucket.get("unknown", 0),
+        # Arrondi à l'entier, comme l'affichage : une décimale rendrait
+        # `consumed` retrouvable par multiplication sur les gros sites.
+        "load_pct": round(consumed / capacity * 100) if capacity > 0 else None,
+    }
+
+
 def _strip_totals(capacity: dict) -> dict:
     """Retirer les CHIFFRES DE CAPACITÉ, en gardant les Rockets saturés.
 
@@ -30,8 +57,12 @@ def _strip_totals(capacity: dict) -> dict:
     l'opérateur veut garder. Le retrait est donc chirurgical —
 
       - `families` → `None` : plus de cercles globaux ;
-      - les agrégats `ltu`/`airmax` de chaque site → `None` : la section
-        « Capacité par site » n'a plus de quoi tracer ses barres ;
+      - les agrégats `ltu`/`airmax` de chaque site → **taux d'occupation seul**
+        (`_ratio_only`) : la section « Capacité par site » reste AFFICHÉE avec
+        ses pourcentages, sans le « 39/120 ». ⚠️ Ses pistes deviennent alors de
+        longueur uniforme côté rendu — leur longueur est proportionnelle à la
+        capacité absolue, donc les garder à l'échelle commune redonnerait à
+        l'œil le rapport de taille entre sites ;
       - `rockets[]` réduit aux **saturés** : la liste reste exacte, et le
         payload cesse de porter le compte de clients de CHAQUE Rocket — sinon
         leur somme redonnerait le total qu'on vient de retirer, à un `reduce`
@@ -45,9 +76,8 @@ def _strip_totals(capacity: dict) -> dict:
     """
     capacity["families"] = None
     for site in capacity.get("sites") or []:
-        site["ltu"] = None
-        site["airmax"] = None
-        site["unknown"] = None
+        site["ltu"] = _ratio_only(site.get("ltu"))
+        site["airmax"] = _ratio_only(site.get("airmax"))
         site["rockets"] = [
             rocket
             for rocket in site.get("rockets") or []

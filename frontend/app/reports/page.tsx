@@ -318,7 +318,11 @@ export default function ReportsPage() {
 // installés / capacité (rouge si saturée), + note des Rockets à capacité
 // indéterminée. Tiret si la famille est absente du site.
 function CapacityCell({ bucket }: { bucket: CapacityBucket }) {
-  if (bucket.capacity <= 0) {
+  // ⚠️ Les chiffres sont `null` pour un profil sans `capacity.totals`. Ce cas
+  // ne devrait pas se produire ici — la section entière du rapport disparaît
+  // alors — mais on ne fabrique pas un « 0/0 » pour satisfaire le typage : un
+  // rapport imprimé qui annonce un site vide serait pire qu'une case vide.
+  if (bucket.capacity == null || bucket.consumed == null || bucket.capacity <= 0) {
     if (bucket.unknown > 0) {
       return (
         <span className="text-[11px] text-amber-600 tabular-nums">

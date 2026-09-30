@@ -154,10 +154,10 @@ export default function CapacityPage() {
             />
           )}
 
-          {/* Barres par site — retirée avec les cercles : ses barres portent
-              les mêmes grandeurs, donc la laisser redonnerait par la somme ce
-              que les cercles annonçaient. */}
-          {showTotals && (
+          {/* Barres par site — TOUJOURS affichée. Sans le droit
+              `capacity.totals` elle garde ses pourcentages et perd le
+              « 39/120 » : on voit quel site est plein, pas combien d'abonnés il
+              porte. */}
           <div className="bg-white border border-blue-100 rounded-xl shadow-sm p-5">
             <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -181,11 +181,19 @@ export default function CapacityPage() {
               <p className="py-8 text-center text-slate-400 text-sm">Aucun site.</p>
             ) : (
               <div className="space-y-3 max-h-[28rem] overflow-y-auto pr-1">
+                {/* ⚠️ Barres non cliquables sans les chiffres : le détail d'un
+                    site n'est QUE des comptes par Rocket (connectés/max), donc
+                    le clic mènerait à un tableau vide ou à l'information même
+                    qu'on retire. La navigation reste ouverte depuis « Rockets
+                    saturés », qui mène à ses propres lignes. */}
                 {sortedSites.map(s => (
                   <button
                     key={s.site}
-                    onClick={() => setSelectedSite(s.site)}
-                    className="w-full text-left rounded-lg px-2 py-2 hover:bg-blue-50 transition-colors"
+                    onClick={showTotals ? () => setSelectedSite(s.site) : undefined}
+                    disabled={!showTotals}
+                    className={`w-full text-left rounded-lg px-2 py-2 transition-colors ${
+                      showTotals ? 'hover:bg-blue-50' : 'cursor-default'
+                    }`}
                   >
                     <div className="flex items-center gap-2 mb-1.5">
                       <span className="text-sm font-semibold text-slate-800 truncate">{s.site}</span>
@@ -213,7 +221,6 @@ export default function CapacityPage() {
               </div>
             )}
           </div>
-          )}
         </>
       )}
 
@@ -513,7 +520,15 @@ function SiteFamilyBar({
 }: { family: Family; bucket: CapacityBucket; globalMax: number }) {
   const { label, used } = FAMILY[family]
 
-  if (bucket.capacity <= 0) {
+  // Deux régimes, et le second n'est pas une dégradation cosmétique : sans le
+  // droit `capacity.totals`, le serveur n'envoie QUE `load_pct`. La barre reste
+  // donc utile (quel site est plein) sans dire combien d'abonnés il porte.
+  const hasFigures = bucket.capacity != null && bucket.consumed != null
+  const loadPct = hasFigures
+    ? Math.round((bucket.consumed! / bucket.capacity!) * 100)
+    : bucket.load_pct ?? null
+
+  if (hasFigures ? bucket.capacity! <= 0 : loadPct == null) {
     if (bucket.unknown <= 0) return null
     return (
       <div className="flex items-center gap-2">
@@ -523,9 +538,14 @@ function SiteFamilyBar({
     )
   }
 
-  const trackPct = globalMax > 0 ? (bucket.capacity / globalMax) * 100 : 0
-  const usedPct = Math.min(100, (bucket.consumed / bucket.capacity) * 100)
-  const loadPct = Math.round((bucket.consumed / bucket.capacity) * 100)
+  // ⚠️ Piste PLEINE LARGEUR quand les chiffres sont retirés. Sa longueur est
+  // proportionnelle à la capacité absolue : la garder à l'échelle commune
+  // redonnerait à l'œil le rapport de taille entre sites — c'est-à-dire le
+  // chiffre qu'on vient d'enlever, sous forme de dessin.
+  const trackPct = hasFigures && globalMax > 0
+    ? (bucket.capacity! / globalMax) * 100
+    : 100
+  const usedPct = Math.min(100, loadPct!)
 
   return (
     <div className="flex items-center gap-2">
@@ -538,10 +558,12 @@ function SiteFamilyBar({
           <div className="h-full rounded-full" style={{ width: `${usedPct}%`, background: used }} />
         </div>
       </div>
-      <span className="w-16 shrink-0 text-[11px] font-semibold text-slate-800 text-right tabular-nums">
-        {bucket.consumed}/{bucket.capacity}
-      </span>
-      <span className={`w-10 shrink-0 text-[11px] font-semibold text-right tabular-nums ${loadColor(loadPct)}`}>
+      {hasFigures && (
+        <span className="w-16 shrink-0 text-[11px] font-semibold text-slate-800 text-right tabular-nums">
+          {bucket.consumed}/{bucket.capacity}
+        </span>
+      )}
+      <span className={`w-10 shrink-0 text-[11px] font-semibold text-right tabular-nums ${loadColor(loadPct!)}`}>
         {loadPct}%
       </span>
       <span

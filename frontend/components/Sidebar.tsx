@@ -92,6 +92,7 @@ const sections: NavSection[] = [
           { href: '/fai-journal',   label: 'Activités du système', icon: JournalIcon, permission: PERM.faiJournal },
           { href: '/router-rules',  label: 'Règles du routeur',   icon: RouterIcon,  permission: PERM.routerRules },
           { href: '/content-block', label: 'Filtre de contenu',   icon: FilterIcon,  permission: PERM.contentFilter },
+          { href: '/broadcast',     label: 'Message aux clients', icon: MessageIcon, permission: PERM.broadcast },
         ],
       },
     ],
@@ -534,6 +535,15 @@ function RequestIcon({ className }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round"
         d="M3 13h4l2 3h6l2-3h4M4 13l2.2-7.1A2 2 0 018.1 4.5h7.8a2 2 0 011.9 1.4L20 13v4.5a2 2 0 01-2 2H6a2 2 0 01-2-2V13z" />
+    </svg>
+  )
+}
+
+function MessageIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round"
+        d="M8 10h8M8 14h5M21 12c0 4.4-4 8-9 8a9.9 9.9 0 01-4.3-.9L3 20l1.3-3.9A7.4 7.4 0 013 12c0-4.4 4-8 9-8s9 3.6 9 8z" />
     </svg>
   )
 }

@@ -14,6 +14,7 @@ from app.api.endpoints import (
     access_control,
     access_diagnostics,
     auth,
+    client_broadcasts,
     client_signal,
     clients,
     content_filter,
@@ -191,6 +192,12 @@ api_router.include_router(
     traffic.router, prefix="/traffic", tags=["traffic"], dependencies=_perm("traffic.view"),
 )
 api_router.include_router(system.router, prefix="/system", tags=["system"], dependencies=_auth)
+# Message WhatsApp aux clients (/broadcast) : droits posés PAR ROUTE —
+# `broadcast.view` pour lire, `broadcast.send` pour écrire au parc.
+api_router.include_router(
+    client_broadcasts.router, prefix="/client-broadcasts", tags=["client-broadcasts"],
+    dependencies=_auth,
+)
 api_router.include_router(
     uisp.router, prefix="/uisp", tags=["uisp"], dependencies=_perm("uisp.sync"),
 )

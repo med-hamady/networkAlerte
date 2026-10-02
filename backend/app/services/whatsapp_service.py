@@ -156,3 +156,45 @@ async def send_whatsapp_document(
 
     logger.error("WhatsApp document send rejected by Ultramsg: %s", data)
     return False
+
+
+async def send_whatsapp_to(phone: str, text: str) -> tuple[bool, str]:
+    """Envoie un message à UN numéro (et non au groupe des alertes).
+
+    `phone` est au format international sans espace (`+22244910449`). Rend
+    `(ok, détail)` : l'id Ultramsg sur succès, la raison de l'échec sinon — le
+    détail est conservé tel quel pour la page « Message aux clients », où
+    l'opérateur décide de relancer ou non. Ne lève jamais, comme
+    `send_whatsapp`.
+
+    ⚠️ N'exige ni `WHATSAPP_ENABLED` ni le groupe : ce sont des réglages des
+    ALERTES. Couper les alertes ne doit pas couper l'écriture aux clients.
+    """
+    settings = get_settings()
+    if not settings.whatsapp_direct_available:
+        return False, "WhatsApp non configuré (WHATSAPP_INSTANCE_ID / WHATSAPP_TOKEN)"
+    if not text:
+        return False, "message vide"
+
+    url = f"{settings.whatsapp_base_url.rstrip('/')}/{settings.whatsapp_instance_id}/messages/chat"
+    payload = {"token": settings.whatsapp_token, "to": phone, "body": text}
+
+    try:
+        async with httpx.AsyncClient(timeout=_SEND_TIMEOUT_S) as client:
+            resp = await client.post(url, data=payload)
+    except httpx.RequestError as exc:
+        return False, f"réseau : {exc}"[:300]
+    except Exception as exc:
+        return False, f"erreur : {exc}"[:300]
+
+    if resp.status_code != 200:
+        return False, f"HTTP {resp.status_code} : {resp.text[:200]}"
+    try:
+        data = resp.json()
+    except Exception:
+        return False, f"réponse non JSON : {resp.text[:200]}"
+
+    # Ultramsg répond 200 même sur un refus : c'est le corps qui tranche.
+    if data.get("sent") in (True, "true", "True") or data.get("message") == "ok":
+        return True, str(data.get("id", "ok"))
+    return False, str(data.get("error") or data)[:300]

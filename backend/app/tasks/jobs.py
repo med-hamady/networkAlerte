@@ -60,6 +60,7 @@ from app.services import (
     airos_api_service,
     alert_engine,
     client_block_service,
+    client_broadcast_service,
     digest_service,
     discovery_service,
     incident_service,
@@ -3908,6 +3909,30 @@ async def site_topology_sync_job() -> None:
         logger.error("Sync topologie : cycle échoué : %s", exc)
 
 
+async def client_broadcast_job() -> None:
+    """Vide la file du « Message aux clients » (page /broadcast), un message à la fois.
+
+    Chaque passage envoie pendant au plus (intervalle − 10 s) puis rend la main :
+    un envoi d'une heure est ainsi découpé en tours d'une minute, reprend seul
+    après un redémarrage, et ne déclenche jamais le « maximum instances » d'un
+    job qui déborderait son intervalle. Rien en file = une requête, aucun envoi.
+
+    Groupe **fast** : le travail est un appel HTTP et une attente async — rien
+    qui dispute le CPU ou le GIL au ping de l'infra.
+    """
+    settings = get_settings()
+    budget = max(5.0, settings.client_broadcast_interval_seconds - 10.0)
+    try:
+        async with async_session_factory() as session:
+            handled = await client_broadcast_service.process_queue(
+                session, budget_s=budget, delay_s=settings.client_broadcast_delay_seconds,
+            )
+        if handled:
+            logger.info("Message aux clients — %d message(s) traité(s) ce tour", handled)
+    except Exception as exc:
+        logger.error("client_broadcast_job cycle failed: %s", exc)
+
+
 async def lr_plan_sync_job() -> None:
     """Lit le forfait (caps du traffic shaper airOS) de chaque LR up via SSH et
     le met en cache (plan_download_mbps / plan_upload_mbps / plan_synced_at).
@@ -3952,7 +3977,7 @@ _FAST_JOB_IDS = {
     "device_metrics_retention",
     "traffic_stats_retention", "lr_latency_retention", "unverified_ip_cleanup",
     "security_anomaly_detection", "rocket_saturation_report",
-    "site_infra_report",
+    "site_infra_report", "client_broadcast",
 }
 _HEAVY_JOB_IDS = {
     "snmp_poll", "power_poll", "lr_internet_probe", "lr_plan_sync",
@@ -4220,6 +4245,13 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
             next_run_time=datetime.datetime.now(),
             max_instances=1, coalesce=True, misfire_grace_time=3600,
         )
+    scheduler.add_job(
+        client_broadcast_job,
+        trigger="interval", seconds=settings.client_broadcast_interval_seconds,
+        id="client_broadcast", name="Message WhatsApp aux clients (file d'envoi)",
+        replace_existing=True,
+        **safety,
+    )
     if settings.client_block_enforcement_enabled:
         scheduler.add_job(
             client_block_enforcement_job,

@@ -1631,3 +1631,57 @@ export interface ClientMapResponse {
   }
   bbox: { lat_min: number; lat_max: number; lon_min: number; lon_max: number }
 }
+
+// ---------------------------------------------------------------------------
+// Message WhatsApp aux clients (/broadcast)
+// ---------------------------------------------------------------------------
+
+export type BroadcastAudience = 'active' | 'blocked' | 'out_of_supervision'
+export type BroadcastStatus = 'running' | 'done' | 'cancelled'
+
+export interface BroadcastPreview {
+  audiences: BroadcastAudience[]
+  lr_count: number
+  recipient_count: number
+  duplicate_count: number
+  without_phone: string[]
+  estimated_seconds: number
+  whatsapp_available: boolean
+}
+
+export interface BroadcastCounts {
+  total: number
+  pending: number
+  sent: number
+  failed: number
+  cancelled: number
+}
+
+export interface Broadcast {
+  id: number
+  created_at: string
+  created_by: string | null
+  finished_at: string | null
+  status: BroadcastStatus
+  audiences: BroadcastAudience[]
+  message: string
+  counts: BroadcastCounts
+  remaining_seconds: number
+}
+
+export interface BroadcastFailure {
+  phone: string
+  name: string | null
+  error: string | null
+  attempts: number
+}
+
+export interface BroadcastDetail extends Broadcast {
+  failures: BroadcastFailure[]
+}
+
+export interface BroadcastList {
+  broadcasts: Broadcast[]
+  running_id: number | null
+  delay_seconds: number
+}

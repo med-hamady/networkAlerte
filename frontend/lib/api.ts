@@ -1,5 +1,8 @@
 import type {
   BadInstallationRow,
+  BroadcastAudience,
+  BroadcastDetail,
+  BroadcastPreview,
   BadInstallationsResponse,
   LiveLinkHealthResponse,
   BlockMode,
@@ -74,6 +77,10 @@ export const endpoints = {
   // résout aucun incident, et un incident qui se résout n'efface pas la ligne.
   manualAlerts:         `${API_BASE}/manual-alerts`,
   acknowledgeManualAlert: (id: number) => `${API_BASE}/manual-alerts/${id}/acknowledge`,
+  // Message WhatsApp aux clients : l'API ne fait qu'enregistrer l'envoi, c'est
+  // un job du scheduler qui écrit aux clients (un message toutes les ~4 s).
+  clientBroadcasts:     `${API_BASE}/client-broadcasts`,
+  clientBroadcast:      (id: number) => `${API_BASE}/client-broadcasts/${id}`,
   deviceMetrics:        (id: number) => `${API_BASE}/devices/${id}/metrics/latest`,
   // Historique d'une courbe de la fiche (latence, capacité, débits) : soit une
   // fenêtre relative, soit une plage de dates (YYYY-MM-DD UTC, fin incluse —
@@ -670,4 +677,34 @@ export async function controlPowerOutput(
     throw new Error(err.detail ?? `HTTP ${res.status}`)
   }
   return res.json() as Promise<PowerOutputResult>
+}
+
+// ---------------------------------------------------------------------------
+// Message WhatsApp aux clients
+// ---------------------------------------------------------------------------
+// ⚠️ `createBroadcast` ne fait qu'ENREGISTRER l'envoi : les messages partent
+// ensuite un par un, côté serveur. Fermer l'onglet ne l'interrompt pas.
+async function broadcastPost<T>(url: string, body?: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  return jsonOrThrow<T>(res)
+}
+
+export function previewBroadcast(audiences: BroadcastAudience[]): Promise<BroadcastPreview> {
+  return broadcastPost(`${endpoints.clientBroadcasts}/preview`, { audiences })
+}
+
+export function createBroadcast(audiences: BroadcastAudience[], message: string): Promise<BroadcastDetail> {
+  return broadcastPost(endpoints.clientBroadcasts, { audiences, message })
+}
+
+export function retryBroadcastFailures(id: number): Promise<BroadcastDetail> {
+  return broadcastPost(`${endpoints.clientBroadcast(id)}/retry-failed`)
+}
+
+export function cancelBroadcast(id: number): Promise<BroadcastDetail> {
+  return broadcastPost(`${endpoints.clientBroadcast(id)}/cancel`)
 }

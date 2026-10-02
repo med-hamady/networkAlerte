@@ -361,6 +361,27 @@ class Settings(BaseSettings):
             and self.whatsapp_group_id
         )
 
+    # Message WhatsApp aux clients (page /broadcast) — même instance Ultramsg que
+    # les alertes, mais envoyé à CHAQUE abonné, un par un.
+    # ⚠️ L'écart entre deux messages n'est pas un confort : WhatsApp bannit un
+    # numéro qui envoie en rafale à des centaines de destinataires. 4 s ≈ 15
+    # messages/min, ~1 h pour 800 clients. Ne pas descendre sous 2-3 s.
+    client_broadcast_delay_seconds: float = 4.0
+    # Cadence du job qui vide la file. Chaque passage envoie pendant au plus
+    # (intervalle − 10 s), puis rend la main : un envoi d'une heure est découpé
+    # en tours d'une minute, donc reprend tout seul après un redémarrage.
+    client_broadcast_interval_seconds: int = 60
+
+    @property
+    def whatsapp_direct_available(self) -> bool:
+        """Instance + token suffisent pour écrire à un NUMÉRO.
+
+        Distinct de `whatsapp_configured`, qui exige aussi le groupe des alertes
+        et `WHATSAPP_ENABLED` : un envoi aux clients n'a besoin ni de l'un ni de
+        l'autre, et couper les alertes ne doit pas couper ce canal-ci.
+        """
+        return bool(self.whatsapp_instance_id and self.whatsapp_token)
+
     # SNMP (Ubiquiti airMAX / LTU)
     snmp_default_community: str = "public"
     snmp_port: int = 161

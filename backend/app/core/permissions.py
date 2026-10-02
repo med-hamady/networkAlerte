@@ -234,6 +234,13 @@ PERMISSION_GROUPS: tuple[PermissionGroup, ...] = (
                     "Bloquer l'accès Internet d'un client, ou le lui rendre."),
             _action("fai.content_filter.edit", "Modifier le filtre de contenu",
                     "Bloquer ou débloquer une plateforme chez un abonné."),
+            _page("broadcast.view", "Message aux clients",
+                  "Les envois WhatsApp faits aux abonnés, et leur résultat.",
+                  "/broadcast"),
+            _action("broadcast.send", "Envoyer un message aux clients",
+                    "Écrire sur WhatsApp à tous les abonnés d'une catégorie "
+                    "(actifs, bloqués, hors supervision), et relancer les échecs. "
+                    "Part du numéro de l'entreprise, vers des centaines de clients."),
         ),
     ),
     PermissionGroup(

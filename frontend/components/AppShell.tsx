@@ -56,6 +56,7 @@ const PAGE_PERMISSIONS: Record<string, string> = {
   '/fai-journal': PERM.faiJournal,
   '/router-rules': PERM.routerRules,
   '/content-block': PERM.contentFilter,
+  '/broadcast': PERM.broadcast,
   '/incidents': PERM.incidents,
   '/access-diagnostics': PERM.accessDiagnostics,
   '/reports': PERM.reports,

@@ -71,6 +71,8 @@ export const PERM = {
   contentFilter: 'fai.content_filter.view',
   contentFilterEdit: 'fai.content_filter.edit',
   faiBlock: 'fai.block',
+  broadcast: 'broadcast.view',
+  broadcastSend: 'broadcast.send',
 
   incidents: 'incidents.view',
   accessDiagnostics: 'access_diagnostics.view',
@@ -156,6 +158,7 @@ export function firstAllowedRoute(can: (...keys: string[]) => boolean): string |
     ['/fai-journal', PERM.faiJournal],
     ['/router-rules', PERM.routerRules],
     ['/content-block', PERM.contentFilter],
+    ['/broadcast', PERM.broadcast],
     ['/incidents', PERM.incidents],
     ['/access-diagnostics', PERM.accessDiagnostics],
     ['/reports', PERM.reports],

@@ -1098,35 +1098,6 @@ def _detect_client_context(
     return None, None
 
 
-def _detect_internal_resolver(
-    transport: paramiko.Transport, default: str = "10.135.0.1"
-) -> str:
-    """Return the LR's own upstream DNS (first private IPv4 nameserver).
-
-    Used as the availability fallback when the adult-filter family resolver is
-    unreachable. Read live from ``/etc/resolv.conf`` rather than hardcoded, so it
-    adapts per LR; falls back to ``default`` if nothing usable is found.
-    """
-    try:
-        code, out = _exec_capture(
-            transport, "cat /etc/resolv.conf 2>/dev/null", timeout=8
-        )
-    except Exception:
-        return default
-    if code != 0 or not out:
-        return default
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and parts[0] == "nameserver":
-            try:
-                addr = ipaddress.ip_address(parts[1].strip())
-            except ValueError:
-                continue
-            if addr.version == 4 and addr.is_private and not addr.is_loopback:
-                return str(addr)
-    return default
-
-
 def _set_whatsapp_only_sync(
     host: str,
     port: int,
@@ -1380,11 +1351,18 @@ def _set_content_block_sync(
     Families 1.1.1.3 by default) which maintains and updates the adult-domain
     categorisation itself — the only tractable way to block "all 18+ sites"
     (there are millions, un-listable). Implemented as ``no-resolv`` +
-    ``strict-order`` + the family servers, then the LR's own resolver last as an
-    availability fallback (a blocked domain is a *valid* answer, so dnsmasq never
-    falls through to the unfiltered resolver unless the family one is down).
+    ``strict-order`` + the family servers ONLY.
     Field-verified 2026-07-27 on an LTU LR: `ping pornhub.com` via 1.1.1.3 → 0.0.0.0
     while google.com resolved normally.
+
+    ⚠️ Aucun résolveur non filtré en secours. Il y en avait un (le DNS du LR,
+    10.135.0.1, en dernier) : dnsmasq bascule dessus dès que Cloudflare tarde à
+    répondre, pas seulement quand il est en panne. Constaté le 2026-10-04 sur un
+    LR LTU : `nslookup pornhub.com 172.16.0.1` a rendu la vraie IP au premier
+    essai puis 0.0.0.0 aux suivants. Une seule fuite suffit — l'appareil du
+    client met la réponse en cache et le site reste ouvert. Contrepartie
+    assumée : si 1.1.1.3 ET 1.0.0.3 sont injoignables, les clients filtrés
+    n'ont plus de DNS.
 
     Two directions, both driven by the same ``domains`` union:
 
@@ -1477,12 +1455,6 @@ def _set_content_block_sync(
                 observed,
                 used_pw,
             )
-        # Availability fallback (used only if the family resolvers are down):
-        # the LR's own upstream, read live from its resolv.conf.
-        fallback_resolver = (
-            _detect_internal_resolver(transport) if block_adult else ""
-        )
-
         net_q = shlex.quote(subnet)
         lr_q = shlex.quote(lr_ip)
         domains_str = " ".join(shlex.quote(d) for d in valid_domains)
@@ -1509,12 +1481,12 @@ def _set_content_block_sync(
         # only answers A records, so on a dual-stack client WhatsApp/TikTok just
         # connected over the still-valid AAAA record — field-confirmed on an LTU
         # LR (nslookup returned 0.0.0.0 for IPv4 AND a live IPv6).
-        # `adult=` (the flag, the family resolvers AND the resolved fallback) is
-        # folded into the stamp too: turning the adult filter on/off, or the
-        # upstream changing, must force a rewrite like any other content change.
-        adult_stamp = (
-            f"adult={int(block_adult)}:{','.join(valid_family)}:{fallback_resolver}"
-        )
+        # `adult=` (the flag and the family resolvers) is folded into the stamp
+        # too: turning the adult filter on/off, or the upstream changing, must
+        # force a rewrite like any other content change. (Le retrait du résolveur
+        # de secours change cette chaîne, donc le tampon : chaque LR filtré est
+        # réécrit au prochain passage du renforcement, sans rien d'autre à faire.)
+        adult_stamp = f"adult={int(block_adult)}:{','.join(valid_family)}"
         digest = hashlib.sha1(
             f"{_CONTENT_FILTER_FORMAT}|{mode}|{adult_stamp}|"
             f"{','.join(sorted(valid_domains))}".encode()
@@ -1526,21 +1498,16 @@ def _set_content_block_sync(
         # Upstream switch for the adult filter — global dnsmasq directives, so
         # they sit at the top of the block. no-resolv makes dnsmasq ignore the
         # LR's resolv.conf (which lists unfiltered resolvers), strict-order makes
-        # it try our servers in order (family first, fallback last).
+        # it try our servers in order. Family resolvers ONLY — see docstring.
         adult_lines = ""
         if block_adult:
             servers = "".join(
                 f"  echo 'server={r}' >> {conf}; " for r in valid_family
             )
-            fb = (
-                f"  echo 'server={fallback_resolver}' >> {conf}; "
-                if fallback_resolver
-                else ""
-            )
             adult_lines = (
                 f"  echo 'no-resolv' >> {conf}; "
                 f"  echo 'strict-order' >> {conf}; "
-                f"{servers}{fb}"
+                f"{servers}"
             )
 
         if enable:

@@ -99,6 +99,14 @@ def _client_signal_api_key_matches(x_api_key: str | None) -> bool:
     return hmac.compare_digest(x_api_key or "", settings.client_signal_api_key)
 
 
+def _site_status_api_key_matches(x_api_key: str | None) -> bool:
+    """True if the header equals the dedicated /site-status key (timing-safe)."""
+    settings = get_settings()
+    if not settings.site_status_api_key:
+        return False  # no dedicated key — /site-status falls back to normal auth
+    return hmac.compare_digest(x_api_key or "", settings.site_status_api_key)
+
+
 def _log_master_key_use(request: Request) -> None:
     """Trace toute authentification par la clé MAÎTRESSE (jamais la clé elle-même).
 
@@ -326,6 +334,26 @@ async def require_client_signal_client(
     a scoped path, it never removes one.
     """
     if _client_signal_api_key_matches(x_api_key):
+        _mark_api_key_auth(request)
+        return None
+    return await require_user_or_api_key(request, x_api_key, db)
+
+
+async def require_site_status_client(
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """Auth for GET /site-status: its own dedicated key, or the normal auth.
+
+    The third party reading whether each site is up or down holds
+    `site_status_api_key`, which unlocks ONLY this route — /site-status is served
+    on the .229 VIP which fronts the WHOLE API, so without it the consumer would
+    need the master key. No fallback on any other scoped key (each third party
+    holds its own power); the fallback on `require_user_or_api_key` keeps the
+    master key and operator sessions working.
+    """
+    if _site_status_api_key_matches(x_api_key):
         _mark_api_key_auth(request)
         return None
     return await require_user_or_api_key(request, x_api_key, db)

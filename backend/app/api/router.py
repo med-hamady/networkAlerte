@@ -5,6 +5,7 @@ from app.api.deps import (
     require_content_block_client,
     require_fai_client,
     require_permission,
+    require_site_status_client,
     require_uisp_assign_client,
     require_user_or_api_key,
     require_verify_client,
@@ -32,6 +33,7 @@ from app.api.endpoints import (
     network_topology,
     network_uptime,
     router_rules,
+    site_status,
     sites,
     system,
     traffic,
@@ -166,6 +168,18 @@ api_router.include_router(
     dependencies=[
         Depends(require_client_signal_client),
         Depends(require_permission("fai.view")),
+    ],
+)
+# État up/down de chaque site — consommé par un système tiers. AUTH PROPRE : sa
+# clé dédiée SITE_STATUS_API_KEY (require_site_status_client), scellée à ce
+# router, sans repli sur les autres clés cloisonnées. Même raisonnement que
+# /client-signal (propre préfixe, aucune voisine qui hériterait de la clé) ;
+# routes permises verrouillées par tests/test_site_status.py.
+api_router.include_router(
+    site_status.router, prefix="/site-status", tags=["site-status"],
+    dependencies=[
+        Depends(require_site_status_client),
+        Depends(require_permission("uptime.view")),
     ],
 )
 api_router.include_router(

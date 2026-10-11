@@ -131,6 +131,14 @@ class Settings(BaseSettings):
     # exactement ce qu'on veut éviter.
     client_signal_api_key: str = ""
 
+    # Clé dédiée à la SEULE route GET /site-status (état up/down de chaque site),
+    # tenue par un système tiers. Même raison d'être que `client_signal_api_key` :
+    # la route est servie sur la VIP .229 qui fronte l'API ENTIÈRE, donc sans clé
+    # dédiée il faudrait confier `api_key` au tiers. Aucun repli sur les autres
+    # clés cloisonnées ; repli sur l'auth normale seulement (session / maîtresse).
+    # Vide = pas de clé dédiée.
+    site_status_api_key: str = ""
+
     # Journal d'audit des blocages / déblocages (une ligne par action). Fichier
     # texte, dans un volume bind-monté → survit aux redéploiements.
     fai_log_path: str = "/app/logs/fai_actions.log"
@@ -1236,6 +1244,7 @@ class Settings(BaseSettings):
             "UISP_ASSIGN_API_KEY": self.uisp_assign_api_key,
             "CONTENT_BLOCK_API_KEY": self.content_block_api_key,
             "CLIENT_SIGNAL_API_KEY": self.client_signal_api_key,
+            "SITE_STATUS_API_KEY": self.site_status_api_key,
         }
         seen: dict[str, str] = {}
         for name, value in scoped.items():

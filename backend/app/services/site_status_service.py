@@ -13,6 +13,12 @@ puisse jamais contredire l'historique des coupures.
 - Le nom de site est rendu tel qu'en base (`devices.site`), sans normalisation
   — le double espace de « A2  ARF1 » est voulu, cf. CLAUDE.md.
 
+``devices_up`` / ``devices_down`` comptent les équipements d'INFRA du site, sur
+le même périmètre que le compteur « 14/1 » de `/topology`
+(`INFRA_SITE_DEVICE_TYPES`, importé — jamais recopié). Les LR abonnés en sont
+exclus : ils portent le site de leur AP, un abonné éteint fausserait le compte.
+Un équipement ``unknown`` n'entre dans aucun des deux.
+
 Lecture seule, une requête, aucun appel aux équipements.
 """
 
@@ -21,27 +27,47 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.device import Device
 from app.schemas.site_status import SiteStatus, SiteStatusResponse
+from app.services.site_topology_service import INFRA_SITE_DEVICE_TYPES
 
 _SWITCH_TYPE = "uisp_switch"
 
 
-def site_statuses_from_switches(rows: list[tuple[str | None, str | None]]) -> list[SiteStatus]:
-    """(site, status du switch) → un état par site, trié par nom. Logique pure."""
-    down_by_site: dict[str, bool] = {}
-    for site, status in rows:
+def site_statuses_from_devices(
+    rows: list[tuple[str | None, str | None, str | None]],
+) -> list[SiteStatus]:
+    """(site, device_type, status) → un état par site, trié par nom. Logique pure."""
+    sites: dict[str, dict] = {}
+    for site, device_type, status in rows:
         if not site or not site.strip():
-            continue  # switch sans site : rien à rattacher
-        down_by_site[site] = down_by_site.get(site, False) or status == "down"
+            continue  # équipement sans site : rien à rattacher
+        entry = sites.setdefault(
+            site, {"has_switch": False, "switch_down": False, "up": 0, "down": 0},
+        )
+        if device_type == _SWITCH_TYPE:
+            entry["has_switch"] = True
+            entry["switch_down"] = entry["switch_down"] or status == "down"
+        if status == "up":
+            entry["up"] += 1
+        elif status == "down":
+            entry["down"] += 1
     return [
-        SiteStatus(site=site, status="down" if down else "up")
-        for site, down in sorted(down_by_site.items())
+        SiteStatus(
+            site=site,
+            status="down" if e["switch_down"] else "up",
+            devices_up=e["up"],
+            devices_down=e["down"],
+        )
+        for site, e in sorted(sites.items())
+        if e["has_switch"]  # règle A : sans switch, rien pour juger le site
     ]
 
 
 async def get_site_statuses(db: AsyncSession) -> SiteStatusResponse:
     rows = (
         await db.execute(
-            select(Device.site, Device.status).where(Device.device_type == _SWITCH_TYPE)
+            select(Device.site, Device.device_type, Device.status).where(
+                Device.device_type.in_(INFRA_SITE_DEVICE_TYPES)
+            )
         )
     ).all()
-    return SiteStatusResponse(sites=site_statuses_from_switches([tuple(r) for r in rows]))
+    return SiteStatusResponse(sites=site_statuses_from_devices([tuple(r) for r in rows]))

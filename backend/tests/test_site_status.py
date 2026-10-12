@@ -18,7 +18,7 @@ import pytest
 from app.api import deps
 from app.api.endpoints import site_status as site_status_module
 from app.api.router import api_router
-from app.services.site_status_service import site_statuses_from_switches
+from app.services.site_status_service import site_statuses_from_devices
 
 MASTER = "master-key-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 FAI = "fai-key-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -43,36 +43,68 @@ def keys(monkeypatch, settings):
 
 
 # ------------------------------------------------------------------ la règle
+SW = "uisp_switch"
+
+
 def _as_dict(rows):
-    return {s.site: s.status for s in site_statuses_from_switches(rows)}
+    return {s.site: s.status for s in site_statuses_from_devices(rows)}
 
 
 def test_site_follows_its_switch():
-    assert _as_dict([("A2 AT1", "up"), ("A2 CT1", "down")]) == {
+    assert _as_dict([("A2 AT1", SW, "up"), ("A2 CT1", SW, "down")]) == {
         "A2 AT1": "up", "A2 CT1": "down",
     }
 
 
 def test_one_switch_down_puts_the_site_down_whatever_the_order():
-    assert _as_dict([("A2 HQ", "up"), ("A2 HQ", "down")]) == {"A2 HQ": "down"}
-    assert _as_dict([("A2 HQ", "down"), ("A2 HQ", "up")]) == {"A2 HQ": "down"}
+    assert _as_dict([("A2 HQ", SW, "up"), ("A2 HQ", SW, "down")]) == {"A2 HQ": "down"}
+    assert _as_dict([("A2 HQ", SW, "down"), ("A2 HQ", SW, "up")]) == {"A2 HQ": "down"}
+
+
+def test_only_the_switch_decides_the_site_status():
+    """Un Rocket tombé ne met pas le site down ; tout tombé sauf le switch non plus."""
+    rows = [("A2 AT1", SW, "up"), ("A2 AT1", "rocket", "down"), ("A2 AT1", "airfiber", "down")]
+    assert _as_dict(rows) == {"A2 AT1": "up"}
 
 
 def test_unknown_is_not_an_outage():
     """On n'affirme une panne que sur constat."""
-    assert _as_dict([("A2 SK1", "unknown"), ("A2 PK1", None)]) == {
+    assert _as_dict([("A2 SK1", SW, "unknown"), ("A2 PK1", SW, None)]) == {
         "A2 SK1": "up", "A2 PK1": "up",
     }
 
 
+def test_site_without_switch_is_not_listed():
+    assert _as_dict([("A2 NR1", "rocket", "down")]) == {}
+
+
+def test_device_counts_cover_every_infra_device_of_the_site():
+    rows = [
+        ("A2 AT1", SW, "up"),
+        ("A2 AT1", "rocket", "up"),
+        ("A2 AT1", "rocket", "down"),
+        ("A2 AT1", "uisp_power", "unknown"),  # ni up ni down : dans aucun compte
+    ]
+    (site,) = site_statuses_from_devices(rows)
+    assert (site.devices_up, site.devices_down) == (2, 1)
+
+
 def test_switch_without_site_is_skipped_and_names_are_kept_verbatim():
-    out = _as_dict([(None, "down"), ("  ", "down"), ("A2  ARF1", "up")])
+    out = _as_dict([(None, SW, "down"), ("  ", SW, "down"), ("A2  ARF1", SW, "up")])
     assert out == {"A2  ARF1": "up"}  # double espace conservé
 
 
 def test_sites_are_sorted():
-    sites = [s.site for s in site_statuses_from_switches([("B", "up"), ("A", "up")])]
+    sites = [s.site for s in site_statuses_from_devices([("B", SW, "up"), ("A", SW, "up")])]
     assert sites == ["A", "B"]
+
+
+def test_subscribers_are_out_of_the_query():
+    """Les LR portent le site de leur AP : un abonné éteint fausserait le compte."""
+    from app.services.site_topology_service import INFRA_SITE_DEVICE_TYPES
+
+    assert "lr" not in INFRA_SITE_DEVICE_TYPES
+    assert SW in INFRA_SITE_DEVICE_TYPES
 
 
 # --------------------------------------------------------- le cloisonnement

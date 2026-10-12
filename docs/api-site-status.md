@@ -45,9 +45,9 @@ curl -k -H "X-API-Key: <votre clé>" https://102.215.95.229/api/v1/site-status
 ```json
 {
   "sites": [
-    { "site": "A2 AT1", "status": "up" },
-    { "site": "A2 CT1", "status": "down" },
-    { "site": "A2 HQ",  "status": "up" }
+    { "site": "A2 AT1", "status": "up",   "devices_up": 13, "devices_down": 1 },
+    { "site": "A2 CT1", "status": "down", "devices_up": 0,  "devices_down": 9 },
+    { "site": "A2 HQ",  "status": "up",   "devices_up": 6,  "devices_down": 0 }
   ]
 }
 ```
@@ -57,6 +57,8 @@ curl -k -H "X-API-Key: <votre clé>" https://102.215.95.229/api/v1/site-status
 | `sites` | liste | Un élément par site, trié par nom |
 | `sites[].site` | texte | Nom du site, exactement tel qu'il est enregistré chez nous |
 | `sites[].status` | texte | `up` ou `down`, rien d'autre |
+| `sites[].devices_up` | entier | Nombre d'équipements du site qui répondent |
+| `sites[].devices_down` | entier | Nombre d'équipements du site en panne |
 
 > Comparez le nom du site **tel quel**, sans le modifier : certains noms
 > contiennent un double espace (ex. `A2  ARF1`).
@@ -70,6 +72,16 @@ a plusieurs switches, il suffit que l'un d'eux soit en panne.
   plus courte n'apparaît pas.
 - L'état est celui du moment de l'appel. L'API ne renvoie aucun historique.
 - Un site sans switch supervisé n'apparaît pas dans la liste.
+
+## Ce que comptent `devices_up` et `devices_down`
+
+Les équipements réseau du site : antennes, liaisons entre sites, switches et
+alimentations. Les équipements installés chez les abonnés ne sont pas comptés.
+
+- Un site peut être `up` avec des équipements en panne (`devices_down` > 0) :
+  une partie du site est touchée, mais le site reste joignable.
+- Un équipement dont l'état n'est pas encore connu n'est compté ni dans
+  `devices_up` ni dans `devices_down`.
 
 ## Fréquence d'appel
 

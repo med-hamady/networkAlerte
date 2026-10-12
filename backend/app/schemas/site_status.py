@@ -11,6 +11,8 @@ from pydantic import BaseModel
 class SiteStatus(BaseModel):
     site: str
     status: Literal["up", "down"]
+    devices_up: int
+    devices_down: int
 
 
 class SiteStatusResponse(BaseModel):

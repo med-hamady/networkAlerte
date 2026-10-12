@@ -62,6 +62,26 @@ def site_statuses_from_devices(
     ]
 
 
+async def get_site_status(db: AsyncSession, site: str | None) -> str | None:
+    """Statut (``up``/``down``) d'UN site, ou ``None`` si on ne peut pas le juger.
+
+    ``None`` = site inconnu ou sans switch supervisé : la règle n'a rien pour
+    trancher, et on ne l'affirme pas. Passe par ``site_statuses_from_devices``
+    pour que `/site-status` et `/client-signal` ne puissent pas diverger.
+    """
+    if not site or not site.strip():
+        return None
+    statuses = (
+        await db.execute(
+            select(Device.status).where(
+                Device.device_type == _SWITCH_TYPE, Device.site == site,
+            )
+        )
+    ).scalars().all()
+    result = site_statuses_from_devices([(site, _SWITCH_TYPE, st) for st in statuses])
+    return result[0].status if result else None
+
+
 async def get_site_statuses(db: AsyncSession) -> SiteStatusResponse:
     rows = (
         await db.execute(

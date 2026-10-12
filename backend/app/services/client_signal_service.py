@@ -35,7 +35,12 @@ from app.schemas.client_signal import (
     HistoryPoint,
 )
 from app.schemas.device import normalize_mac
-from app.services import lr_metric_history_service, ssh_service, threshold_service
+from app.services import (
+    lr_metric_history_service,
+    site_status_service,
+    ssh_service,
+    threshold_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +158,10 @@ async def get_client_signal(db: AsyncSession, mac: str) -> ClientSignalResponse 
     avg_rtt_ms, reason = await _measure_latency_live(db, lr, settings)
     latency_quality = classify_latency(avg_rtt_ms, settings)
 
+    rocket = connected_rocket(lr)
+    site_name = client_site(lr)
+    site_status = await site_status_service.get_site_status(db, site_name)
+
     return ClientSignalResponse(
         mac=normalized,
         lr_id=lr.id,
@@ -168,7 +177,10 @@ async def get_client_signal(db: AsyncSession, mac: str) -> ClientSignalResponse 
         latency_target=settings.lr_latency_target,
         latency_packets_sent=settings.client_signal_ping_count,
         latency_packet_size_bytes=_PING_PAYLOAD_BYTES,
-        rocket=connected_rocket(lr),
+        rocket=rocket,
+        site_name=site_name,
+        site_status=site_status,
+        rocket_status=gated_rocket_status(site_status, rocket),
     )
 
 
@@ -271,6 +283,31 @@ def connected_rocket(lr: Lr) -> ConnectedRocket | None:
     if lr.uisp_ap_name:
         return ConnectedRocket(name=lr.uisp_ap_name, source="uisp")
     return None
+
+
+def client_site(lr: Lr) -> str | None:
+    """Le site du client : celui de son Rocket supervisé, sinon celui du LR.
+
+    Le Rocket fait foi quand on le connaît (c'est lui qui porte le client) ; le
+    LR porte de toute façon le site de son AP (le sync le fait suivre).
+    """
+    rocket = lr.rocket
+    if rocket is not None and rocket.site:
+        return rocket.site
+    return lr.site or None
+
+
+def gated_rocket_status(site_status: str | None, rocket: ConnectedRocket | None) -> str | None:
+    """Statut du Rocket, mais SEULEMENT quand le site est up.
+
+    Site en panne : la cause est le site, pas le Rocket — et le statut du Rocket
+    n'apporte rien (il tombe avec son switch). Site indéterminé : on ne sait pas
+    à quoi rattacher la réponse. Rocket connu de nom seulement (``source=uisp``)
+    : aucun statut n'est mesuré chez nous. Dans ces trois cas : ``None``.
+    """
+    if site_status != "up" or rocket is None or rocket.source != "supervision":
+        return None
+    return rocket.status
 
 
 async def _measure_latency_live(

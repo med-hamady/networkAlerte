@@ -96,7 +96,10 @@ curl -k --max-time 60 \
     "radio_tech": "ltu",
     "status": "up",
     "source": "supervision"
-  }
+  },
+  "site_name": "A2 CT1",
+  "site_status": "up",
+  "rocket_status": "up"
 }
 ```
 
@@ -159,6 +162,34 @@ Lu en base (pas de mesure live), donc instantané.
 
 > Pour un équipement **hors ligne**, `rocket` désigne le dernier point d'accès
 > auquel il a été vu connecté.
+
+### État du site et du Rocket (`site_status`, `rocket_status`)
+
+Lus en base, donc instantanés. Ils répondent à la question « la panne vient-elle
+de chez nous ? », dans cet ordre : d'abord le site, puis le Rocket.
+
+| Champ | Valeurs | Description |
+|---|---|---|
+| `site_name` | texte ou `null` | Site auquel le client est raccordé (celui de son Rocket) |
+| `site_status` | `up` / `down` / `null` | `down` = le site est en panne (son switch ne répond plus). `null` = le site est inconnu ou n'est pas supervisé |
+| `rocket_status` | `up` / `down` / `unknown` / `null` | État du Rocket du client. **Renseigné uniquement si `site_status` vaut `up`** |
+
+Comment les lire :
+
+| `site_status` | `rocket_status` | Signification |
+|---|---|---|
+| `down` | `null` | **Panne du site** : tous les clients du site sont touchés |
+| `up` | `down` | **Panne du Rocket** : les clients de ce Rocket sont touchés, le reste du site fonctionne |
+| `up` | `up` | Le réseau fonctionne jusqu'au Rocket. Un problème viendrait du lien radio ou de l'équipement du client (voir `status`, `quality`, `latency_quality`) |
+| `up` | `unknown` | L'état du Rocket n'est pas encore connu |
+| `up` | `null` | Le Rocket n'est pas supervisé (`rocket.source` vaut `uisp`) ou n'est pas connu |
+| `null` | `null` | Le site n'est pas supervisé : on ne peut pas conclure |
+
+> Quand le site est `down`, `rocket_status` vaut `null` **volontairement** : la
+> cause est le site, et l'état du Rocket n'apporte rien. Le champ `rocket.status`
+> reste disponible pour qui en a besoin.
+
+Le statut du site suit exactement la même règle que `GET /api/v1/site-status`.
 
 ## Codes d'erreur
 

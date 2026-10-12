@@ -116,3 +116,17 @@ class ClientSignalResponse(BaseModel):
         default=None,
         description="Rocket auquel le LR est connecté (null si aucun rattachement connu)",
     )
+    site_name: str | None = Field(
+        default=None, description="Site auquel le client est raccordé (null si inconnu)"
+    )
+    site_status: str | None = Field(
+        default=None,
+        description="État du site : up | down — down quand son switch ne répond plus "
+        "(règle de GET /site-status). null si le site est inconnu ou sans switch supervisé",
+    )
+    rocket_status: str | None = Field(
+        default=None,
+        description="État du Rocket du client : up | down | unknown — renseigné "
+        "UNIQUEMENT si site_status vaut up (site en panne ou indéterminé ⇒ null). "
+        "null aussi si le Rocket n'est pas supervisé",
+    )

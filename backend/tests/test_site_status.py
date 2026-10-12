@@ -176,3 +176,47 @@ def test_unset_key_never_means_open_bar(monkeypatch, settings):
     monkeypatch.setattr(settings, "site_status_api_key", "", raising=False)
     assert deps._site_status_api_key_matches("") is False
     assert deps._site_status_api_key_matches(None) is False
+
+
+# --------------------------------------------- statut d'UN site (client-signal)
+import asyncio  # noqa: E402
+
+from app.services import site_status_service  # noqa: E402
+
+
+class _Result:
+    def __init__(self, values):
+        self._values = values
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._values
+
+
+class _FakeDb:
+    def __init__(self, statuses):
+        self.statuses = statuses
+
+    async def execute(self, _stmt):
+        return _Result(self.statuses)
+
+
+@pytest.mark.parametrize(
+    ("statuses", "expected"),
+    [
+        (["up"], "up"),
+        (["up", "down"], "down"),  # même règle que la liste : un switch tombé suffit
+        (["unknown"], "up"),
+        ([], None),  # aucun switch : on ne tranche pas
+    ],
+)
+def test_single_site_status_uses_the_same_rule(statuses, expected):
+    got = asyncio.run(site_status_service.get_site_status(_FakeDb(statuses), "A2 AT1"))
+    assert got == expected
+
+
+def test_unknown_site_is_not_judged():
+    assert asyncio.run(site_status_service.get_site_status(_FakeDb(["down"]), None)) is None
+    assert asyncio.run(site_status_service.get_site_status(_FakeDb(["down"]), " ")) is None

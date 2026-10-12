@@ -1,6 +1,7 @@
 # API — État des sites
 
-Renvoie l'état actuel de chaque site du réseau : `up` (en service) ou `down` (en panne).
+Renvoie l'état actuel de chaque site du réseau : `up` (en service) ou `down` (en panne),
+avec le nombre d'équipements du site qui répondent et le nombre en panne.
 
 L'API est en lecture seule : elle ne modifie rien.
 

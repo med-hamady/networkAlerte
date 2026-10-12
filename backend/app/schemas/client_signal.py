@@ -124,6 +124,11 @@ class ClientSignalResponse(BaseModel):
         description="État du site : up | down — down quand son switch ne répond plus "
         "(règle de GET /site-status). null si le site est inconnu ou sans switch supervisé",
     )
+    rocket_name: str | None = Field(
+        default=None,
+        description="Nom du Rocket du client (même valeur que rocket.name ; "
+        "renseigné même si le site est en panne). null si aucun Rocket connu",
+    )
     rocket_status: str | None = Field(
         default=None,
         description="État du Rocket du client : up | down | unknown — renseigné "

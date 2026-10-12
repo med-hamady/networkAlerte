@@ -99,6 +99,7 @@ curl -k --max-time 60 \
   },
   "site_name": "A2 CT1",
   "site_status": "up",
+  "rocket_name": "A2-CT1-EST",
   "rocket_status": "up"
 }
 ```
@@ -172,6 +173,7 @@ de chez nous ? », dans cet ordre : d'abord le site, puis le Rocket.
 |---|---|---|
 | `site_name` | texte ou `null` | Site auquel le client est raccordé (celui de son Rocket) |
 | `site_status` | `up` / `down` / `null` | `down` = le site est en panne (son switch ne répond plus). `null` = le site est inconnu ou n'est pas supervisé |
+| `rocket_name` | texte ou `null` | Nom du Rocket du client (même valeur que `rocket.name`). Renseigné **même si le site est en panne** |
 | `rocket_status` | `up` / `down` / `unknown` / `null` | État du Rocket du client. **Renseigné uniquement si `site_status` vaut `up`** |
 
 Comment les lire :

@@ -180,6 +180,7 @@ async def get_client_signal(db: AsyncSession, mac: str) -> ClientSignalResponse 
         rocket=rocket,
         site_name=site_name,
         site_status=site_status,
+        rocket_name=rocket.name if rocket else None,
         rocket_status=gated_rocket_status(site_status, rocket),
     )
 

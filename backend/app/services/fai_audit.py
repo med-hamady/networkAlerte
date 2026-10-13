@@ -147,6 +147,7 @@ def log_action(
     user: str | None = None,
     message: str = "",
     evidence: str | None = None,
+    request_id: str | None = None,
 ) -> None:
     """Ajoute une ligne au journal des actions FAI (best-effort, ne lève jamais).
 
@@ -168,6 +169,9 @@ def log_action(
     ne retrouve plus sa preuve.
     """
     ts = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if request_id:
+        # Versioned UUID marker in the message tail; old log lines stay readable.
+        message = f"request_id={request_id} | {message}"
     path = get_settings().fai_log_path
     # La preuve d'abord : une ligne de journal qui promet une preuve absente est
     # pire que pas de preuve du tout. Dans l'autre ordre, un échec d'écriture du
@@ -222,6 +226,10 @@ def _parse(line: str) -> dict | None:
         # Ligne d'avant le champ agent : le message était le dernier champ et
         # peut porter des ` | ` — le maxsplit plus large vient de les couper.
         message = " | ".join(tail)
+    request_id = None
+    marker = re.match(r"^request_id=([0-9a-f-]{36}) \| (.*)$", message.strip())
+    if marker:
+        request_id, message = marker.groups()
     return {
         "timestamp": ts.strip(),
         "action": action.strip(),
@@ -234,10 +242,19 @@ def _parse(line: str) -> dict | None:
         # « champ absent » (ligne ancienne) de « appelant sans agent ».
         "user": None if user in ("", "-") else user,
         "message": message.strip(),
+        "request_id": request_id,
         # Renseigné plus tard, sur les seules entrées RENDUES (cf. read_entries) :
         # un stat() par ligne lue coûterait un accès disque par ligne du journal.
         "has_evidence": False,
     }
+
+
+def legacy_request_key(timestamp: str, mac: str | None, action: str) -> str:
+    """Stable identity shared with the legacy importer; never infer a new link."""
+    import hashlib
+
+    raw = f"import:{timestamp}:{mac or 'nomac'}:{action}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:36]
 
 
 def _still_failed(
@@ -280,7 +297,7 @@ def _is_stale_failure(
 
 def read_entries(
     *,
-    limit: int = 200,
+    limit: int | None = 200,
     action: str | None = None,
     status: str | None = None,
     search: str | None = None,
@@ -338,7 +355,7 @@ def read_entries(
     stats = {"total": 0, "ok": 0, "failed": 0, "abandoned": 0}
     # Les `limit` DERNIÈRES entrées retenues en ordre de fichier = les plus
     # récentes. Le deque les garde sans jamais matérialiser tout le journal.
-    kept: collections.deque[dict] = collections.deque(maxlen=max(limit, 0))
+    kept: collections.deque[dict] = collections.deque(maxlen=max(limit, 0) if limit is not None else None)
 
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:

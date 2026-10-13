@@ -113,6 +113,8 @@ class FaiBlockRequest(BaseModel):
     # laissant DNS + WhatsApp/Meta joignables. Omis → défaut serveur.
     mode: Literal["full", "whatsapp_only"] | None = None
     user: AgentUser = None
+    contact_name: str | None = Field(None, max_length=120)
+    contact_phone: str | None = Field(None, max_length=40)
 
 
 class FaiUnblockRequest(BaseModel):
@@ -142,6 +144,8 @@ class FaiBlockResult(BaseModel):
     enforced_by: Literal["lr", "router"] | None
     # Une règle de blocage est-elle en place sur le routeur pour ce client ?
     router_blocked: bool
+    request_id: str | None = None
+    request_status: Literal["completed", "incomplete"] | None = None
 
 
 def _result(lr: Lr, ok: bool, message: str) -> FaiBlockResult:
@@ -160,10 +164,14 @@ def _result(lr: Lr, ok: bool, message: str) -> FaiBlockResult:
         block_mode=lr.block_mode,
         client_block_enforced_at=lr.client_block_enforced_at,
         # Un ordre non appliqué reste en file tant que l'échec est transitoire.
-        retry_scheduled=(not ok) and blocked_reason is None,
+        retry_scheduled=lr.client_blocked and lr.client_block_enforced_at is None and blocked_reason is None,
         unenforceable_reason=blocked_reason,
         enforced_by=enforced_by,
         router_blocked=lr.router_blocked,
+        request_id=getattr(getattr(lr, "_fai_request", None), "request_key", None),
+        request_status=(
+            "completed" if lr._fai_request.completed_at else "incomplete"
+        ) if getattr(lr, "_fai_request", None) else None,
     )
 
 
@@ -196,8 +204,16 @@ async def fai_block(
     - 404 : aucun LR pour cette MAC.
     - 409 : LR en mode bridge (le blocage ne peut pas fonctionner).
     """
+    received_at = datetime.datetime.now(datetime.UTC)
     lr = await _lookup_lr(db, body.mac)
     if lr.topology_mode == "bridge":
+        await client_block_service.block_client(
+            db, lr, body.reason, body.mode,
+            source=_source_from_reason(body.reason), user=_clean_user(body.user),
+            received_at=received_at,
+            contact_name=_clean_user(body.contact_name),
+            contact_phone=_clean_user(body.contact_phone),
+        )
         raise HTTPException(
             status_code=409,
             detail=(
@@ -207,18 +223,16 @@ async def fai_block(
             ),
         )
     ok, message, evidence = await client_block_service.block_client(
-        db, lr, body.reason, body.mode
+        db, lr, body.reason, body.mode,
+        source=_source_from_reason(body.reason), user=_clean_user(body.user),
+        received_at=received_at,
+        contact_name=_clean_user(body.contact_name),
+        contact_phone=_clean_user(body.contact_phone),
     )
     # Un refus d'identité n'est pas un échec de blocage : c'est une action NON
     # tentée parce que l'adresse de la fiche pointe sur un autre abonné. Le
     # journal le dit tel quel, sinon l'opérateur cherche une panne inexistante.
-    fai_audit.log_action(
-        "IDENT_KO" if client_block_service.is_identity_refusal(message) else "BLOCK",
-        ok=ok, mac=lr.mac_address, name=lr.name,
-        mode=lr.block_mode, source=_source_from_reason(body.reason),
-        user=_clean_user(body.user), message=message,
-        evidence=evidence,
-    )
+    # The shared service records one request and one audit line for every origin.
     return _result(lr, ok, message)
 
 

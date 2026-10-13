@@ -959,6 +959,11 @@ def _set_iface_state_sync(
             if transcript is not None:
                 transcript.note(f"ÉTAT NON APPLIQUÉ — {msg}")
             return False, msg, observed, used_pw, _ev()
+        if admin_up is None:
+            msg = f"Commande acceptée sur {interface}, mais état illisible : résultat non confirmé."
+            if transcript is not None:
+                transcript.note(msg)
+            return False, msg, observed, used_pw, _ev()
         state_str = "UP" if bring_up else "DOWN"
         verified = "" if admin_up is None else " (vérifié)"
         if transcript is not None:

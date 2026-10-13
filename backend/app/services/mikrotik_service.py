@@ -251,8 +251,20 @@ def _find_drop_rule_ids(api, mac: str) -> list[str]:
 
 def _block_sync(mac: str, comment: str) -> tuple[bool, str]:
     with _session() as api:
-        if _find_drop_rule_ids(api, mac):
-            return True, "Règle de blocage déjà présente sur le routeur."
+        def confirmed():
+            rules = list(api.rawCmd(
+                "/ip/firewall/filter/print", f"?src-mac-address={mac}",
+                "?action=drop", "?chain=forward",
+            ))
+            return any(
+                r.get(".id") and not _as_bool(r.get("disabled"))
+                and r.get("chain") == "forward" and r.get("action") == "drop"
+                and (r.get("src-mac-address") or "").upper() == mac.upper()
+                for r in rules
+            )
+
+        if confirmed():
+            return True, "Règle de blocage active confirmée sur le routeur."
         tuple(api.rawCmd(
             "/ip/firewall/filter/add",
             "=chain=forward",
@@ -261,7 +273,9 @@ def _block_sync(mac: str, comment: str) -> tuple[bool, str]:
             f"=comment={comment}",
             "=place-before=0",
         ))
-        return True, "Règle de blocage posée sur le routeur."
+        if not confirmed():
+            return False, "Commande acceptée, mais règle de blocage absente à la relecture."
+        return True, "Règle de blocage posée et confirmée sur le routeur."
 
 
 def _unblock_sync(mac: str) -> tuple[bool, str]:
@@ -279,6 +293,8 @@ def _unblock_sync(mac: str) -> tuple[bool, str]:
                 logger.warning("mikrotik: remove .id=%s a échoué : %s", rule_id, exc)
         if failed:
             return False, f"{removed} règle(s) retirée(s), {failed} en échec."
+        if _find_drop_rule_ids(api, mac):
+            return False, "Retrait demandé, mais blocage encore présent à la relecture."
         return True, f"{removed} règle(s) de blocage retirée(s) du routeur."
 
 

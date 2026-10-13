@@ -42,6 +42,33 @@ function formatTs(ts: string | null): string {
   })
 }
 
+// Pour les LR « En ligne » (status === 'up'), les jobs de découverte radio
+// remettent `last_discovered_at` à `now()` en continu — la valeur avance donc
+// à chaque Ctrl+R. On gèle côté navigateur la première valeur observée, par
+// id de LR, pour que la colonne « Vu par radio » conserve l'heure initialement
+// enregistrée après rafraîchissement. Les lignes non-up ne sont pas gelées :
+// leur `last_discovered_at` ne bouge plus, donc rien à corriger.
+const RADIO_FIRST_SEEN_STORAGE_KEY = 'access_diagnostics.radio_first_seen.v1'
+
+function readRadioFirstSeen(): Record<number, string> {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.localStorage.getItem(RADIO_FIRST_SEEN_STORAGE_KEY)
+    return raw ? JSON.parse(raw) as Record<number, string> : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeRadioFirstSeen(data: Record<number, string>): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(RADIO_FIRST_SEEN_STORAGE_KEY, JSON.stringify(data))
+  } catch {
+    // Mode privé ou quota : on dégrade silencieusement.
+  }
+}
+
 export default function AccessDiagnosticsPage() {
   const { can } = usePermissions()
   // ⚠️ À ne pas confondre avec `canEnroll` plus bas, qui dit si la
@@ -62,6 +89,24 @@ export default function AccessDiagnosticsPage() {
   const sshRefused = data?.ssh_refused ?? []
   const radioNotInUisp = data?.radio_not_in_uisp ?? []
   const canEnroll = data?.enrollment_available ?? false
+
+  // Heure « vue par radio » gelée pour les LR « En ligne » (voir le commentaire
+  // sur RADIO_FIRST_SEEN_STORAGE_KEY). On ne mémorise QUE les lignes `up`.
+  const [radioFirstSeen, setRadioFirstSeen] = React.useState<Record<number, string>>(readRadioFirstSeen)
+  React.useEffect(() => {
+    if (radioNotInUisp.length === 0) return
+    let next: Record<number, string> | null = null
+    for (const row of radioNotInUisp) {
+      if (row.status === 'up' && row.last_discovered_at && !(row.id in radioFirstSeen)) {
+        if (next === null) next = { ...radioFirstSeen }
+        next[row.id] = row.last_discovered_at
+      }
+    }
+    if (next !== null) {
+      setRadioFirstSeen(next)
+      writeRadioFirstSeen(next)
+    }
+  }, [radioNotInUisp, radioFirstSeen])
 
   // Enrôlement en cours : id du LR visé. Un seul à la fois — chaque CPE prend
   // jusqu'à 45 s (attente de l'adoption par le contrôleur).
@@ -206,6 +251,7 @@ export default function AccessDiagnosticsPage() {
                   disabled={busy !== null}
                   onEnroll={() => runEnroll(r)}
                   onAssign={() => setAssigning(r)}
+                  frozenSeenAt={r.status === 'up' ? (radioFirstSeen[r.id] ?? null) : null}
                 />
               ))}
             </tbody>
@@ -267,7 +313,7 @@ function SshRow({ row }: { row: SshRefusedRow }) {
 }
 
 function RadioRow({
-  row, canEnroll, mayEnroll, mayAssign, force, busy, disabled, onEnroll, onAssign,
+  row, canEnroll, mayEnroll, mayAssign, force, busy, disabled, onEnroll, onAssign, frozenSeenAt,
 }: {
   row: RadioNotInUispRow
   /** La FONCTIONNALITÉ est disponible (clé du contrôleur configurée). */
@@ -281,6 +327,9 @@ function RadioRow({
   disabled: boolean
   onEnroll: () => void
   onAssign: () => void
+  /** Heure gelée pour les LR « En ligne » : la 1re valeur observée (localStorage),
+   *  pour ne plus avancer à chaque Ctrl+R. `null` → afficher la valeur du serveur. */
+  frozenSeenAt: string | null
 }) {
   const up = row.status === 'up'
   return (
@@ -297,7 +346,7 @@ function RadioRow({
           {up ? 'En ligne' : row.status}
         </span>
       </Td>
-      <Td className="whitespace-nowrap text-blue-500 tabular-nums">{formatTs(row.last_discovered_at)}</Td>
+      <Td className="whitespace-nowrap text-blue-500 tabular-nums">{formatTs(frozenSeenAt ?? row.last_discovered_at)}</Td>
       <Td>
         <div className="flex flex-col items-start gap-1.5">
           {mayAssign && (

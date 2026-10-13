@@ -52,6 +52,14 @@ export const fetcher = (url: string) =>
   })
 
 export const endpoints = {
+  faiRequests: (opts: Record<string, string | number | undefined> = {}) => {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(opts)) {
+      if (value !== undefined && value !== '') params.set(key, String(value))
+    }
+    return `${API_BASE}/fai-requests?${params}`
+  },
+  faiRequestEvents: (id: string) => `${API_BASE}/fai-requests/${encodeURIComponent(id)}/events`,
   authLogin:            `${API_BASE}/auth/login`,
   authLogout:           `${API_BASE}/auth/logout`,
   authMe:               `${API_BASE}/auth/me`,
@@ -146,6 +154,9 @@ export const endpoints = {
   // Objet d'options et non des positionnels : à cinq filtres, un appel
   // `faiJournal(a, b, '', '', c)` ne se relit plus.
   faiJournal:           (opts: {
+    limit?: number
+    offset?: number
+    situation?: string
     status?: string
     search?: string
     /** Origine exacte : 'Block_all.php', 'payment', 'enforce', 'script'. */
@@ -154,7 +165,9 @@ export const endpoints = {
     start?: string
     end?: string
   } = {}) => {
-    const p = new URLSearchParams({ limit: '50000' })
+    const p = new URLSearchParams({ limit: String(opts.limit ?? 50000) })
+    if (opts.offset !== undefined) p.set('offset', String(opts.offset))
+    if (opts.situation) p.set('situation', opts.situation)
     if (opts.status) p.set('status', opts.status)
     if (opts.search) p.set('search', opts.search)
     if (opts.source) p.set('source', opts.source)

@@ -33,6 +33,7 @@ from app.schemas.device import (
     UispPowerCreate,
     UispSwitchCreate,
 )
+from app.services import fai_request_service
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +188,8 @@ async def update_device(db: AsyncSession, device_id: int, data: DeviceUpdate) ->
 async def delete_device(db: AsyncSession, device_id: int) -> None:
     """Delete a device (cascades to the type-specific row and all dependents)."""
     device = await get_device(db, device_id)
+    if isinstance(device, Lr):
+        await fai_request_service.close_active(db, device_id, "Fiche supprimée : aucune nouvelle tentative possible.")
     await db.delete(device)
     await db.flush()
     logger.info("Deleted device: %s", device.name)

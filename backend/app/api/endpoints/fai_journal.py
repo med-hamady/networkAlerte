@@ -29,7 +29,7 @@ journal — elle n'a besoin que de bloquer/débloquer.
 from __future__ import annotations
 
 import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -77,6 +77,9 @@ _UNKNOWN_CURRENT = EntryCurrentState(known=False)
 
 class JournalEntry(BaseModel):
     timestamp: str
+    # Preserve the stable marker parsed from the journal. Its timestamp is
+    # rounded to seconds and cannot identify a structured request reliably.
+    request_id: str | None = None
     action: str  # BLOCK | UNBLOCK | RETRY_OK | ABANDON | IDENT_KO
     ok: bool
     mac: str | None
@@ -134,6 +137,30 @@ class JournalResponse(BaseModel):
     entries: list[JournalEntry]
     stats: JournalStats
     attention: list[AttentionRow]
+    matching: int = 0
+    offset: int = 0
+    limit: int = 200
+    current_counts: dict[str, int] = {}
+
+
+def current_state(current: EntryCurrentState) -> str:
+    if not current.known:
+        return "gone"
+    if not current.client_blocked:
+        return "restored"
+    return "cut" if current.enforced_by else "not_cut"
+
+
+def paginate_history(entries, current_by_mac, *, situation, offset, limit):
+    """Count the full filtered journal before slicing; never infer old success."""
+    counts = dict(cut=0, not_cut=0, restored=0, gone=0)
+    selected = []
+    for entry in entries:
+        state = current_state(current_by_mac.get((entry["mac"] or "").lower(), _UNKNOWN_CURRENT))
+        counts[state] += 1
+        if not situation or situation == state:
+            selected.append(entry)
+    return selected[offset:offset + limit], len(selected), counts
 
 
 @router.get("", response_model=JournalResponse)
@@ -162,6 +189,8 @@ async def get_journal(
     end: datetime.date | None = Query(
         None, description="Fin de plage INCLUSE (YYYY-MM-DD, UTC). Requiert `start`."
     ),
+    offset: Annotated[int, Query(ge=0)] = 0,
+    situation: Literal["cut", "not_cut", "restored", "gone"] | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> JournalResponse:
     """Historique des actions de blocage + LR encore en souffrance.
@@ -227,10 +256,13 @@ async def get_journal(
         )
 
     entries, stats = fai_audit.read_entries(
-        limit=limit, action=action, status=status, search=search,
+        limit=None, action=action, status=status, search=search,
         source=source, start=start, end=end,
         resolved_block_macs=resolved_block_macs,
         resolved_unblock_macs=resolved_unblock_macs,
+    )
+    entries, matching, current_counts = paginate_history(
+        entries, current_by_mac, situation=situation, offset=offset, limit=limit,
     )
 
     result = await db.execute(
@@ -272,6 +304,7 @@ async def get_journal(
         ],
         stats=JournalStats(**stats),
         attention=attention,
+        matching=matching, offset=offset, limit=limit, current_counts=current_counts,
     )
 
 

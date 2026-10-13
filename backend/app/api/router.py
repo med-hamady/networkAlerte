@@ -24,6 +24,7 @@ from app.api.endpoints import (
     devices,
     fai,
     fai_journal,
+    fai_requests,
     fai_verify,
     health,
     incidents,
@@ -241,4 +242,9 @@ api_router.include_router(
 api_router.include_router(
     access_control.router, prefix="/access-control", tags=["access-control"],
     dependencies=_auth,
+)
+
+api_router.include_router(
+    fai_requests.router, prefix="/fai-requests", tags=["fai"],
+    dependencies=_perm("fai.requests.view"),
 )

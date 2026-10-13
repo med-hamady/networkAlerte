@@ -3,7 +3,7 @@ import ipaddress
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -637,6 +637,7 @@ def _block_result(lr: Lr, ok: bool, message: str) -> ClientBlockResult:
 async def block_client(
     device_id: int,
     body: BlockClientRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> ClientBlockResult:
     """Cut a client's internet by shutting its LR's LAN port over SSH.
@@ -647,6 +648,9 @@ async def block_client(
     and re-asserted by the enforcement job — it survives an LR reboot. Only
     valid on LR devices.
     """
+    received_at = datetime.datetime.now(datetime.UTC)
+    agent = getattr(request.state, "auth_user", None)
+    agent_name = getattr(agent, "username", None)
     device = await device_service.get_device(db, device_id)
     if not isinstance(device, Lr):
         raise HTTPException(
@@ -654,6 +658,8 @@ async def block_client(
             detail="Le blocage client n'est disponible que sur les LR.",
         )
     if device.topology_mode == "bridge":
+        await client_block_service.block_client(db, device, body.reason, body.mode,
+                                               user=agent_name, received_at=received_at)
         # Bridge mode → iptables FORWARD and the local dnsmasq are bypassed.
         # Any block we apply would silently fail to actually cut the client.
         # Refuse with a clear message; the misconfig is also tracked as an
@@ -668,11 +674,9 @@ async def block_client(
                 f"(airOS), puis réessayer."
             ),
         )
-    # 3e élément = la preuve d'exécution. Ignorée ici : cette route n'écrit
-    # AUCUNE entrée au journal FAI (elle ne l'a jamais fait), donc il n'y a rien
-    # à quoi l'attacher. Trou d'audit préexistant, à traiter séparément.
+    # The shared service persists the request and its execution evidence.
     ok, message, _evidence = await client_block_service.block_client(
-        db, device, body.reason, body.mode
+        db, device, body.reason, body.mode, user=agent_name, received_at=received_at
     )
     return _block_result(device, ok, message)
 

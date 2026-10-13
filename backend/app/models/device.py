@@ -58,6 +58,11 @@ class Device(Base):
     notes: Mapped[str | None] = mapped_column(Text)
     last_seen: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # Horodatages observes, sans reconstruction de l'historique ancien.
+    connectivity_observed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    offline_detected_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    online_detected_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+
     # Auto-discovery metadata — populated for devices reported by a peer (LRs)
     # or when an external scan detects a new device. mac_address is the stable
     # identifier across IP changes and Rocket reassignment.

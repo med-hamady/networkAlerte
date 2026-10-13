@@ -3,6 +3,7 @@ from app.models.client_broadcast import ClientBroadcast, ClientBroadcastRecipien
 from app.models.client_consumption_daily import ClientConsumptionDaily
 from app.models.device import Device, Lr, Rocket, UispPower, UispSwitch
 from app.models.device_metric import DeviceMetric
+from app.models.fai_request import FaiRequest, FaiRequestEvent
 from app.models.incident import Incident
 from app.models.lr_metric_sample import LrMetricSample
 from app.models.manual_alert import ManualAlert
@@ -19,6 +20,8 @@ __all__ = [
     "ClientConsumptionDaily",
     "Device",
     "DeviceMetric",
+    "FaiRequest",
+    "FaiRequestEvent",
     "Incident",
     "Lr",
     "LrMetricSample",

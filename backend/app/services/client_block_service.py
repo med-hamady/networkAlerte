@@ -43,7 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import ADULT_CONTENT_KEY, CONTENT_BLOCK_LABELS, get_settings
 from app.models.device import Lr
 from app.schemas.device import normalize_mac
-from app.services import fai_audit, mikrotik_service, ssh_service
+from app.services import fai_audit, fai_request_service, mikrotik_service, ssh_service
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +246,9 @@ async def _set_full(
         )
     _pin_fp(lr, ok, observed_fp)
     _promote_password(lr, primary_pw, used_pw)
+    lr._fai_network_reachable = bool((ok or used_pw) and not is_identity_refusal(msg))
+    if cut and lr._fai_network_reachable:
+        await fai_request_service.connection_observed()
     return ok, msg, evidence
 
 
@@ -276,6 +279,9 @@ async def _set_whatsapp(lr: Lr, on: bool) -> tuple[bool, str]:
         )
     _pin_fp(lr, ok, observed_fp)
     _promote_password(lr, primary_pw, used_pw)
+    lr._fai_network_reachable = bool((ok or used_pw) and not is_identity_refusal(msg))
+    if on and lr._fai_network_reachable:
+        await fai_request_service.connection_observed()
     return ok, msg
 
 
@@ -292,10 +298,17 @@ async def _assert_block(
     (règles iptables + bloc dnsmasq) et reste à faire — une entrée de journal
     whatsapp_only s'affiche donc simplement sans preuve.
     """
+    await fai_request_service.record("client", "attempting", "Tentative de coupure sur le LR via SSH.")
+    lr._fai_network_reachable = False
     if lr.block_mode == MODE_WHATSAPP:
         ok, msg = await _set_whatsapp(lr, on=True)
-        return ok, msg, None
-    return await _set_full(lr, cut=True, capture_evidence=capture_evidence)
+        evidence = None
+    else:
+        ok, msg, evidence = await _set_full(lr, cut=True, capture_evidence=capture_evidence)
+    await fai_request_service.record("client", "confirmed" if ok else (
+        "unknown" if "non confirmé" in msg else "failed"
+    ), msg, unavailable=not ok and not lr._fai_network_reachable and _unavailable_failure(msg))
+    return ok, msg, evidence
 
 
 async def _clear_block(
@@ -358,6 +371,18 @@ def _structural_failure(msg: str) -> str | None:
     return None
 
 
+def _unavailable_failure(msg: str) -> bool:
+    # Waiting for a return is different from a login refusal, wrong identity,
+    # missing credentials, or an unverified command result.
+    if _structural_failure(msg):
+        return False
+    return any(marker in (msg or "").lower() for marker in (
+        "timed out", "timeout", "no route to host", "network is unreachable",
+        "unreachable", "non joignable", "injoignable", "hors connexion",
+        "[errno 113]", "[errno 101]",
+    ))
+
+
 def _abandon_retry_due(lr: Lr) -> bool:
     """Un ré-essai lent est-il dû pour un LR abandonné ? (filet self-heal)
 
@@ -392,14 +417,19 @@ def _resolve_mode(mode: str | None) -> str:
 async def _neutralize_other(lr: Lr) -> None:
     """Best-effort: undo the mechanism the *other* mode would have left.
 
-    Makes a mode switch (full ↔ whatsapp_only) clean. Failures are logged but
-    never fail the block — the chosen mechanism is what matters; a stale
-    artifact of the other one is harmless (port already up / no iptables rule).
+    Makes a mode switch (full ↔ whatsapp_only) clean. Filter cleanup is optional
+    for a full cut. Opening the LAN port IS required to allow WhatsApp: the
+    request stays incomplete until that opening is confirmed.
     """
+    operation = "Ouvrir le port LAN pour autoriser WhatsApp" if lr.block_mode == MODE_WHATSAPP else "Retirer l'ancien filtre WhatsApp (nettoyage complémentaire)"
+    await fai_request_service.record("mode_cleanup", "attempting", operation,
+                                     operation=operation, target=f"LR {lr.name}",
+                                     required=lr.block_mode == MODE_WHATSAPP)
     if lr.block_mode == MODE_WHATSAPP:
         ok, msg, _ = await _set_full(lr, cut=False)  # ensure port not left down
     else:
         ok, msg = await _set_whatsapp(lr, on=False)  # ensure filter removed
+    await fai_request_service.record("mode_cleanup", "confirmed" if ok else "failed", msg)
     if not ok:
         logger.info(
             "block_client: nettoyage de l'autre mécanisme non concluant "
@@ -519,13 +549,17 @@ async def _reconcile_router(lr: Lr) -> str | None:
         return None
 
     desired = desired_router_block(lr)
-    if desired == lr.router_blocked:
+    if desired == lr.router_blocked and not fai_request_service.needs_action(
+        "router" if desired else "router_cleanup"
+    ):
         return None  # déjà aligné — aucun appel au routeur
 
     if desired:
+        await fai_request_service.record("router", "attempting", "Tentative de blocage de secours par MAC sur le routeur.")
         ok, msg = await mikrotik_service.block_by_mac(
             lr.mac_address, mikrotik_service.build_comment(lr.name or f"lr-{lr.id}"),
         )
+        await fai_request_service.record("router", "confirmed" if ok else "failed", msg)
         if ok:
             lr.router_blocked = True
             lr.router_blocked_at = _now()
@@ -545,7 +579,9 @@ async def _reconcile_router(lr: Lr) -> str | None:
             )
         return msg
 
+    await fai_request_service.record("router_cleanup", "attempting", "Vérification du retrait du blocage de secours sur le routeur.")
     ok, msg = await mikrotik_service.unblock_by_mac(lr.mac_address)
+    await fai_request_service.record("router_cleanup", "confirmed" if ok else "failed", msg)
     if ok:
         lr.router_blocked = False
         lr.router_blocked_at = None
@@ -587,7 +623,9 @@ async def _clear_router_block(
     """
     if not mikrotik_service.is_enabled():
         return None
+    await fai_request_service.record("router_cleanup", "attempting", "Retrait et vérification des règles de blocage de secours sur le routeur.")
     ok, msg = await mikrotik_service.unblock_by_mac(lr.mac_address)
+    await fai_request_service.record("router_cleanup", "confirmed" if ok else "failed", msg)
     if not ok:
         logger.warning(
             "ROUTER UNBLOCK non appliqué — LR '%s' (id=%d) : %s",
@@ -613,8 +651,25 @@ async def _clear_router_block(
     return removed, msg
 
 
+def _router_restore_error(lr: Lr, result: tuple[bool, str] | None) -> str | None:
+    """Require confirmed cleanup, including rules absent from our local state.
+
+    The cleanup boolean means "a rule was removed", not "the check succeeded":
+    an explicitly confirmed empty router is also a successful restoration.
+    """
+    if result is None:
+        return "Blocage routeur non vérifié : intégration routeur désactivée." if lr.router_blocked else None
+    removed, message = result
+    return None if removed or message == mikrotik_service.NO_RULE_MESSAGE else message
+
+
+@fai_request_service.serialized
 async def block_client(
-    session: AsyncSession, lr: Lr, reason: str | None, mode: str | None = None
+    session: AsyncSession, lr: Lr, reason: str | None, mode: str | None = None,
+    *, source: str = "dashboard", user: str | None = None,
+    received_at: datetime.datetime | None = None,
+    contact_name: str | None = None,
+    contact_phone: str | None = None,
 ) -> tuple[bool, str, str | None]:
     """Cut a client's internet on its LR — mode 'full' or 'whatsapp_only'.
 
@@ -629,6 +684,8 @@ async def block_client(
     de journal. ``None`` quand il n'y a rien à prouver (pas de SSH, mode
     whatsapp_only).
     """
+    if lr.topology_mode == "bridge":
+        return False, "LR en mode bridge : coupure refusée, reconfiguration requise.", None
     if not _has_ssh(lr):
         return (
             False,
@@ -642,6 +699,8 @@ async def block_client(
     already = lr.client_blocked
     lr.client_blocked = True
     lr.block_mode = resolved
+    # A new request must never inherit another request's old SSH confirmation.
+    lr.client_block_enforced_at = None
     if not already:
         lr.client_blocked_at = _now()
     lr.client_blocked_reason = (reason or "").strip() or None
@@ -667,7 +726,7 @@ async def block_client(
         # on le lui DEMANDE au lieu de le déduire de notre base : `_reconcile_router`
         # sortirait sans appel dès qu'elle croit qu'aucune règle n'est posée, laissant
         # en place une règle legacy (`add_rules.php`) ou une désynchronisation.
-        router = await _clear_router_block(lr, source="block")
+        router = await _clear_router_block(lr, source="block") if lr.router_blocked or resolved == MODE_WHATSAPP else None
         await session.commit()
         logger.warning(
             "CLIENT BLOCK appliqué — LR '%s' (id=%d, %s) mode=%s — motif: %s",
@@ -733,14 +792,15 @@ async def block_client(
     )
 
 
+@fai_request_service.serialized
 async def unblock_client(
     session: AsyncSession, lr: Lr
 ) -> tuple[bool, str, str | None]:
     """Restore a client's internet by bringing its LR's LAN port back up.
 
-    Intent is cleared first so the enforcement job stops re-cutting. If the
-    SSH bring-up fails the port may stay down until the operator retries (the
-    LR is normally reachable via the radio, so this is rare).
+    Intent is cleared first so the enforcement job stops re-cutting. Restoration
+    is queued in the same commit so an interruption or failed SSH attempt can
+    be retried by the scheduler.
 
     3e élément : la preuve d'exécution, comme :func:`block_client`.
     """
@@ -750,6 +810,12 @@ async def unblock_client(
     lr.client_blocked_at = None
     lr.client_block_enforced_at = None
 
+    # Queue restoration before network I/O so an interrupted worker cannot leave
+    # the client cut after the old block intent and request have been closed.
+    lr.unblock_pending = True
+    # Persist restoration and historical closure atomically, before network I/O.
+    await session.commit()
+
     if not _has_ssh(lr):
         # Même sans SSH, une règle routeur a pu couper ce client : la retirer est
         # justement ce qui lui rend l'accès dans ce cas.
@@ -757,7 +823,7 @@ async def unblock_client(
         await session.commit()
         return (
             False,
-            f"Intention de blocage levée pour {lr.name} (et règle routeur retirée), "
+            f"Intention de blocage levée pour {lr.name}, "
             f"mais sans identifiants SSH une éventuelle coupure locale sur le LR n'a "
             f"pas pu être levée. Configure les credentials puis relance le déblocage.",
             None,
@@ -766,15 +832,26 @@ async def unblock_client(
     # Idem block_client : on acquitte l'intention et on rend la connexion au pool
     # avant de partir en SSH, pour que N déblocages simultanés (le batch du matin
     # après une nuit de paiements) ne saturent pas le pool.
-    await session.commit()
-
     # Retrait routeur INCONDITIONNEL, avant même le SSH : c'est ce qui rend l'accès
     # aux clients que seul le routeur coupait, et ça nettoie au passage les règles
     # posées par le système historique pour cette MAC.
     router = await _clear_router_block(lr, source="unblock")
+    router_error = _router_restore_error(lr, router)
     router_note = f" Routeur : {router[1]}" if router and router[0] else ""
 
     ok, msg, evidence = await _clear_block(lr, capture_evidence=True)
+    if ok and router_error is not None:
+        # SSH success alone cannot prove internet is back: a router DROP may
+        # still exist, even when router_blocked was already False (legacy rule).
+        _set_unenforceable(lr, None)
+        await session.commit()  # keep the queued restoration for the next cycle
+        return (
+            False,
+            f"Déblocage appliqué sur le LR de {lr.name}, mais l'accès internet "
+            f"n'est pas encore confirmé. Routeur : {router_error} "
+            "Le job de renforcement réessaiera automatiquement.",
+            evidence,
+        )
     if ok:
         lr.unblock_pending = False
         _set_unenforceable(lr, None)
@@ -921,6 +998,7 @@ async def enforce_blocked_clients(
     )
 
 
+@fai_request_service.serialized
 async def _enforce_one_block(session: AsyncSession, lr_id: int) -> int:
     """Une itération de :func:`enforce_blocked_clients` — 1 si l'ordre a abouti."""
     lr = await session.get(Lr, lr_id)
@@ -934,15 +1012,26 @@ async def _enforce_one_block(session: AsyncSession, lr_id: int) -> int:
     # (`expire_on_commit=False`) ; les mutations qui suivent partent au commit.
     await session.commit()
 
-    # Plan routeur d'abord : il ne dépend ni du SSH ni de l'état d'abandon,
-    # et c'est lui qui garantit la coupure quand le LR ne répond pas.
-    await _reconcile_router(lr)
+    # Try the client first. A reachable client needs no fallback router cut.
+
+    restoring = not lr.client_blocked and lr.unblock_pending
+    router_error = None
+    if restoring:
+        # A failed unconditional cleanup must stay unconditional on retry:
+        # reconciliation alone skips legacy rules when router_blocked is False.
+        router = await _clear_router_block(lr)
+        router_error = _router_restore_error(lr, router)
 
     if lr.block_unenforceable_reason is not None and not _abandon_retry_due(lr):
+        if not restoring:
+            await _reconcile_router(lr)
         await session.commit()  # persiste l'éventuel changement côté routeur
         return 0  # LR abandonné (récemment) : pas de SSH, le routeur couvre
 
     if not _has_ssh(lr):
+        await fai_request_service.record("client", "failed", "Identifiants SSH absents : configurer les accès au LR.")
+        if not restoring:
+            await _reconcile_router(lr)
         logger.warning(
             "enforce_blocked_clients: LR '%s' (id=%d) sans identifiants SSH "
             "— ordre non garanti",
@@ -952,6 +1041,9 @@ async def _enforce_one_block(session: AsyncSession, lr_id: int) -> int:
         return 0
 
     if not lr.ip_address:
+        await fai_request_service.record("client", "pending", "Adresse IP absente : attendre la découverte ou corriger l'inventaire.", unavailable=True)
+        if not restoring:
+            await _reconcile_router(lr)
         # Sans IP, le LR est hors du sweep de ping et injoignable en SSH : rien
         # à tenter localement. Le routeur (réconcilié ci-dessus) le couvre. Cas
         # des clients « hors supervision » bloqués en masse sur le routeur.
@@ -959,10 +1051,13 @@ async def _enforce_one_block(session: AsyncSession, lr_id: int) -> int:
         return 0
 
     if not lr.client_blocked and not lr.unblock_pending:
+        await _reconcile_router(lr)
         await session.commit()  # visité pour le seul nettoyage routeur
         return 0
 
     blocking = lr.client_blocked
+    if blocking and lr.block_mode == MODE_WHATSAPP and fai_request_service.needs_action("mode_cleanup"):
+        await _neutralize_other(lr)
     action = "BLOCK" if blocking else "UNBLOCK"
     # Capturer la preuve UNIQUEMENT sur une transition — c.-à-d. exactement
     # quand une ligne de journal sera écrite (`first_time` ci-dessous, et
@@ -977,6 +1072,16 @@ async def _enforce_one_block(session: AsyncSession, lr_id: int) -> int:
         if blocking
         else _clear_block(lr, capture_evidence=capture)
     )
+
+    if ok and restoring and router_error is not None:
+        _set_unenforceable(lr, None)
+        logger.warning(
+            "enforce: LR '%s' (id=%d) rétabli mais nettoyage routeur non confirmé : "
+            "%s — déblocage maintenu en attente",
+            lr.name, lr.id, router_error,
+        )
+        await session.commit()
+        return 0
 
     if ok:
         # Un ré-essai réussi lève l'abandon : sans ça la raison resterait
@@ -1026,7 +1131,8 @@ async def _enforce_one_block(session: AsyncSession, lr_id: int) -> int:
     # Le SSH vient peut-être de changer l'état désiré (coupure confirmée → la
     # règle routeur devient inutile ; abandon → elle devient nécessaire). On
     # réaligne tout de suite plutôt que d'attendre le cycle suivant.
-    await _reconcile_router(lr)
+    if not restoring:
+        await _reconcile_router(lr)
     await session.commit()
 
     return 1 if ok else 0
@@ -1215,6 +1321,7 @@ async def _enforce_one_content(session: AsyncSession, lr_id: int) -> int:
     await session.commit()  # aucune transaction ouverte pendant le SSH
 
     if lr.block_unenforceable_reason is not None and not _abandon_retry_due(lr):
+        await _reconcile_router(lr)
         return 0
     if not _has_ssh(lr):
         return 0

@@ -63,6 +63,7 @@ from app.services import (
     client_broadcast_service,
     digest_service,
     discovery_service,
+    fai_request_service,
     incident_service,
     ip_hygiene_service,
     lr_health_service,
@@ -887,6 +888,10 @@ async def _ping_sweep(*, infra: bool) -> None:
 
             if reachable:
                 _set_failures(device.id, 0)
+                if (device.status != "up" or device.connectivity_observed_at is None
+                        or (isinstance(device, Lr) and device.client_blocked)):
+                    await fai_request_service.connectivity_event(session, device, True, now)
+                fai_request_service.observe_connectivity(device, True, now)
                 device.status = "up"
                 device.last_seen = now
                 # Recovery : uniquement si le device avait un incident *_down ouvert.
@@ -909,6 +914,9 @@ async def _ping_sweep(*, infra: bool) -> None:
                 if failures >= settings.ping_down_threshold:
                     # Anti-flap du statut : on ne bascule "down" qu'au seuil (jamais
                     # sur un ICMP perdu — radios Ubiquiti rate-limitent leur mgmt).
+                    if device.status != "down" or device.offline_detected_at is None:
+                        await fai_request_service.connectivity_event(session, device, False, now)
+                    fai_request_service.observe_connectivity(device, False, now)
                     device.status = "down"
                     if device.rule_category == "lr":
                         # Un LR down = panne côté abonné : aucun incident infra. On

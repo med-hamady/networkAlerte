@@ -1324,6 +1324,8 @@ export interface FaiEntryCurrent {
 
 export interface FaiJournalEntry {
   timestamp: string
+  /** Stable structured request marker; absent from legacy journal entries. */
+  request_id?: string | null
   /** IDENT_KO = rien n'a été tenté : l'équipement joint à l'adresse de la
    *  fiche n'était pas celui attendu (MAC differente), donc agir aurait
    *  touché un autre abonné. */
@@ -1383,7 +1385,93 @@ export interface FaiAttentionRow {
   // coupure sur son propre équipement reste à poser.
   router_blocked: boolean
 }
+export interface FaiRequestAction {
+  key: string
+  target: string
+  operation: string
+  result: 'pending' | 'attempting' | 'confirmed' | 'failed' | 'unknown'
+  attempted_at: string | null
+  confirmed_at: string | null
+  reason: string | null
+  message?: string
+  required?: boolean
+}
+
+export interface FaiRequestEvent {
+  timestamp: string
+  target: string | null
+  kind: string
+  result: string | null
+  message: string
+  action_key?: string | null
+}
+
+export interface FaiRequestWaiting {
+  known?: boolean
+  awaiting_return?: boolean
+  periods: { started_at: string; ended_at: string | null; end_reason: 'returned' | 'closed' | 'cut' | null; returned_at?: string | null; awaiting_return?: boolean }[]
+  total_seconds: number
+  started_at: string | null
+  ended_at: string | null
+  returned_at: string | null
+  in_progress: boolean
+}
+
+export interface FaiRequestEntry {
+  id: string
+  received_at: string | null
+  logged_at?: string
+  completed_at: string | null
+  status: 'completed' | 'incomplete' | 'unverified'
+  active: boolean
+  closed_at: string | null
+  closed_reason: string | null
+  name: string
+  client_id?: string | null
+  client_name?: string | null
+  contact_name?: string | null
+  contact_phone?: string | null
+  cut_at?: string | null
+  waiting?: FaiRequestWaiting | null
+  stage?: 'completed' | 'closed' | 'waiting' | 'finalizing' | 'to_cut' | 'attention' | 'pending' | 'legacy'
+  mac: string | null
+  site: string | null
+  source: string
+  agent: string | null
+  mode: string
+  reason: string | null
+  summary: string
+  remaining: string[]
+  actions: FaiRequestAction[]
+  legacy: boolean
+  events?: FaiRequestEvent[]
+  current: {
+    known: boolean
+    block_requested?: boolean
+    restoration_pending?: boolean
+    connectivity?: string
+    observed_at?: string | null
+    offline_detected_at?: string | null
+    online_detected_at?: string | null
+  }
+}
+
+export interface FaiRequestsResponse {
+  entries: FaiRequestEntry[]
+  counts: { total: number; completed: number; incomplete: number; unverified?: number } | null
+  history_available?: boolean
+  notice?: string | null
+  capabilities?: { request_history: boolean; event_history: boolean; connectivity_timestamps: boolean; legacy_journal: boolean }
+  matching: number
+  limit: number
+  offset: number
+}
+
 export interface FaiJournalResponse {
+  matching?: number
+  offset?: number
+  limit?: number
+  current_counts?: Record<'cut' | 'not_cut' | 'restored' | 'gone', number>
   entries: FaiJournalEntry[]
   stats: FaiJournalStats
   attention: FaiAttentionRow[]

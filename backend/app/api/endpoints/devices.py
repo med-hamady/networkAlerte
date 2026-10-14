@@ -27,7 +27,9 @@ from app.schemas.device import (
 )
 from app.services import (
     client_block_service,
+    crm_balance_service,
     device_service,
+    fai_audit,
     lan_discovery,
     lr_metric_history_service,
     lr_plan_service,
@@ -821,6 +823,18 @@ async def unblock_client(
         raise HTTPException(
             status_code=400,
             detail="Le déblocage client n'est disponible que sur les LR.",
+        )
+    # Même contrôle du solde CRM que `POST /fai/unblock`, sans moyen de forcer
+    # (décision opérateur) : 409 dû au-delà du seuil, 503 CRM injoignable.
+    balance = await crm_balance_service.check_unblock_allowed(device)
+    if not balance.allowed:
+        fai_audit.log_action(
+            "BALANCE_KO", ok=False, mac=device.mac_address, name=device.name,
+            mode=device.block_mode, source="dashboard", message=balance.message,
+        )
+        raise HTTPException(
+            status_code=409 if balance.verdict == "outstanding_balance" else 503,
+            detail=balance.message,
         )
     # Preuve ignorée : cette route ne journalise pas (cf. block_client ci-dessus).
     ok, message, _evidence = await client_block_service.unblock_client(db, device)

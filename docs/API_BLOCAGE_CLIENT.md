@@ -127,6 +127,35 @@ Content-Type: application/json
 Rétablit l'accès complet **quel que soit le mode** qui avait été appliqué — vous n'avez
 pas à savoir comment le client avait été coupé.
 
+### Contrôle du solde CRM (depuis le 2026-10-14)
+
+Avant toute action, nous lisons dans le CRM ce que le client doit encore. **Le
+déblocage est refusé** — le client reste coupé, rien n'est modifié — dans deux cas :
+
+| HTTP | `error_code` | Cas |
+|---|---|---|
+| **409** | `outstanding_balance` | Le client doit **plus de 150** (150 tout rond passe) |
+| **503** | `crm_unavailable` | Le solde n'a pas pu être vérifié (CRM injoignable, réponse illisible, client introuvable dans le CRM). Réessayer plus tard |
+
+```json
+{
+  "detail": {
+    "error_code": "outstanding_balance",
+    "message": "Déblocage refusé : le client CRM 1361 doit encore 300.00 (seuil 150.00).",
+    "mac": "d0:21:f9:f6:07:c2",
+    "crm_client_id": "1361",
+    "outstanding": 300.0,
+    "threshold": 150.0
+  }
+}
+```
+
+- Le solde est lu **au moment de l'appel** : un paiement doit déjà être enregistré
+  dans le CRM quand vous appelez `/unblock`, sinon le client sera refusé.
+- Un client **non rattaché à un client CRM** est débloqué sans contrôle.
+- Il n'existe **aucun moyen de forcer** le déblocage.
+- Chaque refus est inscrit dans notre journal (action « Solde impayé »).
+
 ---
 
 ## 6. Consulter l'état d'un client

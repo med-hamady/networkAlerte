@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.models.device import Lr
-from app.services import client_block_service, fai_audit
+from app.services import client_block_service, crm_balance_service, fai_audit
 
 router = APIRouter()
 
@@ -231,10 +231,33 @@ async def fai_unblock(
 
     `user` (facultatif) : l'agent à l'origine de l'ordre, journalisé tel quel.
 
+    Le solde CRM du client est vérifié AVANT toute action
+    (`crm_balance_service`) : rien n'est touché — ni la base, ni le LR, ni le
+    routeur — si le déblocage est refusé.
+
     - 400 : MAC mal formée.
     - 404 : aucun LR pour cette MAC.
+    - 409 `outstanding_balance` : le client doit plus que le seuil (150).
+    - 503 `crm_unavailable` : solde impossible à vérifier (CRM injoignable…).
     """
     lr = await _lookup_lr(db, body.mac)
+    balance = await crm_balance_service.check_unblock_allowed(lr)
+    if not balance.allowed:
+        fai_audit.log_action(
+            "BALANCE_KO", ok=False, mac=lr.mac_address, name=lr.name,
+            mode=lr.block_mode, user=_clean_user(body.user), message=balance.message,
+        )
+        raise HTTPException(
+            status_code=409 if balance.verdict == "outstanding_balance" else 503,
+            detail={
+                "error_code": balance.verdict,
+                "message": balance.message,
+                "mac": lr.mac_address,
+                "crm_client_id": balance.crm_client_id,
+                "outstanding": balance.outstanding,
+                "threshold": balance.threshold,
+            },
+        )
     ok, message, evidence = await client_block_service.unblock_client(db, lr)
     # Un refus d'identité n'est pas un échec de blocage : c'est une action NON
     # tentée parce que l'adresse de la fiche pointe sur un autre abonné. Le

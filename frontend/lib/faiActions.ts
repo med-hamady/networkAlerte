@@ -21,6 +21,10 @@ export const ACTION_STYLE: Record<FaiJournalEntry['action'], { label: string; cl
   // (ambre) — ici il n'y a rien à réparer sur le terrain, c'est la fiche qui
   // est périmée, et elle se corrigera dès que la découverte reverra le client.
   IDENT_KO: { label: 'Identité refusée', cls: 'bg-purple-50 text-purple-700 border-purple-200' },
+  // Déblocage REFUSÉ avant toute action : le client doit plus que le seuil
+  // dans le CRM, ou son solde n'a pas pu être vérifié (CRM injoignable). Le
+  // client reste coupé, et c'est voulu — rien à réparer sur le terrain.
+  BALANCE_KO: { label: 'Solde impayé', cls: 'bg-orange-50 text-orange-800 border-orange-300' },
   // Le repli : la coupure n'a pas pu être posée sur l'équipement du client, elle
   // l'a été sur le routeur de cœur. Teinte ardoise pour marquer « autre plan » —
   // ce n'est ni un succès nominal (rouge/vert) ni un échec (ambre).
@@ -37,6 +41,7 @@ export const SOURCE_LABEL: Record<string, string> = {
   payment: 'Système de paiement',
   enforce: 'Renforcement auto',
   script:  'Blocage de masse',
+  dashboard: 'Dashboard',
 }
 
 export function sourceLabel(source: string): string {

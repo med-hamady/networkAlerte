@@ -1328,7 +1328,7 @@ export interface FaiJournalEntry {
    *  fiche n'était pas celui attendu (MAC differente), donc agir aurait
    *  touché un autre abonné. */
   action:
-    | 'BLOCK' | 'UNBLOCK' | 'RETRY_OK' | 'ABANDON' | 'IDENT_KO'
+    | 'BLOCK' | 'UNBLOCK' | 'RETRY_OK' | 'ABANDON' | 'IDENT_KO' | 'BALANCE_KO'
     // Repli : coupure posée / retirée sur le routeur de cœur parce que
     // l'équipement du client ne répondait pas.
     | 'ROUTER_BLOCK' | 'ROUTER_UNBLOCK'

@@ -77,7 +77,7 @@ _UNKNOWN_CURRENT = EntryCurrentState(known=False)
 
 class JournalEntry(BaseModel):
     timestamp: str
-    action: str  # BLOCK | UNBLOCK | RETRY_OK | ABANDON | IDENT_KO
+    action: str  # BLOCK | UNBLOCK | RETRY_OK | ABANDON | IDENT_KO | BALANCE_KO
     ok: bool
     mac: str | None
     name: str
@@ -144,7 +144,7 @@ async def get_journal(
     # journal complet, et existe seulement pour qu'une réponse ne devienne jamais
     # illimitée quand le fichier aura grossi de plusieurs années.
     limit: int = Query(200, ge=1, le=50_000),
-    action: str | None = Query(None, description="BLOCK | UNBLOCK | RETRY_OK | ABANDON | IDENT_KO"),
+    action: str | None = Query(None, description="BLOCK | UNBLOCK | RETRY_OK | ABANDON | IDENT_KO | BALANCE_KO"),
     status: str | None = Query(None, description="ok | failed | abandoned"),
     search: str | None = Query(
         None, description="Filtre sur la MAC, le nom du client ou l'agent"
@@ -287,7 +287,7 @@ class EvidenceResponse(BaseModel):
 @router.get("/evidence", response_model=EvidenceResponse)
 async def get_evidence(
     timestamp: str = Query(..., description="Horodatage exact de l'entrée (ex. 2026-08-04T14:22:07Z)"),
-    action: str = Query(..., description="BLOCK | UNBLOCK | RETRY_OK | ABANDON | IDENT_KO"),
+    action: str = Query(..., description="BLOCK | UNBLOCK | RETRY_OK | ABANDON | IDENT_KO | BALANCE_KO"),
     mac: str | None = Query(None, description="MAC du LR de l'entrée"),
 ) -> EvidenceResponse:
     """Preuve d'exécution d'une action : ce qui est réellement passé sur le LR.

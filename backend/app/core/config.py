@@ -477,6 +477,26 @@ class Settings(BaseSettings):
     # Inter-site topology graph (/network-topology) — the site the layered layout
     # is rooted on. It CANNOT be derived: the Internet→HQ hop is not a UISP
     # data-link, so the controller has no idea which site faces upstream. When
+    # ── Contrôle du solde CRM avant un DÉBLOCAGE client ─────────────────────
+    # Avant de rétablir l'accès d'un abonné (`POST /fai/unblock` du système de
+    # paiement ET bouton « Débloquer » du dashboard), on lit son dû dans le CRM
+    # UISP : au-delà de `unblock_max_outstanding`, le déblocage est REFUSÉ.
+    # ⚠️ L'API CRM (`/crm/api/v1.0/`) refuse le token NMS (401) : elle exige une
+    # **App Key** à elle (CRM → Paramètres → Sécurité → App keys, en LECTURE),
+    # envoyée en `X-Auth-App-Key`.
+    # ⚠️ **Fermé par défaut** : CRM injoignable, réponse illisible ou clé absente
+    # ⇒ déblocage REFUSÉ (décision opérateur). Seul un abonné SANS id CRM est
+    # débloqué sans contrôle — il n'a aucun compte à interroger.
+    unblock_balance_check_enabled: bool = True
+    # Vide = `{uisp_base_url}/crm/api/v1.0` (le CRM est servi par le contrôleur).
+    crm_api_url: str = ""
+    crm_api_key: str = ""
+    # Refus si le dû est STRICTEMENT supérieur à ce montant (150 → 150 passe).
+    unblock_max_outstanding: float = 150.0
+    # Court : l'appel est sur le chemin d'une requête que le système de paiement
+    # attend, et un CRM lent doit se traduire par un refus clair, pas un 504.
+    crm_request_timeout: int = 10
+
     # this site is absent from the graph, the layout falls back to the
     # highest-degree site and SAYS SO (`root_source`) — a silent fallback would
     # read as a deduction.

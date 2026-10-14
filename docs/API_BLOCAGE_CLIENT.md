@@ -129,13 +129,15 @@ pas à savoir comment le client avait été coupé.
 
 ### Contrôle du solde CRM (depuis le 2026-10-14)
 
-Avant toute action, nous lisons dans le CRM ce que le client doit encore. **Le
-déblocage est refusé** — le client reste coupé, rien n'est modifié — dans deux cas :
+Avant toute action, pour un client qui n'a **qu'un seul abonnement** dans le CRM
+(abonnements terminés non comptés), nous lisons ce qu'il doit encore. Un client à
+**plusieurs abonnements** est débloqué sans contrôle du solde. **Le déblocage est
+refusé** — le client reste coupé, rien n'est modifié — dans deux cas :
 
 | HTTP | `error_code` | Cas |
 |---|---|---|
 | **409** | `outstanding_balance` | Le client doit **plus de 150** (150 tout rond passe) |
-| **503** | `crm_unavailable` | Le solde n'a pas pu être vérifié (CRM injoignable, réponse illisible, client introuvable dans le CRM). Réessayer plus tard |
+| **503** | `crm_unavailable` | Le nombre d'abonnements ou le solde n'a pas pu être vérifié (CRM injoignable, réponse illisible, client introuvable dans le CRM). Réessayer plus tard |
 
 ```json
 {

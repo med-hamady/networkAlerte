@@ -1,7 +1,6 @@
 import type {
   BadInstallationRow,
   BroadcastAudience,
-  BroadcastChannel,
   BroadcastDetail,
   BroadcastPreview,
   BadInstallationsResponse,
@@ -694,16 +693,12 @@ async function broadcastPost<T>(url: string, body?: unknown): Promise<T> {
   return jsonOrThrow<T>(res)
 }
 
-export function previewBroadcast(
-  audiences: BroadcastAudience[], channels: BroadcastChannel[],
-): Promise<BroadcastPreview> {
-  return broadcastPost(`${endpoints.clientBroadcasts}/preview`, { audiences, channels })
+export function previewBroadcast(audiences: BroadcastAudience[]): Promise<BroadcastPreview> {
+  return broadcastPost(`${endpoints.clientBroadcasts}/preview`, { audiences })
 }
 
-export function createBroadcast(
-  audiences: BroadcastAudience[], channels: BroadcastChannel[], message: string,
-): Promise<BroadcastDetail> {
-  return broadcastPost(endpoints.clientBroadcasts, { audiences, channels, message })
+export function createBroadcast(audiences: BroadcastAudience[], message: string): Promise<BroadcastDetail> {
+  return broadcastPost(endpoints.clientBroadcasts, { audiences, message })
 }
 
 export function retryBroadcastFailures(id: number): Promise<BroadcastDetail> {

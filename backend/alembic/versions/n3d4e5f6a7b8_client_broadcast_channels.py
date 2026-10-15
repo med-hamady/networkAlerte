@@ -6,6 +6,11 @@ une ligne par canal choisi. WhatsApp et SMS avancent ainsi à leur propre
 rythme (un job par canal), et un échec SMS se relance sans renvoyer le
 WhatsApp déjà reçu.
 
+⚠️ Le canal SMS lui-même a été RETIRÉ de `main` (pas encore validé), mais
+cette migration y est CONSERVÉE : elle a pu être appliquée en prod, et une
+révision absente du code empêcherait le backend de démarrer. Sans le SMS elle
+est inoffensive — toutes les lignes prennent le canal par défaut `whatsapp`.
+
 L'unicité passe de (envoi, numéro) à (envoi, canal, numéro). Les lignes déjà
 présentes étaient toutes WhatsApp : c'est la valeur par défaut posée ici.
 

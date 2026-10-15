@@ -1638,18 +1638,15 @@ export interface ClientMapResponse {
 
 export type BroadcastAudience = 'active' | 'blocked' | 'out_of_supervision'
 export type BroadcastStatus = 'running' | 'done' | 'cancelled'
-export type BroadcastChannel = 'whatsapp' | 'sms'
 
 export interface BroadcastPreview {
   audiences: BroadcastAudience[]
-  channels: BroadcastChannel[]
   lr_count: number
   recipient_count: number
   duplicate_count: number
   without_phone: string[]
   estimated_seconds: number
   whatsapp_available: boolean
-  sms_available: boolean
 }
 
 export interface BroadcastCounts {
@@ -1667,16 +1664,12 @@ export interface Broadcast {
   finished_at: string | null
   status: BroadcastStatus
   audiences: BroadcastAudience[]
-  channels: BroadcastChannel[]
   message: string
-  /** Tous canaux confondus. */
   counts: BroadcastCounts
-  by_channel: Partial<Record<BroadcastChannel, BroadcastCounts>>
   remaining_seconds: number
 }
 
 export interface BroadcastFailure {
-  channel: BroadcastChannel
   phone: string
   name: string | null
   error: string | null

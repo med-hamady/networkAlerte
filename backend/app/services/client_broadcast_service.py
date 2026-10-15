@@ -1,4 +1,4 @@
-"""Message aux clients (WhatsApp et/ou SMS) — destinataires, file d'envoi, relance.
+"""Message WhatsApp aux clients — choix des destinataires, file d'envoi, relance.
 
 Page /broadcast. Un opérateur choisit une ou plusieurs catégories d'abonnés,
 écrit un message ; `create_broadcast` fige la liste des numéros, puis
@@ -17,13 +17,10 @@ Plusieurs catégories = leur UNION. Les trois ensemble = tout le parc.
 mobile mauritanien à 8 chiffres commençant par 2, 3 ou 4 ; un nom sans numéro
 valide est RENDU dans l'aperçu (`without_phone`), jamais deviné.
 
-⚠️ **Un message à la fois, espacé, et UNE FILE PAR CANAL** : WhatsApp bannit
-un numéro qui écrit en rafale (`client_broadcast_delay_seconds`, 4 s — le
-numéro de l'entreprise porte aussi les alertes du réseau), la passerelle SMS
-demande seulement des requêtes séquentielles (`client_broadcast_sms_delay_seconds`,
-1 s). Un même numéro a une ligne par canal choisi, et chaque canal est vidé
-par son propre job : le SMS ne marche pas au pas imposé à WhatsApp, et un échec
-SMS se relance sans renvoyer le WhatsApp déjà reçu.
+⚠️ **Un message à la fois, espacé** (`client_broadcast_delay_seconds`) :
+WhatsApp bannit un numéro qui écrit en rafale à des centaines de destinataires.
+C'est la ressource à protéger — le numéro de l'entreprise porte aussi les
+alertes du réseau.
 """
 
 from __future__ import annotations
@@ -40,10 +37,10 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.models.client_broadcast import CHANNELS, ClientBroadcast, ClientBroadcastRecipient
+from app.models.client_broadcast import ClientBroadcast, ClientBroadcastRecipient
 from app.models.device import Lr
 from app.schemas.device import is_out_of_supervision
-from app.services import sms_service, whatsapp_service
+from app.services import whatsapp_service
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +53,6 @@ MAX_MESSAGE_LENGTH = 4000
 _LEADING_RE = re.compile(r"^\s*(?:\+?222)?([234]\d{7})(?!\d)")
 _ANYWHERE_RE = re.compile(r"(?<!\d)(?:\+?222)?([234]\d{7})(?!\d)")
 
-
-Sender = Callable[[str, str], Awaitable[tuple[bool, str]]]
 
 SERVICE_STOPPED_MESSAGE = (
     "Le service d'envoi de messages aux clients est temporairement arrêté."
@@ -98,32 +93,6 @@ def normalize_audiences(audiences: Iterable[str]) -> list[str]:
     if not wanted:
         raise BroadcastError("Choisir au moins une catégorie de clients")
     return [a for a in AUDIENCES if a in wanted]
-
-
-def normalize_channels(channels: Iterable[str]) -> list[str]:
-    """Canaux valides, dans l'ordre du catalogue, sans doublon."""
-    wanted = set(channels)
-    unknown = wanted - set(CHANNELS)
-    if unknown:
-        raise BroadcastError(f"Canal inconnu : {', '.join(sorted(unknown))}")
-    if not wanted:
-        raise BroadcastError("Choisir au moins un canal (WhatsApp ou SMS)")
-    return [c for c in CHANNELS if c in wanted]
-
-
-def channel_available(channel: str) -> bool:
-    settings = get_settings()
-    return settings.whatsapp_direct_available if channel == "whatsapp" else settings.sms_available
-
-
-def channel_delay(channel: str) -> float:
-    settings = get_settings()
-    return (settings.client_broadcast_delay_seconds if channel == "whatsapp"
-            else settings.client_broadcast_sms_delay_seconds)
-
-
-def default_sender(channel: str) -> Sender:
-    return whatsapp_service.send_whatsapp_to if channel == "whatsapp" else sms_service.send_sms
 
 
 def lr_categories(client_blocked: bool, ip_address: str | None,
@@ -187,7 +156,6 @@ async def running_broadcast(session: AsyncSession) -> ClientBroadcast | None:
 
 async def create_broadcast(
     session: AsyncSession, *, audiences: list[str], message: str, created_by: str | None,
-    channels: list[str] | None = None,
 ) -> ClientBroadcast:
     """Fige les destinataires et met l'envoi en file. Ne commit pas.
 
@@ -196,19 +164,15 @@ async def create_broadcast(
     """
     _ensure_enabled()
     audiences = normalize_audiences(audiences)
-    channels = normalize_channels(channels or ["whatsapp"])
     message = message.strip()
     if not message:
         raise BroadcastError("Le message est vide")
     if len(message) > MAX_MESSAGE_LENGTH:
         raise BroadcastError(f"Message trop long ({len(message)} caractères, {MAX_MESSAGE_LENGTH} au plus)")
-    for channel in channels:
-        if not channel_available(channel):
-            raise BroadcastError(
-                "WhatsApp n'est pas configuré sur le serveur (WHATSAPP_INSTANCE_ID / WHATSAPP_TOKEN)"
-                if channel == "whatsapp" else
-                "Le SMS n'est pas configuré sur le serveur (SMS_GATEWAY_URL / _USERNAME / _PASSWORD)"
-            )
+    if not get_settings().whatsapp_direct_available:
+        raise BroadcastError(
+            "WhatsApp n'est pas configuré sur le serveur (WHATSAPP_INSTANCE_ID / WHATSAPP_TOKEN)"
+        )
     current = await running_broadcast(session)
     if current is not None:
         raise BroadcastError(
@@ -220,45 +184,41 @@ async def create_broadcast(
         raise BroadcastError("Aucun numéro de téléphone parmi les clients choisis")
 
     broadcast = ClientBroadcast(
-        message=message, audiences=",".join(audiences), channels=",".join(channels),
-        status="running", created_by=created_by,
+        message=message, audiences=",".join(audiences), status="running",
+        created_by=created_by,
     )
     session.add(broadcast)
     await session.flush()
     session.add_all(
         ClientBroadcastRecipient(
-            broadcast_id=broadcast.id, channel=channel, phone=phone,
-            name=(name or None) and name[:200], status="pending", attempts=0,
+            broadcast_id=broadcast.id, phone=phone, name=(name or None) and name[:200],
+            status="pending", attempts=0,
         )
-        for channel in channels
         for phone, name in preview.recipients
     )
     await session.flush()
     logger.info(
-        "Message aux clients n° %d créé par %s — %d numéro(s), catégories %s, canaux %s",
+        "Message aux clients n° %d créé par %s — %d destinataire(s), catégories %s",
         broadcast.id, created_by or "clé API", len(preview.recipients), broadcast.audiences,
-        broadcast.channels,
     )
     return broadcast
 
 
-async def status_counts(
-    session: AsyncSession, broadcast_ids: list[int],
-) -> dict[int, dict[str, dict[str, int]]]:
-    """{broadcast_id: {canal: {statut: nombre}}} — une seule requête pour tout l'historique."""
+async def status_counts(session: AsyncSession, broadcast_ids: list[int]) -> dict[int, dict[str, int]]:
+    """{broadcast_id: {statut: nombre}} — une seule requête pour tout l'historique."""
     if not broadcast_ids:
         return {}
-    rec = ClientBroadcastRecipient
     rows = (
         await session.execute(
-            select(rec.broadcast_id, rec.channel, rec.status, func.count())
-            .where(rec.broadcast_id.in_(broadcast_ids))
-            .group_by(rec.broadcast_id, rec.channel, rec.status)
+            select(ClientBroadcastRecipient.broadcast_id, ClientBroadcastRecipient.status,
+                   func.count())
+            .where(ClientBroadcastRecipient.broadcast_id.in_(broadcast_ids))
+            .group_by(ClientBroadcastRecipient.broadcast_id, ClientBroadcastRecipient.status)
         )
     ).all()
-    out: dict[int, dict[str, dict[str, int]]] = {bid: {} for bid in broadcast_ids}
-    for bid, channel, status, n in rows:
-        out[bid].setdefault(channel, {})[status] = n
+    out: dict[int, dict[str, int]] = {bid: {} for bid in broadcast_ids}
+    for bid, status, n in rows:
+        out[bid][status] = n
     return out
 
 
@@ -319,21 +279,19 @@ async def _finish_drained(session: AsyncSession) -> None:
     )
 
 
+Sender = Callable[[str, str], Awaitable[tuple[bool, str]]]
+
 
 async def process_queue(
     session: AsyncSession,
     *,
-    channel: str = "whatsapp",
     budget_s: float,
     delay_s: float,
     send: Sender | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> int:
-    """Envoie les messages en attente de `channel` pendant au plus `budget_s`.
-
-    Rend le nombre traité. Un appel par canal : chaque canal a son job, donc son
-    rythme.
+    """Envoie les messages en attente pendant au plus `budget_s`. Rend le nombre traité.
 
     Un message, un commit : un redémarrage au milieu d'un envoi n'en renvoie
     aucun (au pire celui qui était en vol). Le destinataire suivant et le statut
@@ -345,7 +303,7 @@ async def process_queue(
     # réactivation.
     if not service_enabled():
         return 0
-    send = send or default_sender(channel)
+    send = send or whatsapp_service.send_whatsapp_to
     started = clock()
     handled = 0
     await _finish_drained(session)
@@ -357,7 +315,6 @@ async def process_queue(
                 select(ClientBroadcastRecipient, ClientBroadcast)
                 .join(ClientBroadcast, ClientBroadcast.id == ClientBroadcastRecipient.broadcast_id)
                 .where(ClientBroadcast.status == "running",
-                       ClientBroadcastRecipient.channel == channel,
                        ClientBroadcastRecipient.status == "pending")
                 .order_by(ClientBroadcast.id, ClientBroadcastRecipient.id)
                 .limit(1)
@@ -378,8 +335,8 @@ async def process_queue(
         else:
             recipient.status = "failed"
             recipient.error = detail[:300]
-            logger.warning("Message aux clients n° %d — échec %s vers %s : %s",
-                           broadcast.id, channel, recipient.phone, detail)
+            logger.warning("Message aux clients n° %d — échec vers %s : %s",
+                           broadcast.id, recipient.phone, detail)
         await session.commit()
         handled += 1
 

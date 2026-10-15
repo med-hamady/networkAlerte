@@ -13,14 +13,10 @@ BROADCAST_STATUSES = ("running", "done", "cancelled")
 # arrêté avant son tour. « Relancer les échecs » repasse les `failed` en
 # `pending`, et rien d'autre.
 RECIPIENT_STATUSES = ("pending", "sent", "failed", "cancelled")
-# Canaux d'envoi. Un même numéro a UNE ligne par canal choisi : WhatsApp et SMS
-# avancent chacun à leur rythme (job séparé), et un échec SMS se relance sans
-# renvoyer le WhatsApp déjà reçu.
-CHANNELS = ("whatsapp", "sms")
 
 
 class ClientBroadcast(Base):
-    """Un message (WhatsApp et/ou SMS) envoyé aux abonnés d'une ou plusieurs catégories.
+    """Un message WhatsApp envoyé aux abonnés d'une ou plusieurs catégories.
 
     ⚠️ Les destinataires sont FIGÉS à la création (`ClientBroadcastRecipient`),
     pas recalculés à chaque passage du job : « relancer les échecs » doit viser
@@ -34,8 +30,6 @@ class ClientBroadcast(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
     # Catégories choisies, séparées par des virgules (« active,blocked »).
     audiences: Mapped[str] = mapped_column(String(100), nullable=False)
-    # Canaux choisis, séparés par des virgules (« whatsapp,sms »).
-    channels: Mapped[str] = mapped_column(String(30), nullable=False, default="whatsapp")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
     # Auteur : NULL sur un appel par clé API, qui ne porte aucune identité.
     created_by: Mapped[str | None] = mapped_column(String(150))
@@ -47,16 +41,14 @@ class ClientBroadcastRecipient(Base):
 
     __tablename__ = "client_broadcast_recipients"
     __table_args__ = (
-        # Un numéro ne reçoit qu'UN message par envoi et par canal, même s'il
-        # porte plusieurs LR (client à plusieurs services).
-        UniqueConstraint("broadcast_id", "channel", "phone",
-                         name="uq_client_broadcast_recipient_channel_phone"),
+        # Un numéro ne reçoit qu'UN message par envoi, même s'il porte plusieurs
+        # LR (client à plusieurs services).
+        UniqueConstraint("broadcast_id", "phone", name="uq_client_broadcast_recipient_phone"),
     )
 
     broadcast_id: Mapped[int] = mapped_column(
         ForeignKey("client_broadcasts.id", ondelete="CASCADE"), nullable=False, index=True,
     )
-    channel: Mapped[str] = mapped_column(String(10), nullable=False, default="whatsapp")
     # Numéro local à 8 chiffres ; l'indicatif 222 est ajouté à l'envoi.
     phone: Mapped[str] = mapped_column(String(16), nullable=False)
     # Nom du LR au moment de l'envoi, COPIÉ : le sync UISP supprime les stations

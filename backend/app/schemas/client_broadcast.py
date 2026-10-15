@@ -4,14 +4,10 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 Audience = Literal["active", "blocked", "out_of_supervision"]
-Channel = Literal["whatsapp", "sms"]
 
 
 class BroadcastAudienceRequest(BaseModel):
     audiences: list[Audience] = Field(min_length=1)
-    # Canaux d'envoi : WhatsApp, SMS, ou les deux. Défaut WhatsApp, le
-    # comportement d'avant l'arrivée du SMS.
-    channels: list[Channel] = Field(default_factory=lambda: ["whatsapp"], min_length=1)
 
 
 class BroadcastCreateRequest(BroadcastAudienceRequest):
@@ -22,19 +18,17 @@ class BroadcastPreview(BaseModel):
     """Ce que l'envoi toucherait — affiché AVANT la confirmation."""
 
     audiences: list[Audience]
-    channels: list[Channel]
     lr_count: int
-    # Numéros distincts qui recevront le message (par canal choisi).
+    # Numéros distincts qui recevront le message.
     recipient_count: int
     # LR écartés parce que leur numéro est déjà dans la liste (client à
     # plusieurs services) : ils reçoivent le message, une seule fois.
     duplicate_count: int
     # Noms de LR sans numéro exploitable : ces clients ne seront PAS prévenus.
     without_phone: list[str]
-    # Durée estimée : le canal le plus lent (les canaux avancent en parallèle).
+    # Durée estimée, au rythme imposé par l'écart entre deux messages.
     estimated_seconds: int
     whatsapp_available: bool
-    sms_available: bool
 
 
 class BroadcastCounts(BaseModel):
@@ -52,17 +46,13 @@ class BroadcastRead(BaseModel):
     finished_at: datetime.datetime | None
     status: str
     audiences: list[str]
-    channels: list[str]
     message: str
-    # Tous canaux confondus (un client prévenu par WhatsApp ET SMS compte deux fois).
     counts: BroadcastCounts
-    by_channel: dict[str, BroadcastCounts]
-    # Temps restant estimé (canal le plus lent), 0 quand rien n'attend.
+    # Temps restant estimé (en file × écart), 0 quand rien n'attend.
     remaining_seconds: int
 
 
 class BroadcastFailure(BaseModel):
-    channel: str
     phone: str
     name: str | None
     error: str | None

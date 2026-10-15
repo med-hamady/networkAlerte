@@ -379,6 +379,30 @@ class Settings(BaseSettings):
     # (intervalle − 10 s), puis rend la main : un envoi d'une heure est découpé
     # en tours d'une minute, donc reprend tout seul après un redémarrage.
     client_broadcast_interval_seconds: int = 60
+    # Interrupteur du « Message aux clients » (WhatsApp ET SMS). `false` =
+    # service arrêté temporairement : la page l'annonce, aucun envoi ne peut
+    # être créé ni relancé, et les jobs n'envoient plus rien. Un envoi déjà
+    # lancé est SUSPENDU, pas annulé : ce qui n'est pas parti attend la
+    # réactivation (`true` + redémarrage du backend et du scheduler).
+    client_broadcast_enabled: bool = True
+
+    # Passerelle SMS HTTP (route Mattel) — second canal du « Message aux
+    # clients ». ⚠️ Identifiants dans le .env UNIQUEMENT, jamais dans le dépôt.
+    # La passerelle est en HTTP clair : le serveur doit pouvoir la joindre.
+    sms_gateway_url: str = ""
+    sms_gateway_username: str = ""
+    sms_gateway_password: str = ""
+    sms_gateway_route: str = "Mattel"
+    # La documentation de la passerelle demande au moins 60 s par requête.
+    sms_gateway_timeout_seconds: float = 60.0
+    # Envoi SÉQUENTIEL demandé par la passerelle ; pas de risque de bannissement
+    # comme sur WhatsApp, d'où un écart bien plus court.
+    client_broadcast_sms_delay_seconds: float = 1.0
+
+    @property
+    def sms_available(self) -> bool:
+        return bool(self.sms_gateway_url and self.sms_gateway_username
+                    and self.sms_gateway_password)
 
     @property
     def whatsapp_direct_available(self) -> bool:
@@ -459,24 +483,6 @@ class Settings(BaseSettings):
     uisp_sync_hour: int = 7  # daily run time, 24h clock, UTC
     uisp_request_timeout: int = 30
 
-    # Client-station import (subscriber LRs) into the `lrs` table, on the same
-    # uisp_sync_job (runs after the infra import). Brings UISP's last-known
-    # bridge/router mode + status for every client so /access stays complete and
-    # accurate even when a Rocket/LR is down. Gated separately from the infra
-    # sync (it pulls ~1000 rows). Imports the FULL roster UISP still lists
-    # (UISP's /devices?role=station already drops de-provisioned stations).
-    uisp_station_sync_enabled: bool = False
-
-    # UISP site names to skip entirely. SEMICOLON-separated (not comma — UISP
-    # site names themselves contain commas, e.g. "Bureau, A2"), case-insensitive.
-    # Any device whose site matches is ignored by the sync — neither created nor
-    # updated. Use for office/LAN sites whose gear (a desk switch, etc.) is
-    # classified as infra but must not be supervised.
-    uisp_ignored_sites: str = ""
-
-    # Inter-site topology graph (/network-topology) — the site the layered layout
-    # is rooted on. It CANNOT be derived: the Internet→HQ hop is not a UISP
-    # data-link, so the controller has no idea which site faces upstream. When
     # ── Contrôle du solde CRM avant un DÉBLOCAGE client ─────────────────────
     # Avant de rétablir l'accès d'un abonné (`POST /fai/unblock` du système de
     # paiement ET bouton « Débloquer » du dashboard), on lit son dû dans le CRM
@@ -497,6 +503,24 @@ class Settings(BaseSettings):
     # attend, et un CRM lent doit se traduire par un refus clair, pas un 504.
     crm_request_timeout: int = 10
 
+    # Client-station import (subscriber LRs) into the `lrs` table, on the same
+    # uisp_sync_job (runs after the infra import). Brings UISP's last-known
+    # bridge/router mode + status for every client so /access stays complete and
+    # accurate even when a Rocket/LR is down. Gated separately from the infra
+    # sync (it pulls ~1000 rows). Imports the FULL roster UISP still lists
+    # (UISP's /devices?role=station already drops de-provisioned stations).
+    uisp_station_sync_enabled: bool = False
+
+    # UISP site names to skip entirely. SEMICOLON-separated (not comma — UISP
+    # site names themselves contain commas, e.g. "Bureau, A2"), case-insensitive.
+    # Any device whose site matches is ignored by the sync — neither created nor
+    # updated. Use for office/LAN sites whose gear (a desk switch, etc.) is
+    # classified as infra but must not be supervised.
+    uisp_ignored_sites: str = ""
+
+    # Inter-site topology graph (/network-topology) — the site the layered layout
+    # is rooted on. It CANNOT be derived: the Internet→HQ hop is not a UISP
+    # data-link, so the controller has no idea which site faces upstream. When
     # this site is absent from the graph, the layout falls back to the
     # highest-degree site and SAYS SO (`root_source`) — a silent fallback would
     # read as a deduction.

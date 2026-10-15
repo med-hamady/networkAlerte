@@ -13,6 +13,7 @@ import {
 import type {
   Broadcast,
   BroadcastAudience,
+  BroadcastChannel,
   BroadcastDetail,
   BroadcastList,
   BroadcastPreview,
@@ -29,6 +30,43 @@ const AUDIENCES: Array<{ key: BroadcastAudience; label: string; hint: string }> 
 
 const AUDIENCE_LABEL: Record<string, string> = {
   active: 'Actifs', blocked: 'Bloqués', out_of_supervision: 'Hors supervision',
+}
+
+const CHANNELS: Array<{ key: BroadcastChannel; label: string; hint: string }> = [
+  { key: 'whatsapp', label: 'WhatsApp', hint: "Depuis le numéro WhatsApp de l'entreprise (Ultramsg)." },
+  { key: 'sms', label: 'SMS', hint: 'Par la passerelle SMS (route Mattel). Chaque segment est facturé.' },
+]
+
+const CHANNEL_LABEL: Record<string, string> = { whatsapp: 'WhatsApp', sms: 'SMS' }
+
+/**
+ * Nombre de SMS facturés pour un texte. Estimation affichée AVANT l'envoi — la
+ * passerelle donne le chiffre réel dans sa réponse (une ligne par segment).
+ *
+ * Alphabet GSM-7 : 160 caractères pour 1 SMS, 153 par segment au-delà. Dès
+ * qu'un caractère en sort (arabe, emoji, la plupart des accents), tout le
+ * message passe en Unicode : 70, puis 67 par segment — compté en unités
+ * UTF-16, un emoji en vaut deux.
+ */
+const GSM7 = new Set(
+  '@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !"#¤%&\'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà',
+)
+const GSM7_EXT = new Set('^{}\\[~]|€')
+
+function smsSegments(text: string): { segments: number; unicode: boolean } {
+  if (!text) return { segments: 0, unicode: false }
+  let gsmLength = 0
+  let unicode = false
+  for (const ch of text) {
+    if (GSM7.has(ch)) gsmLength += 1
+    else if (GSM7_EXT.has(ch)) gsmLength += 2
+    else { unicode = true; break }
+  }
+  if (unicode) {
+    const units = text.length // unités UTF-16
+    return { segments: units <= 70 ? 1 : Math.ceil(units / 67), unicode }
+  }
+  return { segments: gsmLength <= 160 ? 1 : Math.ceil(gsmLength / 153), unicode }
 }
 
 const STATUS: Record<BroadcastStatus, { label: string; cls: string }> = {
@@ -66,7 +104,13 @@ export default function BroadcastPage() {
     keepPreviousData: true,
   })
   const runningId = data?.running_id ?? null
-  React.useEffect(() => setFastRefresh(runningId !== null), [runningId])
+  // Tant que la réponse n'est pas arrivée on ne suppose rien : ni formulaire,
+  // ni bandeau d'arrêt.
+  const serviceEnabled = data ? data.service_enabled !== false : null
+  React.useEffect(
+    () => setFastRefresh(runningId !== null && serviceEnabled === true),
+    [runningId, serviceEnabled],
+  )
 
   const [selected, setSelected] = React.useState<number | null>(null)
   // Par défaut on suit l'envoi en cours, sinon le plus récent.
@@ -77,11 +121,13 @@ export default function BroadcastPage() {
       <div>
         <h1 className="text-2xl font-bold text-blue-900 tracking-tight">Message aux clients</h1>
         <p className="text-sm text-blue-400 mt-1">
-          Un message WhatsApp envoyé à chaque abonné, depuis le numéro de l'entreprise.
+          Un message envoyé à chaque abonné, par WhatsApp, par SMS, ou les deux.
         </p>
       </div>
 
-      {maySend && (
+      {serviceEnabled === false && <ServiceStoppedBanner suspendedId={runningId} />}
+
+      {maySend && serviceEnabled === true && (
         <Composer
           busy={runningId !== null}
           onCreated={(b) => { setSelected(b.id); mutate() }}
@@ -92,6 +138,7 @@ export default function BroadcastPage() {
         <BroadcastPanel
           id={shownId}
           maySend={maySend}
+          serviceEnabled={serviceEnabled !== false}
           live={shownId === runningId}
           onChanged={() => mutate()}
         />
@@ -113,6 +160,7 @@ export default function BroadcastPage() {
 
 function Composer({ busy, onCreated }: { busy: boolean; onCreated: (b: BroadcastDetail) => void }) {
   const [audiences, setAudiences] = React.useState<BroadcastAudience[]>(['active'])
+  const [channels, setChannels] = React.useState<BroadcastChannel[]>(['whatsapp'])
   const [message, setMessage] = React.useState('')
   const [preview, setPreview] = React.useState<BroadcastPreview | null>(null)
   const [previewError, setPreviewError] = React.useState<string | null>(null)
@@ -124,17 +172,24 @@ function Composer({ busy, onCreated }: { busy: boolean; onCreated: (b: Broadcast
   const allSelected = audiences.length === AUDIENCES.length
 
   React.useEffect(() => {
-    if (audiences.length === 0) {
+    if (audiences.length === 0 || channels.length === 0) {
       setPreview(null)
       return
     }
     let cancelled = false
     setPreviewError(null)
-    previewBroadcast(audiences)
+    previewBroadcast(audiences, channels)
       .then((p) => { if (!cancelled) setPreview(p) })
       .catch((e) => { if (!cancelled) setPreviewError(e instanceof Error ? e.message : String(e)) })
     return () => { cancelled = true }
-  }, [audiences])
+  }, [audiences, channels])
+
+  function toggleChannel(key: BroadcastChannel) {
+    setChannels((cur) => {
+      const next = cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key]
+      return CHANNELS.map((c) => c.key).filter((k) => next.includes(k))
+    })
+  }
 
   function toggle(key: BroadcastAudience) {
     setAudiences((cur) => {
@@ -145,14 +200,18 @@ function Composer({ busy, onCreated }: { busy: boolean; onCreated: (b: Broadcast
 
   const trimmed = message.trim()
   const recipients = preview?.recipient_count ?? 0
+  const sms = channels.includes('sms') ? smsSegments(trimmed) : null
+  const unavailable = preview
+    ? channels.filter((c) => (c === 'whatsapp' ? !preview.whatsapp_available : !preview.sms_available))
+    : []
   const canSend = !busy && !sending && trimmed.length > 0 && recipients > 0
-    && preview?.whatsapp_available !== false && message.length <= MAX_LENGTH
+    && channels.length > 0 && unavailable.length === 0 && message.length <= MAX_LENGTH
 
   async function send() {
     setSending(true)
     setError(null)
     try {
-      const created = await createBroadcast(audiences, message)
+      const created = await createBroadcast(audiences, channels, message)
       setConfirming(false)
       setMessage('')
       onCreated(created)
@@ -171,6 +230,36 @@ function Composer({ busy, onCreated }: { busy: boolean; onCreated: (b: Broadcast
       </header>
 
       <div className="p-5 space-y-5">
+        {/* 0. Canaux */}
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wide text-blue-900 mb-2">Envoyer par</p>
+          <div className="flex flex-wrap gap-2">
+            {CHANNELS.map((c) => (
+              <label
+                key={c.key}
+                title={c.hint}
+                className={`cursor-pointer select-none rounded-lg border px-3 py-2 text-sm transition
+                  ${channels.includes(c.key)
+                    ? 'border-blue-600 bg-blue-600 text-white'
+                    : 'border-blue-200 bg-white text-blue-900 hover:border-blue-400'}`}
+              >
+                <input
+                  type="checkbox" className="sr-only"
+                  checked={channels.includes(c.key)} onChange={() => toggleChannel(c.key)}
+                />
+                {c.label}
+              </label>
+            ))}
+          </div>
+          {channels.length === 0 && <p className="mt-2 text-sm text-amber-700">Choisir au moins un canal.</p>}
+          {unavailable.length > 0 && (
+            <p className="mt-2 text-sm text-red-700">
+              {unavailable.map((c) => CHANNEL_LABEL[c]).join(' et ')} : non configuré sur le serveur,
+              aucun message ne peut partir par ce canal.
+            </p>
+          )}
+        </div>
+
         {/* 1. Destinataires */}
         <div>
           <p className="text-xs font-bold uppercase tracking-wide text-blue-900 mb-2">Destinataires</p>
@@ -236,11 +325,6 @@ function Composer({ busy, onCreated }: { busy: boolean; onCreated: (b: Broadcast
                     )}
                   </div>
                 )}
-                {!preview.whatsapp_available && (
-                  <p className="text-red-700">
-                    WhatsApp n'est pas configuré sur le serveur : aucun message ne peut partir.
-                  </p>
-                )}
               </div>
             )}
           </div>
@@ -258,9 +342,21 @@ function Composer({ busy, onCreated }: { busy: boolean; onCreated: (b: Broadcast
             className="w-full rounded-lg border border-blue-200 px-3 py-2 text-sm text-blue-900
                        focus:outline-none focus:ring-2 focus:ring-blue-300"
           />
-          <p className={`text-right text-xs tabular-nums ${message.length > MAX_LENGTH ? 'text-red-600' : 'text-blue-400'}`}>
-            {message.length} / {MAX_LENGTH}
-          </p>
+          <div className="flex flex-wrap justify-between gap-2 text-xs">
+            <span className="text-blue-400">
+              {sms && sms.segments > 0 && (
+                <>
+                  SMS : <strong className={sms.segments > 1 ? 'text-amber-700' : ''}>
+                    {sms.segments} segment{sms.segments > 1 ? 's' : ''}</strong> par client
+                  {sms.unicode && ' (arabe / emoji / accent : 70 caractères par SMS)'}
+                  {recipients > 0 && ` · ${sms.segments * recipients} SMS facturés au total`}
+                </>
+              )}
+            </span>
+            <span className={`tabular-nums ${message.length > MAX_LENGTH ? 'text-red-600' : 'text-blue-400'}`}>
+              {message.length} / {MAX_LENGTH}
+            </span>
+          </div>
         </div>
 
         {busy && (
@@ -287,6 +383,7 @@ function Composer({ busy, onCreated }: { busy: boolean; onCreated: (b: Broadcast
         <ConfirmDialog
           preview={preview}
           message={message}
+          smsSegments={sms?.segments ?? null}
           sending={sending}
           onCancel={() => setConfirming(false)}
           onConfirm={send}
@@ -297,10 +394,11 @@ function Composer({ busy, onCreated }: { busy: boolean; onCreated: (b: Broadcast
 }
 
 function ConfirmDialog({
-  preview, message, sending, onCancel, onConfirm,
+  preview, message, smsSegments: segments, sending, onCancel, onConfirm,
 }: {
   preview: BroadcastPreview
   message: string
+  smsSegments: number | null
   sending: boolean
   onCancel: () => void
   onConfirm: () => void
@@ -314,9 +412,16 @@ function ConfirmDialog({
         <div className="px-5 py-4 space-y-3 text-sm text-blue-900">
           <p>
             Vous allez écrire à <strong>{preview.recipient_count} clients</strong> (
-            {preview.audiences.map((a) => AUDIENCE_LABEL[a]).join(', ')}) depuis le numéro WhatsApp de
-            l'entreprise. Durée estimée : <strong>{formatDuration(preview.estimated_seconds)}</strong>.
+            {preview.audiences.map((a) => AUDIENCE_LABEL[a]).join(', ')}) par{' '}
+            <strong>{preview.channels.map((c) => CHANNEL_LABEL[c]).join(' et ')}</strong>.
+            Durée estimée : <strong>{formatDuration(preview.estimated_seconds)}</strong>.
           </p>
+          {segments !== null && segments > 0 && (
+            <p>
+              SMS : {segments} segment{segments > 1 ? 's' : ''} par client, soit{' '}
+              <strong>{segments * preview.recipient_count} SMS facturés</strong>.
+            </p>
+          )}
           <p className="text-blue-400">
             Une fois lancé, l'envoi continue côté serveur même si vous fermez cette page. Il peut être arrêté
             à tout moment ; les messages déjà partis ne se rattrapent pas.
@@ -340,13 +445,37 @@ function ConfirmDialog({
   )
 }
 
+/**
+ * Service arrêté côté serveur (`CLIENT_BROADCAST_ENABLED=false`). La page reste
+ * consultable — historique et résultats — mais aucun message ne peut partir :
+ * le serveur refuse lui-même la création et la relance, ce bandeau ne fait que
+ * le dire.
+ */
+function ServiceStoppedBanner({ suspendedId }: { suspendedId: number | null }) {
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-amber-300 bg-amber-50 px-5 py-4">
+      <span aria-hidden className="text-xl leading-none">⏸</span>
+      <div className="text-sm text-amber-900">
+        <p className="font-bold">Service d'envoi temporairement arrêté</p>
+        <p className="mt-0.5">
+          Aucun message WhatsApp ni SMS ne peut être envoyé aux clients pour le moment.
+          {suspendedId !== null && (
+            <> L'envoi n° {suspendedId} est suspendu : les messages pas encore partis
+              repartiront à la réactivation du service.</>
+          )}
+        </p>
+      </div>
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Un envoi : avancement, résultat, échecs, relance
 // ---------------------------------------------------------------------------
 
 function BroadcastPanel({
-  id, maySend, live, onChanged,
-}: { id: number; maySend: boolean; live: boolean; onChanged: () => void }) {
+  id, maySend, serviceEnabled, live, onChanged,
+}: { id: number; maySend: boolean; serviceEnabled: boolean; live: boolean; onChanged: () => void }) {
   const { data, mutate } = useSWR<BroadcastDetail>(endpoints.clientBroadcast(id), fetcher, {
     refreshInterval: live ? 5_000 : 0,
     keepPreviousData: true,
@@ -361,7 +490,10 @@ function BroadcastPanel({
   const { counts } = data
   const done = counts.sent + counts.failed
   const pct = counts.total > 0 ? Math.round((done / counts.total) * 100) : 0
-  const status = STATUS[data.status]
+  // Service arrêté : un envoi en cours n'avance plus, il est suspendu.
+  const status = data.status === 'running' && !serviceEnabled
+    ? { label: 'Suspendu', cls: 'bg-amber-50 text-amber-800 border-amber-300' }
+    : STATUS[data.status]
 
   async function act(fn: () => Promise<BroadcastDetail>) {
     setActing(true)
@@ -409,8 +541,29 @@ function BroadcastPanel({
           </p>
         </div>
 
+        {data.channels.length > 1 && (
+          <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
+            {data.channels.map((ch) => {
+              const c = data.by_channel[ch]
+              if (!c) return null
+              return (
+                <p key={ch} className="text-blue-900">
+                  <strong>{CHANNEL_LABEL[ch]}</strong> :{' '}
+                  <span className="text-green-700">{c.sent} envoyé{c.sent > 1 ? 's' : ''}</span>
+                  {' · '}
+                  <span className={c.failed > 0 ? 'text-red-700 font-semibold' : 'text-blue-400'}>
+                    {c.failed} échec{c.failed > 1 ? 's' : ''}
+                  </span>
+                  {c.pending > 0 && <span className="text-blue-400"> · {c.pending} en attente</span>}
+                </p>
+              )
+            })}
+          </div>
+        )}
+
         <p className="text-xs text-blue-400">
           Destinataires : {data.audiences.map((a) => AUDIENCE_LABEL[a] ?? a).join(', ')}
+          {' · '}par {data.channels.map((c) => CHANNEL_LABEL[c] ?? c).join(' et ')}
         </p>
         <div dir="auto" className="whitespace-pre-wrap rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900">
           {data.message}
@@ -427,7 +580,7 @@ function BroadcastPanel({
                 Arrêter l'envoi
               </button>
             )}
-            {data.status !== 'running' && counts.failed > 0 && (
+            {serviceEnabled && data.status !== 'running' && counts.failed > 0 && (
               <button type="button" disabled={acting}
                 onClick={() => act(() => retryBroadcastFailures(data.id))}
                 className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50">
@@ -442,6 +595,7 @@ function BroadcastPanel({
             <table className="w-full text-sm">
               <thead className="bg-red-50 text-red-900">
                 <tr>
+                  <Th>Canal</Th>
                   <Th>Client</Th>
                   <Th>Numéro</Th>
                   <Th>Tentatives</Th>
@@ -450,7 +604,8 @@ function BroadcastPanel({
               </thead>
               <tbody className="divide-y divide-red-50">
                 {data.failures.map((f) => (
-                  <tr key={f.phone}>
+                  <tr key={`${f.channel}-${f.phone}`}>
+                    <Td>{CHANNEL_LABEL[f.channel] ?? f.channel}</Td>
                     <Td>{f.name ?? '—'}</Td>
                     <Td className="font-mono">+222 {f.phone}</Td>
                     <Td className="tabular-nums">{f.attempts}</Td>
@@ -495,6 +650,7 @@ function History({
                 <Th>Date</Th>
                 <Th>Par</Th>
                 <Th>Destinataires</Th>
+                <Th>Canal</Th>
                 <Th>Message</Th>
                 <Th>Envoyés</Th>
                 <Th>Échecs</Th>
@@ -511,6 +667,7 @@ function History({
                   <Td className="whitespace-nowrap">{formatTs(b.created_at)}</Td>
                   <Td>{b.created_by ?? '—'}</Td>
                   <Td>{b.audiences.map((a) => AUDIENCE_LABEL[a] ?? a).join(', ')}</Td>
+                  <Td className="whitespace-nowrap">{b.channels.map((c) => CHANNEL_LABEL[c] ?? c).join(' + ')}</Td>
                   <Td className="max-w-xs truncate" ><span dir="auto">{b.message}</span></Td>
                   <Td className="tabular-nums text-green-700">{b.counts.sent} / {b.counts.total}</Td>
                   <Td className={`tabular-nums ${b.counts.failed > 0 ? 'text-red-700 font-semibold' : 'text-blue-400'}`}>

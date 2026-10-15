@@ -3909,8 +3909,36 @@ async def site_topology_sync_job() -> None:
         logger.error("Sync topologie : cycle échoué : %s", exc)
 
 
+async def _run_broadcast_queue(channel: str) -> None:
+    settings = get_settings()
+    budget = max(5.0, settings.client_broadcast_interval_seconds - 10.0)
+    try:
+        async with async_session_factory() as session:
+            handled = await client_broadcast_service.process_queue(
+                session, channel=channel, budget_s=budget,
+                delay_s=client_broadcast_service.channel_delay(channel),
+            )
+        if handled:
+            logger.info("Message aux clients (%s) — %d message(s) traité(s) ce tour",
+                        channel, handled)
+    except Exception as exc:
+        logger.error("client_broadcast_job (%s) cycle failed: %s", channel, exc)
+
+
+async def client_broadcast_sms_job() -> None:
+    """File SMS du « Message aux clients » — même mécanique que la file WhatsApp.
+
+    Job SÉPARÉ et non une boucle commune : le SMS (1 s d'écart, passerelle à
+    nous) ne doit pas avancer au pas de 4 s imposé à WhatsApp, ni attendre que
+    la file WhatsApp soit vidée. ⚠️ Une requête SMS peut durer jusqu'à 60 s
+    (délai demandé par la passerelle) : un tour peut alors déborder son budget
+    d'autant, sans autre effet que de sauter un déclenchement.
+    """
+    await _run_broadcast_queue("sms")
+
+
 async def client_broadcast_job() -> None:
-    """Vide la file du « Message aux clients » (page /broadcast), un message à la fois.
+    """Vide la file WhatsApp du « Message aux clients » (page /broadcast), un message à la fois.
 
     Chaque passage envoie pendant au plus (intervalle − 10 s) puis rend la main :
     un envoi d'une heure est ainsi découpé en tours d'une minute, reprend seul
@@ -3920,17 +3948,7 @@ async def client_broadcast_job() -> None:
     Groupe **fast** : le travail est un appel HTTP et une attente async — rien
     qui dispute le CPU ou le GIL au ping de l'infra.
     """
-    settings = get_settings()
-    budget = max(5.0, settings.client_broadcast_interval_seconds - 10.0)
-    try:
-        async with async_session_factory() as session:
-            handled = await client_broadcast_service.process_queue(
-                session, budget_s=budget, delay_s=settings.client_broadcast_delay_seconds,
-            )
-        if handled:
-            logger.info("Message aux clients — %d message(s) traité(s) ce tour", handled)
-    except Exception as exc:
-        logger.error("client_broadcast_job cycle failed: %s", exc)
+    await _run_broadcast_queue("whatsapp")
 
 
 async def lr_plan_sync_job() -> None:
@@ -3977,7 +3995,7 @@ _FAST_JOB_IDS = {
     "device_metrics_retention",
     "traffic_stats_retention", "lr_latency_retention", "unverified_ip_cleanup",
     "security_anomaly_detection", "rocket_saturation_report",
-    "site_infra_report", "client_broadcast",
+    "site_infra_report", "client_broadcast", "client_broadcast_sms",
 }
 _HEAVY_JOB_IDS = {
     "snmp_poll", "power_poll", "lr_internet_probe", "lr_plan_sync",
@@ -4249,6 +4267,13 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         client_broadcast_job,
         trigger="interval", seconds=settings.client_broadcast_interval_seconds,
         id="client_broadcast", name="Message WhatsApp aux clients (file d'envoi)",
+        replace_existing=True,
+        **safety,
+    )
+    scheduler.add_job(
+        client_broadcast_sms_job,
+        trigger="interval", seconds=settings.client_broadcast_interval_seconds,
+        id="client_broadcast_sms", name="Message SMS aux clients (file d'envoi)",
         replace_existing=True,
         **safety,
     )

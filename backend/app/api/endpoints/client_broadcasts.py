@@ -1,7 +1,8 @@
-"""Message WhatsApp aux clients — page /broadcast.
+"""Message aux clients (WhatsApp et/ou SMS) — page /broadcast.
 
-L'endpoint ne fait qu'ENREGISTRER l'envoi : c'est `client_broadcast_job` qui
-écrit aux clients, un message toutes les quelques secondes. Un envoi dure
+L'endpoint ne fait qu'ENREGISTRER l'envoi : ce sont les jobs
+`client_broadcast_job` (WhatsApp) et `client_broadcast_sms_job` (SMS) qui
+écrivent aux clients, chacun à son rythme. Un envoi dure
 ~1 h pour 800 abonnés, bien au-delà des 30 s qu'nginx laisse à une requête, et
 doit survivre à la fermeture de l'onglet comme à un redémarrage.
 
@@ -41,15 +42,31 @@ _VIEW = [Depends(require_permission("broadcast.view", "broadcast.send"))]
 _SEND = [Depends(require_permission("broadcast.send"))]
 
 
-def _read(b: ClientBroadcast, counts: dict[str, int]) -> BroadcastRead:
-    c = BroadcastCounts(**counts, total=sum(counts.values()))
+def _read(b: ClientBroadcast, by_channel: dict[str, dict[str, int]]) -> BroadcastRead:
+    per_channel = {
+        ch: BroadcastCounts(**counts, total=sum(counts.values()))
+        for ch, counts in by_channel.items()
+    }
+    total: dict[str, int] = {}
+    for counts in by_channel.values():
+        for status, n in counts.items():
+            total[status] = total.get(status, 0) + n
+    remaining = 0
+    if b.status == "running":
+        # Les canaux avancent en parallèle : c'est le plus lent qui fixe la fin.
+        remaining = max(
+            (int(c.pending * svc.channel_delay(ch)) for ch, c in per_channel.items()),
+            default=0,
+        )
     return BroadcastRead(
         id=b.id, created_at=b.created_at, created_by=b.created_by,
         finished_at=b.finished_at, status=b.status,
         audiences=[a for a in b.audiences.split(",") if a],
-        message=b.message, counts=c,
-        remaining_seconds=int(c.pending * get_settings().client_broadcast_delay_seconds)
-        if b.status == "running" else 0,
+        channels=[c for c in b.channels.split(",") if c],
+        message=b.message,
+        counts=BroadcastCounts(**total, total=sum(total.values())),
+        by_channel=per_channel,
+        remaining_seconds=remaining,
     )
 
 
@@ -67,13 +84,14 @@ async def _detail(db: AsyncSession, b: ClientBroadcast) -> BroadcastDetail:
             select(ClientBroadcastRecipient)
             .where(ClientBroadcastRecipient.broadcast_id == b.id,
                    ClientBroadcastRecipient.status == "failed")
-            .order_by(ClientBroadcastRecipient.id)
+            .order_by(ClientBroadcastRecipient.channel, ClientBroadcastRecipient.id)
         )
     ).scalars().all()
     return BroadcastDetail(
         **_read(b, counts).model_dump(),
         failures=[
-            BroadcastFailure(phone=f.phone, name=f.name, error=f.error, attempts=f.attempts)
+            BroadcastFailure(channel=f.channel, phone=f.phone, name=f.name,
+                             error=f.error, attempts=f.attempts)
             for f in failures
         ],
     )
@@ -97,6 +115,7 @@ async def list_broadcasts(
         broadcasts=[_read(b, counts[b.id]) for b in rows],
         running_id=running,
         delay_seconds=get_settings().client_broadcast_delay_seconds,
+        service_enabled=svc.service_enabled(),
     )
 
 
@@ -107,15 +126,18 @@ async def preview_broadcast(
     """Qui recevrait le message — sans rien envoyer."""
     try:
         audiences = svc.normalize_audiences(body.audiences)
+        channels = svc.normalize_channels(body.channels)
     except svc.BroadcastError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     p = await svc.select_audience(db, audiences)
     settings = get_settings()
     return BroadcastPreview(
-        audiences=audiences, lr_count=p.lr_count, recipient_count=len(p.recipients),
+        audiences=audiences, channels=channels, lr_count=p.lr_count,
+        recipient_count=len(p.recipients),
         duplicate_count=p.duplicate_count, without_phone=p.without_phone,
-        estimated_seconds=int(len(p.recipients) * settings.client_broadcast_delay_seconds),
+        estimated_seconds=max(int(len(p.recipients) * svc.channel_delay(c)) for c in channels),
         whatsapp_available=settings.whatsapp_direct_available,
+        sms_available=settings.sms_available,
     )
 
 
@@ -129,8 +151,11 @@ async def create_broadcast(
     try:
         b = await svc.create_broadcast(
             db, audiences=list(body.audiences), message=body.message,
+            channels=list(body.channels),
             created_by=user.username if user is not None else None,
         )
+    except svc.BroadcastDisabledError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except svc.BroadcastError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     await db.commit()
@@ -148,6 +173,8 @@ async def retry_failed(broadcast_id: int, db: AsyncSession = Depends(get_db)) ->
     b = await _get_or_404(db, broadcast_id)
     try:
         await svc.retry_failed(db, b)
+    except svc.BroadcastDisabledError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except svc.BroadcastError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     await db.commit()

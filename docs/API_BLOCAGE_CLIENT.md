@@ -171,8 +171,22 @@ Un client à un seul abonnement est refusé dès que son dû dépasse 150.
 - Le solde est lu **au moment de l'appel** : un paiement doit déjà être enregistré
   dans le CRM quand vous appelez `/unblock`, sinon le client sera refusé.
 - Un client **non rattaché à un client CRM** est débloqué sans contrôle.
-- Il n'existe **aucun moyen de forcer** le déblocage.
 - Chaque refus est inscrit dans notre journal (action « Solde impayé »).
+
+### Forcer un déblocage (`force`)
+
+```json
+{ "mac": "d0:21:f9:f6:07:c2", "user": "ali.brahim@a2ict.com", "force": true }
+```
+
+`"force": true` débloque le client **sans contrôler son solde** (geste commercial,
+litige…) : le CRM n'est pas interrogé, aucun 409 ni 503 de solde n'est possible.
+Sans ce champ, ou avec `false`, le contrôle s'applique normalement.
+
+- Le déblocage est inscrit dans notre journal avec la mention **« FORCÉ »** et
+  l'agent transmis dans `user` — pensez à toujours renseigner `user` sur un
+  déblocage forcé.
+- `force` ne contourne que le contrôle du solde : une MAC inconnue reste un 404.
 
 ---
 

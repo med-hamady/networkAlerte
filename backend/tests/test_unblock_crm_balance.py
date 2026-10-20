@@ -323,6 +323,43 @@ async def test_dashboard_unblock_is_checked_too():
     unblock.assert_not_awaited()
 
 
-def test_no_force_option_exists():
-    """Décision opérateur : aucun moyen de passer outre le solde."""
-    assert set(fai_ep.FaiUnblockRequest.model_fields) == {"mac", "user"}
+def test_force_defaults_to_false():
+    """Un appelant qui n'envoie pas `force` garde le contrôle du solde."""
+    assert fai_ep.FaiUnblockRequest(mac=_MAC).force is False
+
+
+@pytest.mark.asyncio
+async def test_force_skips_the_balance_check_and_is_journaled():
+    lr = _lr()
+    with (
+        patch.object(fai_ep, "_lookup_lr", AsyncMock(return_value=lr)),
+        patch.object(crm_balance_service, "check_unblock_allowed",
+                     AsyncMock(return_value=_REFUSED)) as check,
+        patch.object(fai_ep.client_block_service, "unblock_client",
+                     AsyncMock(return_value=(True, "rétabli", None))) as unblock,
+        patch.object(fai_ep.fai_audit, "log_action") as log,
+        patch.object(fai_ep, "_result", return_value="RESULT"),
+    ):
+        body = fai_ep.FaiUnblockRequest(mac=lr.mac_address, user="a@b", force=True)
+        assert await fai_ep.fai_unblock(body, db=None) == "RESULT"
+    check.assert_not_awaited()          # le CRM n'est même pas interrogé
+    unblock.assert_awaited_once()
+    assert log.call_args.args[0] == "UNBLOCK"
+    assert log.call_args.kwargs["message"].startswith("FORCÉ")
+    assert log.call_args.kwargs["user"] == "a@b"
+
+
+@pytest.mark.asyncio
+async def test_unforced_unblock_is_not_marked_forced():
+    lr = _lr()
+    ok = crm_balance_service.BalanceCheck("allowed", "ok")
+    with (
+        patch.object(fai_ep, "_lookup_lr", AsyncMock(return_value=lr)),
+        patch.object(crm_balance_service, "check_unblock_allowed", AsyncMock(return_value=ok)),
+        patch.object(fai_ep.client_block_service, "unblock_client",
+                     AsyncMock(return_value=(True, "rétabli", None))),
+        patch.object(fai_ep.fai_audit, "log_action") as log,
+        patch.object(fai_ep, "_result", return_value="RESULT"),
+    ):
+        await fai_ep.fai_unblock(fai_ep.FaiUnblockRequest(mac=lr.mac_address), db=None)
+    assert log.call_args.kwargs["message"] == "rétabli"

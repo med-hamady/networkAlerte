@@ -15,6 +15,7 @@ le système tiers, qui ne connaît pas nos `id` internes.
 from __future__ import annotations
 
 import datetime
+import logging
 import unicodedata
 from typing import Annotated, Literal
 
@@ -25,6 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.models.device import Lr
 from app.services import client_block_service, crm_balance_service, fai_audit
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -118,6 +121,11 @@ class FaiBlockRequest(BaseModel):
 class FaiUnblockRequest(BaseModel):
     mac: str
     user: AgentUser = None
+    # Débloque SANS contrôler le solde CRM (geste commercial, litige…). Défaut
+    # False : un appelant qui ne l'envoie pas garde le contrôle. Un déblocage
+    # forcé est marqué comme tel dans le journal FAI — la seule trace qu'un
+    # client impayé a été rétabli volontairement.
+    force: bool = False
 
 
 class FaiBlockResult(BaseModel):
@@ -233,7 +241,8 @@ async def fai_unblock(
 
     Le solde CRM du client est vérifié AVANT toute action
     (`crm_balance_service`) : rien n'est touché — ni la base, ni le LR, ni le
-    routeur — si le déblocage est refusé.
+    routeur — si le déblocage est refusé. `force: true` saute ce contrôle (le
+    CRM n'est alors même pas interrogé) ; le journal le note « FORCÉ ».
 
     - 400 : MAC mal formée.
     - 404 : aucun LR pour cette MAC.
@@ -242,11 +251,17 @@ async def fai_unblock(
     - 503 `crm_unavailable` : solde impossible à vérifier (CRM injoignable…).
     """
     lr = await _lookup_lr(db, body.mac)
-    balance = await crm_balance_service.check_unblock_allowed(db, lr)
-    if not balance.allowed:
+    user = _clean_user(body.user)
+    if body.force:
+        logger.warning(
+            "FAI UNBLOCK FORCÉ — LR '%s' (%s) débloqué sans contrôle du solde, agent=%s",
+            lr.name, lr.mac_address, user or "-",
+        )
+    balance = None if body.force else await crm_balance_service.check_unblock_allowed(db, lr)
+    if balance is not None and not balance.allowed:
         fai_audit.log_action(
             "BALANCE_KO", ok=False, mac=lr.mac_address, name=lr.name,
-            mode=lr.block_mode, user=_clean_user(body.user), message=balance.message,
+            mode=lr.block_mode, user=user, message=balance.message,
         )
         raise HTTPException(
             status_code=409 if balance.verdict == "outstanding_balance" else 503,
@@ -268,7 +283,8 @@ async def fai_unblock(
     fai_audit.log_action(
         "IDENT_KO" if client_block_service.is_identity_refusal(message) else "UNBLOCK",
         ok=ok, mac=lr.mac_address, name=lr.name,
-        mode=lr.block_mode, user=_clean_user(body.user), message=message,
+        mode=lr.block_mode, user=user,
+        message=f"FORCÉ (solde non contrôlé) — {message}" if body.force else message,
         evidence=evidence,
     )
     return _result(lr, ok, message)

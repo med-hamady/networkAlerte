@@ -1,13 +1,16 @@
 """
 Contrôle du solde CRM avant un déblocage — `crm_balance_service` + les deux routes.
 
-Décisions opérateur (2026-10-14) verrouillées ici :
-  * dû > 150 ⇒ refus (150 tout rond passe) ;
-  * contrôle SEULEMENT pour un client à un seul abonnement (hors terminés) ;
-  * CRM injoignable / illisible / clé absente ⇒ refus (fermé par défaut) ;
+Règle (décision opérateur du 2026-10-20) : on débloque si
+    solde dû − prix des AUTRES abonnements du client encore coupés ≤ 150.
+Verrouillé ici :
+  * l'exemple opérateur (3 abonnements à 1000) ;
+  * solde ≤ 150 ⇒ débloqué sans rien lire d'autre ;
+  * prix différents ⇒ rattachement par site UISP, introuvable ⇒ refus ;
+  * le nombre compté comme coupé ne dépasse jamais abonnements − 1 ;
+  * CRM / UISP injoignable, illisible, clé absente ⇒ refus (fermé par défaut) ;
   * abonné sans id CRM ⇒ débloqué sans contrôle ;
-  * aucun moyen de forcer ;
-  * un refus ne touche à RIEN (ni base, ni LR, ni routeur).
+  * aucun moyen de forcer ; un refus ne touche à RIEN.
 """
 
 from types import SimpleNamespace
@@ -25,6 +28,9 @@ from app.services import crm_balance_service
 
 settings = get_settings()
 
+_MAC = "1c:6a:1b:b8:79:b0"
+_B1, _B2 = "aa:aa:aa:aa:aa:01", "aa:aa:aa:aa:aa:02"
+
 
 @pytest.fixture(autouse=True)
 def _crm_settings(monkeypatch):
@@ -36,14 +42,30 @@ def _crm_settings(monkeypatch):
 
 def _lr(crm_id: str | None = "1361") -> SimpleNamespace:
     return SimpleNamespace(
-        id=7, name="LR test", mac_address="1c:6a:1b:b8:79:b0",
+        id=7, name="LR test", mac_address=_MAC,
         uisp_crm_client_id=crm_id, block_mode="full",
     )
 
 
-def _crm(handler):
-    """Fait répondre le CRM par `handler(request) -> httpx.Response`."""
+def _svc(sid, price=1000, site=None, client_id=1361):
+    return {"id": sid, "clientId": client_id, "status": 1, "totalPrice": price,
+            "unmsClientSiteId": site}
+
+
+def _crm(outstanding, services=()):
+    """Faux CRM. `outstanding` / `services` = valeur, ou callable(request)."""
     real = httpx.AsyncClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["X-Auth-App-Key"] == "app-key"
+        if request.url.path.endswith("/clients/services"):
+            assert request.url.params["clientId"] == "1361"
+            target = services if callable(services) else list(services)
+        elif request.url.path.endswith("/clients/1361"):
+            target = outstanding if callable(outstanding) else {"id": 1361, "accountOutstanding": outstanding}
+        else:  # pragma: no cover
+            raise AssertionError(f"appel inattendu {request.url}")
+        return target(request) if callable(target) else httpx.Response(200, json=target)
 
     def factory(*args, **kwargs):
         kwargs["transport"] = httpx.MockTransport(handler)
@@ -52,103 +74,147 @@ def _crm(handler):
     return patch.object(crm_balance_service.httpx, "AsyncClient", factory)
 
 
-def _svc(*statuses, client_id=1361):
-    return [{"id": 100 + i, "clientId": client_id, "status": st} for i, st in enumerate(statuses)]
+def _blocked(*macs):
+    """Les AUTRES antennes coupées du client, telles que la base les rend."""
+    return patch.object(crm_balance_service, "other_blocked_macs", AsyncMock(return_value=list(macs)))
 
 
-def _fake(services=None, client=None):
-    """Faux CRM : `services` / `client` = réponse httpx, ou callable(request).
-
-    `client=None` : le solde ne doit PAS être lu (le handler lève s'il l'est).
-    """
-    services = services if services is not None else httpx.Response(200, json=_svc(1))
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["X-Auth-App-Key"] == "app-key"
-        if request.url.path.endswith("/clients/services"):
-            assert request.url.params["clientId"] == "1361"
-            target = services
-        else:
-            assert request.url.path.endswith("/clients/1361")
-            if client is None:
-                raise AssertionError("le solde ne doit pas être lu")
-            target = client
-        return target(request) if callable(target) else target
-    return handler
+@pytest.fixture(autouse=True)
+def _uisp_sites():
+    with patch.object(crm_balance_service, "_station_sites", AsyncMock(return_value={})) as mock:
+        yield mock
 
 
-def _owes(amount, services=None):
-    return _fake(services, httpx.Response(200, json={"id": 1361, "accountOutstanding": amount}))
+async def _check():
+    return await crm_balance_service.check_unblock_allowed(None, _lr())
 
 
-# ── Verdicts : client à un seul abonnement ─────────────────────────────────
+_THREE = [_svc(1), _svc(2), _svc(3)]
+
+
+# ── L'exemple opérateur : 3 abonnements à 1000 ─────────────────────────────
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("amount", [0, 0.0, 149.99, 150])
-async def test_balance_at_or_below_threshold_is_allowed(amount):
-    with _crm(_owes(amount)):
-        check = await crm_balance_service.check_unblock_allowed(_lr())
-    assert check.allowed
-    assert check.outstanding == float(amount)
+@pytest.mark.parametrize("outstanding,others_blocked,allowed", [
+    (3000, (_B1, _B2), False),   # rien payé : 3000 − 2000 = 1000
+    (2000, (_B1, _B2), True),    # un payé, on débloque le 1er : 2000 − 2000 = 0
+    (2000, (_B1,), False),       # 1 actif, on demande le 2e : 2000 − 1000 = 1000
+    (1000, (_B1,), True),        # deux payés, on demande le 2e : 1000 − 1000 = 0
+    (1000, (), False),           # deux payés, 2 actifs, on demande le 3e : 1000 − 0
+])
+async def test_operator_example(outstanding, others_blocked, allowed):
+    with _crm(outstanding, _THREE), _blocked(*others_blocked):
+        check = await _check()
+    assert check.allowed is allowed
+    assert check.blocked_services == len(others_blocked)
 
 
 @pytest.mark.asyncio
-async def test_balance_above_threshold_is_refused():
-    with _crm(_owes(150.01)):
-        check = await crm_balance_service.check_unblock_allowed(_lr())
+async def test_single_service_client_only_its_balance_counts():
+    with _crm(980, [_svc(1, 990)]), _blocked():
+        check = await _check()
     assert check.verdict == "outstanding_balance"
-    assert check.outstanding == 150.01
-    assert "150.01" in check.message
+    assert check.covered == 0
 
 
 @pytest.mark.asyncio
-async def test_suspended_single_service_is_checked():
-    """Un client coupé a souvent son abonnement SUSPENDU (3) : il compte."""
-    with _crm(_owes(980, httpx.Response(200, json=_svc(3)))):
-        check = await crm_balance_service.check_unblock_allowed(_lr())
+@pytest.mark.parametrize("outstanding,allowed", [(0, True), (150, True), (150.01, False)])
+async def test_threshold(outstanding, allowed):
+    with _crm(outstanding, [_svc(1)]), _blocked():
+        assert (await _check()).allowed is allowed
+
+
+@pytest.mark.asyncio
+async def test_small_balance_reads_nothing_else():
+    def boom(request):  # pragma: no cover — ne doit pas être appelé
+        raise AssertionError("les abonnements ne doivent pas être lus")
+    with _crm(100, boom), _blocked(_B1) as blocked:
+        assert (await _check()).allowed
+    blocked.assert_not_awaited()
+
+
+# ── Garde-fous du comptage ─────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_stale_rows_never_cover_more_than_services_minus_one():
+    """3 fiches coupées pour un client à 2 abonnements : une seule compte."""
+    with _crm(2000, [_svc(1), _svc(2)]), _blocked(_B1, _B2, "aa:aa:aa:aa:aa:03"):
+        check = await _check()
+    assert check.blocked_services == 1
     assert check.verdict == "outstanding_balance"
-
-
-@pytest.mark.asyncio
-async def test_ended_services_do_not_count():
-    """Un actif + des terminés (2) / obsolètes (5) = UN seul abonnement."""
-    with _crm(_owes(980, httpx.Response(200, json=_svc(1, 2, 5, 2)))):
-        check = await crm_balance_service.check_unblock_allowed(_lr())
-    assert check.verdict == "outstanding_balance"
-    assert check.service_count == 1
-
-
-# ── Client à plusieurs abonnements (ou aucun) : pas de contrôle ────────────
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("statuses", [(1, 1), (1, 3), (1, 1, 1), (), (2,), (2, 5)])
-async def test_not_exactly_one_service_skips_the_balance(statuses):
-    """Le solde n'est même pas lu (le faux CRM lève s'il l'était)."""
-    with _crm(_fake(httpx.Response(200, json=_svc(*statuses)))):
-        check = await crm_balance_service.check_unblock_allowed(_lr())
-    assert check.allowed
-    assert check.outstanding is None
-    assert check.service_count == sum(1 for st in statuses if st not in (2, 5))
 
 
 @pytest.mark.asyncio
 async def test_services_of_another_client_are_ignored():
-    """Garde-fou : seuls les services de CE client comptent."""
-    other = _svc(1, client_id=999)
-    with _crm(_owes(980, httpx.Response(200, json=_svc(1) + other))):
-        check = await crm_balance_service.check_unblock_allowed(_lr())
+    with _crm(2000, [_svc(1), _svc(9, client_id=999)]), _blocked(_B1):
+        check = await _check()
+    assert check.blocked_services == 0
     assert check.verdict == "outstanding_balance"
+
+
+# ── Prix différents : rattachement par site UISP ───────────────────────────
+
+_MIXED = [_svc(1, 990, "s1"), _svc(2, 990, "s2"), _svc(3, 1190, "s3")]
+
+
+@pytest.mark.asyncio
+async def test_different_prices_use_each_blocked_antenna_price(_uisp_sites):
+    _uisp_sites.return_value = {_B1: "s3"}
+    with _crm(1190, _MIXED), _blocked(_B1):
+        check = await _check()
+    assert check.covered == 1190
+    assert check.allowed
+
+
+@pytest.mark.asyncio
+async def test_cheaper_blocked_antenna_does_not_cover_more_than_its_price(_uisp_sites):
+    _uisp_sites.return_value = {_B1: "s1"}
+    with _crm(1190, _MIXED), _blocked(_B1):
+        check = await _check()
+    assert check.covered == 990
+    assert check.verdict == "outstanding_balance"
+
+
+@pytest.mark.asyncio
+async def test_two_rows_on_the_same_service_count_once(_uisp_sites):
+    _uisp_sites.return_value = {_B1: "s3", _B2: "s3"}
+    with _crm(2380, _MIXED), _blocked(_B1, _B2):
+        check = await _check()
+    assert check.blocked_services == 1
+
+
+@pytest.mark.asyncio
+async def test_equal_prices_need_no_uisp_lookup(_uisp_sites):
+    with _crm(2000, _THREE), _blocked(_B1, _B2):
+        assert (await _check()).allowed
+    _uisp_sites.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unmappable_blocked_antenna_is_refused(_uisp_sites):
+    _uisp_sites.return_value = {}
+    with _crm(1190, _MIXED), _blocked(_B1):
+        check = await _check()
+    assert check.verdict == "crm_unavailable"
+    assert "introuvable" in check.message
+
+
+@pytest.mark.asyncio
+async def test_uisp_unreachable_is_refused(_uisp_sites):
+    _uisp_sites.side_effect = httpx.ConnectError("down")
+    with _crm(1190, _MIXED), _blocked(_B1):
+        assert (await _check()).verdict == "crm_unavailable"
 
 
 # ── Sans id CRM / CRM muet ─────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_client_without_crm_id_is_allowed_without_calling_the_crm():
-    def boom(request):  # pragma: no cover — ne doit pas être appelé
+    def boom(request):  # pragma: no cover
         raise AssertionError("le CRM ne doit pas être interrogé")
-    with _crm(boom):
+    with _crm(boom, boom):
         for crm_id in (None, "", "  "):
-            assert (await crm_balance_service.check_unblock_allowed(_lr(crm_id))).allowed
+            assert (await crm_balance_service.check_unblock_allowed(None, _lr(crm_id))).allowed
 
 
 _FAILURES = [
@@ -162,38 +228,28 @@ _FAILURES = [
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", [
-    *_FAILURES,
-    lambda r: httpx.Response(200, json={"id": 1361}),
-    lambda r: httpx.Response(200, json=[{"clientId": 1361}]),
-])
-async def test_unknown_service_count_is_refused(failure):
-    """Fermé par défaut : on ne SAIT pas si le client relève du contrôle."""
-    with _crm(_fake(failure)):
-        check = await crm_balance_service.check_unblock_allowed(_lr())
-    assert check.verdict == "crm_unavailable"
-    assert "abonnements" in check.message
+@pytest.mark.parametrize("failure", [*_FAILURES, lambda r: httpx.Response(200, json={"id": 1361})])
+async def test_unreadable_balance_is_refused(failure):
+    with _crm(failure), _blocked():
+        assert (await _check()).verdict == "crm_unavailable"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [
     *_FAILURES,
-    lambda r: httpx.Response(200, json={"id": 1361}),
-    lambda r: httpx.Response(200, json={"accountOutstanding": "abc"}),
+    lambda r: httpx.Response(200, json={"id": 1}),
+    lambda r: httpx.Response(200, json=[{"id": 1, "clientId": 1361, "totalPrice": "abc"},
+                                        {"id": 2, "clientId": 1361, "totalPrice": 1000}]),
 ])
-async def test_unknown_balance_is_refused(failure):
-    """Fermé par défaut : on ne SAIT pas que le client est à jour."""
-    with _crm(_fake(client=failure)):
-        check = await crm_balance_service.check_unblock_allowed(_lr())
-    assert check.verdict == "crm_unavailable"
-    assert not check.allowed
+async def test_unreadable_services_are_refused(failure):
+    with _crm(2000, failure), _blocked(_B1):
+        assert (await _check()).verdict == "crm_unavailable"
 
 
 @pytest.mark.asyncio
 async def test_missing_app_key_is_refused(monkeypatch):
     monkeypatch.setattr(settings, "crm_api_key", "")
-    check = await crm_balance_service.check_unblock_allowed(_lr())
-    assert check.verdict == "crm_unavailable"
+    assert (await _check()).verdict == "crm_unavailable"
 
 
 def test_crm_url_defaults_to_the_controller(monkeypatch):
@@ -205,7 +261,7 @@ def test_crm_url_defaults_to_the_controller(monkeypatch):
 # ── Les deux routes ─────────────────────────────────────────────────────────
 
 _REFUSED = crm_balance_service.BalanceCheck(
-    "outstanding_balance", "Déblocage refusé : doit 300.00", "1361", 300.0, 150.0,
+    "outstanding_balance", "Déblocage refusé : doit 2000.00", "1361", 2000.0, 150.0, 1000.0, 1,
 )
 _UNAVAILABLE = crm_balance_service.BalanceCheck(
     "crm_unavailable", "Déblocage refusé : CRM injoignable", "1361", None, 150.0,
@@ -225,8 +281,11 @@ async def test_fai_unblock_refusal_touches_nothing(check, status):
     ):
         await fai_ep.fai_unblock(fai_ep.FaiUnblockRequest(mac=lr.mac_address, user="a@b"), db=None)
     assert exc.value.status_code == status
-    assert exc.value.detail["error_code"] == check.verdict
-    assert exc.value.detail["outstanding"] == check.outstanding
+    detail = exc.value.detail
+    assert detail["error_code"] == check.verdict
+    assert detail["outstanding"] == check.outstanding
+    assert detail["blocked_services"] == check.blocked_services
+    assert detail["covered"] == check.covered
     unblock.assert_not_awaited()
     assert log.call_args.args[0] == "BALANCE_KO"
     assert log.call_args.kwargs["user"] == "a@b"
@@ -236,19 +295,21 @@ async def test_fai_unblock_refusal_touches_nothing(check, status):
 async def test_fai_unblock_allowed_goes_through():
     lr = _lr()
     ok = crm_balance_service.BalanceCheck("allowed", "ok")
-    with patch.object(fai_ep, "_lookup_lr", AsyncMock(return_value=lr)), \
-         patch.object(crm_balance_service, "check_unblock_allowed", AsyncMock(return_value=ok)), \
-         patch.object(fai_ep.client_block_service, "unblock_client",
-                      AsyncMock(return_value=(True, "rétabli", None))) as unblock, \
-         patch.object(fai_ep.fai_audit, "log_action"), \
-         patch.object(fai_ep, "_result", return_value="RESULT"):
+    with (
+        patch.object(fai_ep, "_lookup_lr", AsyncMock(return_value=lr)),
+        patch.object(crm_balance_service, "check_unblock_allowed", AsyncMock(return_value=ok)),
+        patch.object(fai_ep.client_block_service, "unblock_client",
+                     AsyncMock(return_value=(True, "rétabli", None))) as unblock,
+        patch.object(fai_ep.fai_audit, "log_action"),
+        patch.object(fai_ep, "_result", return_value="RESULT"),
+    ):
         assert await fai_ep.fai_unblock(fai_ep.FaiUnblockRequest(mac=lr.mac_address), db=None) == "RESULT"
     unblock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_dashboard_unblock_is_checked_too():
-    lr = Lr(id=7, name="LR test", mac_address="1c:6a:1b:b8:79:b0", uisp_crm_client_id="1361")
+    lr = Lr(id=7, name="LR test", mac_address=_MAC, uisp_crm_client_id="1361")
     with (
         patch.object(devices_ep.device_service, "get_device", AsyncMock(return_value=lr)),
         patch.object(crm_balance_service, "check_unblock_allowed", AsyncMock(return_value=_REFUSED)),

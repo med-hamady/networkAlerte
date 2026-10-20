@@ -237,11 +237,12 @@ async def fai_unblock(
 
     - 400 : MAC mal formée.
     - 404 : aucun LR pour cette MAC.
-    - 409 `outstanding_balance` : le client doit plus que le seuil (150).
+    - 409 `outstanding_balance` : le dû n'est pas couvert par les abonnements
+      du client qui restent coupés (reste > seuil 150).
     - 503 `crm_unavailable` : solde impossible à vérifier (CRM injoignable…).
     """
     lr = await _lookup_lr(db, body.mac)
-    balance = await crm_balance_service.check_unblock_allowed(lr)
+    balance = await crm_balance_service.check_unblock_allowed(db, lr)
     if not balance.allowed:
         fai_audit.log_action(
             "BALANCE_KO", ok=False, mac=lr.mac_address, name=lr.name,
@@ -255,6 +256,8 @@ async def fai_unblock(
                 "mac": lr.mac_address,
                 "crm_client_id": balance.crm_client_id,
                 "outstanding": balance.outstanding,
+                "blocked_services": balance.blocked_services,
+                "covered": balance.covered,
                 "threshold": balance.threshold,
             },
         )

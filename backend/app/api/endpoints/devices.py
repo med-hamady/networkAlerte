@@ -826,7 +826,7 @@ async def unblock_client(
         )
     # Même contrôle du solde CRM que `POST /fai/unblock`, sans moyen de forcer
     # (décision opérateur) : 409 dû au-delà du seuil, 503 CRM injoignable.
-    balance = await crm_balance_service.check_unblock_allowed(device)
+    balance = await crm_balance_service.check_unblock_allowed(db, device)
     if not balance.allowed:
         fai_audit.log_action(
             "BALANCE_KO", ok=False, mac=device.mac_address, name=device.name,

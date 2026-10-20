@@ -127,31 +127,47 @@ Content-Type: application/json
 Rétablit l'accès complet **quel que soit le mode** qui avait été appliqué — vous n'avez
 pas à savoir comment le client avait été coupé.
 
-### Contrôle du solde CRM (depuis le 2026-10-14)
+### Contrôle du solde CRM (depuis le 2026-10-14, règle du 2026-10-20)
 
-Avant toute action, pour un client qui n'a **qu'un seul abonnement** dans le CRM
-(abonnements terminés non comptés), nous lisons ce qu'il doit encore. Un client à
-**plusieurs abonnements** est débloqué sans contrôle du solde. **Le déblocage est
-refusé** — le client reste coupé, rien n'est modifié — dans deux cas :
+Avant toute action, nous lisons dans le CRM le **solde dû** du client. Un client
+peut avoir **autant d'abonnements actifs qu'il en a payé** : le dû doit être
+couvert par ses abonnements qui **restent coupés**.
+
+> Déblocage accepté si : **dû − prix de ses autres abonnements encore coupés ≤ 150**
+
+Exemple, un client à 3 abonnements de 1000 MRU :
+
+| Situation | Dû | Restent coupés | Calcul | Résultat |
+|---|---|---|---|---|
+| Rien payé | 3000 | 2 | 3000 − 2000 = 1000 | refusé (409) |
+| A payé un abonnement | 2000 | 2 | 2000 − 2000 = 0 | débloqué |
+| 1 actif, demande d'un 2e | 2000 | 1 | 2000 − 1000 = 1000 | refusé (409) |
+| A payé deux abonnements | 1000 | 1 | 1000 − 1000 = 0 | débloqué |
+
+Un client à un seul abonnement est refusé dès que son dû dépasse 150.
 
 | HTTP | `error_code` | Cas |
 |---|---|---|
-| **409** | `outstanding_balance` | Le client doit **plus de 150** (150 tout rond passe) |
-| **503** | `crm_unavailable` | Le nombre d'abonnements ou le solde n'a pas pu être vérifié (CRM injoignable, réponse illisible, client introuvable dans le CRM). Réessayer plus tard |
+| **409** | `outstanding_balance` | Le dû n'est pas couvert par les abonnements qui restent coupés (reste **> 150**) |
+| **503** | `crm_unavailable` | Le solde n'a pas pu être vérifié (CRM injoignable, réponse illisible, client introuvable). Réessayer plus tard |
 
 ```json
 {
   "detail": {
     "error_code": "outstanding_balance",
-    "message": "Déblocage refusé : le client CRM 1361 doit encore 300.00 (seuil 150.00).",
+    "message": "Déblocage refusé : le client CRM 1361 doit 2000.00, dont 1000.00 non couverts par ses 1 abonnement(s) encore coupé(s) (seuil 150.00).",
     "mac": "d0:21:f9:f6:07:c2",
     "crm_client_id": "1361",
-    "outstanding": 300.0,
+    "outstanding": 2000.0,
+    "blocked_services": 1,
+    "covered": 1000.0,
     "threshold": 150.0
   }
 }
 ```
 
+- `outstanding` = dû total du client, `blocked_services` = nombre de ses autres
+  abonnements encore coupés, `covered` = leur prix total.
 - Le solde est lu **au moment de l'appel** : un paiement doit déjà être enregistré
   dans le CRM quand vous appelez `/unblock`, sinon le client sera refusé.
 - Un client **non rattaché à un client CRM** est débloqué sans contrôle.

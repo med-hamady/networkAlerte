@@ -6,11 +6,12 @@ by `uisp_sync_service` to import infrastructure devices automatically, so the
 operator doesn't enter each base-station Rocket / switch / UISP Power / AF60
 backhaul by hand.
 
-⚠️ **Presque entièrement en LECTURE seule.** Seule exception :
+⚠️ **Presque entièrement en LECTURE seule.** Deux exceptions :
 :meth:`UISPClient.assign_device_to_site`, qui rattache un équipement au site d'un
-client (`uisp_client_assignment_service`). Elle exige un **token API en
+client (`uisp_assignment_service`), et :meth:`UISPClient.delete_device`, qui
+retire une antenne abonnée de l'inventaire (`antenna_lifecycle_service`). Elle exige un **token API en
 écriture** : un token de lecture reçoit `403 "You are not authorized for this
-action."` (constaté le 2026-07-28). Toute écriture future doit rester regroupée
+action."` (constaté le 2026-07-28). Les deux en exigent un. Toute écriture future doit rester regroupée
 ici et signalée, pour qu'un lecteur ne suppose jamais qu'un appel à ce client est
 sans effet.
 
@@ -155,6 +156,33 @@ class UISPClient:
                 return resp.json()
             except ValueError:
                 return {}
+
+    async def delete_device(self, device_id: str) -> bool:
+        """⚠️ ÉCRITURE — retire un équipement de l'inventaire (`DELETE /devices/{id}`).
+
+        Utilisée par `antenna_lifecycle_service` (suppression / remplacement
+        d'une antenne abonnée demandés par S-Ticketing). Rend ``True`` si le
+        contrôleur l'a supprimé, ``False`` s'il ne le connaissait déjà plus
+        (404) : un rejeu après une suppression réussie ne doit pas échouer.
+
+        Même token d'écriture que :meth:`assign_device_to_site`.
+        """
+        async with httpx.AsyncClient(verify=self._verify, timeout=self._timeout) as client:
+            headers = await self._auth_headers(client)
+            resp = await client.delete(
+                f"{self._base}/nms/api/v2.1/devices/{device_id}",
+                headers=headers,
+                timeout=self._timeout,
+            )
+            if resp.status_code in (401, 403):
+                raise UISPAuthError(
+                    f"UISP a refusé la suppression ({resp.status_code}) : le token "
+                    f"n'a pas les droits d'écriture (UISP_WRITE_API_TOKEN)."
+                )
+            if resp.status_code == 404:
+                return False
+            resp.raise_for_status()
+            return True
 
     async def fetch_data_links(self) -> list[dict]:
         """Return the controller's provisioned data-links (raw UISP dicts).

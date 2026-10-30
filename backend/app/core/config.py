@@ -139,6 +139,13 @@ class Settings(BaseSettings):
     # Vide = pas de clé dédiée.
     site_status_api_key: str = ""
 
+    # Clé dédiée aux SEULES routes /antennas (suppression / remplacement d'une
+    # antenne abonnée), tenue par S-Ticketing. Ces routes ÉCRIVENT dans UISP et
+    # SUPPRIMENT des lignes de notre base : un pouvoir distinct de tous les
+    # autres, d'où aucun repli sur une autre clé cloisonnée — repli sur l'auth
+    # normale seulement (session / maîtresse). Vide = pas de clé dédiée.
+    ticketing_api_key: str = ""
+
     # Journal d'audit des blocages / déblocages (une ligne par action). Fichier
     # texte, dans un volume bind-monté → survit aux redéploiements.
     fai_log_path: str = "/app/logs/fai_actions.log"
@@ -1271,6 +1278,7 @@ class Settings(BaseSettings):
             "CONTENT_BLOCK_API_KEY": self.content_block_api_key,
             "CLIENT_SIGNAL_API_KEY": self.client_signal_api_key,
             "SITE_STATUS_API_KEY": self.site_status_api_key,
+            "TICKETING_API_KEY": self.ticketing_api_key,
         }
         seen: dict[str, str] = {}
         for name, value in scoped.items():

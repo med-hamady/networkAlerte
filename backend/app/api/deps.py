@@ -107,6 +107,14 @@ def _site_status_api_key_matches(x_api_key: str | None) -> bool:
     return hmac.compare_digest(x_api_key or "", settings.site_status_api_key)
 
 
+def _ticketing_api_key_matches(x_api_key: str | None) -> bool:
+    """Constant-time check against the S-Ticketing key (False if unset)."""
+    settings = get_settings()
+    if not settings.ticketing_api_key:
+        return False
+    return hmac.compare_digest(x_api_key or "", settings.ticketing_api_key)
+
+
 def _log_master_key_use(request: Request) -> None:
     """Trace toute authentification par la clé MAÎTRESSE (jamais la clé elle-même).
 
@@ -354,6 +362,24 @@ async def require_site_status_client(
     master key and operator sessions working.
     """
     if _site_status_api_key_matches(x_api_key):
+        _mark_api_key_auth(request)
+        return None
+    return await require_user_or_api_key(request, x_api_key, db)
+
+
+async def require_ticketing_client(
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """Auth for /antennas (delete / replace a subscriber antenna): its own key.
+
+    S-Ticketing holds `ticketing_api_key`, which unlocks ONLY these routes — they
+    write to the UISP controller and delete rows here, a power no other third
+    party holds. No fallback on any other scoped key; the fallback on
+    `require_user_or_api_key` keeps the master key and operator sessions working.
+    """
+    if _ticketing_api_key_matches(x_api_key):
         _mark_api_key_auth(request)
         return None
     return await require_user_or_api_key(request, x_api_key, db)

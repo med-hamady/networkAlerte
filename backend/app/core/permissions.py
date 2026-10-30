@@ -206,6 +206,9 @@ PERMISSION_GROUPS: tuple[PermissionGroup, ...] = (
                     "depuis le contrôleur UISP."),
             _action("uisp.assign", "Associer un équipement à un client CRM",
                     "Rattacher un CPE installé au compte de l'abonné dans UISP."),
+            _action("uisp.antenna_remove", "Supprimer ou remplacer une antenne abonnée",
+                    "Retirer une antenne de UISP et de la base, ou la remplacer par "
+                    "une nouvelle sur le compte du client. Irréversible."),
         ),
     ),
     PermissionGroup(

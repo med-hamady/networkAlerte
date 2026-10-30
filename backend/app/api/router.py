@@ -6,6 +6,7 @@ from app.api.deps import (
     require_fai_client,
     require_permission,
     require_site_status_client,
+    require_ticketing_client,
     require_uisp_assign_client,
     require_user_or_api_key,
     require_verify_client,
@@ -14,6 +15,7 @@ from app.api.endpoints import (
     access,
     access_control,
     access_diagnostics,
+    antennas,
     auth,
     client_broadcasts,
     client_signal,
@@ -225,6 +227,17 @@ api_router.include_router(
     dependencies=[
         Depends(require_uisp_assign_client),
         Depends(require_permission("uisp.assign")),
+    ],
+)
+
+# /antennas — suppression / remplacement d'une antenne abonnée, demandés par
+# S-Ticketing avec SA clé (TICKETING_API_KEY). Préfixe propre : aucune route
+# voisine n'hérite de cette clé — mais toute route ajoutée dans antennas.py, si.
+api_router.include_router(
+    antennas.router, prefix="/antennas", tags=["antennas"],
+    dependencies=[
+        Depends(require_ticketing_client),
+        Depends(require_permission("uisp.antenna_remove")),
     ],
 )
 

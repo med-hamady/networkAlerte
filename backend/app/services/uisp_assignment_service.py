@@ -376,6 +376,7 @@ async def assign_device_to_crm_client(
     crm_client_id: str,
     crm_service_id: str | None = None,
     reassign: bool = False,
+    started: float | None = None,
 ) -> dict[str, Any]:
     """Associe l'équipement `mac` au client CRM `crm_client_id`.
 
@@ -396,8 +397,12 @@ async def assign_device_to_crm_client(
     attend qu'il se déclare et on l'associe dans le même appel. S'il ne s'est
     pas déclaré dans le délai, la réponse porte ``pending_registration`` et
     ``retry_after_seconds`` — ce n'est pas une erreur, c'est une attente.
+
+    `started` (horloge monotone) : début de l'appel HTTP quand ce rattachement
+    n'en est qu'une étape (remplacement d'antenne) — le budget `CALL_BUDGET_S`
+    se compte alors depuis là, pas depuis l'entrée dans cette fonction.
     """
-    started = time.monotonic()
+    started = time.monotonic() if started is None else started
     normalized = normalize_mac(mac)  # ValueError -> 400 chez l'appelant
     # Une chaîne vide vaut « non fourni » : les intégrations sérialisent souvent
     # un champ absent en "". Sans ça, `""` partait dans la branche « service
